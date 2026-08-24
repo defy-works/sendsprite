@@ -1,12 +1,16 @@
 import { z } from "zod";
+import { eq } from "drizzle-orm";
 import { APIError } from "better-auth/api";
 import { can, type Action, type TeamRole } from "@sendsprite/shared";
 import { auth } from "@/lib/auth";
+import { db } from "@/db";
+import { invitation } from "@/db/schema";
 import { computeDiff, recordAudit } from "@/lib/audit";
+// Not `@/env`: that module is `server-only` and throws under vitest.
 import { loadEnv } from "@/env.schema";
 
 export type Result<T = undefined> =
-  { ok: true; data?: T } | { ok: false; error: string };
+  { ok: true; data: T } | { ok: false; error: string };
 
 /** The slice of `TeamContext` the team mutations need. No `next/*` here. */
 export interface TeamActor {
@@ -61,12 +65,13 @@ export function renameTeam(
       targetId: actor.teamId,
       diff: computeDiff({ name: actor.teamName }, { name: name.data }),
     });
-    return { ok: true };
+    return { ok: true, data: undefined };
   });
 }
 
+// Invitation lookup on signup matches by lowercased email (lib/auth.ts).
 const inviteSchema = z.object({
-  email: z.email(),
+  email: z.string().trim().toLowerCase().pipe(z.email()),
   role: z.enum(["admin", "member"]),
 });
 
@@ -112,6 +117,15 @@ export function cancelInvitation(
   invitationId: string,
 ): Promise<Result> {
   return authorized(actor, "members.invite", async () => {
+    // better-auth authorizes against the invitation's own org, so an admin
+    // of another team could cancel by id. Scope to the actor's team first.
+    const [inv] = await db()
+      .select({ organizationId: invitation.organizationId })
+      .from(invitation)
+      .where(eq(invitation.id, invitationId))
+      .limit(1);
+    if (!inv || inv.organizationId !== actor.teamId)
+      return { ok: false, error: "Invitation not found." };
     await auth.api.cancelInvitation({ headers, body: { invitationId } });
     await recordAudit({
       teamId: actor.teamId,
@@ -120,7 +134,7 @@ export function cancelInvitation(
       targetType: "invitation",
       targetId: invitationId,
     });
-    return { ok: true };
+    return { ok: true, data: undefined };
   });
 }
 
@@ -141,7 +155,7 @@ export function removeMember(
       targetType: "member",
       targetId: memberIdOrEmail,
     });
-    return { ok: true };
+    return { ok: true, data: undefined };
   });
 }
 
@@ -166,6 +180,6 @@ export function changeRole(
       targetId: memberId,
       diff: { role: { to: role } },
     });
-    return { ok: true };
+    return { ok: true, data: undefined };
   });
 }

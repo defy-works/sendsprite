@@ -10,9 +10,11 @@ let svc: typeof import("@/services/team");
 
 let owner: TeamActor;
 let ownerHeaders: Headers;
+let ownerMemberId: string;
 let plain: TeamActor; // role "member"
 let plainHeaders: Headers;
 let plainMemberId: string;
+let otherOrgInvitationId: string; // pending invitation in an unrelated org
 
 beforeAll(async () => {
   pg = await startPg();
@@ -38,6 +40,11 @@ beforeAll(async () => {
     teamName: org.name,
     role: "owner",
   };
+  const [ownerRow] = await pg.db
+    .select({ id: schema.member.id })
+    .from(schema.member)
+    .where(eq(schema.member.userId, owner.userId));
+  ownerMemberId = ownerRow!.id;
 
   const m = await signUp("member@example.com");
   plainHeaders = cookieHeaders(m);
@@ -50,6 +57,23 @@ beforeAll(async () => {
     createdAt: new Date(),
   });
   plain = { ...owner, userId: m.response.user.id, role: "member" };
+
+  // A second org the Acme owner has nothing to do with.
+  const stranger = await signUp("stranger@example.com");
+  const otherOrg = await auth.api.createOrganization({
+    headers: cookieHeaders(stranger),
+    body: { name: "Other", slug: "other" },
+  });
+  otherOrgInvitationId = "inv_other";
+  await pg.db.insert(schema.invitation).values({
+    id: otherOrgInvitationId,
+    organizationId: otherOrg!.id,
+    email: "someone@example.com",
+    role: "member",
+    status: "pending",
+    expiresAt: new Date(Date.now() + 60_000),
+    inviterId: stranger.response.user.id,
+  });
 });
 afterAll(async () => {
   await pg.stop();
@@ -84,6 +108,14 @@ function audits(action: string) {
     .orderBy(desc(schema.auditLog.createdAt));
 }
 
+function memberRole(id: string) {
+  return pg.db
+    .select({ role: schema.member.role })
+    .from(schema.member)
+    .where(eq(schema.member.id, id))
+    .then((r) => r[0]?.role);
+}
+
 describe("team service", () => {
   it("member role cannot invite", async () => {
     const res = await svc.inviteMember(
@@ -100,8 +132,15 @@ describe("team service", () => {
   });
 
   it("rejects an invalid email before calling better-auth", async () => {
+    const before = (await audits("members.invite")).length;
     const res = await svc.inviteMember(owner, ownerHeaders, "nope", "member");
     expect(res.ok).toBe(false);
+    const rows = await pg.db
+      .select({ id: schema.invitation.id })
+      .from(schema.invitation)
+      .where(eq(schema.invitation.organizationId, owner.teamId));
+    expect(rows).toHaveLength(0);
+    expect(await audits("members.invite")).toHaveLength(before);
   });
 
   let invitationId: string;
@@ -115,8 +154,8 @@ describe("team service", () => {
     );
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    invitationId = res.data!.link.split("/invite/")[1]!;
-    expect(res.data!.link).toBe(`http://localhost:3000/invite/${invitationId}`);
+    invitationId = res.data.link.split("/invite/")[1]!;
+    expect(res.data.link).toBe(`http://localhost:3000/invite/${invitationId}`);
     const [inv] = await pg.db
       .select()
       .from(schema.invitation)
@@ -136,9 +175,31 @@ describe("team service", () => {
     });
   });
 
+  it("mixed-case invite email is stored and audited lowercase", async () => {
+    const res = await svc.inviteMember(
+      owner,
+      ownerHeaders,
+      "  Mixed.Case@Example.COM ",
+      "member",
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const id = res.data.link.split("/invite/")[1]!;
+    const [inv] = await pg.db
+      .select({ email: schema.invitation.email })
+      .from(schema.invitation)
+      .where(eq(schema.invitation.id, id));
+    expect(inv?.email).toBe("mixed.case@example.com");
+    const [a] = await audits("members.invite");
+    expect(a).toMatchObject({
+      targetId: id,
+      diff: { email: { to: "mixed.case@example.com" } },
+    });
+  });
+
   it("cancel invitation: status canceled + audit", async () => {
     const res = await svc.cancelInvitation(owner, ownerHeaders, invitationId);
-    expect(res).toEqual({ ok: true });
+    expect(res).toEqual({ ok: true, data: undefined });
     const [inv] = await pg.db
       .select({ status: schema.invitation.status })
       .from(schema.invitation)
@@ -146,6 +207,21 @@ describe("team service", () => {
     expect(inv?.status).toBe("canceled");
     const [a] = await audits("members.invite.cancel");
     expect(a).toMatchObject({ targetId: invitationId });
+  });
+
+  it("cannot cancel another org's invitation", async () => {
+    const res = await svc.cancelInvitation(
+      owner,
+      ownerHeaders,
+      otherOrgInvitationId,
+    );
+    expect(res).toEqual({ ok: false, error: "Invitation not found." });
+    const [inv] = await pg.db
+      .select({ status: schema.invitation.status })
+      .from(schema.invitation)
+      .where(eq(schema.invitation.id, otherOrgInvitationId));
+    expect(inv?.status).toBe("pending");
+    expect(await audits("members.invite.cancel")).toHaveLength(1);
   });
 
   it("better-auth's own permission check surfaces as a Result error", async () => {
@@ -158,7 +234,7 @@ describe("team service", () => {
       "member",
     );
     expect(res.ok).toBe(false);
-    expect(await audits("members.invite")).toHaveLength(1);
+    expect(await audits("members.invite")).toHaveLength(2);
   });
 
   it("admin cannot promote to owner", async () => {
@@ -176,6 +252,25 @@ describe("team service", () => {
     expect(await audits("members.changeRole")).toHaveLength(0);
   });
 
+  it("last owner cannot demote themselves", async () => {
+    const res = await svc.changeRole(
+      owner,
+      ownerHeaders,
+      ownerMemberId,
+      "admin",
+    );
+    expect(res.ok).toBe(false);
+    expect(await memberRole(ownerMemberId)).toBe("owner");
+    expect(await audits("members.changeRole")).toHaveLength(0);
+  });
+
+  it("last owner cannot be removed", async () => {
+    const res = await svc.removeMember(owner, ownerHeaders, ownerMemberId);
+    expect(res.ok).toBe(false);
+    expect(await memberRole(ownerMemberId)).toBe("owner");
+    expect(await audits("members.remove")).toHaveLength(0);
+  });
+
   it("owner changes a member's role + audit", async () => {
     const res = await svc.changeRole(
       owner,
@@ -183,12 +278,8 @@ describe("team service", () => {
       plainMemberId,
       "admin",
     );
-    expect(res).toEqual({ ok: true });
-    const [m] = await pg.db
-      .select({ role: schema.member.role })
-      .from(schema.member)
-      .where(eq(schema.member.id, plainMemberId));
-    expect(m?.role).toBe("admin");
+    expect(res).toEqual({ ok: true, data: undefined });
+    expect(await memberRole(plainMemberId)).toBe("admin");
     const [a] = await audits("members.changeRole");
     expect(a).toMatchObject({
       targetId: plainMemberId,
@@ -203,7 +294,7 @@ describe("team service", () => {
 
   it("rename: organization.name updated + audit diff", async () => {
     const res = await svc.renameTeam(owner, ownerHeaders, "  Acme Corp ");
-    expect(res).toEqual({ ok: true });
+    expect(res).toEqual({ ok: true, data: undefined });
     const [org] = await pg.db
       .select({ name: schema.organization.name })
       .from(schema.organization)
@@ -219,7 +310,7 @@ describe("team service", () => {
 
   it("remove member: row gone + audit", async () => {
     const res = await svc.removeMember(owner, ownerHeaders, plainMemberId);
-    expect(res).toEqual({ ok: true });
+    expect(res).toEqual({ ok: true, data: undefined });
     const rows = await pg.db
       .select({ id: schema.member.id })
       .from(schema.member)

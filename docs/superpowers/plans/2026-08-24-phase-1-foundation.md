@@ -502,7 +502,7 @@ git commit -m "feat(shared): prefixed ULID ids and team role permission table"
     "dev": "next dev -p 3000",
     "build": "next build",
     "start": "next start",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
     "test:e2e": "playwright test",
@@ -3207,9 +3207,202 @@ git commit -m "feat(web): app shell, team creation/switching, instance settings 
 
 **Files:**
 
-- Create: `apps/web/src/app/app/settings/page.tsx`, `apps/web/src/app/app/settings/actions.ts`, `apps/web/src/app/app/settings/MembersPanel.tsx`, `apps/web/src/app/app/settings/InvitePanel.tsx`, `apps/web/src/app/app/settings/RenameForm.tsx`
+- Create: `apps/web/src/services/team.ts`, `apps/web/src/app/app/settings/page.tsx`, `apps/web/src/app/app/settings/actions.ts`, `apps/web/src/app/app/settings/MembersPanel.tsx`, `apps/web/src/app/app/settings/InvitePanel.tsx`, `apps/web/src/app/app/settings/RenameForm.tsx`, `apps/web/src/components/app/MobileNav.tsx`, `apps/web/tests/integration/team-actions.test.ts`
+- Modify: `apps/web/src/components/app/AppShell.tsx`, `apps/web/package.json` (`typecheck` runs `next typegen` first: the global `PageProps` types live in `.next/types`, so `tsc` alone fails on a clean checkout)
 
-- [x] **Step 1: Server actions (authorize with `can()`, audit every mutation)**
+- [x] **Step 1: Team service (authorize with `can()`, audit every mutation) + thin server actions**
+
+The mutations live in a service that takes a `TeamActor` + request `Headers` and returns a `Result`, with no `next/*` imports, so they are integration-testable without a request context. Server actions only resolve the actor via `requireTeam()`, delegate, and revalidate. better-auth `APIError`s become `Result` errors; `cancelInvitation` scopes the invitation to the actor's team before calling better-auth (which authorizes against the invitation's own org); invite emails are trimmed + lowercased to match the signup-policy lookup.
+
+`apps/web/src/services/team.ts`:
+
+```ts
+import { z } from "zod";
+import { eq } from "drizzle-orm";
+import { APIError } from "better-auth/api";
+import { can, type Action, type TeamRole } from "@sendsprite/shared";
+import { auth } from "@/lib/auth";
+import { db } from "@/db";
+import { invitation } from "@/db/schema";
+import { computeDiff, recordAudit } from "@/lib/audit";
+// Not `@/env`: that module is `server-only` and throws under vitest.
+import { loadEnv } from "@/env.schema";
+
+export type Result<T = undefined> =
+  { ok: true; data: T } | { ok: false; error: string };
+
+/** The slice of `TeamContext` the team mutations need. No `next/*` here. */
+export interface TeamActor {
+  userId: string;
+  teamId: string;
+  teamName: string;
+  role: TeamRole;
+}
+
+const DENIED: Result<never> = {
+  ok: false,
+  error: "You don't have permission to do that.",
+};
+
+/**
+ * Runs `fn` when the actor holds `action`; better-auth's own permission
+ * errors (APIError) surface as a Result instead of throwing.
+ */
+async function authorized<T>(
+  actor: TeamActor,
+  action: Action,
+  fn: () => Promise<Result<T>>,
+): Promise<Result<T>> {
+  if (!can(actor.role, action)) return DENIED;
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof APIError)
+      return { ok: false, error: err.message || "Request failed." };
+    throw err;
+  }
+}
+
+export function renameTeam(
+  actor: TeamActor,
+  headers: Headers,
+  rawName: unknown,
+): Promise<Result> {
+  return authorized(actor, "team.rename", async () => {
+    const name = z.string().trim().min(2).max(64).safeParse(rawName);
+    if (!name.success)
+      return { ok: false, error: "Name must be 2–64 characters." };
+    await auth.api.updateOrganization({
+      headers,
+      body: { organizationId: actor.teamId, data: { name: name.data } },
+    });
+    await recordAudit({
+      teamId: actor.teamId,
+      actorUserId: actor.userId,
+      action: "team.rename",
+      targetType: "team",
+      targetId: actor.teamId,
+      diff: computeDiff({ name: actor.teamName }, { name: name.data }),
+    });
+    return { ok: true, data: undefined };
+  });
+}
+
+// Invitation lookup on signup matches by lowercased email (lib/auth.ts).
+const inviteSchema = z.object({
+  email: z.string().trim().toLowerCase().pipe(z.email()),
+  role: z.enum(["admin", "member"]),
+});
+
+export function inviteMember(
+  actor: TeamActor,
+  headers: Headers,
+  email: unknown,
+  role: unknown,
+): Promise<Result<{ link: string }>> {
+  return authorized(actor, "members.invite", async () => {
+    const parsed = inviteSchema.safeParse({ email, role });
+    if (!parsed.success)
+      return { ok: false, error: "Enter a valid email and role." };
+    const inv = await auth.api.createInvitation({
+      headers,
+      body: {
+        organizationId: actor.teamId,
+        email: parsed.data.email,
+        role: parsed.data.role,
+      },
+    });
+    await recordAudit({
+      teamId: actor.teamId,
+      actorUserId: actor.userId,
+      action: "members.invite",
+      targetType: "invitation",
+      targetId: inv.id,
+      diff: {
+        email: { to: parsed.data.email },
+        role: { to: parsed.data.role },
+      },
+    });
+    return {
+      ok: true,
+      data: { link: `${loadEnv().APP_URL}/invite/${inv.id}` },
+    };
+  });
+}
+
+export function cancelInvitation(
+  actor: TeamActor,
+  headers: Headers,
+  invitationId: string,
+): Promise<Result> {
+  return authorized(actor, "members.invite", async () => {
+    // better-auth authorizes against the invitation's own org, so an admin
+    // of another team could cancel by id. Scope to the actor's team first.
+    const [inv] = await db()
+      .select({ organizationId: invitation.organizationId })
+      .from(invitation)
+      .where(eq(invitation.id, invitationId))
+      .limit(1);
+    if (!inv || inv.organizationId !== actor.teamId)
+      return { ok: false, error: "Invitation not found." };
+    await auth.api.cancelInvitation({ headers, body: { invitationId } });
+    await recordAudit({
+      teamId: actor.teamId,
+      actorUserId: actor.userId,
+      action: "members.invite.cancel",
+      targetType: "invitation",
+      targetId: invitationId,
+    });
+    return { ok: true, data: undefined };
+  });
+}
+
+export function removeMember(
+  actor: TeamActor,
+  headers: Headers,
+  memberIdOrEmail: string,
+): Promise<Result> {
+  return authorized(actor, "members.remove", async () => {
+    await auth.api.removeMember({
+      headers,
+      body: { organizationId: actor.teamId, memberIdOrEmail },
+    });
+    await recordAudit({
+      teamId: actor.teamId,
+      actorUserId: actor.userId,
+      action: "members.remove",
+      targetType: "member",
+      targetId: memberIdOrEmail,
+    });
+    return { ok: true, data: undefined };
+  });
+}
+
+export function changeRole(
+  actor: TeamActor,
+  headers: Headers,
+  memberId: string,
+  role: TeamRole,
+): Promise<Result> {
+  return authorized(actor, "members.changeRole", async () => {
+    if (role === "owner" && actor.role !== "owner")
+      return { ok: false, error: "Only an owner can promote to owner." };
+    await auth.api.updateMemberRole({
+      headers,
+      body: { organizationId: actor.teamId, memberId, role },
+    });
+    await recordAudit({
+      teamId: actor.teamId,
+      actorUserId: actor.userId,
+      action: "members.changeRole",
+      targetType: "member",
+      targetId: memberId,
+      diff: { role: { to: role } },
+    });
+    return { ok: true, data: undefined };
+  });
+}
+```
 
 `apps/web/src/app/app/settings/actions.ts`:
 
@@ -3217,148 +3410,78 @@ git commit -m "feat(web): app shell, team creation/switching, instance settings 
 "use server";
 import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
-import { z } from "zod";
-import { can, type TeamRole } from "@sendsprite/shared";
-import { auth } from "@/lib/auth";
+import { TEAM_ROLES, type TeamRole } from "@sendsprite/shared";
 import { requireTeam } from "@/lib/session";
-import { computeDiff, recordAudit } from "@/lib/audit";
-import { env } from "@/env";
+import * as team from "@/services/team";
 
-type Result<T = undefined> =
-  { ok: true; data?: T } | { ok: false; error: string };
+export type { Result } from "@/services/team";
 
-async function guard(action: Parameters<typeof can>[1]) {
+/** Server actions are thin: resolve the actor, delegate, revalidate. */
+async function actor() {
   const ctx = await requireTeam();
-  if (!can(ctx.role, action))
-    return {
-      ctx,
-      denied: {
-        ok: false as const,
-        error: "You don't have permission to do that.",
-      },
-    };
-  return { ctx, denied: null };
-}
-
-export async function renameTeam(formData: FormData): Promise<Result> {
-  const { ctx, denied } = await guard("team.rename");
-  if (denied) return denied;
-  const name = z.string().min(2).max(64).safeParse(formData.get("name"));
-  if (!name.success)
-    return { ok: false, error: "Name must be 2–64 characters." };
-  await auth.api.updateOrganization({
-    headers: await headers(),
-    body: { organizationId: ctx.team.id, data: { name: name.data } },
-  });
-  await recordAudit({
-    teamId: ctx.team.id,
-    actorUserId: ctx.userId,
-    action: "team.rename",
-    targetType: "team",
-    targetId: ctx.team.id,
-    diff: computeDiff({ name: ctx.team.name }, { name: name.data }),
-  });
-  revalidatePath("/app", "layout");
-  return { ok: true };
-}
-
-export async function inviteMember(
-  formData: FormData,
-): Promise<Result<{ link: string }>> {
-  const { ctx, denied } = await guard("members.invite");
-  if (denied) return denied;
-  const parsed = z
-    .object({ email: z.string().email(), role: z.enum(["admin", "member"]) })
-    .safeParse({ email: formData.get("email"), role: formData.get("role") });
-  if (!parsed.success)
-    return { ok: false, error: "Enter a valid email and role." };
-  const inv = await auth.api.createInvitation({
-    headers: await headers(),
-    body: {
-      organizationId: ctx.team.id,
-      email: parsed.data.email,
-      role: parsed.data.role,
+  return {
+    actor: {
+      userId: ctx.userId,
+      teamId: ctx.team.id,
+      teamName: ctx.team.name,
+      role: ctx.role,
     },
-  });
-  await recordAudit({
-    teamId: ctx.team.id,
-    actorUserId: ctx.userId,
-    action: "members.invite",
-    targetType: "invitation",
-    targetId: inv.id,
-    diff: { email: { to: parsed.data.email }, role: { to: parsed.data.role } },
-  });
-  revalidatePath("/app/settings");
-  return { ok: true, data: { link: `${env.APP_URL}/invite/${inv.id}` } };
+    headers: await headers(),
+  };
 }
 
-export async function cancelInvitation(invitationId: string): Promise<Result> {
-  const { ctx, denied } = await guard("members.invite");
-  if (denied) return denied;
-  await auth.api.cancelInvitation({
-    headers: await headers(),
-    body: { invitationId },
-  });
-  await recordAudit({
-    teamId: ctx.team.id,
-    actorUserId: ctx.userId,
-    action: "members.invite.cancel",
-    targetType: "invitation",
-    targetId: invitationId,
-  });
-  revalidatePath("/app/settings");
-  return { ok: true };
+export async function renameTeam(formData: FormData) {
+  const { actor: a, headers: h } = await actor();
+  const res = await team.renameTeam(a, h, formData.get("name"));
+  if (res.ok) revalidatePath("/app", "layout");
+  return res;
 }
 
-export async function removeMember(memberIdOrEmail: string): Promise<Result> {
-  const { ctx, denied } = await guard("members.remove");
-  if (denied) return denied;
-  await auth.api.removeMember({
-    headers: await headers(),
-    body: { organizationId: ctx.team.id, memberIdOrEmail },
-  });
-  await recordAudit({
-    teamId: ctx.team.id,
-    actorUserId: ctx.userId,
-    action: "members.remove",
-    targetType: "member",
-    targetId: memberIdOrEmail,
-  });
-  revalidatePath("/app/settings");
-  return { ok: true };
+export async function inviteMember(formData: FormData) {
+  const { actor: a, headers: h } = await actor();
+  const res = await team.inviteMember(
+    a,
+    h,
+    formData.get("email"),
+    formData.get("role"),
+  );
+  if (res.ok) revalidatePath("/app/settings");
+  return res;
 }
 
-export async function changeRole(
-  memberId: string,
-  role: TeamRole,
-): Promise<Result> {
-  const { ctx, denied } = await guard("members.changeRole");
-  if (denied) return denied;
-  if (role === "owner" && ctx.role !== "owner")
-    return { ok: false, error: "Only an owner can promote to owner." };
-  await auth.api.updateMemberRole({
-    headers: await headers(),
-    body: { organizationId: ctx.team.id, memberId, role },
-  });
-  await recordAudit({
-    teamId: ctx.team.id,
-    actorUserId: ctx.userId,
-    action: "members.changeRole",
-    targetType: "member",
-    targetId: memberId,
-    diff: { role: { to: role } },
-  });
-  revalidatePath("/app/settings");
-  return { ok: true };
+export async function cancelInvitation(invitationId: string) {
+  const { actor: a, headers: h } = await actor();
+  const res = await team.cancelInvitation(a, h, invitationId);
+  if (res.ok) revalidatePath("/app/settings");
+  return res;
+}
+
+export async function removeMember(memberId: string) {
+  const { actor: a, headers: h } = await actor();
+  const res = await team.removeMember(a, h, memberId);
+  if (res.ok) revalidatePath("/app/settings");
+  return res;
+}
+
+export async function changeRole(memberId: string, role: string) {
+  // Arguments arrive from the client untyped: narrow before delegating.
+  if (!TEAM_ROLES.includes(role as TeamRole))
+    return { ok: false as const, error: "Unknown role." };
+  const { actor: a, headers: h } = await actor();
+  const res = await team.changeRole(a, h, memberId, role as TeamRole);
+  if (res.ok) revalidatePath("/app/settings");
+  return res;
 }
 ```
 
 - [x] **Step 2: Settings page (server) + panels (client)**
 
+Pending invitations are additionally filtered by `expiresAt > now`, and `expiresAt` is formatted on the server so SSR and hydration agree. `RenameForm` is keyed on the team name so a successful rename resets its `defaultValue`. Owner rows are read-only for non-owners; `Remove` asks for confirmation.
+
 `apps/web/src/app/app/settings/page.tsx`:
 
 ```tsx
-import { eq, and } from "drizzle-orm";
+import { and, eq, gt } from "drizzle-orm";
 import { can } from "@sendsprite/shared";
 import { db } from "@/db";
 import { invitation, member, user } from "@/db/schema";
@@ -3369,6 +3492,16 @@ import { MembersPanel } from "./MembersPanel";
 import { InvitePanel } from "./InvitePanel";
 
 export const metadata = { title: "Settings" };
+
+// Server-side formatting: a locale/timezone-dependent toLocaleDateString in a
+// client component would hydrate differently from the SSR markup.
+const formatDate = (d: Date) =>
+  new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  }).format(d);
 
 export default async function SettingsPage() {
   const ctx = await requireTeam();
@@ -3382,21 +3515,26 @@ export default async function SettingsPage() {
     })
     .from(member)
     .innerJoin(user, eq(member.userId, user.id))
-    .where(eq(member.organizationId, ctx.team.id));
-  const invites = await db()
-    .select({
-      id: invitation.id,
-      email: invitation.email,
-      role: invitation.role,
-      expiresAt: invitation.expiresAt,
-    })
-    .from(invitation)
-    .where(
-      and(
-        eq(invitation.organizationId, ctx.team.id),
-        eq(invitation.status, "pending"),
-      ),
-    );
+    .where(eq(member.organizationId, ctx.team.id))
+    .orderBy(member.createdAt);
+  const invites = (
+    await db()
+      .select({
+        id: invitation.id,
+        email: invitation.email,
+        role: invitation.role,
+        expiresAt: invitation.expiresAt,
+      })
+      .from(invitation)
+      .where(
+        and(
+          eq(invitation.organizationId, ctx.team.id),
+          eq(invitation.status, "pending"),
+          gt(invitation.expiresAt, new Date()),
+        ),
+      )
+      .orderBy(invitation.expiresAt)
+  ).map(({ expiresAt, ...i }) => ({ ...i, expires: formatDate(expiresAt) }));
   return (
     <div className="flex max-w-3xl flex-col gap-6">
       <Card>
@@ -3404,7 +3542,9 @@ export default async function SettingsPage() {
           <CardTitle>Team</CardTitle>
         </CardHeader>
         <CardBody>
+          {/* Keyed on the name so a successful rename resets the field's defaultValue. */}
           <RenameForm
+            key={ctx.team.name}
             name={ctx.team.name}
             disabled={!can(ctx.role, "team.rename")}
           />
@@ -3455,14 +3595,24 @@ export function RenameForm({
     null,
   );
   return (
-    <form action={action} className="flex items-end gap-3">
-      <div className="flex-1">
-        <Label htmlFor="name">Team name</Label>
-        <Input id="name" name="name" defaultValue={name} disabled={disabled} />
+    <form action={action} className="flex flex-col gap-3">
+      <div className="flex items-end gap-3">
+        <div className="flex-1">
+          <Label htmlFor="team-name">Team name</Label>
+          <Input
+            id="team-name"
+            name="name"
+            defaultValue={name}
+            disabled={disabled}
+            required
+            minLength={2}
+            maxLength={64}
+          />
+        </div>
+        <Button type="submit" disabled={disabled || pending}>
+          {pending ? "Saving…" : "Save"}
+        </Button>
       </div>
-      <Button type="submit" disabled={disabled || pending}>
-        Save
-      </Button>
       {state && !state.ok && (
         <p role="alert" className="text-sm text-red-300">
           {state.error}
@@ -3477,11 +3627,12 @@ export function RenameForm({
 
 ```tsx
 "use client";
-import { useTransition } from "react";
+import { useState, useTransition } from "react";
 import { can, TEAM_ROLES, type TeamRole } from "@sendsprite/shared";
-import { changeRole, removeMember } from "./actions";
+import { changeRole, removeMember, type Result } from "./actions";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { Select } from "@/components/ui/Select";
 
 type Member = {
   id: string;
@@ -3501,60 +3652,88 @@ export function MembersPanel({
   myRole: TeamRole;
 }) {
   const [pending, start] = useTransition();
+  const [error, setError] = useState<string | null>(null);
   const canEdit = can(myRole, "members.changeRole");
+  const canRemove = can(myRole, "members.remove");
+  const run = (fn: () => Promise<Result>) =>
+    start(async () => {
+      setError(null);
+      try {
+        const res = await fn();
+        if (!res.ok) setError(res.error);
+      } catch {
+        setError("Something went wrong. Please try again.");
+      }
+    });
   return (
-    <ul className="divide-y divide-white/10">
-      {members.map((m) => (
-        <li key={m.id} className="flex items-center justify-between gap-3 py-3">
-          <div className="min-w-0">
-            <p className="truncate text-sm">{m.name || m.email}</p>
-            <p className="truncate text-xs text-white/50">{m.email}</p>
-          </div>
-          <div className="flex items-center gap-2">
-            {canEdit && m.userId !== me ? (
-              <select
-                className="rounded-md border border-white/15 bg-shadow px-2 py-1 text-xs"
-                value={m.role}
-                disabled={pending}
-                onChange={(e) =>
-                  start(() => {
-                    void changeRole(m.id, e.target.value as TeamRole);
-                  })
-                }
-              >
-                {TEAM_ROLES.map((r) => (
-                  <option
-                    key={r}
-                    value={r}
-                    disabled={r === "owner" && myRole !== "owner"}
+    <div className="flex flex-col gap-3">
+      <ul className="divide-y divide-white/10">
+        {members.map((m) => {
+          const self = m.userId === me;
+          // Only owners may touch owner rows; nobody edits their own row here.
+          const editable = !self && (m.role !== "owner" || myRole === "owner");
+          return (
+            <li
+              key={m.id}
+              className="flex items-center justify-between gap-3 py-3"
+            >
+              <div className="min-w-0">
+                <p className="truncate text-sm">
+                  {m.name || m.email}
+                  {self && <span className="text-white/50"> (you)</span>}
+                </p>
+                <p className="truncate text-xs text-white/50">{m.email}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                {canEdit && editable ? (
+                  <Select
+                    aria-label={`Role for ${m.email}`}
+                    className="h-8 w-auto text-xs"
+                    value={m.role}
+                    disabled={pending}
+                    onChange={(e) =>
+                      run(() => changeRole(m.id, e.target.value))
+                    }
                   >
-                    {r}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <Badge variant={m.role === "owner" ? "indigo" : "muted"}>
-                {m.role}
-              </Badge>
-            )}
-            {can(myRole, "members.remove") && m.userId !== me && (
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={pending}
-                onClick={() =>
-                  start(() => {
-                    void removeMember(m.id);
-                  })
-                }
-              >
-                Remove
-              </Button>
-            )}
-          </div>
-        </li>
-      ))}
-    </ul>
+                    {TEAM_ROLES.map((r) => (
+                      <option
+                        key={r}
+                        value={r}
+                        disabled={r === "owner" && myRole !== "owner"}
+                      >
+                        {r}
+                      </option>
+                    ))}
+                  </Select>
+                ) : (
+                  <Badge variant={m.role === "owner" ? "indigo" : "muted"}>
+                    {m.role}
+                  </Badge>
+                )}
+                {canRemove && editable && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={pending}
+                    onClick={() => {
+                      if (window.confirm(`Remove ${m.email} from the team?`))
+                        run(() => removeMember(m.id));
+                    }}
+                  >
+                    Remove
+                  </Button>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+      {error && (
+        <p role="alert" className="text-sm text-red-300">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
 ```
@@ -3563,46 +3742,44 @@ export function MembersPanel({
 
 ```tsx
 "use client";
-import { useActionState, useTransition } from "react";
+import { useActionState, useState, useTransition } from "react";
 import { cancelInvitation, inviteMember } from "./actions";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Label } from "@/components/ui/Label";
+import { Select } from "@/components/ui/Select";
 
 type Invite = {
   id: string;
   email: string;
   role: string | null;
-  expiresAt: Date;
+  /** Pre-formatted on the server so SSR and hydration agree. */
+  expires: string;
 };
 
 export function InvitePanel({ invites }: { invites: Invite[] }) {
   const [state, action, pending] = useActionState(
-    async (_p: unknown, fd: FormData) => inviteMember(fd),
+    async (_prev: unknown, fd: FormData) => inviteMember(fd),
     null,
   );
-  const [, start] = useTransition();
+  const [cancelling, start] = useTransition();
+  const [cancelError, setCancelError] = useState<string | null>(null);
   return (
     <div className="flex flex-col gap-4">
       <form action={action} className="flex items-end gap-3">
         <div className="flex-1">
-          <Label htmlFor="email">Email</Label>
-          <Input id="email" name="email" type="email" required />
+          <Label htmlFor="invite-email">Email</Label>
+          <Input id="invite-email" name="email" type="email" required />
         </div>
         <div>
-          <Label htmlFor="role">Role</Label>
-          <select
-            id="role"
-            name="role"
-            defaultValue="member"
-            className="block h-10 rounded-md border border-white/15 bg-shadow px-3 text-sm"
-          >
+          <Label htmlFor="invite-role">Role</Label>
+          <Select id="invite-role" name="role" defaultValue="member">
             <option value="member">member</option>
             <option value="admin">admin</option>
-          </select>
+          </Select>
         </div>
         <Button type="submit" disabled={pending}>
-          Invite
+          {pending ? "Inviting…" : "Invite"}
         </Button>
       </form>
       {state && !state.ok && (
@@ -3610,10 +3787,10 @@ export function InvitePanel({ invites }: { invites: Invite[] }) {
           {state.error}
         </p>
       )}
-      {state && state.ok && state.data && (
+      {state && state.ok && (
         <p className="text-sm text-white/70">
           Invitation created. Share this link:{" "}
-          <code className="select-all rounded bg-white/8 px-1.5 py-0.5 text-xs">
+          <code className="rounded bg-white/8 px-1.5 py-0.5 text-xs select-all">
             {state.data.link}
           </code>
         </p>
@@ -3623,21 +3800,27 @@ export function InvitePanel({ invites }: { invites: Invite[] }) {
           {invites.map((i) => (
             <li
               key={i.id}
-              className="flex items-center justify-between py-2 text-sm"
+              className="flex items-center justify-between gap-3 py-2 text-sm"
             >
-              <span>
+              <span className="min-w-0 truncate">
                 {i.email}{" "}
                 <span className="text-white/50">
-                  · {i.role ?? "member"} · expires{" "}
-                  {i.expiresAt.toLocaleDateString()}
+                  · {i.role ?? "member"} · expires {i.expires}
                 </span>
               </span>
               <Button
                 size="sm"
                 variant="ghost"
+                disabled={cancelling}
                 onClick={() =>
-                  start(() => {
-                    void cancelInvitation(i.id);
+                  start(async () => {
+                    setCancelError(null);
+                    try {
+                      const res = await cancelInvitation(i.id);
+                      if (!res.ok) setCancelError(res.error);
+                    } catch {
+                      setCancelError("Something went wrong. Please try again.");
+                    }
                   })
                 }
               >
@@ -3647,24 +3830,86 @@ export function InvitePanel({ invites }: { invites: Invite[] }) {
           ))}
         </ul>
       )}
+      {cancelError && (
+        <p role="alert" className="text-sm text-red-300">
+          {cancelError}
+        </p>
+      )}
     </div>
   );
 }
 ```
 
-- [x] **Step 3: Typecheck**
+- [x] **Step 3: Mobile navigation (deferred from Task 11)**
 
-Run: `cd apps/web && bun run typecheck`
-Expected: clean. If `auth.api.updateOrganization` / `createInvitation` / `removeMember` / `updateMemberRole` / `cancelInvitation` body shapes differ in the installed better-auth version, open `node_modules/better-auth/dist/plugins/organization/*.d.ts` and adjust the body fields — do not cast to `any`.
+A small client component in the header, visible below `md`, that closes on route change, Escape, or a link click. `AppShell` renders it before the team name with the same `TeamSwitcher` + `NavLink` list as the sidebar.
 
-- [x] **Step 4: Manual check**
+`apps/web/src/components/app/MobileNav.tsx`:
+
+```tsx
+"use client";
+import { useEffect, useState, type ReactNode } from "react";
+import { usePathname } from "next/navigation";
+
+/** Header menu below `md`. Closes on navigation, Escape, or link click. */
+export function MobileNav({ children }: { children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const pathname = usePathname();
+  useEffect(() => setOpen(false), [pathname]);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+  return (
+    <div className="md:hidden">
+      <button
+        type="button"
+        aria-label="Menu"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        className="cursor-pointer rounded-md px-2 py-1 text-sm text-white/75 hover:bg-white/6 hover:text-white"
+      >
+        ☰
+      </button>
+      {open && (
+        <div
+          className="absolute top-14 left-0 z-20 flex w-64 flex-col gap-4 border-r border-b border-white/10 bg-shadow p-4"
+          onClick={(e) => {
+            if ((e.target as HTMLElement).closest("a")) setOpen(false);
+          }}
+        >
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+- [x] **Step 4: Integration test**
+
+`apps/web/tests/integration/team-actions.test.ts` — signs up an owner + a member through `auth.api.signUpEmail` (`returnHeaders` → cookie headers), creates the org via `auth.api.createOrganization`, and asserts: member cannot invite; invalid email leaves no invitation/audit; owner invite → pending row + `members.invite` audit + `APP_URL/invite/<id>` link; mixed-case email stored/audited lowercase; cancel → `canceled` + audit; another org's invitation cannot be cancelled; a forged actor role is still rejected by better-auth's session check; admin cannot promote to owner; last owner cannot demote self or be removed; role change, rename (diff `{ name: { from, to } }`) and removal each write an audit row.
+
+Run: `cd apps/web && bun run test:integration`
+Expected: PASS.
+
+- [x] **Step 5: Typecheck**
+
+Run: `cd apps/web && rm -rf .next && bun run typecheck`
+Expected: clean. If `auth.api.updateOrganization` / `createInvitation` / `removeMember` / `updateMemberRole` / `cancelInvitation` body shapes differ in the installed better-auth version, open `node_modules/better-auth/dist/plugins/organization/routes/*.d.mts` and adjust the body fields — do not cast to `any`. (better-auth 1.7.1: all five match the calls above.)
+
+- [x] **Step 6: Manual check**
 
 `bun run dev` → `/app/settings`: rename works and persists; invite creates a link; open the link in a private window → sign up (allowed despite invite mode because a pending invite exists) → accept → new user lands in `/app` with the team; owner sees them in Members, can change role, remove.
 
-- [x] **Step 5: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
-git add apps/web/src/app/app/settings
+git add apps/web/src/services/team.ts apps/web/src/app/app/settings apps/web/src/components/app apps/web/tests/integration/team-actions.test.ts apps/web/package.json
 git commit -m "feat(web): team settings — rename, members, roles, link-based invitations"
 ```
 

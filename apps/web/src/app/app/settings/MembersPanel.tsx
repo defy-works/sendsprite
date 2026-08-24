@@ -1,7 +1,7 @@
 "use client";
 import { useState, useTransition } from "react";
 import { can, TEAM_ROLES, type TeamRole } from "@sendsprite/shared";
-import { changeRole, removeMember } from "./actions";
+import { changeRole, removeMember, type Result } from "./actions";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
@@ -27,17 +27,23 @@ export function MembersPanel({
   const [error, setError] = useState<string | null>(null);
   const canEdit = can(myRole, "members.changeRole");
   const canRemove = can(myRole, "members.remove");
-  const run = (fn: () => Promise<{ ok: boolean; error?: string }>) =>
+  const run = (fn: () => Promise<Result>) =>
     start(async () => {
       setError(null);
-      const res = await fn();
-      if (!res.ok) setError(res.error ?? "Request failed.");
+      try {
+        const res = await fn();
+        if (!res.ok) setError(res.error);
+      } catch {
+        setError("Something went wrong. Please try again.");
+      }
     });
   return (
     <div className="flex flex-col gap-3">
       <ul className="divide-y divide-white/10">
         {members.map((m) => {
           const self = m.userId === me;
+          // Only owners may touch owner rows; nobody edits their own row here.
+          const editable = !self && (m.role !== "owner" || myRole === "owner");
           return (
             <li
               key={m.id}
@@ -51,7 +57,7 @@ export function MembersPanel({
                 <p className="truncate text-xs text-white/50">{m.email}</p>
               </div>
               <div className="flex items-center gap-2">
-                {canEdit && !self ? (
+                {canEdit && editable ? (
                   <Select
                     aria-label={`Role for ${m.email}`}
                     className="h-8 w-auto text-xs"
@@ -76,12 +82,15 @@ export function MembersPanel({
                     {m.role}
                   </Badge>
                 )}
-                {canRemove && !self && (
+                {canRemove && editable && (
                   <Button
                     size="sm"
                     variant="ghost"
                     disabled={pending}
-                    onClick={() => run(() => removeMember(m.id))}
+                    onClick={() => {
+                      if (window.confirm(`Remove ${m.email} from the team?`))
+                        run(() => removeMember(m.id));
+                    }}
                   >
                     Remove
                   </Button>

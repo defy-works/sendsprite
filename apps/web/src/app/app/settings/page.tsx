@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, gt } from "drizzle-orm";
 import { can } from "@sendsprite/shared";
 import { db } from "@/db";
 import { invitation, member, user } from "@/db/schema";
@@ -9,6 +9,16 @@ import { MembersPanel } from "./MembersPanel";
 import { InvitePanel } from "./InvitePanel";
 
 export const metadata = { title: "Settings" };
+
+// Server-side formatting: a locale/timezone-dependent toLocaleDateString in a
+// client component would hydrate differently from the SSR markup.
+const formatDate = (d: Date) =>
+  new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  }).format(d);
 
 export default async function SettingsPage() {
   const ctx = await requireTeam();
@@ -24,21 +34,24 @@ export default async function SettingsPage() {
     .innerJoin(user, eq(member.userId, user.id))
     .where(eq(member.organizationId, ctx.team.id))
     .orderBy(member.createdAt);
-  const invites = await db()
-    .select({
-      id: invitation.id,
-      email: invitation.email,
-      role: invitation.role,
-      expiresAt: invitation.expiresAt,
-    })
-    .from(invitation)
-    .where(
-      and(
-        eq(invitation.organizationId, ctx.team.id),
-        eq(invitation.status, "pending"),
-      ),
-    )
-    .orderBy(invitation.expiresAt);
+  const invites = (
+    await db()
+      .select({
+        id: invitation.id,
+        email: invitation.email,
+        role: invitation.role,
+        expiresAt: invitation.expiresAt,
+      })
+      .from(invitation)
+      .where(
+        and(
+          eq(invitation.organizationId, ctx.team.id),
+          eq(invitation.status, "pending"),
+          gt(invitation.expiresAt, new Date()),
+        ),
+      )
+      .orderBy(invitation.expiresAt)
+  ).map(({ expiresAt, ...i }) => ({ ...i, expires: formatDate(expiresAt) }));
   return (
     <div className="flex max-w-3xl flex-col gap-6">
       <Card>

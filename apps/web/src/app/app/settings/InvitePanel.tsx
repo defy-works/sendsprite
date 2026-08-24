@@ -10,7 +10,8 @@ type Invite = {
   id: string;
   email: string;
   role: string | null;
-  expiresAt: Date;
+  /** Pre-formatted on the server so SSR and hydration agree. */
+  expires: string;
 };
 
 export function InvitePanel({ invites }: { invites: Invite[] }) {
@@ -43,7 +44,7 @@ export function InvitePanel({ invites }: { invites: Invite[] }) {
           {state.error}
         </p>
       )}
-      {state && state.ok && state.data && (
+      {state && state.ok && (
         <p className="text-sm text-white/70">
           Invitation created. Share this link:{" "}
           <code className="rounded bg-white/8 px-1.5 py-0.5 text-xs select-all">
@@ -61,8 +62,7 @@ export function InvitePanel({ invites }: { invites: Invite[] }) {
               <span className="min-w-0 truncate">
                 {i.email}{" "}
                 <span className="text-white/50">
-                  · {i.role ?? "member"} · expires{" "}
-                  {i.expiresAt.toLocaleDateString()}
+                  · {i.role ?? "member"} · expires {i.expires}
                 </span>
               </span>
               <Button
@@ -72,8 +72,12 @@ export function InvitePanel({ invites }: { invites: Invite[] }) {
                 onClick={() =>
                   start(async () => {
                     setCancelError(null);
-                    const res = await cancelInvitation(i.id);
-                    if (!res.ok) setCancelError(res.error);
+                    try {
+                      const res = await cancelInvitation(i.id);
+                      if (!res.ok) setCancelError(res.error);
+                    } catch {
+                      setCancelError("Something went wrong. Please try again.");
+                    }
                   })
                 }
               >
