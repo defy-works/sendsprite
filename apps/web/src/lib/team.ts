@@ -2,11 +2,21 @@ import { eq } from "drizzle-orm";
 import { TEAM_ROLES, type TeamRole } from "@sendsprite/shared";
 import { db } from "@/db";
 import { member, organization } from "@/db/schema";
+import type { auth } from "./auth";
 
-export interface TeamContext {
+export type Session = NonNullable<
+  Awaited<ReturnType<typeof auth.api.getSession>>
+>;
+
+export interface ResolvedTeam {
   userId: string;
   team: { id: string; name: string; slug: string };
   role: TeamRole;
+}
+
+/** What `requireTeam()` hands to pages: the team plus the session it came from. */
+export interface TeamContext extends ResolvedTeam {
+  session: Session;
 }
 
 /**
@@ -18,7 +28,7 @@ export interface TeamContext {
 export async function resolveTeam(
   userId: string,
   activeId: string | null,
-): Promise<TeamContext | null> {
+): Promise<ResolvedTeam | null> {
   const rows = await db()
     .select({
       id: organization.id,

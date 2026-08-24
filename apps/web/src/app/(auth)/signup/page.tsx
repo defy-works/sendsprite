@@ -2,15 +2,15 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { env } from "@/env";
 import { getSession } from "@/lib/session";
+import { safeNext } from "@/lib/safe-next";
 import { AuthForm } from "@/components/auth/AuthForm";
 
 export const metadata = { title: "Sign up" };
 
 export default async function SignupPage(props: PageProps<"/signup">) {
-  if (await getSession()) redirect("/app");
   const sp = await props.searchParams;
-  const next =
-    typeof sp.next === "string" && sp.next.startsWith("/") ? sp.next : "/app";
+  const next = safeNext(sp.next);
+  if (await getSession()) redirect(next);
   return (
     <>
       <AuthForm mode="signup" providers={env.providers} next={next} />

@@ -26,22 +26,44 @@ export function AuthForm({ mode, providers, next = "/app" }: AuthFormProps) {
     const fd = new FormData(e.currentTarget);
     const email = String(fd.get("email"));
     const password = String(fd.get("password"));
-    const res =
-      mode === "signup"
-        ? await authClient.signUp.email({
-            email,
-            password,
-            name: String(fd.get("name") || email.split("@")[0]),
-          })
-        : await authClient.signIn.email({ email, password });
-    setBusy(false);
-    if (res.error) return setError(res.error.message ?? "Something went wrong");
-    router.push(next);
-    router.refresh();
+    try {
+      const res =
+        mode === "signup"
+          ? await authClient.signUp.email({
+              email,
+              password,
+              name: String(fd.get("name") || email.split("@")[0]),
+            })
+          : await authClient.signIn.email({ email, password });
+      if (res.error) {
+        setError(res.error.message ?? "Something went wrong");
+        return;
+      }
+      router.push(next);
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setBusy(false);
+    }
   }
 
-  const social = (provider: "google" | "github") =>
-    authClient.signIn.social({ provider, callbackURL: next });
+  async function social(provider: "google" | "github") {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await authClient.signIn.social({
+        provider,
+        callbackURL: next,
+      });
+      if (res.error) setError(res.error.message ?? "Sign-in failed");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -51,12 +73,20 @@ export function AuthForm({ mode, providers, next = "/app" }: AuthFormProps) {
       {(providers.google || providers.github) && (
         <div className="flex flex-col gap-2">
           {providers.google && (
-            <Button variant="secondary" onClick={() => social("google")}>
+            <Button
+              variant="secondary"
+              disabled={busy}
+              onClick={() => social("google")}
+            >
               Continue with Google
             </Button>
           )}
           {providers.github && (
-            <Button variant="secondary" onClick={() => social("github")}>
+            <Button
+              variant="secondary"
+              disabled={busy}
+              onClick={() => social("github")}
+            >
               Continue with GitHub
             </Button>
           )}

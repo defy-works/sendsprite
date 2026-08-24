@@ -14,21 +14,40 @@ const slugify = (s: string) =>
     .replace(/^-|-$/g, "")
     .slice(0, 48);
 
+const suffix = () => Math.random().toString(36).slice(2, 6);
+
 export function CreateTeamForm() {
   const router = useRouter();
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    const res = await authClient.organization.create({
-      name,
-      slug: slugify(name) || `team-${Date.now()}`,
-    });
-    if (res.error)
-      return setError(res.error.message ?? "Could not create team");
-    await authClient.organization.setActive({ organizationId: res.data.id });
-    router.push("/app");
-    router.refresh();
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const slug = slugify(name) || `team-${Date.now()}`;
+      let res = await authClient.organization.create({ name, slug });
+      // Slug collision with another team: retry once with a random suffix.
+      if (res.error?.code === "ORGANIZATION_SLUG_ALREADY_TAKEN") {
+        res = await authClient.organization.create({
+          name,
+          slug: `${slug}-${suffix()}`,
+        });
+      }
+      if (res.error) {
+        setError(res.error.message ?? "Could not create team");
+        return;
+      }
+      await authClient.organization.setActive({ organizationId: res.data.id });
+      router.push("/app");
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setBusy(false);
+    }
   }
   return (
     <form onSubmit={onSubmit} className="mt-4 flex flex-col gap-3">
@@ -47,7 +66,9 @@ export function CreateTeamForm() {
           {error}
         </p>
       )}
-      <Button type="submit">Create team</Button>
+      <Button type="submit" disabled={busy}>
+        {busy ? "…" : "Create team"}
+      </Button>
     </form>
   );
 }

@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
@@ -28,7 +29,14 @@ export default async function InvitePage(props: PageProps<"/invite/[id]">) {
     <main className="grid-hairlines flex min-h-dvh items-center justify-center p-6">
       <div className="glass-strong w-full max-w-sm p-8">
         <p className="num-stamp">Invitation</p>
-        {!valid ? (
+        {inv?.status === "accepted" ? (
+          <p className="mt-4 text-sm text-white/70">
+            Already accepted.{" "}
+            <Link className="text-indigo-300" href="/app">
+              Go to the app
+            </Link>
+          </p>
+        ) : !valid ? (
           <p className="mt-4 text-sm text-white/70">
             This invitation is invalid or has expired.
           </p>

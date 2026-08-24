@@ -2104,11 +2104,21 @@ import { eq } from "drizzle-orm";
 import { TEAM_ROLES, type TeamRole } from "@sendsprite/shared";
 import { db } from "@/db";
 import { member, organization } from "@/db/schema";
+import type { auth } from "./auth";
 
-export interface TeamContext {
+export type Session = NonNullable<
+  Awaited<ReturnType<typeof auth.api.getSession>>
+>;
+
+export interface ResolvedTeam {
   userId: string;
   team: { id: string; name: string; slug: string };
   role: TeamRole;
+}
+
+/** What `requireTeam()` hands to pages: the team plus the session it came from. */
+export interface TeamContext extends ResolvedTeam {
+  session: Session;
 }
 
 /**
@@ -2120,7 +2130,7 @@ export interface TeamContext {
 export async function resolveTeam(
   userId: string,
   activeId: string | null,
-): Promise<TeamContext | null> {
+): Promise<ResolvedTeam | null> {
   const rows = await db()
     .select({
       id: organization.id,
@@ -2145,6 +2155,7 @@ export async function resolveTeam(
 `apps/web/src/lib/session.ts`:
 
 ```ts
+import { cache } from "react";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "./auth";
@@ -2152,9 +2163,14 @@ import { resolveTeam, type TeamContext } from "./team";
 
 export type { TeamContext } from "./team";
 
-export async function getSession() {
-  return auth.api.getSession({ headers: await headers() });
-}
+/** Request-scoped: layout and page share one session lookup. */
+export const getSession = cache(async () =>
+  auth.api.getSession({ headers: await headers() }),
+);
+
+const cachedResolveTeam = cache((userId: string, activeId: string | null) =>
+  resolveTeam(userId, activeId),
+);
 
 /** Redirects to /login when unauthenticated. */
 export async function requireSession() {
@@ -2166,12 +2182,12 @@ export async function requireSession() {
 /** Resolves the active team; if the user has none, sends them to create one. */
 export async function requireTeam(): Promise<TeamContext> {
   const s = await requireSession();
-  const ctx = await resolveTeam(
+  const ctx = await cachedResolveTeam(
     s.user.id,
     s.session.activeOrganizationId ?? null,
   );
   if (!ctx) redirect("/teams/new");
-  return ctx;
+  return { ...ctx, session: s };
 }
 ```
 
@@ -2252,22 +2268,44 @@ export function AuthForm({ mode, providers, next = "/app" }: AuthFormProps) {
     const fd = new FormData(e.currentTarget);
     const email = String(fd.get("email"));
     const password = String(fd.get("password"));
-    const res =
-      mode === "signup"
-        ? await authClient.signUp.email({
-            email,
-            password,
-            name: String(fd.get("name") || email.split("@")[0]),
-          })
-        : await authClient.signIn.email({ email, password });
-    setBusy(false);
-    if (res.error) return setError(res.error.message ?? "Something went wrong");
-    router.push(next);
-    router.refresh();
+    try {
+      const res =
+        mode === "signup"
+          ? await authClient.signUp.email({
+              email,
+              password,
+              name: String(fd.get("name") || email.split("@")[0]),
+            })
+          : await authClient.signIn.email({ email, password });
+      if (res.error) {
+        setError(res.error.message ?? "Something went wrong");
+        return;
+      }
+      router.push(next);
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setBusy(false);
+    }
   }
 
-  const social = (provider: "google" | "github") =>
-    authClient.signIn.social({ provider, callbackURL: next });
+  async function social(provider: "google" | "github") {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await authClient.signIn.social({
+        provider,
+        callbackURL: next,
+      });
+      if (res.error) setError(res.error.message ?? "Sign-in failed");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -2277,12 +2315,20 @@ export function AuthForm({ mode, providers, next = "/app" }: AuthFormProps) {
       {(providers.google || providers.github) && (
         <div className="flex flex-col gap-2">
           {providers.google && (
-            <Button variant="secondary" onClick={() => social("google")}>
+            <Button
+              variant="secondary"
+              disabled={busy}
+              onClick={() => social("google")}
+            >
               Continue with Google
             </Button>
           )}
           {providers.github && (
-            <Button variant="secondary" onClick={() => social("github")}>
+            <Button
+              variant="secondary"
+              disabled={busy}
+              onClick={() => social("github")}
+            >
               Continue with GitHub
             </Button>
           )}
@@ -2345,6 +2391,51 @@ export function AuthForm({ mode, providers, next = "/app" }: AuthFormProps) {
 
 - [x] **Step 3: Login and signup pages**
 
+`apps/web/src/lib/safe-next.ts` (open-redirect guard; both pages use it):
+
+```ts
+/**
+ * Accepts only same-origin absolute paths for post-auth redirects.
+ * Rejects protocol-relative (`//x`), backslash tricks (`/\x`) and encoded
+ * slashes that some routers decode into the same thing.
+ */
+export function safeNext(raw: unknown, fallback = "/app"): string {
+  if (typeof raw !== "string") return fallback;
+  if (!/^\/(?![/\\])/.test(raw)) return fallback;
+  if (raw.includes("\\")) return fallback;
+  if (/%2f|%5c/i.test(raw)) return fallback;
+  return raw;
+}
+```
+
+`apps/web/tests/unit/safe-next.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { safeNext } from "@/lib/safe-next";
+
+describe("safeNext", () => {
+  it("accepts same-origin paths", () => {
+    expect(safeNext("/app/x")).toBe("/app/x");
+    expect(safeNext("/invite/abc?x=1")).toBe("/invite/abc?x=1");
+  });
+  it.each([
+    ["//evil.com"],
+    ["/\\evil.com"],
+    ["/%2fevil.com"],
+    ["/%2Fevil.com"],
+    ["/%5cevil.com"],
+    ["https://x"],
+    [""],
+    [undefined],
+    [42],
+  ])("falls back for %p", (raw) => {
+    expect(safeNext(raw)).toBe("/app");
+    expect(safeNext(raw, "/x")).toBe("/x");
+  });
+});
+```
+
 `apps/web/src/app/(auth)/login/page.tsx`:
 
 ```tsx
@@ -2352,15 +2443,15 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { env } from "@/env";
 import { getSession } from "@/lib/session";
+import { safeNext } from "@/lib/safe-next";
 import { AuthForm } from "@/components/auth/AuthForm";
 
 export const metadata = { title: "Sign in" };
 
 export default async function LoginPage(props: PageProps<"/login">) {
-  if (await getSession()) redirect("/app");
   const sp = await props.searchParams;
-  const next =
-    typeof sp.next === "string" && sp.next.startsWith("/") ? sp.next : "/app";
+  const next = safeNext(sp.next);
+  if (await getSession()) redirect(next);
   return (
     <>
       <AuthForm mode="login" providers={env.providers} next={next} />
@@ -2385,15 +2476,15 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { env } from "@/env";
 import { getSession } from "@/lib/session";
+import { safeNext } from "@/lib/safe-next";
 import { AuthForm } from "@/components/auth/AuthForm";
 
 export const metadata = { title: "Sign up" };
 
 export default async function SignupPage(props: PageProps<"/signup">) {
-  if (await getSession()) redirect("/app");
   const sp = await props.searchParams;
-  const next =
-    typeof sp.next === "string" && sp.next.startsWith("/") ? sp.next : "/app";
+  const next = safeNext(sp.next);
+  if (await getSession()) redirect(next);
   return (
     <>
       <AuthForm mode="signup" providers={env.providers} next={next} />
@@ -2418,6 +2509,7 @@ Run `cd apps/web && bunx next typegen` once so the global `PageProps<...>` helpe
 `apps/web/src/app/invite/[id]/page.tsx`:
 
 ```tsx
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
@@ -2448,7 +2540,14 @@ export default async function InvitePage(props: PageProps<"/invite/[id]">) {
     <main className="grid-hairlines flex min-h-dvh items-center justify-center p-6">
       <div className="glass-strong w-full max-w-sm p-8">
         <p className="num-stamp">Invitation</p>
-        {!valid ? (
+        {inv?.status === "accepted" ? (
+          <p className="mt-4 text-sm text-white/70">
+            Already accepted.{" "}
+            <Link className="text-indigo-300" href="/app">
+              Go to the app
+            </Link>
+          </p>
+        ) : !valid ? (
           <p className="mt-4 text-sm text-white/70">
             This invitation is invalid or has expired.
           </p>
@@ -2483,28 +2582,41 @@ export function AcceptInvite(p: {
 }) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const mismatch =
     p.invitedEmail.toLowerCase() !== p.currentEmail.toLowerCase();
   async function accept() {
-    const res = await authClient.organization.acceptInvitation({
-      invitationId: p.invitationId,
-    });
-    if (res.error) return setError(res.error.message ?? "Could not accept");
-    await authClient.organization.setActive({
-      organizationId: res.data.invitation.organizationId,
-    });
-    router.push("/app");
-    router.refresh();
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await authClient.organization.acceptInvitation({
+        invitationId: p.invitationId,
+      });
+      if (res.error) {
+        setError(res.error.message ?? "Could not accept");
+        return;
+      }
+      await authClient.organization.setActive({
+        organizationId: res.data.invitation.organizationId,
+      });
+      router.push("/app");
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setBusy(false);
+    }
   }
   return (
     <div className="mt-4 flex flex-col gap-4">
       <p className="text-sm text-white/80">
-        You've been invited to join <strong>{p.teamName}</strong>.
+        You&apos;ve been invited to join <strong>{p.teamName}</strong>.
       </p>
       {mismatch && (
         <p className="text-sm text-amber-300">
-          This invite was sent to {p.invitedEmail}, but you're signed in as{" "}
-          {p.currentEmail}.
+          This invitation is for a different account than the one you&apos;re
+          signed in as ({p.currentEmail}).
         </p>
       )}
       {error && (
@@ -2512,8 +2624,8 @@ export function AcceptInvite(p: {
           {error}
         </p>
       )}
-      <Button onClick={accept} disabled={mismatch}>
-        Accept invitation
+      <Button onClick={accept} disabled={mismatch || busy}>
+        {busy ? "…" : "Accept invitation"}
       </Button>
     </div>
   );
@@ -2525,7 +2637,7 @@ export function AcceptInvite(p: {
 Run: `cd apps/web && bun run typecheck`
 Expected: no errors in `src/app/(auth)/**`, `src/app/invite/**`, `src/components/auth/**`.
 
-Start Postgres for local dev (`docker run -d --name ss-pg -e POSTGRES_USER=sendsprite -e POSTGRES_PASSWORD=sendsprite -e POSTGRES_DB=sendsprite -p 5432:5432 postgres:16-alpine`), copy `.env.example` → `apps/web/.env.local`, run `bun run db:migrate` then `bun run dev`, open `http://localhost:3000/signup`, create the first account. Expected: redirected to `/app` (404 until Task 11 — that's fine).
+Start Postgres for local dev with `bun run db:dev` (embedded Postgres in `apps/web/.pgdata`, no Docker; script in `apps/web/scripts/dev-db.ts`), copy `.env.example` → `apps/web/.env.local`, run `bun run db:migrate` then `bun run dev`, open `http://localhost:3000/signup`, create the first account. Expected: redirected to `/app` (404 until Task 11 — that's fine).
 
 - [x] **Step 6: Commit**
 
@@ -2584,21 +2696,40 @@ const slugify = (s: string) =>
     .replace(/^-|-$/g, "")
     .slice(0, 48);
 
+const suffix = () => Math.random().toString(36).slice(2, 6);
+
 export function CreateTeamForm() {
   const router = useRouter();
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    const res = await authClient.organization.create({
-      name,
-      slug: slugify(name) || `team-${Date.now()}`,
-    });
-    if (res.error)
-      return setError(res.error.message ?? "Could not create team");
-    await authClient.organization.setActive({ organizationId: res.data.id });
-    router.push("/app");
-    router.refresh();
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const slug = slugify(name) || `team-${Date.now()}`;
+      let res = await authClient.organization.create({ name, slug });
+      // Slug collision with another team: retry once with a random suffix.
+      if (res.error?.code === "ORGANIZATION_SLUG_ALREADY_TAKEN") {
+        res = await authClient.organization.create({
+          name,
+          slug: `${slug}-${suffix()}`,
+        });
+      }
+      if (res.error) {
+        setError(res.error.message ?? "Could not create team");
+        return;
+      }
+      await authClient.organization.setActive({ organizationId: res.data.id });
+      router.push("/app");
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setBusy(false);
+    }
   }
   return (
     <form onSubmit={onSubmit} className="mt-4 flex flex-col gap-3">
@@ -2617,7 +2748,9 @@ export function CreateTeamForm() {
           {error}
         </p>
       )}
-      <Button type="submit">Create team</Button>
+      <Button type="submit" disabled={busy}>
+        {busy ? "…" : "Create team"}
+      </Button>
     </form>
   );
 }
@@ -2637,8 +2770,18 @@ export function TeamSwitcher({ activeId }: { activeId: string }) {
   const { data: orgs } = authClient.useListOrganizations();
   async function change(id: string) {
     if (id === "__new") return router.push("/teams/new");
-    await authClient.organization.setActive({ organizationId: id });
-    router.refresh();
+    try {
+      const res = await authClient.organization.setActive({
+        organizationId: id,
+      });
+      if (res.error) {
+        console.error("setActive failed", res.error);
+        return;
+      }
+      router.refresh();
+    } catch (err) {
+      console.error("setActive failed", err);
+    }
   }
   return (
     <select
@@ -2647,11 +2790,17 @@ export function TeamSwitcher({ activeId }: { activeId: string }) {
       onChange={(e) => change(e.target.value)}
       className="w-full rounded-md border border-white/15 bg-shadow px-3 py-2 text-sm"
     >
-      {(orgs ?? []).map((o) => (
-        <option key={o.id} value={o.id}>
-          {o.name}
+      {orgs == null ? (
+        <option value={activeId} disabled>
+          Loading…
         </option>
-      ))}
+      ) : (
+        orgs.map((o) => (
+          <option key={o.id} value={o.id}>
+            {o.name}
+          </option>
+        ))
+      )}
       <option value="__new">+ New team…</option>
     </select>
   );
@@ -2687,12 +2836,43 @@ export function UserMenu({ email }: { email: string }) {
 }
 ```
 
+`apps/web/src/components/app/NavLink.tsx` (active-route highlight):
+
+```tsx
+"use client";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { cn } from "@/lib/cn";
+
+export function NavLink({ href, label }: { href: string; label: string }) {
+  const pathname = usePathname();
+  const active =
+    pathname === href || (href !== "/app" && pathname.startsWith(href));
+  return (
+    <Link
+      href={href}
+      aria-current={active ? "page" : undefined}
+      className={cn(
+        "rounded-md px-3 py-2 text-sm transition-colors",
+        active
+          ? "bg-white/8 text-white"
+          : "text-white/75 hover:bg-white/6 hover:text-white",
+      )}
+    >
+      {label}
+    </Link>
+  );
+}
+```
+
 `apps/web/src/components/app/AppShell.tsx`:
 
 ```tsx
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/Badge";
+import type { InstanceSettings } from "@/services/instance-settings";
+import { NavLink } from "./NavLink";
 import { TeamSwitcher } from "./TeamSwitcher";
 import { UserMenu } from "./UserMenu";
 
@@ -2712,7 +2892,7 @@ export function AppShell(p: {
   teamId: string;
   teamName: string;
   email: string;
-  sesStatus: "sandbox" | "requested" | "production" | null;
+  sesStatus: InstanceSettings["sesAccountStatus"];
   children: ReactNode;
 }) {
   return (
@@ -2724,13 +2904,7 @@ export function AppShell(p: {
         <TeamSwitcher activeId={p.teamId} />
         <nav className="flex flex-col gap-1">
           {NAV.map((n) => (
-            <Link
-              key={n.href}
-              href={n.href}
-              className="rounded-md px-3 py-2 text-sm text-white/75 hover:bg-white/6 hover:text-white"
-            >
-              {n.label}
-            </Link>
+            <NavLink key={n.href} href={n.href} label={n.label} />
           ))}
         </nav>
         <div className="mt-auto">
@@ -2771,20 +2945,19 @@ export function AppShell(p: {
 
 ```tsx
 import type { ReactNode } from "react";
-import { requireTeam, requireSession } from "@/lib/session";
+import { requireTeam } from "@/lib/session";
 import { getInstanceSettings } from "@/services/instance-settings";
 import { AppShell } from "@/components/app/AppShell";
 
 export default async function AppLayout({ children }: { children: ReactNode }) {
-  const session = await requireSession();
   const ctx = await requireTeam();
   const settings = await getInstanceSettings();
   return (
     <AppShell
       teamId={ctx.team.id}
       teamName={ctx.team.name}
-      email={session.user.email}
-      sesStatus={settings.sesAccountStatus ?? null}
+      email={ctx.session.user.email}
+      sesStatus={settings.sesAccountStatus}
     >
       {children}
     </AppShell>
@@ -2849,6 +3022,7 @@ export default async function OverviewPage() {
 `apps/web/src/services/instance-settings.ts`:
 
 ```ts
+import { cache } from "react";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { instanceSettings } from "@/db/schema";
@@ -2856,30 +3030,52 @@ import { getCipher } from "@/lib/crypto";
 
 export type InstanceSettings = typeof instanceSettings.$inferSelect;
 
-/** Creates the singleton row on first read. */
-export async function getInstanceSettings(): Promise<InstanceSettings> {
+async function selectSingleton() {
   const [row] = await db()
     .select()
     .from(instanceSettings)
     .where(eq(instanceSettings.id, 1))
     .limit(1);
-  if (row) return row;
-  const [created] = await db()
-    .insert(instanceSettings)
-    .values({ id: 1 })
-    .onConflictDoNothing()
-    .returning();
-  return created ?? (await getInstanceSettings());
+  return row;
 }
 
-type Plain = Partial<Omit<InstanceSettings, "id" | "createdAt" | "updatedAt">>;
+/**
+ * Creates the singleton row on first read. Request-scoped (`React.cache`)
+ * so layout + page share one query; outside a request it is a plain call.
+ */
+export const getInstanceSettings = cache(
+  async (): Promise<InstanceSettings> => {
+    const existing = await selectSingleton();
+    if (existing) return existing;
+    await db().insert(instanceSettings).values({ id: 1 }).onConflictDoNothing();
+    const row = await selectSingleton();
+    if (!row) throw new Error("instance_settings singleton missing");
+    return row;
+  },
+);
+
+/** Plain columns only: encrypted columns are written via `Secrets`. */
+type Plain = Partial<
+  Omit<
+    InstanceSettings,
+    | "id"
+    | "createdAt"
+    | "updatedAt"
+    | "awsAccessKeyEnc"
+    | "awsSecretEnc"
+    | "cloudflareTokenEnc"
+  >
+>;
 type Secrets = {
   awsAccessKey?: string | null;
   awsSecret?: string | null;
   cloudflareToken?: string | null;
 };
 
-/** Update plain columns; secret inputs are encrypted before writing. */
+/**
+ * Update plain columns; secret inputs are encrypted before writing.
+ * Upsert, so it works on a fresh instance without a prior read.
+ */
 export async function updateInstanceSettings(
   patch: Plain & Secrets,
 ): Promise<InstanceSettings> {
@@ -2896,13 +3092,14 @@ export async function updateInstanceSettings(
       cloudflareTokenEnc: cloudflareToken ? c.encrypt(cloudflareToken) : null,
     }),
   };
-  await getInstanceSettings();
+  const set = { ...plain, ...enc, updatedAt: new Date() };
   const [row] = await db()
-    .update(instanceSettings)
-    .set({ ...plain, ...enc, updatedAt: new Date() })
-    .where(eq(instanceSettings.id, 1))
+    .insert(instanceSettings)
+    .values({ id: 1, ...set })
+    .onConflictDoUpdate({ target: instanceSettings.id, set })
     .returning();
-  return row!;
+  if (!row) throw new Error("instance_settings upsert returned no row");
+  return row;
 }
 
 export async function getDecryptedSecrets() {
@@ -2959,6 +3156,24 @@ describe("instance settings", () => {
       cloudflareToken: null,
     });
   });
+  it("clears a secret when given null", async () => {
+    const { updateInstanceSettings, getDecryptedSecrets } =
+      await import("@/services/instance-settings");
+    const s = await updateInstanceSettings({ awsSecret: null });
+    expect(s.awsSecretEnc).toBeNull();
+    expect(s.awsAccessKeyEnc).toMatch(/^v1\./);
+    expect((await getDecryptedSecrets()).awsSecret).toBeNull();
+  });
+  it("leaves secrets untouched on a plain patch", async () => {
+    const { updateInstanceSettings, getDecryptedSecrets } =
+      await import("@/services/instance-settings");
+    const before = await updateInstanceSettings({ cloudflareToken: "cf-tok" });
+    const after = await updateInstanceSettings({ awsRegion: "eu-west-1" });
+    expect(after.awsRegion).toBe("eu-west-1");
+    expect(after.awsAccessKeyEnc).toBe(before.awsAccessKeyEnc);
+    expect(after.cloudflareTokenEnc).toBe(before.cloudflareTokenEnc);
+    expect((await getDecryptedSecrets()).cloudflareToken).toBe("cf-tok");
+  });
 });
 ```
 
@@ -2980,6 +3195,8 @@ git commit -m "feat(web): app shell, team creation/switching, instance settings 
 ---
 
 ### Task 12: Team settings — rename, members, invites, roles (server actions)
+
+> Note: mobile navigation for the app shell (sidebar is hidden below `md`) is deferred from Task 11 review to this task.
 
 **Files:**
 

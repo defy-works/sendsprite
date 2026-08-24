@@ -1,6 +1,8 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/Badge";
+import type { InstanceSettings } from "@/services/instance-settings";
+import { NavLink } from "./NavLink";
 import { TeamSwitcher } from "./TeamSwitcher";
 import { UserMenu } from "./UserMenu";
 
@@ -20,7 +22,7 @@ export function AppShell(p: {
   teamId: string;
   teamName: string;
   email: string;
-  sesStatus: "sandbox" | "requested" | "production" | null;
+  sesStatus: InstanceSettings["sesAccountStatus"];
   children: ReactNode;
 }) {
   return (
@@ -32,13 +34,7 @@ export function AppShell(p: {
         <TeamSwitcher activeId={p.teamId} />
         <nav className="flex flex-col gap-1">
           {NAV.map((n) => (
-            <Link
-              key={n.href}
-              href={n.href}
-              className="rounded-md px-3 py-2 text-sm text-white/75 hover:bg-white/6 hover:text-white"
-            >
-              {n.label}
-            </Link>
+            <NavLink key={n.href} href={n.href} label={n.label} />
           ))}
         </nav>
         <div className="mt-auto">

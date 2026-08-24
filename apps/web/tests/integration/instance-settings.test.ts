@@ -34,4 +34,22 @@ describe("instance settings", () => {
       cloudflareToken: null,
     });
   });
+  it("clears a secret when given null", async () => {
+    const { updateInstanceSettings, getDecryptedSecrets } =
+      await import("@/services/instance-settings");
+    const s = await updateInstanceSettings({ awsSecret: null });
+    expect(s.awsSecretEnc).toBeNull();
+    expect(s.awsAccessKeyEnc).toMatch(/^v1\./);
+    expect((await getDecryptedSecrets()).awsSecret).toBeNull();
+  });
+  it("leaves secrets untouched on a plain patch", async () => {
+    const { updateInstanceSettings, getDecryptedSecrets } =
+      await import("@/services/instance-settings");
+    const before = await updateInstanceSettings({ cloudflareToken: "cf-tok" });
+    const after = await updateInstanceSettings({ awsRegion: "eu-west-1" });
+    expect(after.awsRegion).toBe("eu-west-1");
+    expect(after.awsAccessKeyEnc).toBe(before.awsAccessKeyEnc);
+    expect(after.cloudflareTokenEnc).toBe(before.cloudflareTokenEnc);
+    expect((await getDecryptedSecrets()).cloudflareToken).toBe("cf-tok");
+  });
 });

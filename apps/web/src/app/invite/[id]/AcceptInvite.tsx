@@ -12,18 +12,31 @@ export function AcceptInvite(p: {
 }) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const mismatch =
     p.invitedEmail.toLowerCase() !== p.currentEmail.toLowerCase();
   async function accept() {
-    const res = await authClient.organization.acceptInvitation({
-      invitationId: p.invitationId,
-    });
-    if (res.error) return setError(res.error.message ?? "Could not accept");
-    await authClient.organization.setActive({
-      organizationId: res.data.invitation.organizationId,
-    });
-    router.push("/app");
-    router.refresh();
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await authClient.organization.acceptInvitation({
+        invitationId: p.invitationId,
+      });
+      if (res.error) {
+        setError(res.error.message ?? "Could not accept");
+        return;
+      }
+      await authClient.organization.setActive({
+        organizationId: res.data.invitation.organizationId,
+      });
+      router.push("/app");
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setBusy(false);
+    }
   }
   return (
     <div className="mt-4 flex flex-col gap-4">
@@ -32,8 +45,8 @@ export function AcceptInvite(p: {
       </p>
       {mismatch && (
         <p className="text-sm text-amber-300">
-          This invite was sent to {p.invitedEmail}, but you&apos;re signed in as{" "}
-          {p.currentEmail}.
+          This invitation is for a different account than the one you&apos;re
+          signed in as ({p.currentEmail}).
         </p>
       )}
       {error && (
@@ -41,8 +54,8 @@ export function AcceptInvite(p: {
           {error}
         </p>
       )}
-      <Button onClick={accept} disabled={mismatch}>
-        Accept invitation
+      <Button onClick={accept} disabled={mismatch || busy}>
+        {busy ? "…" : "Accept invitation"}
       </Button>
     </div>
   );

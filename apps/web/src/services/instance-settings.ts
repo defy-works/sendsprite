@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { instanceSettings } from "@/db/schema";
@@ -5,21 +6,29 @@ import { getCipher } from "@/lib/crypto";
 
 export type InstanceSettings = typeof instanceSettings.$inferSelect;
 
-/** Creates the singleton row on first read. */
-export async function getInstanceSettings(): Promise<InstanceSettings> {
+async function selectSingleton() {
   const [row] = await db()
     .select()
     .from(instanceSettings)
     .where(eq(instanceSettings.id, 1))
     .limit(1);
-  if (row) return row;
-  const [created] = await db()
-    .insert(instanceSettings)
-    .values({ id: 1 })
-    .onConflictDoNothing()
-    .returning();
-  return created ?? (await getInstanceSettings());
+  return row;
 }
+
+/**
+ * Creates the singleton row on first read. Request-scoped (`React.cache`)
+ * so layout + page share one query; outside a request it is a plain call.
+ */
+export const getInstanceSettings = cache(
+  async (): Promise<InstanceSettings> => {
+    const existing = await selectSingleton();
+    if (existing) return existing;
+    await db().insert(instanceSettings).values({ id: 1 }).onConflictDoNothing();
+    const row = await selectSingleton();
+    if (!row) throw new Error("instance_settings singleton missing");
+    return row;
+  },
+);
 
 /** Plain columns only: encrypted columns are written via `Secrets`. */
 type Plain = Partial<
@@ -39,7 +48,10 @@ type Secrets = {
   cloudflareToken?: string | null;
 };
 
-/** Update plain columns; secret inputs are encrypted before writing. */
+/**
+ * Update plain columns; secret inputs are encrypted before writing.
+ * Upsert, so it works on a fresh instance without a prior read.
+ */
 export async function updateInstanceSettings(
   patch: Plain & Secrets,
 ): Promise<InstanceSettings> {
@@ -56,13 +68,14 @@ export async function updateInstanceSettings(
       cloudflareTokenEnc: cloudflareToken ? c.encrypt(cloudflareToken) : null,
     }),
   };
-  await getInstanceSettings();
+  const set = { ...plain, ...enc, updatedAt: new Date() };
   const [row] = await db()
-    .update(instanceSettings)
-    .set({ ...plain, ...enc, updatedAt: new Date() })
-    .where(eq(instanceSettings.id, 1))
+    .insert(instanceSettings)
+    .values({ id: 1, ...set })
+    .onConflictDoUpdate({ target: instanceSettings.id, set })
     .returning();
-  return row!;
+  if (!row) throw new Error("instance_settings upsert returned no row");
+  return row;
 }
 
 export async function getDecryptedSecrets() {
