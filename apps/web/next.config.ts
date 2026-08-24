@@ -6,7 +6,7 @@ const nextConfig: NextConfig = {
   output: "standalone",
   // Migrations run at boot from instrumentation.ts, so the SQL files must
   // ship inside the standalone bundle.
-  outputFileTracingIncludes: { "/*": ["./drizzle/**/*"] },
+  outputFileTracingIncludes: { "/**": ["./drizzle/**/*"] },
   // Node-only packages: keep out of the client bundle and Turbopack graph.
   serverExternalPackages: ["pg-boss", "postgres"],
 };

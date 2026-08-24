@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseEnv } from "@/env";
+import { parseEnv } from "@/env.schema";
 
 const BASE = {
   APP_URL: "https://mail.example.com",
@@ -32,6 +32,11 @@ describe("parseEnv", () => {
       /APP_SECRET/,
     );
   });
+  it("rejects the placeholder APP_SECRET", () => {
+    expect(() =>
+      parseEnv({ ...BASE, APP_SECRET: "change-me-".padEnd(40, "x") }),
+    ).toThrow(/placeholder/);
+  });
   it("rejects APP_URL without protocol", () => {
     expect(() => parseEnv({ ...BASE, APP_URL: "mail.example.com" })).toThrow(
       /APP_URL/,
@@ -48,7 +53,7 @@ describe("parseEnv", () => {
     expect(env.LANDING_ENABLED).toBe(false);
     expect(env.EMAIL_PASSWORD_ENABLED).toBe(true);
   });
-  it("requires at least one auth provider", () => {
+  it("reports providers.any=false when nothing is configured", () => {
     expect(() => parseEnv(BASE)).not.toThrow(); // email/password off, no social → allowed but flagged
     expect(parseEnv(BASE).providers.any).toBe(false);
   });

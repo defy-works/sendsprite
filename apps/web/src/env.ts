@@ -1,71 +1,31 @@
-import { z } from "zod";
+import "server-only";
+import { parseEnv, type Env } from "./env.schema";
 
-const bool = z
-  .union([z.boolean(), z.string()])
-  .transform((v) =>
-    typeof v === "boolean"
-      ? v
-      : !["false", "0", "no", "off", ""].includes(v.toLowerCase()),
-  );
+export { parseEnv, schema, type Env } from "./env.schema";
 
-const schema = z.object({
-  NODE_ENV: z
-    .enum(["development", "test", "production"])
-    .default("development"),
-  APP_URL: z
-    .string()
-    .url({ message: "APP_URL must be a full URL incl. protocol" }),
-  APP_SECRET: z.string().min(32, "APP_SECRET must be at least 32 characters"),
-  DATABASE_URL: z.string().min(1),
-  WORKER_MODE: z.enum(["inline", "separate", "none"]).default("inline"),
-  SMTP_ENABLED: bool.default(true),
-  LANDING_ENABLED: bool.default(true),
-  SIGNUP_MODE: z.enum(["auto", "open", "invite", "closed"]).default("auto"),
-  EMAIL_RETENTION_DAYS: z.coerce.number().int().min(1).default(90),
-  EMAIL_PASSWORD_ENABLED: bool.default(false),
-  GOOGLE_CLIENT_ID: z.string().optional(),
-  GOOGLE_CLIENT_SECRET: z.string().optional(),
-  GITHUB_CLIENT_ID: z.string().optional(),
-  GITHUB_CLIENT_SECRET: z.string().optional(),
-});
-
-export type Env = z.infer<typeof schema> & {
-  providers: {
-    google: boolean;
-    github: boolean;
-    emailPassword: boolean;
-    any: boolean;
-  };
-};
-
-export function parseEnv(raw: Record<string, string | undefined>): Env {
-  const parsed = schema.safeParse(raw);
-  if (!parsed.success) {
-    const msg = parsed.error.issues
-      .map((i) => `${i.path.join(".")}: ${i.message}`)
-      .join("; ");
-    throw new Error(`Invalid environment: ${msg}`);
-  }
-  const e = parsed.data;
-  const google = Boolean(e.GOOGLE_CLIENT_ID && e.GOOGLE_CLIENT_SECRET);
-  const github = Boolean(e.GITHUB_CLIENT_ID && e.GITHUB_CLIENT_SECRET);
-  const emailPassword = e.EMAIL_PASSWORD_ENABLED;
-  return {
-    ...e,
-    providers: {
-      google,
-      github,
-      emailPassword,
-      any: google || github || emailPassword,
-    },
-  };
-}
-
-/** Lazily parsed so importing this module in tests doesn't require a real env. */
+/**
+ * Lazily parsed on first access (not at import time) so `next build` can
+ * bundle this module without a real environment. The Proxy forwards keys,
+ * descriptors and `in` checks so `Object.keys(env)`, spread and
+ * `JSON.stringify(env)` all work.
+ */
 let cached: Env | undefined;
+const load = (): Env => (cached ??= parseEnv(process.env));
+
 export const env: Env = new Proxy({} as Env, {
   get(_t, key) {
-    cached ??= parseEnv(process.env);
-    return cached[key as keyof Env];
+    if (typeof key === "symbol") return undefined;
+    return load()[key as keyof Env];
+  },
+  has(_t, key) {
+    return key in load();
+  },
+  ownKeys() {
+    return Reflect.ownKeys(load());
+  },
+  getOwnPropertyDescriptor(_t, key) {
+    const value = load()[key as keyof Env];
+    if (value === undefined && !(key in load())) return undefined;
+    return { enumerable: true, configurable: true, value };
   },
 });
