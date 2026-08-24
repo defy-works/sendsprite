@@ -50,8 +50,27 @@ export function AppShell(p: {
         </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-14 items-center justify-between border-b border-white/10 px-4">
-          <span className="text-sm text-white/60">{p.teamName}</span>
+        <header className="relative flex h-14 items-center justify-between border-b border-white/10 px-4">
+          <div className="flex items-center gap-3">
+            {/* Mobile nav: native <details> so it needs no client JS. */}
+            <details className="group md:hidden">
+              <summary
+                aria-label="Menu"
+                className="cursor-pointer list-none rounded-md px-2 py-1 text-sm text-white/75 hover:bg-white/6 hover:text-white"
+              >
+                ☰
+              </summary>
+              <div className="absolute top-14 left-0 z-20 flex w-64 flex-col gap-4 border-r border-b border-white/10 bg-shadow p-4">
+                <TeamSwitcher activeId={p.teamId} />
+                <nav className="flex flex-col gap-1">
+                  {NAV.map((n) => (
+                    <NavLink key={n.href} href={n.href} label={n.label} />
+                  ))}
+                </nav>
+              </div>
+            </details>
+            <span className="text-sm text-white/60">{p.teamName}</span>
+          </div>
           <div className="flex items-center gap-3">
             <Link
               href="/docs"

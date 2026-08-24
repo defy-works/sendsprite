@@ -3209,7 +3209,7 @@ git commit -m "feat(web): app shell, team creation/switching, instance settings 
 
 - Create: `apps/web/src/app/app/settings/page.tsx`, `apps/web/src/app/app/settings/actions.ts`, `apps/web/src/app/app/settings/MembersPanel.tsx`, `apps/web/src/app/app/settings/InvitePanel.tsx`, `apps/web/src/app/app/settings/RenameForm.tsx`
 
-- [ ] **Step 1: Server actions (authorize with `can()`, audit every mutation)**
+- [x] **Step 1: Server actions (authorize with `can()`, audit every mutation)**
 
 `apps/web/src/app/app/settings/actions.ts`:
 
@@ -3353,7 +3353,7 @@ export async function changeRole(
 }
 ```
 
-- [ ] **Step 2: Settings page (server) + panels (client)**
+- [x] **Step 2: Settings page (server) + panels (client)**
 
 `apps/web/src/app/app/settings/page.tsx`:
 
@@ -3652,16 +3652,16 @@ export function InvitePanel({ invites }: { invites: Invite[] }) {
 }
 ```
 
-- [ ] **Step 3: Typecheck**
+- [x] **Step 3: Typecheck**
 
 Run: `cd apps/web && bun run typecheck`
 Expected: clean. If `auth.api.updateOrganization` / `createInvitation` / `removeMember` / `updateMemberRole` / `cancelInvitation` body shapes differ in the installed better-auth version, open `node_modules/better-auth/dist/plugins/organization/*.d.ts` and adjust the body fields — do not cast to `any`.
 
-- [ ] **Step 4: Manual check**
+- [x] **Step 4: Manual check**
 
 `bun run dev` → `/app/settings`: rename works and persists; invite creates a link; open the link in a private window → sign up (allowed despite invite mode because a pending invite exists) → accept → new user lands in `/app` with the team; owner sees them in Members, can change role, remove.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/app/app/settings
