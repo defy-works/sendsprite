@@ -207,6 +207,46 @@ describe("connectWithKeys", () => {
     expect(sns.commandCalls(SubscribeCommand)).toHaveLength(1);
     expect((await settings()).snsSubscriptionArn).toBe(SUB_ARN);
   });
+  it("waits out IAM propagation: STS rejects twice, then connects", async () => {
+    happyMocks();
+    sts
+      .on(GetCallerIdentityCommand)
+      .rejectsOnce(awsErr("InvalidClientTokenId", "invalid token"))
+      .rejectsOnce(awsErr("InvalidSignatureException", "bad signature"))
+      .resolves({ Account: "123456789012" });
+    const { connectWithKeys, setSleepForTests } =
+      await import("@/services/aws-connect");
+    const slept: number[] = [];
+    setSleepForTests(async (ms) => {
+      slept.push(ms);
+    });
+    try {
+      expect((await connectWithKeys(KEYS, { userId: "u1" })).ok).toBe(true);
+    } finally {
+      setSleepForTests((ms) => new Promise((r) => setTimeout(r, ms)));
+    }
+    expect(sts.commandCalls(GetCallerIdentityCommand)).toHaveLength(3);
+    expect(slept).toEqual([3000, 3000]);
+    expect((await settings()).awsMode).toBe("keys");
+  });
+  it("gives up after 6 propagation failures with no state and the error code", async () => {
+    happyMocks();
+    sts
+      .on(GetCallerIdentityCommand)
+      .rejects(awsErr("InvalidClientTokenId", "invalid token"));
+    const { connectWithKeys, setSleepForTests } =
+      await import("@/services/aws-connect");
+    setSleepForTests(async () => {});
+    try {
+      const res = await connectWithKeys(KEYS, { userId: "u1" });
+      expect(res).toMatchObject({ ok: false, code: "InvalidClientTokenId" });
+    } finally {
+      setSleepForTests((ms) => new Promise((r) => setTimeout(r, ms)));
+    }
+    expect(sts.commandCalls(GetCallerIdentityCommand)).toHaveLength(6);
+    expect((await settings()).awsMode).toBe("none");
+    expect(await instanceAudits()).toHaveLength(0);
+  });
   it("stays connected with a warning when Subscribe fails (no rollback trap)", async () => {
     happyMocks();
     sns

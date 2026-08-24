@@ -1547,11 +1547,44 @@ const errName = (e: unknown) => (e as { name?: string })?.name;
 const isAlreadyExists = (e: unknown) => errName(e) === "AlreadyExistsException";
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+let sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/** Test hook: replace the propagation-retry sleep. */
+export function setSleepForTests(fn: typeof sleep) {
+  sleep = fn;
+}
+
+/** Errors a freshly created IAM key produces until it has propagated. */
+const PROPAGATION_ERRORS = new Set([
+  "InvalidClientTokenId",
+  "InvalidSignatureException",
+  "AuthFailure",
+]);
+const PROPAGATION_ATTEMPTS = 6;
+const PROPAGATION_DELAY_MS = 3_000;
+
+/**
+ * STS + GetAccount. A key created seconds ago (the CloudFormation Lambda)
+ * can be rejected until IAM propagates it, so both calls are retried up to
+ * ~18 s on propagation errors; the Lambda's POST timeout is 25 s.
+ */
 async function verifyIdentity(ctx: AwsContext) {
-  const id = await makeSts(ctx).send(new GetCallerIdentityCommand({}));
-  if (!id.Account) throw new Error("STS returned no account id");
-  const account = await makeSes(ctx).send(new GetAccountCommand({}));
-  return { accountId: id.Account, account: mapAccount(account) };
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const id = await makeSts(ctx).send(new GetCallerIdentityCommand({}));
+      if (!id.Account) throw new Error("STS returned no account id");
+      const account = await makeSes(ctx).send(new GetAccountCommand({}));
+      return { accountId: id.Account, account: mapAccount(account) };
+    } catch (e) {
+      const name = errName(e);
+      if (
+        !name ||
+        !PROPAGATION_ERRORS.has(name) ||
+        attempt >= PROPAGATION_ATTEMPTS
+      )
+        throw e;
+      await sleep(PROPAGATION_DELAY_MS);
+    }
+  }
 }
 
 /**
@@ -1704,7 +1737,11 @@ export async function connectWithKeys(
       actor,
     );
   } catch (e) {
-    return { ok: false, error: `AWS rejected the connection: ${errMsg(e)}` };
+    return {
+      ok: false,
+      error: `AWS rejected the connection: ${errMsg(e)}`,
+      code: errName(e),
+    };
   }
 }
 
@@ -1969,11 +2006,11 @@ Resources:
   # secret never appears in CloudFormation resource properties, stack state or
   # events. It always answers the pre-signed ResponseURL (SUCCESS or FAILED);
   # a missing response would leave the stack hanging for an hour.
-  #   Create: create key -> POST to CallbackUrl (retried up to 5x, 3 s apart,
-  #           while a freshly created key has not propagated through IAM and
-  #           Sendsprite's STS check answers InvalidClientTokenId) -> on any
-  #           failure delete the key it just created and report FAILED with
-  #           the callback's response body as the reason.
+  #   Create: create key -> one POST to CallbackUrl -> on any failure delete
+  #           the key it just created and report FAILED with the callback's
+  #           response body as the reason. The POST is not retried: the
+  #           callback token is single-use, and Sendsprite itself waits out
+  #           IAM propagation of the new key (retrying its STS check ~18 s).
   #   Delete: remove every access key of the user so the user can be deleted.
   #   Update: no-op.
   CallbackFunction:
@@ -1985,10 +2022,9 @@ Resources:
       Role: !GetAtt CallbackFunctionRole.Arn
       Code:
         ZipFile: |
-          import json, time, urllib.request, urllib.error
+          import json, urllib.request, urllib.error
           import boto3
           iam = boto3.client("iam")
-          RETRY = ("InvalidClientTokenId", "not yet propagated")
           def respond(event, context, status, reason=""):
               body = json.dumps({"Status": status, "Reason": reason or "See CloudWatch logs",
                   "PhysicalResourceId": event.get("PhysicalResourceId") or context.log_stream_name,
@@ -2007,13 +2043,9 @@ Resources:
               try:
                   payload = {"token": p["CallbackToken"], "accessKeyId": key["AccessKeyId"], "secretAccessKey": key["SecretAccessKey"],
                       "region": p["Region"], "accountId": p["AccountId"]}
-                  for attempt in range(5):
-                      status, body = post(p["CallbackUrl"], payload)
-                      if status < 300:
-                          return
-                      if status != 502 or not any(m in body for m in RETRY) or attempt == 4:
-                          raise Exception("callback returned %d: %s" % (status, body))
-                      time.sleep(3)
+                  status, body = post(p["CallbackUrl"], payload)
+                  if status >= 300:
+                      raise Exception("callback returned %d: %s" % (status, body))
               except Exception:
                   iam.delete_access_key(UserName=p["UserName"], AccessKeyId=key["AccessKeyId"])
                   raise
@@ -2052,7 +2084,7 @@ Outputs:
 Notes (applied in review):
 
 - `NoEcho` parameters are ignored in quick-create URLs (AWS docs), so `CallbackToken` is not `NoEcho`; single-use + 15-minute expiry is the mitigation.
-- No `AWS::IAM::AccessKey`: the Lambda creates the key itself (scoped `iam:CreateAccessKey/DeleteAccessKey/ListAccessKeys` on the user) so the secret never enters CloudFormation state; on failure it deletes the key; on `Delete` it removes all keys so the user can be deleted. It retries a 502 `InvalidClientTokenId` up to 5× (IAM propagation) and puts the callback's response body into the FAILED reason.
+- No `AWS::IAM::AccessKey`: the Lambda creates the key itself (scoped `iam:CreateAccessKey/DeleteAccessKey/ListAccessKeys` on the user) so the secret never enters CloudFormation state; on failure it deletes the key; on `Delete` it removes all keys so the user can be deleted. It POSTs once (the token is single-use, so a Lambda-side retry could never succeed) and puts the callback's response body into the FAILED reason; IAM propagation of the new key is waited out server-side in `verifyIdentity` (6 attempts, 3 s apart, on `InvalidClientTokenId`/`InvalidSignatureException`/`AuthFailure`). The 502 body carries `code` (the AWS error name).
 - `sns:Unsubscribe`/`GetSubscriptionAttributes` need `Resource: "*"` (subscription ARNs are not topic-scoped). Unused SES/SNS actions removed.
 - `CallbackUrl` must be https (redirects drop POST bodies); Lambda `Timeout: 60`, `ServiceTimeout: 120`.
 
@@ -2234,27 +2266,30 @@ describe("POST /api/setup/aws/callback", () => {
     );
   });
 
-  it("returns 502 without the secret when AWS rejects the keys; token stays burned; failure is recorded", async () => {
+  it("returns 502 with the error code and without the secret when AWS rejects the keys; token stays burned; failure is recorded", async () => {
     sts
       .on(GetCallerIdentityCommand)
       .rejects(
         Object.assign(
-          new Error("The security token included in the request is invalid."),
-          { name: "InvalidClientTokenId" },
+          new Error("User is not authorized to perform sts:GetCallerIdentity"),
+          { name: "AccessDenied" },
         ),
       );
     const token = await issue("us-east-1");
     const res = await post({ token, ...KEYS, region: "us-east-1" });
     expect(res.status).toBe(502);
     const text = await res.text();
-    expect(text).toContain("AWS rejected the connection");
+    expect(JSON.parse(text)).toMatchObject({
+      error: expect.stringContaining("AWS rejected the connection"),
+      code: "AccessDenied",
+    });
     expect(text).not.toContain(KEYS.secretAccessKey);
     expect((await post({ token, ...KEYS, region: "us-east-1" })).status).toBe(
       403,
     );
     const { lastSetupFailure } = await import("@/services/setup-tokens");
     expect(await lastSetupFailure("aws_callback", "u1")).toMatchObject({
-      reason: expect.stringContaining("security token"),
+      reason: expect.stringContaining("not authorized"),
     });
   });
 
@@ -2336,7 +2371,10 @@ export async function POST(req: Request) {
   );
   if (!res.ok) {
     await recordSetupFailure(tok.id, res.error);
-    return NextResponse.json({ error: res.error }, { status: 502 });
+    return NextResponse.json(
+      { error: res.error, code: res.code ?? null },
+      { status: 502 },
+    );
   }
   return NextResponse.json({ ok: true, warning: res.data.warning ?? null });
 }

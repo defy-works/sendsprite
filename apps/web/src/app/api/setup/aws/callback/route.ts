@@ -45,7 +45,10 @@ export async function POST(req: Request) {
   );
   if (!res.ok) {
     await recordSetupFailure(tok.id, res.error);
-    return NextResponse.json({ error: res.error }, { status: 502 });
+    return NextResponse.json(
+      { error: res.error, code: res.code ?? null },
+      { status: 502 },
+    );
   }
   return NextResponse.json({ ok: true, warning: res.data.warning ?? null });
 }

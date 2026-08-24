@@ -81,11 +81,11 @@ Resources:
   # secret never appears in CloudFormation resource properties, stack state or
   # events. It always answers the pre-signed ResponseURL (SUCCESS or FAILED);
   # a missing response would leave the stack hanging for an hour.
-  #   Create: create key -> POST to CallbackUrl (retried up to 5x, 3 s apart,
-  #           while a freshly created key has not propagated through IAM and
-  #           Sendsprite's STS check answers InvalidClientTokenId) -> on any
-  #           failure delete the key it just created and report FAILED with
-  #           the callback's response body as the reason.
+  #   Create: create key -> one POST to CallbackUrl -> on any failure delete
+  #           the key it just created and report FAILED with the callback's
+  #           response body as the reason. The POST is not retried: the
+  #           callback token is single-use, and Sendsprite itself waits out
+  #           IAM propagation of the new key (retrying its STS check ~18 s).
   #   Delete: remove every access key of the user so the user can be deleted.
   #   Update: no-op.
   CallbackFunction:
@@ -97,10 +97,9 @@ Resources:
       Role: !GetAtt CallbackFunctionRole.Arn
       Code:
         ZipFile: |
-          import json, time, urllib.request, urllib.error
+          import json, urllib.request, urllib.error
           import boto3
           iam = boto3.client("iam")
-          RETRY = ("InvalidClientTokenId", "not yet propagated")
           def respond(event, context, status, reason=""):
               body = json.dumps({"Status": status, "Reason": reason or "See CloudWatch logs",
                   "PhysicalResourceId": event.get("PhysicalResourceId") or context.log_stream_name,
@@ -119,13 +118,9 @@ Resources:
               try:
                   payload = {"token": p["CallbackToken"], "accessKeyId": key["AccessKeyId"], "secretAccessKey": key["SecretAccessKey"],
                       "region": p["Region"], "accountId": p["AccountId"]}
-                  for attempt in range(5):
-                      status, body = post(p["CallbackUrl"], payload)
-                      if status < 300:
-                          return
-                      if status != 502 or not any(m in body for m in RETRY) or attempt == 4:
-                          raise Exception("callback returned %d: %s" % (status, body))
-                      time.sleep(3)
+                  status, body = post(p["CallbackUrl"], payload)
+                  if status >= 300:
+                      raise Exception("callback returned %d: %s" % (status, body))
               except Exception:
                   iam.delete_access_key(UserName=p["UserName"], AccessKeyId=key["AccessKeyId"])
                   raise

@@ -167,27 +167,30 @@ describe("POST /api/setup/aws/callback", () => {
     );
   });
 
-  it("returns 502 without the secret when AWS rejects the keys; token stays burned; failure is recorded", async () => {
+  it("returns 502 with the error code and without the secret when AWS rejects the keys; token stays burned; failure is recorded", async () => {
     sts
       .on(GetCallerIdentityCommand)
       .rejects(
         Object.assign(
-          new Error("The security token included in the request is invalid."),
-          { name: "InvalidClientTokenId" },
+          new Error("User is not authorized to perform sts:GetCallerIdentity"),
+          { name: "AccessDenied" },
         ),
       );
     const token = await issue("us-east-1");
     const res = await post({ token, ...KEYS, region: "us-east-1" });
     expect(res.status).toBe(502);
     const text = await res.text();
-    expect(text).toContain("AWS rejected the connection");
+    expect(JSON.parse(text)).toMatchObject({
+      error: expect.stringContaining("AWS rejected the connection"),
+      code: "AccessDenied",
+    });
     expect(text).not.toContain(KEYS.secretAccessKey);
     expect((await post({ token, ...KEYS, region: "us-east-1" })).status).toBe(
       403,
     );
     const { lastSetupFailure } = await import("@/services/setup-tokens");
     expect(await lastSetupFailure("aws_callback", "u1")).toMatchObject({
-      reason: expect.stringContaining("security token"),
+      reason: expect.stringContaining("not authorized"),
     });
   });
 

@@ -57,11 +57,44 @@ const errName = (e: unknown) => (e as { name?: string })?.name;
 const isAlreadyExists = (e: unknown) => errName(e) === "AlreadyExistsException";
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+let sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/** Test hook: replace the propagation-retry sleep. */
+export function setSleepForTests(fn: typeof sleep) {
+  sleep = fn;
+}
+
+/** Errors a freshly created IAM key produces until it has propagated. */
+const PROPAGATION_ERRORS = new Set([
+  "InvalidClientTokenId",
+  "InvalidSignatureException",
+  "AuthFailure",
+]);
+const PROPAGATION_ATTEMPTS = 6;
+const PROPAGATION_DELAY_MS = 3_000;
+
+/**
+ * STS + GetAccount. A key created seconds ago (the CloudFormation Lambda)
+ * can be rejected until IAM propagates it, so both calls are retried up to
+ * ~18 s on propagation errors; the Lambda's POST timeout is 25 s.
+ */
 async function verifyIdentity(ctx: AwsContext) {
-  const id = await makeSts(ctx).send(new GetCallerIdentityCommand({}));
-  if (!id.Account) throw new Error("STS returned no account id");
-  const account = await makeSes(ctx).send(new GetAccountCommand({}));
-  return { accountId: id.Account, account: mapAccount(account) };
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const id = await makeSts(ctx).send(new GetCallerIdentityCommand({}));
+      if (!id.Account) throw new Error("STS returned no account id");
+      const account = await makeSes(ctx).send(new GetAccountCommand({}));
+      return { accountId: id.Account, account: mapAccount(account) };
+    } catch (e) {
+      const name = errName(e);
+      if (
+        !name ||
+        !PROPAGATION_ERRORS.has(name) ||
+        attempt >= PROPAGATION_ATTEMPTS
+      )
+        throw e;
+      await sleep(PROPAGATION_DELAY_MS);
+    }
+  }
 }
 
 /**
@@ -214,7 +247,11 @@ export async function connectWithKeys(
       actor,
     );
   } catch (e) {
-    return { ok: false, error: `AWS rejected the connection: ${errMsg(e)}` };
+    return {
+      ok: false,
+      error: `AWS rejected the connection: ${errMsg(e)}`,
+      code: errName(e),
+    };
   }
 }
 
