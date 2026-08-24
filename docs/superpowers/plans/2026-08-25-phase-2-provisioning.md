@@ -628,16 +628,23 @@ describe("buildQuickCreateUrl", () => {
     );
     expect(q.get("param_CallbackToken")).toBe("abc123");
   });
-  it("rejects a non-S3 template url", () => {
-    expect(() =>
-      buildQuickCreateUrl({
-        region: "us-east-1",
-        templateUrl: "https://example.com/t.yaml",
-        callbackUrl: "https://x/cb",
-        callbackToken: "t",
-        stackName: "s",
-      }),
-    ).toThrow(/S3/);
+  it("rejects non-S3 and look-alike template urls", () => {
+    for (const templateUrl of [
+      "https://example.com/t.yaml",
+      "https://evil.com/s3.amazonaws.com/x.yaml",
+      "https://b.s3.amazonaws.com.evil.com/x.yaml",
+      "http://b.s3.amazonaws.com/x.yaml",
+    ]) {
+      expect(() =>
+        buildQuickCreateUrl({
+          region: "us-east-1",
+          templateUrl,
+          callbackUrl: "https://x/cb",
+          callbackToken: "t",
+          stackName: "s",
+        }),
+      ).toThrow(/S3/);
+    }
   });
 });
 ```
@@ -671,6 +678,14 @@ describe("mapAccount", () => {
       }),
     ).toMatchObject({ status: "requested", reviewStatus: "PENDING" });
   });
+  it("maps a denied review back to sandbox", () => {
+    expect(
+      mapAccount({
+        ProductionAccessEnabled: false,
+        Details: { ReviewDetails: { Status: "DENIED" } },
+      }),
+    ).toMatchObject({ status: "sandbox", reviewStatus: "DENIED" });
+  });
   it("maps production", () => {
     expect(
       mapAccount({
@@ -699,8 +714,12 @@ Run: `cd apps/web && bun run test` → FAIL (modules missing).
 `apps/web/src/lib/aws/quick-create.ts`:
 
 ```ts
+// Accepts virtual-hosted (regional/global) and path-style regional S3 URLs;
+// rejects legacy global path-style, dualstack and look-alike hosts.
+// `env.schema.ts` reuses this for CFN_TEMPLATE_URL.
 const S3_URL =
   /^https:\/\/(([a-z0-9.-]+\.)?s3[.-][a-z0-9-]+|[a-z0-9.-]+\.s3)\.amazonaws\.com\//;
+export const isS3TemplateUrl = (url: string): boolean => S3_URL.test(url);
 
 export interface QuickCreateInput {
   region: string;
@@ -716,7 +735,7 @@ export interface QuickCreateInput {
  * the instance. Parameters map to `param_<Name>` and must match the template.
  */
 export function buildQuickCreateUrl(i: QuickCreateInput): string {
-  if (!S3_URL.test(i.templateUrl))
+  if (!isS3TemplateUrl(i.templateUrl))
     throw new Error(
       "templateUrl must be an S3 URL (CloudFormation quick-create only accepts S3)",
     );
@@ -764,15 +783,18 @@ export function mapAccount(a: GetAccountResponse): SesAccount {
 `apps/web/src/lib/aws/credentials.ts`:
 
 ```ts
-import type { AwsCredentialIdentity, Provider } from "@aws-sdk/types";
+// `@aws-sdk/types` is not hoisted by Bun's isolated linker; derive the
+// credential type from the installed client instead.
+import type { SESv2ClientConfig } from "@aws-sdk/client-sesv2";
 import {
   getInstanceSettings,
   getDecryptedSecrets,
 } from "@/services/instance-settings";
 
+export type AwsCredentials = NonNullable<SESv2ClientConfig["credentials"]>;
 export interface AwsContext {
   region: string;
-  credentials?: AwsCredentialIdentity | Provider<AwsCredentialIdentity>;
+  credentials?: AwsCredentials;
 }
 
 /**
@@ -814,6 +836,7 @@ export const makeSns = (c: AwsContext) =>
 export const makeSts = (c: AwsContext) =>
   new STSClient({ region: c.region, credentials: c.credentials });
 
+/** Checked 2026-08-25 against SESv2 regional availability. */
 export const SES_REGIONS = [
   "us-east-1",
   "us-east-2",
@@ -836,11 +859,17 @@ export const SES_REGIONS = [
   "af-south-1",
   "me-south-1",
   "il-central-1",
+  "ap-southeast-3",
+  "ap-south-2",
+  "eu-central-2",
+  "me-central-1",
+  "ca-west-1",
+  "ap-southeast-5",
 ] as const;
 export type SesRegion = (typeof SES_REGIONS)[number];
 ```
 
-Add `"@aws-sdk/client-sesv2", "@aws-sdk/client-sns", "@aws-sdk/client-sts"` to `serverExternalPackages` in `next.config.ts`.
+Add `"@aws-sdk/client-sesv2", "@aws-sdk/client-sns", "@aws-sdk/client-sts"` to `serverExternalPackages` in `next.config.ts`. In `env.schema.ts`, `AWS_DEFAULT_REGION` becomes `z.enum(SES_REGIONS)` and the `CFN_TEMPLATE_URL` refine calls `isS3TemplateUrl` (no duplicated regex; `clients.ts`/`quick-create.ts` must not import env).
 
 - [x] **Step 4: Run tests, commit**
 
@@ -904,6 +933,8 @@ describe("setup tokens", () => {
 });
 ```
 
+`setup_tokens.issued_by` is a FK to `user.id` (cascade; migration `0005`), so the test's `beforeAll` inserts `user` rows. Also cover: two concurrent `consumeSetupToken` calls → exactly one wins; `pendingSetupToken` returns the newest; deleting the user drops its tokens.
+
 Run: `cd apps/web && bun run test:integration -- setup-tokens` → FAIL.
 
 - [x] **Step 2: Implement**
@@ -912,7 +943,7 @@ Run: `cd apps/web && bun run test:integration -- setup-tokens` → FAIL.
 
 ```ts
 import { createHash, randomBytes } from "node:crypto";
-import { and, eq, gt, isNull } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { newId } from "@sendsprite/shared";
 import { db } from "@/db";
 import { setupTokens } from "@/db/schema";
@@ -951,14 +982,14 @@ export async function consumeSetupToken(purpose: Purpose, token: string) {
         eq(setupTokens.purpose, purpose),
         eq(setupTokens.tokenHash, hash(token)),
         isNull(setupTokens.consumedAt),
-        gt(setupTokens.expiresAt, new Date()),
+        gt(setupTokens.expiresAt, sql`now()`),
       ),
     )
     .returning();
   return row ?? null;
 }
 
-/** Latest unconsumed token for the wizard's status poll. */
+/** Newest unconsumed, unexpired token for the wizard's status poll. */
 export async function pendingSetupToken(purpose: Purpose, issuedBy: string) {
   const [row] = await db()
     .select()
@@ -968,10 +999,10 @@ export async function pendingSetupToken(purpose: Purpose, issuedBy: string) {
         eq(setupTokens.purpose, purpose),
         eq(setupTokens.issuedBy, issuedBy),
         isNull(setupTokens.consumedAt),
-        gt(setupTokens.expiresAt, new Date()),
+        gt(setupTokens.expiresAt, sql`now()`),
       ),
     )
-    .orderBy(setupTokens.createdAt)
+    .orderBy(desc(setupTokens.createdAt), desc(setupTokens.id))
     .limit(1);
   return row ?? null;
 }

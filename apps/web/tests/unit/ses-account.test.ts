@@ -24,6 +24,14 @@ describe("mapAccount", () => {
       }),
     ).toMatchObject({ status: "requested", reviewStatus: "PENDING" });
   });
+  it("maps a denied review back to sandbox", () => {
+    expect(
+      mapAccount({
+        ProductionAccessEnabled: false,
+        Details: { ReviewDetails: { Status: "DENIED" } },
+      }),
+    ).toMatchObject({ status: "sandbox", reviewStatus: "DENIED" });
+  });
   it("maps production", () => {
     expect(
       mapAccount({

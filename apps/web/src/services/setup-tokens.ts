@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, gt, isNull } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { newId } from "@sendsprite/shared";
 import { db } from "@/db";
 import { setupTokens } from "@/db/schema";
@@ -43,7 +43,7 @@ export async function consumeSetupToken(purpose: Purpose, token: string) {
         eq(setupTokens.purpose, purpose),
         eq(setupTokens.tokenHash, hash(token)),
         isNull(setupTokens.consumedAt),
-        gt(setupTokens.expiresAt, new Date()),
+        gt(setupTokens.expiresAt, sql`now()`),
       ),
     )
     .returning();
@@ -60,7 +60,7 @@ export async function pendingSetupToken(purpose: Purpose, issuedBy: string) {
         eq(setupTokens.purpose, purpose),
         eq(setupTokens.issuedBy, issuedBy),
         isNull(setupTokens.consumedAt),
-        gt(setupTokens.expiresAt, new Date()),
+        gt(setupTokens.expiresAt, sql`now()`),
       ),
     )
     .orderBy(desc(setupTokens.createdAt), desc(setupTokens.id))

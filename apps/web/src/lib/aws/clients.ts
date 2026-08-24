@@ -11,6 +11,7 @@ export const makeSns = (c: AwsContext) =>
 export const makeSts = (c: AwsContext) =>
   new STSClient({ region: c.region, credentials: c.credentials });
 
+/** Regions where SESv2 is available (checked 2026-08-25 against SESv2 regional availability). */
 export const SES_REGIONS = [
   "us-east-1",
   "us-east-2",
@@ -33,5 +34,11 @@ export const SES_REGIONS = [
   "af-south-1",
   "me-south-1",
   "il-central-1",
+  "ap-southeast-3",
+  "ap-south-2",
+  "eu-central-2",
+  "me-central-1",
+  "ca-west-1",
+  "ap-southeast-5",
 ] as const;
 export type SesRegion = (typeof SES_REGIONS)[number];

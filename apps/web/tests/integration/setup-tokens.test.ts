@@ -1,9 +1,16 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
+import { user } from "@/db/schema";
 import { startPg } from "./_pg";
 
 let pg: Awaited<ReturnType<typeof startPg>>;
 beforeAll(async () => {
   pg = await startPg();
+  await pg.db.insert(user).values([
+    { id: "u1", name: "One", email: "u1@example.com" },
+    { id: "u2", name: "Two", email: "u2@example.com" },
+    { id: "u3", name: "Three", email: "u3@example.com" },
+  ]);
 });
 afterAll(async () => {
   await pg.stop();
@@ -72,5 +79,17 @@ describe("setup tokens", () => {
     expect(await pendingSetupToken("aws_callback", "u2")).not.toMatchObject({
       id,
     });
+  });
+  it("drops tokens when the issuing user is deleted", async () => {
+    const { issueSetupToken, consumeSetupToken } =
+      await import("@/services/setup-tokens");
+    const { token } = await issueSetupToken({
+      purpose: "aws_callback",
+      issuedBy: "u3",
+      region: "us-east-1",
+      ttlMs: 60_000,
+    });
+    await pg.db.delete(user).where(eq(user.id, "u3"));
+    expect(await consumeSetupToken("aws_callback", token)).toBeNull();
   });
 });

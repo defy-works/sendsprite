@@ -72,4 +72,13 @@ describe("parseEnv", () => {
       }),
     ).toThrow(/S3/);
   });
+  it("rejects an AWS_DEFAULT_REGION where SES is unavailable", () => {
+    expect(() =>
+      parseEnv({ ...BASE, AWS_DEFAULT_REGION: "us-gov-west-1" }),
+    ).toThrow(/AWS_DEFAULT_REGION/);
+    expect(
+      parseEnv({ ...BASE, AWS_DEFAULT_REGION: "eu-central-2" })
+        .AWS_DEFAULT_REGION,
+    ).toBe("eu-central-2");
+  });
 });

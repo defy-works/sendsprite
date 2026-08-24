@@ -1,8 +1,17 @@
-// Virtual-hosted (`bucket.s3.region.amazonaws.com`, `bucket.s3.amazonaws.com`)
-// or path-style (`s3.region.amazonaws.com/bucket`). Same rule as the
-// `CFN_TEMPLATE_URL` env check.
+/**
+ * Accepted S3 template URLs (https only, host anchored at `amazonaws.com/`):
+ *  - virtual-hosted regional: `https://bucket.s3.<region>.amazonaws.com/key`
+ *  - virtual-hosted global:   `https://bucket.s3.amazonaws.com/key`
+ *  - path-style regional:     `https://s3.<region>.amazonaws.com/bucket/key`
+ * Not accepted: legacy global path-style (`https://s3.amazonaws.com/bucket/key`),
+ * dualstack (`s3.dualstack.<region>`), and anything that merely contains
+ * `s3.amazonaws.com` in the path or as a subdomain of another host.
+ * Shared with the `CFN_TEMPLATE_URL` env check.
+ */
 const S3_URL =
   /^https:\/\/(([a-z0-9.-]+\.)?s3[.-][a-z0-9-]+|[a-z0-9.-]+\.s3)\.amazonaws\.com\//;
+
+export const isS3TemplateUrl = (url: string): boolean => S3_URL.test(url);
 
 export interface QuickCreateInput {
   region: string;
@@ -18,7 +27,7 @@ export interface QuickCreateInput {
  * the instance. Parameters map to `param_<Name>` and must match the template.
  */
 export function buildQuickCreateUrl(i: QuickCreateInput): string {
-  if (!S3_URL.test(i.templateUrl))
+  if (!isS3TemplateUrl(i.templateUrl))
     throw new Error(
       "templateUrl must be an S3 URL (CloudFormation quick-create only accepts S3)",
     );

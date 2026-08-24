@@ -19,6 +19,7 @@ describe("buildQuickCreateUrl", () => {
       ),
     ).toBe(true);
   });
+  // The console percent-decodes `param_*` values, so URLSearchParams encoding round-trips.
   it("carries template, stack name and both params URL-encoded", () => {
     const q = new URLSearchParams(url.split("#/stacks/create/review?")[1]);
     expect(q.get("templateURL")).toBe(base.templateUrl);
@@ -28,18 +29,21 @@ describe("buildQuickCreateUrl", () => {
     );
     expect(q.get("param_CallbackToken")).toBe("abc123");
   });
-  it("accepts path-style S3 urls", () => {
-    expect(() =>
-      buildQuickCreateUrl({
-        ...base,
-        templateUrl: "https://s3.eu-west-1.amazonaws.com/bucket/t.yaml",
-      }),
-    ).not.toThrow();
+  it("accepts path-style regional and virtual-hosted global S3 urls", () => {
+    for (const templateUrl of [
+      "https://s3.eu-west-1.amazonaws.com/bucket/t.yaml",
+      "https://b.s3.amazonaws.com/x.yaml",
+    ]) {
+      expect(() => buildQuickCreateUrl({ ...base, templateUrl })).not.toThrow();
+    }
   });
-  it("rejects a non-S3 template url", () => {
+  it("rejects non-S3 and look-alike template urls", () => {
     for (const templateUrl of [
       "https://example.com/t.yaml",
       "https://raw.githubusercontent.com/x/y/main/t.yaml",
+      "https://evil.com/s3.amazonaws.com/x.yaml",
+      "https://b.s3.amazonaws.com.evil.com/x.yaml",
+      "http://b.s3.amazonaws.com/x.yaml",
     ]) {
       expect(() => buildQuickCreateUrl({ ...base, templateUrl })).toThrow(/S3/);
     }

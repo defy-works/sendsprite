@@ -1,0 +1,1 @@
+ALTER TABLE "setup_tokens" ADD CONSTRAINT "setup_tokens_issued_by_user_id_fk" FOREIGN KEY ("issued_by") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;

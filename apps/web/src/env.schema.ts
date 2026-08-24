@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { SES_REGIONS } from "@/lib/aws/clients";
+import { isS3TemplateUrl } from "@/lib/aws/quick-create";
 
 const bool = z
   .union([z.boolean(), z.string()])
@@ -31,21 +33,17 @@ export const schema = z.object({
   GOOGLE_CLIENT_SECRET: z.string().optional(),
   GITHUB_CLIENT_ID: z.string().optional(),
   GITHUB_CLIENT_SECRET: z.string().optional(),
-  // CloudFormation quick-create only accepts S3 template URLs (virtual-hosted
-  // or path-style, regional or global).
+  // CloudFormation quick-create only accepts S3 template URLs.
   CFN_TEMPLATE_URL: z
     .url()
     .refine(
-      (u) =>
-        /^https:\/\/([a-z0-9.-]+\.)?s3[.-][a-z0-9-]+\.amazonaws\.com\//.test(
-          u,
-        ) || /^https:\/\/[a-z0-9.-]+\.s3\.amazonaws\.com\//.test(u),
+      isS3TemplateUrl,
       "CFN_TEMPLATE_URL must be an S3 URL (CloudFormation quick-create only accepts S3)",
     )
     .default(
       "https://sendsprite-cfn.s3.us-east-1.amazonaws.com/latest/sendsprite-connect.yaml",
     ),
-  AWS_DEFAULT_REGION: z.string().default("us-east-1"),
+  AWS_DEFAULT_REGION: z.enum(SES_REGIONS).default("us-east-1"),
 });
 
 export type Env = z.infer<typeof schema> & {
