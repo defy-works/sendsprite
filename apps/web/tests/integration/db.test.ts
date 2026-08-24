@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { randomBytes } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { startPg } from "./_pg";
 
@@ -22,8 +23,10 @@ describe("migrations", () => {
   });
   it("tolerate two processes migrating at once", async () => {
     const { runMigrations } = await import("@/db/migrate");
-    await pg.db.execute(sql`create database race`);
-    const raceUrl = pg.url.replace(/\/[^/]*$/, "/race");
+    // Fresh name per run: TEST_DATABASE_URL may point at a reused server.
+    const name = `race_${randomBytes(4).toString("hex")}`;
+    await pg.db.execute(sql.raw(`create database ${name}`));
+    const raceUrl = pg.url.replace(/\/[^/]*$/, `/${name}`);
     await expect(
       Promise.all([runMigrations(raceUrl), runMigrations(raceUrl)]),
     ).resolves.toBeDefined();

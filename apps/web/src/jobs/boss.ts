@@ -14,6 +14,7 @@ interface Registration {
 interface Shared {
   state: WorkerState;
   boss?: PgBoss;
+  bossPromise?: Promise<PgBoss>;
   starting?: Promise<void>;
   registry: Map<string, Registration>;
 }
@@ -61,15 +62,29 @@ export function registerQueue<T extends object>(
   }
 }
 
+/** Started pg-boss instance. Re-entrant: concurrent callers share one start. */
 export async function getBoss(): Promise<PgBoss> {
   if (shared.boss) return shared.boss;
-  const url = process.env.DATABASE_URL;
-  if (!url) throw new Error("DATABASE_URL is not set");
-  const boss = new PgBoss({ connectionString: url, schema: "pgboss" });
-  boss.on("error", (e) => console.error("[pg-boss]", e));
-  await boss.start();
-  shared.boss = boss;
-  return boss;
+  if (shared.bossPromise) return shared.bossPromise;
+  shared.bossPromise = (async () => {
+    const url = process.env.DATABASE_URL;
+    if (!url) throw new Error("DATABASE_URL is not set");
+    const boss = new PgBoss({ connectionString: url, schema: "pgboss" });
+    boss.on("error", (e) => console.error("[pg-boss]", e));
+    await boss.start();
+    shared.boss = boss;
+    return boss;
+  })().finally(() => {
+    shared.bossPromise = undefined;
+  });
+  return shared.bossPromise;
+}
+
+/** Drop the instance so the next getBoss()/startWorker() begins from scratch. */
+async function teardownBoss() {
+  const b = shared.boss;
+  shared.boss = undefined;
+  if (b) await b.stop({ graceful: false }).catch(() => undefined);
 }
 
 /**
@@ -82,7 +97,13 @@ export async function startWorker(): Promise<void> {
   shared.starting = (async () => {
     await import("./handlers");
     const b = await getBoss();
-    for (const reg of shared.registry.values()) await attach(b, reg);
+    try {
+      for (const reg of shared.registry.values()) await attach(b, reg);
+    } catch (err) {
+      // Half-attached workers must not survive into a retry.
+      await teardownBoss();
+      throw err;
+    }
     shared.state = "running";
     console.info(
       `[worker] started (${[...shared.registry.keys()].join(", ")})`,
@@ -96,6 +117,7 @@ export async function startWorker(): Promise<void> {
 /** Stop polling and close the pool. State stays "disabled" if never started. */
 export async function stopWorker() {
   if (shared.starting) await shared.starting.catch(() => undefined);
+  if (shared.bossPromise) await shared.bossPromise.catch(() => undefined);
   const b = shared.boss;
   if (!b) return;
   await b.stop({ graceful: true, timeout: 10_000 });

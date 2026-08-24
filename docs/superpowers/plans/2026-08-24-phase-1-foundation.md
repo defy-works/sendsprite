@@ -4313,35 +4313,49 @@ git commit -m "feat(web): pg-boss worker with boot-time migrations via instrumen
 
 - Create: `Dockerfile`, `docker-compose.yml`, `install.sh`
 
-- [ ] **Step 1: Dockerfile (multistage Bun, standalone output)**
+- [x] **Step 1: Dockerfile (multistage Bun, standalone output)**
 
 ```dockerfile
+# syntax=docker/dockerfile:1
 FROM oven/bun:1 AS base
 WORKDIR /app
 
+# Dependencies only: workspace manifests + lockfile so this layer is cached
+# until a package.json changes. Bun's isolated linker puts the real packages
+# in /app/node_modules/.bun and symlinks them per workspace.
 FROM base AS deps
 COPY package.json bun.lock bunfig.toml ./
 COPY apps/web/package.json apps/web/
 COPY packages/shared/package.json packages/shared/
-RUN --mount=type=cache,target=/root/.bun/install/cache bun install --frozen-lockfile
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install --frozen-lockfile
 
-FROM base AS build
+# Build on top of deps so every workspace's node_modules (and their symlinks
+# into .bun) come along. .dockerignore keeps host node_modules/.next out of
+# the context, so COPY . . only adds sources. packages/shared is a source
+# package consumed via workspace:*, so it must be present here.
+FROM deps AS build
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY . .
-COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/apps/web/node_modules ./apps/web/node_modules
-RUN --mount=type=cache,target=/app/apps/web/.next/cache cd apps/web && bun run build
+RUN --mount=type=cache,target=/app/apps/web/.next/cache \
+    cd apps/web && bun run build
 
 FROM base AS runner
 ARG APP_VERSION=dev
 ENV NODE_ENV=production HOSTNAME=0.0.0.0 PORT=3000 NEXT_TELEMETRY_DISABLED=1
-# Reported by /api/health; instrumentation.ts stops pg-boss on SIGTERM.
+# APP_VERSION is reported by /api/health. NEXT_MANUAL_SIG_HANDLE hands
+# SIGTERM to instrumentation.ts, which stops pg-boss before exiting.
 ENV APP_VERSION=$APP_VERSION NEXT_MANUAL_SIG_HANDLE=true
-# Standalone output already contains the traced node_modules and server.js.
+# `output: "standalone"` in a monorepo emits:
+#   .next/standalone/apps/web/server.js       entry (reads PORT/HOSTNAME)
+#   .next/standalone/apps/web/.next/          server chunks
+#   .next/standalone/apps/web/drizzle/        via outputFileTracingIncludes
+#   .next/standalone/node_modules/.bun/       traced runtime packages
+# It deliberately omits .next/static and public/, so those are copied
+# alongside; leaving either out serves pages without CSS or fonts.
 COPY --from=build /app/apps/web/.next/standalone ./
 COPY --from=build /app/apps/web/.next/static ./apps/web/.next/static
 COPY --from=build /app/apps/web/public ./apps/web/public
-COPY --from=build /app/apps/web/drizzle ./apps/web/drizzle
 WORKDIR /app/apps/web
 EXPOSE 3000 587
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
@@ -4349,7 +4363,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 CMD ["bun", "server.js"]
 ```
 
-- [ ] **Step 2: docker-compose.yml**
+- [x] **Step 2: docker-compose.yml**
 
 ```yaml
 services:
@@ -4382,16 +4396,18 @@ services:
       retries: 20
     restart: unless-stopped
 
-  # Optional: `docker compose --profile worker up` runs jobs in a second container.
+  # Optional: `docker compose --profile worker up -d` runs jobs in a second
+  # container. Set WORKER_MODE=separate in .env so `app` stops running them.
+  # The worker is the same image with the worker forced on; it only listens
+  # on the internal network (no ports published).
   worker:
     profiles: ["worker"]
     image: ghcr.io/defyworks/sendsprite:latest
     build: .
-    command: ["bun", "run", "worker"]
     env_file: .env
     environment:
       DATABASE_URL: postgres://sendsprite:${POSTGRES_PASSWORD}@db:5432/sendsprite
-      WORKER_MODE: separate
+      WORKER_MODE: inline
     depends_on:
       db:
         condition: service_healthy
@@ -4401,9 +4417,9 @@ volumes:
   pgdata:
 ```
 
-Note: when the `worker` profile is used, set `WORKER_MODE=separate` in `.env` so the `app` container stops running jobs.
+Note: when the `worker` profile is used, set `WORKER_MODE=separate` in `.env` so the `app` container stops running jobs. The worker container runs the same standalone `server.js` with `WORKER_MODE=inline` rather than `bun run worker`: the standalone image has no `src/` or full `node_modules`, so `src/worker.ts` cannot run there.
 
-- [ ] **Step 3: install.sh**
+- [x] **Step 3: install.sh**
 
 ```bash
 #!/usr/bin/env sh
@@ -4447,12 +4463,12 @@ echo "Add Google/GitHub sign-in later by setting GOOGLE_CLIENT_ID/SECRET or GITH
 
 Run `chmod +x install.sh` (on Windows, `git update-index --chmod=+x install.sh` after adding).
 
-- [ ] **Step 4: Build and run the image locally**
+- [ ] **Step 4: Build and run the image locally** — verified in CI (Task 16) — no Docker locally (WSL2 virtualisation disabled). Validated statically against the observed `bun run build` standalone tree.
 
 Run (repo root): `docker compose build && POSTGRES_PASSWORD=devpass docker compose up -d` with a `.env` copied from `.env.example` (`APP_SECRET` ≥ 32 chars).
 Expected: `docker compose ps` shows `db` healthy and `app` healthy; `curl localhost:3000/api/health` → `"status":"ok"`; `/signup` renders.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Dockerfile docker-compose.yml install.sh
@@ -4598,7 +4614,7 @@ git commit -m "test: e2e smoke (signup → team → settings) and CI workflow"
 
 - Create: `README.md`
 
-- [ ] **Step 1: Write README** (aws-cost-dashboard "why it works this way" tone)
+- [x] **Step 1: Write README** (aws-cost-dashboard "why it works this way" tone)
 
 ````markdown
 # Sendsprite
@@ -4687,7 +4703,7 @@ MIT
 
 ````
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add README.md
