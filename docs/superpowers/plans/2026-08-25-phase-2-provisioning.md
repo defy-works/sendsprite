@@ -589,11 +589,11 @@ git commit -m "feat(web): provisioning env, setup_tokens and domains schema"
 - Test: `apps/web/tests/unit/quick-create.test.ts`, `apps/web/tests/unit/ses-account.test.ts`
 - Modify: `apps/web/package.json` (deps), `apps/web/next.config.ts` (`serverExternalPackages` += the three AWS clients)
 
-- [ ] **Step 1: Install**
+- [x] **Step 1: Install**
 
 Run: `cd apps/web && bun add @aws-sdk/client-sesv2 @aws-sdk/client-sns @aws-sdk/client-sts && bun add -d aws-sdk-client-mock`
 
-- [ ] **Step 2: Failing unit tests**
+- [x] **Step 2: Failing unit tests**
 
 `tests/unit/quick-create.test.ts`:
 
@@ -694,7 +694,7 @@ describe("mapAccount", () => {
 
 Run: `cd apps/web && bun run test` → FAIL (modules missing).
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `apps/web/src/lib/aws/quick-create.ts`:
 
@@ -842,7 +842,7 @@ export type SesRegion = (typeof SES_REGIONS)[number];
 
 Add `"@aws-sdk/client-sesv2", "@aws-sdk/client-sns", "@aws-sdk/client-sts"` to `serverExternalPackages` in `next.config.ts`.
 
-- [ ] **Step 4: Run tests, commit**
+- [x] **Step 4: Run tests, commit**
 
 Run: `cd apps/web && bun run test && bun run typecheck` → PASS.
 

@@ -8,7 +8,13 @@ const nextConfig: NextConfig = {
   // ship inside the standalone bundle.
   outputFileTracingIncludes: { "/**": ["./drizzle/**/*"] },
   // Node-only packages: keep out of the client bundle and Turbopack graph.
-  serverExternalPackages: ["pg-boss", "postgres"],
+  serverExternalPackages: [
+    "pg-boss",
+    "postgres",
+    "@aws-sdk/client-sesv2",
+    "@aws-sdk/client-sns",
+    "@aws-sdk/client-sts",
+  ],
 };
 
 export default nextConfig;
