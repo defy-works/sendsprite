@@ -48,10 +48,10 @@ sendsprite/
    ├─ package.json · tsconfig.json · next.config.ts · postcss.config.mjs
    ├─ drizzle.config.ts · drizzle/    generated SQL migrations
    ├─ vitest.config.ts · playwright.config.ts
-   ├─ instrumentation.ts             boot: migrate → start pg-boss (if WORKER_MODE≠none)
    ├─ public/fonts/                  SpaceGrotesk-Variable.woff2, SUIT-Variable.woff2
    ├─ public/favicon.svg
    ├─ src/
+   │  ├─ instrumentation.ts          boot: migrate → start pg-boss (if WORKER_MODE≠none)
    │  ├─ env.ts                      zod-validated process.env (server only)
    │  ├─ styles/globals.css          theme (copied)
    │  ├─ lib/cn.ts
@@ -4031,10 +4031,10 @@ git commit -m "feat(web): /api/health with db + queue lag checks"
 
 **Files:**
 
-- Create: `apps/web/src/jobs/queues.ts`, `apps/web/src/jobs/handlers/heartbeat.ts`, `apps/web/instrumentation.ts`, `apps/web/src/worker.ts`
+- Create: `apps/web/src/jobs/queues.ts`, `apps/web/src/jobs/handlers/heartbeat.ts`, `apps/web/src/instrumentation.ts`, `apps/web/src/worker.ts`
 - Modify: `apps/web/src/jobs/boss.ts`, `apps/web/package.json` (add `"worker": "bun run src/worker.ts"`)
 
-- [ ] **Step 1: Queue names and a heartbeat handler**
+- [x] **Step 1: Queue names and a heartbeat handler**
 
 `apps/web/src/jobs/queues.ts`:
 
@@ -4055,7 +4055,7 @@ export async function heartbeat() {
 }
 ```
 
-- [ ] **Step 2: pg-boss singleton**
+- [x] **Step 2: pg-boss singleton**
 
 `apps/web/src/jobs/boss.ts` (replace the stub):
 
@@ -4103,9 +4103,9 @@ export async function stopWorker() {
 }
 ```
 
-- [ ] **Step 3: Boot hook**
+- [x] **Step 3: Boot hook**
 
-`apps/web/instrumentation.ts`:
+`apps/web/src/instrumentation.ts`:
 
 ```ts
 /**
@@ -4145,17 +4145,17 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
 
 Add to `apps/web/package.json` scripts: `"worker": "bun run src/worker.ts"`.
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run: `cd apps/web && bun run dev`
 Expected console: `[boot] migrations applied`, `[worker] started`, and within 5 minutes a `[worker] heartbeat …` line. `curl localhost:3000/api/health` → `{"status":"ok","db":"ok","worker":"running",...}`.
 
 Run: `WORKER_MODE=none bun run dev` (PowerShell: `$env:WORKER_MODE="none"; bun run dev`) → health reports `"worker":"disabled"`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
-git add apps/web/instrumentation.ts apps/web/src/jobs apps/web/src/worker.ts apps/web/package.json
+git add apps/web/src/instrumentation.ts apps/web/src/jobs apps/web/src/worker.ts apps/web/package.json
 git commit -m "feat(web): pg-boss worker with boot-time migrations via instrumentation hook"
 ```
 
