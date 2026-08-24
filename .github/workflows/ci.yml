@@ -1,0 +1,98 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: sendsprite
+          POSTGRES_PASSWORD: sendsprite
+          POSTGRES_DB: sendsprite
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sendsprite"
+          --health-interval 5s
+          --health-retries 20
+    env:
+      APP_URL: http://localhost:3000
+      APP_SECRET: ci-secret-ci-secret-ci-secret-ci-secret
+      DATABASE_URL: postgres://sendsprite:sendsprite@localhost:5432/sendsprite
+      # Integration tests use the service container instead of downloading
+      # embedded-postgres binaries.
+      TEST_DATABASE_URL: postgres://sendsprite:sendsprite@localhost:5432/sendsprite
+      E2E_PORT: "3000"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run lint
+      - run: bun run format:check
+      - run: bun run test
+      - run: bun run test:integration
+      - run: bunx playwright install --with-deps chromium
+        working-directory: apps/web
+      - run: bun run db:migrate
+        working-directory: apps/web
+      - run: bun run test:e2e
+        working-directory: apps/web
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report
+          retention-days: 7
+
+  docker:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: sendsprite
+          POSTGRES_PASSWORD: sendsprite
+          POSTGRES_DB: sendsprite
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sendsprite"
+          --health-interval 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: sendsprite:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # Boots the standalone image against the service Postgres: proves the
+      # traced node_modules/.bun symlinks, boot migrations and /api/health work.
+      - name: Smoke-test image
+        run: |
+          docker run -d --name ss --network host \
+            -e APP_URL=http://localhost:3000 \
+            -e APP_SECRET=ci-secret-ci-secret-ci-secret-ci-secret \
+            -e DATABASE_URL=postgres://sendsprite:sendsprite@localhost:5432/sendsprite \
+            -e EMAIL_PASSWORD_ENABLED=true \
+            sendsprite:ci
+          for i in $(seq 1 30); do
+            if curl -fsS localhost:3000/api/health; then
+              echo; echo "healthy after ${i} tries"; exit 0
+            fi
+            sleep 2
+          done
+          echo "image did not become healthy"; docker logs ss; exit 1
+      - name: Container logs
+        if: failure()
+        run: docker logs ss || true
+      # GHCR push (docker/login-action + push: true, tags ghcr.io/...) goes
+      # here once releases are cut; not part of Phase 1.

@@ -4497,7 +4497,7 @@ git commit -m "feat: Docker image, compose stack, one-line installer"
 
 - Create: `apps/web/playwright.config.ts`, `apps/web/tests/e2e/smoke.spec.ts`, `.github/workflows/ci.yml`
 
-- [ ] **Step 1: Playwright config**
+- [x] **Step 1: Playwright config**
 
 `apps/web/playwright.config.ts`:
 
@@ -4527,7 +4527,7 @@ export default defineConfig({
 });
 ```
 
-- [ ] **Step 2: Smoke spec**
+- [x] **Step 2: Smoke spec**
 
 `apps/web/tests/e2e/smoke.spec.ts`:
 
@@ -4559,7 +4559,7 @@ test("signup → create team → shell renders → settings rename", async ({
 });
 ```
 
-- [ ] **Step 3: CI workflow**
+- [x] **Step 3: CI workflow**
 
 `.github/workflows/ci.yml`:
 
@@ -4607,12 +4607,12 @@ jobs:
         with: { context: ., push: false, tags: sendsprite:ci }
 ```
 
-- [ ] **Step 4: Run e2e locally**
+- [x] **Step 4: Run e2e locally**
 
 Run: `cd apps/web && bunx playwright install chromium && bun run test:e2e` (local Postgres running, `.env.local` present)
 Expected: 1 passed.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/playwright.config.ts apps/web/tests/e2e .github
