@@ -64,3 +64,12 @@ export function parseEnv(raw: Record<string, string | undefined>): Env {
     },
   };
 }
+
+let cached: Env | undefined;
+/** Cached parse of process.env. Server/CLI/test use; pages should import `env` from "@/env". */
+export function loadEnv(): Env {
+  return (cached ??= parseEnv(process.env));
+}
+export function resetEnvCache() {
+  cached = undefined;
+}

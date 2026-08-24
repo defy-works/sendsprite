@@ -15,6 +15,13 @@
       "when": 1787585229251,
       "tag": "0001_short_maginty",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787585597572,
+      "tag": "0002_wealthy_iceman",
+      "breakpoints": true
     }
   ]
 }

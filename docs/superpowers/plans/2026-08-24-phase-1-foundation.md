@@ -1397,9 +1397,9 @@ git commit -m "feat(web): drizzle client, instance_settings + audit_log schema, 
 **Files:**
 
 - Create: `apps/web/src/lib/auth.ts`, `apps/web/src/lib/auth-client.ts`, `apps/web/src/app/api/auth/[...all]/route.ts`, `apps/web/src/lib/signup-policy.ts`, `apps/web/tests/unit/signup-policy.test.ts`
-- Modify: `apps/web/src/db/schema/auth.ts` (generated), new migration
+- Modify: `apps/web/src/db/schema/auth.ts` (generated), new migration, `apps/web/src/env.schema.ts` (+`loadEnv`/`resetEnvCache`), `apps/web/src/env.ts` (Proxy over `loadEnv`)
 
-- [ ] **Step 1: Failing test for the signup policy (pure function)**
+- [x] **Step 1: Failing test for the signup policy (pure function)**
 
 `apps/web/tests/unit/signup-policy.test.ts`:
 
@@ -1429,12 +1429,12 @@ describe("canSignUp", () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `cd apps/web && bun run test`
 Expected: FAIL — cannot find `@/lib/signup-policy`.
 
-- [ ] **Step 3: Implement the policy**
+- [x] **Step 3: Implement the policy**
 
 `apps/web/src/lib/signup-policy.ts`:
 
@@ -1466,12 +1466,12 @@ export function canSignUp(
 }
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `cd apps/web && bun run test`
 Expected: PASS.
 
-- [ ] **Step 5: Auth server**
+- [x] **Step 5: Auth server**
 
 `apps/web/src/lib/auth.ts`:
 
@@ -1484,16 +1484,19 @@ import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { and, count, eq, gt } from "drizzle-orm";
 import { db } from "@/db";
 import * as schema from "@/db/schema";
-import { env } from "@/env";
+import { loadEnv } from "@/env.schema";
 import { canSignUp, resolveSignupMode } from "./signup-policy";
+
+// Not `@/env`: that module is `server-only` and throws under the CLI/vitest.
+const env = loadEnv();
 
 async function currentSignupMode() {
   const [settings] = await db().select().from(schema.instanceSettings).limit(1);
-  const [{ n }] = await db().select({ n: count() }).from(schema.user);
+  const [users] = await db().select({ n: count() }).from(schema.user);
   return resolveSignupMode(
     env.SIGNUP_MODE,
     (settings?.signupMode as never) ?? null,
-    Number(n),
+    Number(users?.n ?? 0),
   );
 }
 
@@ -1590,15 +1593,15 @@ export const auth = betterAuth({
 export type Auth = typeof auth;
 ```
 
-- [ ] **Step 6: Generate the better-auth Drizzle schema, then a migration**
+- [x] **Step 6: Generate the better-auth Drizzle schema, then a migration**
 
-Run: `cd apps/web && bun run auth:generate`
+Run: `cd apps/web && bun run auth:generate` (the script uses `bunx auth@latest`; the older `@better-auth/cli` package is stale for better-auth 1.7 and omits `account.issuer`). The CLI imports `auth.ts`, so `APP_URL`, `APP_SECRET`, `DATABASE_URL`, `EMAIL_PASSWORD_ENABLED` must be set in the shell (no connection is made).
 Expected: `src/db/schema/auth.ts` overwritten with `pgTable` definitions for `user`, `session` (incl. `activeOrganizationId`), `account`, `verification`, `organization`, `member`, `invitation`. Open the file and confirm exports are named `user`, `session`, `account`, `verification`, `organization`, `member`, `invitation`.
 
 Run: `bun run db:generate`
-Expected: `drizzle/0001_*.sql` creating those seven tables.
+Expected: `drizzle/0002_*.sql` creating those seven tables.
 
-- [ ] **Step 7: Client + route handler**
+- [x] **Step 7: Client + route handler**
 
 `apps/web/src/lib/auth-client.ts`:
 
@@ -1620,12 +1623,13 @@ import { toNextJsHandler } from "better-auth/next-js";
 export const { GET, POST } = toNextJsHandler(auth);
 ```
 
-- [ ] **Step 8: Integration test — signup modes**
+- [x] **Step 8: Integration test — signup modes**
 
 `apps/web/tests/integration/auth.test.ts`:
 
 ```ts
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { resetEnvCache } from "@/env.schema";
 import { startPg } from "./_pg";
 
 let pg: Awaited<ReturnType<typeof startPg>>;
@@ -1635,6 +1639,7 @@ beforeAll(async () => {
   process.env.APP_SECRET = "x".repeat(40);
   process.env.EMAIL_PASSWORD_ENABLED = "true";
   process.env.SIGNUP_MODE = "auto";
+  resetEnvCache();
 });
 afterAll(async () => {
   await pg.stop();
@@ -1666,7 +1671,7 @@ describe("signup policy (auto)", () => {
 Run: `cd apps/web && bun run test:integration`
 Expected: PASS (both files).
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add apps/web/src/lib/auth.ts apps/web/src/lib/auth-client.ts apps/web/src/lib/signup-policy.ts apps/web/src/app/api/auth apps/web/src/db/schema/auth.ts apps/web/drizzle apps/web/tests

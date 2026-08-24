@@ -1,7 +1,7 @@
 import "server-only";
-import { parseEnv, type Env } from "./env.schema";
+import { loadEnv, type Env } from "./env.schema";
 
-export { parseEnv, schema, type Env } from "./env.schema";
+export { loadEnv, parseEnv, schema, type Env } from "./env.schema";
 
 /**
  * Lazily parsed on first access (not at import time) so `next build` can
@@ -9,8 +9,7 @@ export { parseEnv, schema, type Env } from "./env.schema";
  * descriptors and `in` checks so `Object.keys(env)`, spread and
  * `JSON.stringify(env)` all work.
  */
-let cached: Env | undefined;
-const load = (): Env => (cached ??= parseEnv(process.env));
+const load = loadEnv;
 
 export const env: Env = new Proxy({} as Env, {
   get(_t, key) {
