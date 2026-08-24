@@ -36,20 +36,28 @@ export function createCipher(
       return `v1.${b64u.enc(iv)}.${b64u.enc(ct)}.${b64u.enc(c.getAuthTag())}`;
     },
     decrypt(payload) {
-      const [v, iv, ct, tag] = payload.split(".");
-      if (v !== "v1" || !iv || !ct || !tag)
+      const parts = payload.split(".");
+      if (parts.length !== 4 || parts[0] !== "v1")
         throw new Error("bad ciphertext format");
-      const d = createDecipheriv("aes-256-gcm", key, b64u.dec(iv));
-      d.setAuthTag(b64u.dec(tag));
-      return Buffer.concat([d.update(b64u.dec(ct)), d.final()]).toString(
-        "utf8",
-      );
+      const iv = b64u.dec(parts[1]!);
+      const ct = b64u.dec(parts[2]!); // may be empty: "" encrypts to no bytes
+      const tag = b64u.dec(parts[3]!);
+      if (iv.length !== 12 || tag.length !== 16)
+        throw new Error("bad ciphertext format");
+      const d = createDecipheriv("aes-256-gcm", key, iv);
+      d.setAuthTag(tag);
+      return Buffer.concat([d.update(ct), d.final()]).toString("utf8");
     },
   };
 }
 
 let appCipher: Cipher | undefined;
-/** Process-wide cipher bound to APP_SECRET. Import lazily from server code only. */
+/**
+ * Process-wide cipher bound to APP_SECRET. Import lazily from server code only.
+ * Reads `process.env` directly rather than `@/env` because env.ts is
+ * `server-only` (unimportable from tests) and validates the whole
+ * environment, which this module does not need.
+ */
 export function getCipher(): Cipher {
   if (!appCipher) {
     const secret = process.env.APP_SECRET;

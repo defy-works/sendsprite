@@ -25,6 +25,13 @@ describe("createCipher", () => {
     const tampered = enc.slice(0, -2) + (enc.endsWith("A") ? "BB" : "AA");
     expect(() => c.decrypt(tampered)).toThrow();
   });
+  it("round-trips the empty string", () => {
+    const c = createCipher(SECRET);
+    expect(c.decrypt(c.encrypt(""))).toBe("");
+  });
+  it("rejects a malformed payload", () => {
+    expect(() => createCipher(SECRET).decrypt("v1.a.b.c.d")).toThrow();
+  });
   it("is versioned so the format can change later", () => {
     expect(createCipher(SECRET).encrypt("v")).toMatch(/^v1\./);
   });

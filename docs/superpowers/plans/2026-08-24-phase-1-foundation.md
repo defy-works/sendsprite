@@ -527,7 +527,7 @@ git commit -m "feat(shared): prefixed ULID ids and team role permission table"
   "devDependencies": {
     "@playwright/test": "^1.55.0",
     "@tailwindcss/postcss": "^4.3.3",
-    "embedded-postgres": "^18.4.0-beta.17",
+    "embedded-postgres": "16.14.0-beta.17",
     "@types/node": "^22.10.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.0",
@@ -953,6 +953,13 @@ describe("createCipher", () => {
     const tampered = enc.slice(0, -2) + (enc.endsWith("A") ? "BB" : "AA");
     expect(() => c.decrypt(tampered)).toThrow();
   });
+  it("round-trips the empty string", () => {
+    const c = createCipher(SECRET);
+    expect(c.decrypt(c.encrypt(""))).toBe("");
+  });
+  it("rejects a malformed payload", () => {
+    expect(() => createCipher(SECRET).decrypt("v1.a.b.c.d")).toThrow();
+  });
   it("is versioned so the format can change later", () => {
     expect(createCipher(SECRET).encrypt("v")).toMatch(/^v1\./);
   });
@@ -1007,20 +1014,28 @@ export function createCipher(
       return `v1.${b64u.enc(iv)}.${b64u.enc(ct)}.${b64u.enc(c.getAuthTag())}`;
     },
     decrypt(payload) {
-      const [v, iv, ct, tag] = payload.split(".");
-      if (v !== "v1" || !iv || !ct || !tag)
+      const parts = payload.split(".");
+      if (parts.length !== 4 || parts[0] !== "v1")
         throw new Error("bad ciphertext format");
-      const d = createDecipheriv("aes-256-gcm", key, b64u.dec(iv));
-      d.setAuthTag(b64u.dec(tag));
-      return Buffer.concat([d.update(b64u.dec(ct)), d.final()]).toString(
-        "utf8",
-      );
+      const iv = b64u.dec(parts[1]!);
+      const ct = b64u.dec(parts[2]!); // may be empty: "" encrypts to no bytes
+      const tag = b64u.dec(parts[3]!);
+      if (iv.length !== 12 || tag.length !== 16)
+        throw new Error("bad ciphertext format");
+      const d = createDecipheriv("aes-256-gcm", key, iv);
+      d.setAuthTag(tag);
+      return Buffer.concat([d.update(ct), d.final()]).toString("utf8");
     },
   };
 }
 
 let appCipher: Cipher | undefined;
-/** Process-wide cipher bound to APP_SECRET. Import lazily from server code only. */
+/**
+ * Process-wide cipher bound to APP_SECRET. Import lazily from server code only.
+ * Reads `process.env` directly rather than `@/env` because env.ts is
+ * `server-only` (unimportable from tests) and validates the whole
+ * environment, which this module does not need.
+ */
 export function getCipher(): Cipher {
   if (!appCipher) {
     const secret = process.env.APP_SECRET;
@@ -1077,42 +1092,49 @@ export default defineConfig({
 `apps/web/src/db/schema/instance.ts`:
 
 ```ts
+import { sql } from "drizzle-orm";
 import {
   boolean,
+  check,
+  doublePrecision,
   integer,
   pgTable,
   text,
   timestamp,
 } from "drizzle-orm/pg-core";
 
-/** Singleton row (id = 1). Encrypted columns end in `_enc`. */
-export const instanceSettings = pgTable("instance_settings", {
-  id: integer("id").primaryKey().default(1),
-  setupCompleted: boolean("setup_completed").notNull().default(false),
-  signupMode: text("signup_mode", { enum: ["open", "invite", "closed"] }),
-  landingEnabled: boolean("landing_enabled"),
-  awsMode: text("aws_mode", { enum: ["none", "instance_role", "keys"] })
-    .notNull()
-    .default("none"),
-  awsRegion: text("aws_region"),
-  awsAccessKeyEnc: text("aws_access_key_enc"),
-  awsSecretEnc: text("aws_secret_enc"),
-  snsTopicArn: text("sns_topic_arn"),
-  sesConfigSet: text("ses_config_set"),
-  sesAccountStatus: text("ses_account_status", {
-    enum: ["sandbox", "requested", "production"],
-  }),
-  sesMaxSendRate: integer("ses_max_send_rate"),
-  sesDailyQuota: integer("ses_daily_quota"),
-  cloudflareTokenEnc: text("cloudflare_token_enc"),
-  retentionDays: integer("retention_days").notNull().default(90),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+/** Singleton row (id = 1, enforced by check). Encrypted columns end in `_enc`. */
+export const instanceSettings = pgTable(
+  "instance_settings",
+  {
+    id: integer("id").primaryKey().default(1),
+    setupCompleted: boolean("setup_completed").notNull().default(false),
+    signupMode: text("signup_mode", { enum: ["open", "invite", "closed"] }),
+    landingEnabled: boolean("landing_enabled"),
+    awsMode: text("aws_mode", { enum: ["none", "instance_role", "keys"] })
+      .notNull()
+      .default("none"),
+    awsRegion: text("aws_region"),
+    awsAccessKeyEnc: text("aws_access_key_enc"),
+    awsSecretEnc: text("aws_secret_enc"),
+    snsTopicArn: text("sns_topic_arn"),
+    sesConfigSet: text("ses_config_set"),
+    sesAccountStatus: text("ses_account_status", {
+      enum: ["sandbox", "requested", "production"],
+    }),
+    sesMaxSendRate: doublePrecision("ses_max_send_rate"),
+    sesDailyQuota: integer("ses_daily_quota"),
+    cloudflareTokenEnc: text("cloudflare_token_enc"),
+    retentionDays: integer("retention_days").notNull().default(90),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  () => [check("instance_settings_singleton", sql`id = 1`)],
+);
 ```
 
 `apps/web/src/db/schema/audit.ts`:
@@ -1163,15 +1185,33 @@ import * as schema from "./schema";
 
 export type Db = ReturnType<typeof createDb>;
 
+/**
+ * Connection budget per process: app pool 10 + pg-boss ~10 + migrator 1.
+ * With WORKER_MODE=separate there are two processes, so double it when
+ * sizing Postgres `max_connections`.
+ */
 export function createDb(url: string) {
-  const client = postgres(url, { max: 10, prepare: false });
+  const client = postgres(url, { max: 10 });
   return drizzle(client, { schema });
 }
 
 let _db: Db | undefined;
+// Outside production the singleton lives on globalThis: Next dev HMR
+// re-evaluates this module and would otherwise leak a pool per reload.
+const g = globalThis as { __sendspriteDb?: Db };
+
 export function db(): Db {
-  _db ??= createDb(process.env.DATABASE_URL!);
-  return _db;
+  const url = process.env.DATABASE_URL;
+  if (!url) throw new Error("DATABASE_URL is not set");
+  if (process.env.NODE_ENV === "production") return (_db ??= createDb(url));
+  return (g.__sendspriteDb ??= createDb(url));
+}
+
+export async function closeDb() {
+  await _db?.$client.end();
+  await g.__sendspriteDb?.$client.end();
+  _db = undefined;
+  g.__sendspriteDb = undefined;
 }
 ```
 
@@ -1183,7 +1223,14 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import path from "node:path";
 
-/** Apply pending migrations from ./drizzle. Safe to run on every boot. */
+/**
+ * Apply pending migrations from ./drizzle. Safe to run on every boot.
+ *
+ * The default folder is resolved from `process.cwd()`, which is correct for
+ * both `next dev` (cwd = apps/web) and the standalone image (`server.js`
+ * chdirs to its own directory, where the Dockerfile copies `drizzle/`).
+ * `import.meta.dirname` would point inside the bundled output and break.
+ */
 export async function runMigrations(
   url: string,
   folder = path.join(process.cwd(), "drizzle"),
@@ -1208,7 +1255,7 @@ console.log("migrations applied");
 - [x] **Step 4: Generate the first migration**
 
 Run: `cd apps/web && bun run db:generate`
-Expected: `apps/web/drizzle/0000_*.sql` + `drizzle/meta/` created, containing `CREATE TABLE "instance_settings"` and `CREATE TABLE "audit_log"`.
+Expected: `apps/web/drizzle/0000_*.sql` + `drizzle/meta/` created, containing `CREATE TABLE "instance_settings"` and `CREATE TABLE "audit_log"`. (Review follow-up: `0001_*.sql` adds the `instance_settings_singleton` check and `ses_max_send_rate` as double precision.)
 
 - [x] **Step 5: embedded-postgres helper + failing integration test**
 
@@ -1221,7 +1268,7 @@ import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runMigrations } from "@/db/migrate";
-import { createDb, type Db } from "@/db";
+import { closeDb, createDb, type Db } from "@/db";
 
 export interface TestPg {
   url: string;
@@ -1239,9 +1286,40 @@ export async function startPg(): Promise<TestPg> {
   if (external) {
     await runMigrations(external);
     process.env.DATABASE_URL = external;
-    return { url: external, db: createDb(external), stop: async () => {} };
+    const db = createDb(external);
+    return {
+      url: external,
+      db,
+      async stop() {
+        await db.$client.end();
+        await closeDb();
+      },
+    };
   }
 
+  const { pg, databaseDir, port } = await bootEmbedded();
+  const url = `postgres://postgres:postgres@localhost:${port}/test`;
+  await runMigrations(url);
+  process.env.DATABASE_URL = url;
+  const db = createDb(url);
+  return {
+    url,
+    db,
+    async stop() {
+      await db.$client.end();
+      await closeDb();
+      await pg.stop();
+      await rm(databaseDir, { recursive: true, force: true });
+    },
+  };
+}
+
+/** Start an embedded Postgres; retry once on a fresh dir/port (port clash). */
+async function bootEmbedded(attempt = 1): Promise<{
+  pg: EmbeddedPostgres;
+  databaseDir: string;
+  port: number;
+}> {
   const databaseDir = path.join(
     os.tmpdir(),
     `sendsprite-pg-${randomBytes(6).toString("hex")}`,
@@ -1254,20 +1332,17 @@ export async function startPg(): Promise<TestPg> {
     password: "postgres",
     persistent: false,
   });
-  await pg.initialise();
-  await pg.start();
-  await pg.createDatabase("test");
-  const url = `postgres://postgres:postgres@localhost:${port}/test`;
-  await runMigrations(url);
-  process.env.DATABASE_URL = url;
-  return {
-    url,
-    db: createDb(url),
-    async stop() {
-      await pg.stop();
-      await rm(databaseDir, { recursive: true, force: true });
-    },
-  };
+  try {
+    await pg.initialise();
+    await pg.start();
+    await pg.createDatabase("test");
+    return { pg, databaseDir, port };
+  } catch (err) {
+    await pg.stop().catch(() => undefined);
+    await rm(databaseDir, { recursive: true, force: true });
+    if (attempt >= 2) throw err;
+    return bootEmbedded(attempt + 1);
+  }
 }
 ```
 
