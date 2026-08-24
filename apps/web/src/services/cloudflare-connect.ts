@@ -17,12 +17,16 @@ const errCode = (e: unknown) =>
     ? String(e.code)
     : undefined;
 
+/** Zero zones is not a failure (the token may be scoped later), but the user should hear about it. */
+const NO_ZONES =
+  "Token is active but lists no zones — grant it Zone:Read on the zones you want to use.";
+
 /** Verify a pasted API token, store it encrypted and return the zones it can see. */
 export async function connectCloudflare(
   token: string,
   actor: InstanceActor,
   f: FetchLike = fetch,
-): Promise<Result<{ zones: CfZone[] }>> {
+): Promise<Result<{ zones: CfZone[]; warning?: string }>> {
   if (typeof token !== "string" || token.trim().length < 10)
     return { ok: false, error: "Paste the API token Cloudflare showed you." };
   const trimmed = token.trim();
@@ -36,17 +40,23 @@ export async function connectCloudflare(
       {
         cloudflareToken: trimmed,
         cloudflareConnectedAt: new Date(),
-        cloudflareAccountName: zones[0]?.name ?? null,
+        // Only meaningful as a label when the token sees exactly one zone.
+        cloudflareAccountName: zones.length === 1 ? zones[0]!.name : null,
       },
       actor,
     );
-    return { ok: true, data: { zones } };
-  } catch (e) {
     return {
-      ok: false,
-      error: `Cloudflare rejected the token: ${errMsg(e)}`,
-      code: errCode(e),
+      ok: true,
+      data: { zones, ...(zones.length === 0 && { warning: NO_ZONES }) },
     };
+  } catch (e) {
+    if (e instanceof CloudflareError)
+      return {
+        ok: false,
+        error: `Cloudflare rejected the token: ${e.message}`,
+        code: errCode(e),
+      };
+    return { ok: false, error: `Could not reach Cloudflare: ${errMsg(e)}` };
   }
 }
 

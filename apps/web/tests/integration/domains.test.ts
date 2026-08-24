@@ -135,6 +135,16 @@ describe("domains", () => {
       domainId: res.data.id,
     });
   });
+  it("createDomain strips a trailing dot before validating", async () => {
+    const { createDomain } = await import("@/services/domains");
+    const res = await createDomain(actor, { name: "dot.acme.com." }, noop);
+    expect(res).toMatchObject({
+      ok: true,
+      data: { name: "dot.acme.com", dnsMode: "auto" },
+    });
+    // Later tests count rows; drop this one.
+    await pg.db.delete(domains).where(eq(domains.name, "dot.acme.com"));
+  });
   it("falls back to manual mode when no zone matches", async () => {
     const { createDomain, deleteDomain } = await import("@/services/domains");
     const res = await createDomain(actor, { name: "mail.other.io" }, noop);

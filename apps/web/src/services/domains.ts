@@ -90,7 +90,11 @@ export async function createDomain(
 ): Promise<Result<Domain>> {
   if (!can(actor.role, "domains.manage")) return DENIED;
   const parsed = z
-    .object({ name: z.string().transform((s) => s.trim().toLowerCase()) })
+    .object({
+      name: z
+        .string()
+        .transform((s) => s.trim().toLowerCase().replace(/\.$/, "")),
+    })
     .safeParse(input);
   if (!parsed.success || !DOMAIN_RE.test(parsed.data.name))
     return { ok: false, error: "Enter a valid domain like mail.example.com." };

@@ -3239,6 +3239,14 @@ Run → PASS. `git add apps/web && git commit -m "feat(web): Cloudflare client a
 
 ---
 
+**Review follow-ups (applied after the Task 11 commit):**
+
+- Injected fetch is typed `FetchLike = (url, init?) => Promise<Response>` (not `typeof fetch`, which carries React's `preconnect` and rejects plain test fakes).
+- `upsertRecord` TXT keying via `txtKey`: content normalised (one pair of surrounding quotes stripped, whitespace collapsed, trimmed); `v=spf1` / `v=DMARC1` prefixes key by prefix (RFC 7208 / RFC 7489 allow one per name, so an existing one is PATCHed); any other TXT keys by exact normalised content (created alongside neighbours). CNAME/MX still key by (type, name).
+- `deleteRecord` is idempotent: HTTP 404 or Cloudflare code 81044 (incl. non-JSON 404 bodies) returns `{ id }`.
+- `listZones` pages through `result_info.total_pages` (per_page 100). `CloudflareError` carries `code` and HTTP `status`.
+- `connectCloudflare`: `cloudflareAccountName` is the zone name only when exactly one zone is visible (else `null`); zero zones succeeds with `data.warning` asking for Zone:Read; `CloudflareError` → "Cloudflare rejected the token: …" (with `code`), anything else → "Could not reach Cloudflare: …".
+
 ### Task 12: DNS pure helpers — expected records, zone matching, checks (TDD)
 
 **Files:**
@@ -3511,6 +3519,13 @@ export async function checkRecords(
 Run → PASS. Commit: `git add apps/web && git commit -m "feat(web): DNS expected records, zone matching, live checks"`
 
 ---
+
+**Review follow-ups (applied after the Task 12 commit):**
+
+- `RecordInput.dmarcRua?: string | null`; omitted → `v=DMARC1; p=none` (no `rua=` tag).
+- `matchZone` and `createDomain` strip a trailing dot from the domain.
+- `publicResolver()` uses `new dns.Resolver({ timeout: 3000, tries: 2 })`; JSDoc notes the outbound port-53 requirement and the CNAME-flattening caveat.
+- `checkRecords` is kind-aware: `MAIL_FROM_SPF` ok = a `v=spf1` TXT at the name containing `include:amazonses.com`; `DMARC` ok = any `v=DMARC1` TXT at `_dmarc.<domain>`; CNAME/MX compare lowercased, trailing dot stripped, MX exchange only. TXT normalisation is shared with the Cloudflare client (`normaliseTxt`).
 
 ### Task 13: Domains service + jobs (TDD with mocks)
 

@@ -37,9 +37,24 @@ describe("expectedRecords", () => {
     expect(recs[5]).toMatchObject({
       type: "TXT",
       name: "_dmarc.mail.acme.com",
-      value: "v=DMARC1; p=none; rua=mailto:dmarc@mail.acme.com",
+      value: "v=DMARC1; p=none",
     });
     expect(recs.every((r) => r.ok === false)).toBe(true);
+  });
+  it("adds rua= only when a report address is given", () => {
+    const dmarc = (rua?: string | null) =>
+      expectedRecords({
+        domain: "acme.com",
+        region: "us-east-1",
+        dkimTokens: [],
+        mailFromDomain: "b.acme.com",
+        dmarcRua: rua,
+      }).find((r) => r.kind === "DMARC")?.value;
+    expect(dmarc()).toBe("v=DMARC1; p=none");
+    expect(dmarc(null)).toBe("v=DMARC1; p=none");
+    expect(dmarc("reports@acme.com")).toBe(
+      "v=DMARC1; p=none; rua=mailto:reports@acme.com",
+    );
   });
   it("honours an explicit DMARC policy", () => {
     const [dmarc] = expectedRecords({
@@ -49,8 +64,6 @@ describe("expectedRecords", () => {
       mailFromDomain: "b.acme.com",
       dmarcPolicy: "quarantine",
     }).filter((r) => r.kind === "DMARC");
-    expect(dmarc?.value).toBe(
-      "v=DMARC1; p=quarantine; rua=mailto:dmarc@acme.com",
-    );
+    expect(dmarc?.value).toBe("v=DMARC1; p=quarantine");
   });
 });

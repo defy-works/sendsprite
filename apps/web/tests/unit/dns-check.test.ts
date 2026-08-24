@@ -11,9 +11,9 @@ const resolver: Resolver = {
       : [],
   resolveTxt: async (n) =>
     n === "_dmarc.mail.acme.com"
-      ? [["v=DMARC1;  p=none; rua=mailto:dmarc@mail.acme.com "]]
+      ? [["v=DMARC1; p=quarantine; pct=25; rua=mailto:x@acme.com"]]
       : n === "bounce.mail.acme.com"
-        ? [["v=spf1 -all"], ["v=spf1 ", "include:amazonses.com ~all"]]
+        ? [["v=spf1 include:_spf.google.com ", "include:amazonses.com ~all"]]
         : [],
 };
 
@@ -36,6 +36,30 @@ describe("checkRecords", () => {
     ]);
     // Input is not mutated.
     expect(recs.every((r) => r.ok === false)).toBe(true);
+  });
+  it("SPF needs a v=spf1 record that includes amazonses.com; DMARC needs any v=DMARC1", async () => {
+    const recs = expectedRecords({
+      domain: "a.com",
+      region: "us-east-1",
+      dkimTokens: [],
+      mailFromDomain: "b.a.com",
+    });
+    const withTxt = (txt: string[][]) =>
+      checkRecords(recs, {
+        resolveCname: async () => [],
+        resolveMx: async () => [],
+        resolveTxt: async () => txt,
+      }).then((out) => out.slice(1).map((r) => r.ok));
+    // [SPF, DMARC]
+    expect(await withTxt([["include:amazonses.com"]])).toEqual([false, false]);
+    expect(await withTxt([["v=spf1 -all"]])).toEqual([false, false]);
+    expect(await withTxt([['"V=SPF1 include:amazonses.com -all"']])).toEqual([
+      true,
+      false,
+    ]);
+    expect(await withTxt([["v=DMARC1; p=none"]])).toEqual([false, true]);
+    expect(await withTxt([["v=DMARC1 p=none"]])).toEqual([false, true]);
+    expect(await withTxt([["dmarc1; p=none"]])).toEqual([false, false]);
   });
   it("treats resolver errors (NXDOMAIN) as not-ok", async () => {
     const throwing: Resolver = {

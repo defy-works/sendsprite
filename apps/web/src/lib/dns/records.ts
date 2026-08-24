@@ -6,6 +6,8 @@ export interface RecordInput {
   dkimTokens: string[];
   mailFromDomain: string;
   dmarcPolicy?: "none" | "quarantine" | "reject";
+  /** Aggregate-report address; omitted (default) → no `rua=` tag. */
+  dmarcRua?: string | null;
 }
 
 /** The DNS every SES domain needs. Pure; order is stable for display. */
@@ -38,7 +40,9 @@ export function expectedRecords(i: RecordInput): ExpectedRecord[] {
       kind: "DMARC",
       type: "TXT",
       name: `_dmarc.${i.domain}`,
-      value: `v=DMARC1; p=${i.dmarcPolicy ?? "none"}; rua=mailto:dmarc@${i.domain}`,
+      value:
+        `v=DMARC1; p=${i.dmarcPolicy ?? "none"}` +
+        (i.dmarcRua ? `; rua=mailto:${i.dmarcRua}` : ""),
       ok: false,
     },
   ];

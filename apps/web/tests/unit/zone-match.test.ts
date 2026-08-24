@@ -14,8 +14,10 @@ describe("matchZone", () => {
     expect(matchZone("acme.com", zones)?.id).toBe("z1");
     expect(matchZone("www.acme.com", zones)?.id).toBe("z1");
   });
-  it("is case-insensitive", () => {
+  it("is case-insensitive and ignores a trailing dot", () => {
     expect(matchZone("Mail.ACME.com", zones)?.id).toBe("z2");
+    expect(matchZone("x.mail.acme.com.", zones)?.id).toBe("z2");
+    expect(matchZone("acme.com.", zones)?.id).toBe("z1");
   });
   it("returns null when no zone matches", () => {
     expect(matchZone("acme.com.evil.net", zones)).toBeNull();

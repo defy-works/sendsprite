@@ -99,5 +99,54 @@ describe("connectCloudflare", () => {
       ok: false,
       error: expect.stringMatching(/Paste the API token/),
     });
+    const down: FetchLike = async () => {
+      throw new TypeError("fetch failed");
+    };
+    expect(
+      await connectCloudflare("token-0123456789", { userId: "u1" }, down),
+    ).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/^Could not reach Cloudflare: fetch failed/),
+    });
+    expect((await getInstanceSettings()).cloudflareTokenEnc).toBeNull();
+  });
+
+  it("warns when the token lists no zones and labels the account only for a single zone", async () => {
+    const { connectCloudflare } = await import("@/services/cloudflare-connect");
+    const { getInstanceSettings } =
+      await import("@/services/instance-settings");
+    const zonesFetch =
+      (zones: { id: string; name: string }[]): FetchLike =>
+      async (url) =>
+        new Response(
+          JSON.stringify({
+            success: true,
+            result: String(url).includes("/user/tokens/verify")
+              ? { status: "active" }
+              : zones,
+          }),
+        );
+    const none = await connectCloudflare(
+      "token-0123456789",
+      { userId: "u1" },
+      zonesFetch([]),
+    );
+    expect(none).toMatchObject({
+      ok: true,
+      data: { zones: [], warning: expect.stringMatching(/Zone:Read/) },
+    });
+    expect((await getInstanceSettings()).cloudflareTokenEnc).toMatch(/^v1\./);
+    expect((await getInstanceSettings()).cloudflareAccountName).toBeNull();
+
+    const two = await connectCloudflare(
+      "token-0123456789",
+      { userId: "u1" },
+      zonesFetch([
+        { id: "z1", name: "acme.com" },
+        { id: "z2", name: "other.io" },
+      ]),
+    );
+    expect(two.ok && two.data.warning).toBeUndefined();
+    expect((await getInstanceSettings()).cloudflareAccountName).toBeNull();
   });
 });
