@@ -35,6 +35,18 @@ describe("migrations", () => {
       await pg.db.execute(sql.raw(`drop database ${name}`));
     }
   });
+  it("creates team_settings with cascade to organization", async () => {
+    const rows = await pg.db.execute(
+      sql`select table_name from information_schema.tables where table_schema='public'`,
+    );
+    expect(rows.map((r) => r.table_name)).toContain("team_settings");
+    const fks = await pg.db.execute(
+      sql`select rc.delete_rule from information_schema.referential_constraints rc
+          join information_schema.table_constraints tc on tc.constraint_name = rc.constraint_name
+          where tc.table_name = 'team_settings'`,
+    );
+    expect(fks.map((r) => r.delete_rule)).toEqual(["CASCADE"]);
+  });
   it("are idempotent", async () => {
     const { runMigrations } = await import("@/db/migrate");
     await expect(runMigrations(pg.url)).resolves.toBeUndefined();

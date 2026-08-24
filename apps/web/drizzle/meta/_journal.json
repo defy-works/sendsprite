@@ -22,6 +22,13 @@
       "when": 1787585597572,
       "tag": "0002_wealthy_iceman",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1787610716389,
+      "tag": "0003_strong_grey_gargoyle",
+      "breakpoints": true
     }
   ]
 }

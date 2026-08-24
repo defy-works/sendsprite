@@ -210,7 +210,7 @@ git commit -m "feat(web): per-queue pg-boss options; session hook uses resolveTe
 - Modify: `apps/web/src/db/schema/index.ts`, `docs/superpowers/plans/2026-08-24-phase-1-foundation.md` (no), `apps/web/src/db/schema/audit.ts` (comment only)
 - Test: `apps/web/tests/integration/db.test.ts`
 
-- [ ] **Step 1: Schema**
+- [x] **Step 1: Schema**
 
 `apps/web/src/db/schema/team-settings.ts`:
 
@@ -249,7 +249,7 @@ export const teamSettings = pgTable("team_settings", {
 
 Add `export * from "./team-settings";` to `apps/web/src/db/schema/index.ts` (and remove the stale "generated in Task 7" comment).
 
-- [ ] **Step 2: Failing test**
+- [x] **Step 2: Failing test**
 
 Append to `tests/integration/db.test.ts`:
 
@@ -264,12 +264,12 @@ it("creates team_settings with cascade to organization", async () => {
 
 Run: `cd apps/web && bun run test:integration -- db` → FAIL (table missing).
 
-- [ ] **Step 3: Generate migration**
+- [x] **Step 3: Generate migration**
 
 Run: `cd apps/web && bun run db:generate`
 Expected: `drizzle/0003_*.sql` with `CREATE TABLE "team_settings"` and the FK.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 Run: `cd apps/web && bun run test:integration -- db` → PASS.
 
