@@ -299,9 +299,11 @@ export interface RequestMeta {
 
 /** Pull client ip / UA from request headers (proxy-aware). No `next/*` import. */
 export function requestMeta(h: Headers): RequestMeta {
-  const fwd = h.get("x-forwarded-for");
-  const ip = (fwd ? fwd.split(",")[0]?.trim() : h.get("x-real-ip")) || null;
-  return { ip, userAgent: h.get("user-agent") };
+  // `x-real-ip` wins, then the first hop of `x-forwarded-for`; only trust
+  // either behind a proxy that overwrites them.
+  const real = h.get("x-real-ip")?.trim();
+  const fwd = h.get("x-forwarded-for")?.split(",")[0]?.trim();
+  return { ip: real || fwd || null, userAgent: h.get("user-agent") };
 }
 ```
 
@@ -389,7 +391,7 @@ Import `recordAudit` from `@/lib/audit` (no `next/*` — safe here). Keep the se
 
 - [x] **Step 5: Instance self-audit**
 
-`apps/web/src/services/instance-settings.ts`: `updateInstanceSettings(patch, actor?: { userId: string; meta?: RequestMeta })` — after the upsert, `recordAudit({ teamId: null, actorUserId: actor?.userId ?? null, action: "instance.update", targetType: "instance", targetId: "1", diff: computeDiff(beforePlain, afterPlain), ...actor?.meta })` where `beforePlain/afterPlain` are the row minus `*Enc` columns, plus `{ awsSecretEnc: "[set]" }`-style markers when a secret was set/cleared (`computeDiff` redacts by key anyway). Add to `instance-settings.test.ts`:
+`apps/web/src/services/instance-settings.ts`: `updateInstanceSettings(patch, actor?: { userId: string; meta?: RequestMeta })` — after the upsert, `recordAudit({ teamId: null, actorUserId: actor?.userId ?? null, action: "instance.update", targetType: "instance", targetId: "1", diff: computeDiff(beforePlain, afterPlain), ...actor?.meta })` where `beforePlain/afterPlain` are the row minus `id/createdAt/updatedAt`, with `*Enc` columns compared as ciphertext so rotations (set → set) are recorded (`computeDiff` redacts by key, so the log only ever shows `[redacted]`). On a fresh instance the first update lists every column as `{ to: … }`. Add to `instance-settings.test.ts`:
 
 ```ts
 it("writes an instance-level audit row on update", async () => {

@@ -8,6 +8,8 @@ import { db } from "@/db";
 import * as schema from "@/db/schema";
 import { loadEnv, type Env } from "@/env.schema";
 import { recordAudit } from "@/lib/audit";
+// No runtime cycle: `@/lib/team` only `import type`s this module.
+import { resolveTeam } from "@/lib/team";
 import { canSignUp, resolveSignupMode } from "./signup-policy";
 
 /**
@@ -96,7 +98,6 @@ function createAuth() {
           // after signup has no membership yet; team creation sets the
           // active org explicitly.
           before: async (session) => {
-            const { resolveTeam } = await import("@/lib/team");
             const t = await resolveTeam(session.userId, null);
             return {
               data: { ...session, activeOrganizationId: t?.team.id ?? null },

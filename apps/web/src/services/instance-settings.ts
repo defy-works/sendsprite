@@ -49,22 +49,17 @@ type Secrets = {
   cloudflareToken?: string | null;
 };
 
-const ENC_COLUMNS = [
-  "awsAccessKeyEnc",
-  "awsSecretEnc",
-  "cloudflareTokenEnc",
-] as const;
-
 /**
- * Row as it appears in the audit diff: bookkeeping columns dropped, secret
- * columns reduced to a set/cleared marker (`computeDiff` redacts them by key
- * anyway, so only the fact that they changed is recorded).
+ * Row as it appears in the audit diff: bookkeeping columns dropped. Secret
+ * columns are compared as ciphertext so a rotation (set → set) still shows up;
+ * `computeDiff` redacts them by key name, so the values never reach the log.
+ * On a fresh instance `before` is undefined and the first update lists every
+ * column as `{ to: … }`.
  */
 function auditView(row: InstanceSettings | undefined): Record<string, unknown> {
   if (!row) return {};
   const view: Record<string, unknown> = { ...row };
   for (const col of ["id", "createdAt", "updatedAt"]) delete view[col];
-  for (const col of ENC_COLUMNS) view[col] = row[col] ? "[set]" : null;
   return view;
 }
 

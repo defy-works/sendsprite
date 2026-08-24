@@ -23,6 +23,8 @@ export const teamSettings = pgTable("team_settings", {
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
+  // `$onUpdate` fires only via drizzle `.update()`; upserts
+  // (`onConflictDoUpdate`) must set `updatedAt` explicitly.
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()
     .defaultNow()

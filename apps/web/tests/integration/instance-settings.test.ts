@@ -79,4 +79,26 @@ describe("instance settings", () => {
     });
     expect(JSON.stringify(rows.at(-1)!.diff)).not.toContain("again");
   });
+  it("audits a secret rotation as redacted, and omits untouched secrets", async () => {
+    const { updateInstanceSettings } =
+      await import("@/services/instance-settings");
+    const { auditLog } = await import("@/db/schema");
+    const latest = async () =>
+      (
+        await pg.db
+          .select()
+          .from(auditLog)
+          .where(eq(auditLog.action, "instance.update"))
+      ).at(-1)!;
+    await updateInstanceSettings({ awsSecret: "one" });
+    await updateInstanceSettings({ awsSecret: "two" });
+    const rotated = await latest();
+    expect(rotated.diff).toEqual({
+      awsSecretEnc: { from: "[redacted]", to: "[redacted]" },
+    });
+    expect(JSON.stringify(rotated.diff)).not.toMatch(/one|two/);
+    await updateInstanceSettings({ retentionDays: 45 });
+    const plain = await latest();
+    expect(plain.diff).toEqual({ retentionDays: { from: 30, to: 45 } });
+  });
 });

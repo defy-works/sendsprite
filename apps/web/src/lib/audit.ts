@@ -25,11 +25,15 @@ export interface RequestMeta {
   userAgent: string | null;
 }
 
-/** Pull client ip / UA from request headers (proxy-aware). No `next/*` import. */
+/**
+ * Pull client ip / UA from request headers. No `next/*` import.
+ * `x-real-ip` wins, then the first hop of `x-forwarded-for`. Both are
+ * client-suppliable: only trust them behind a proxy that overwrites them.
+ */
 export function requestMeta(h: Headers): RequestMeta {
-  const fwd = h.get("x-forwarded-for");
-  const ip = (fwd ? fwd.split(",")[0]?.trim() : h.get("x-real-ip")) || null;
-  return { ip, userAgent: h.get("user-agent") };
+  const real = h.get("x-real-ip")?.trim();
+  const fwd = h.get("x-forwarded-for")?.split(",")[0]?.trim();
+  return { ip: real || fwd || null, userAgent: h.get("user-agent") };
 }
 
 export interface AuditInput {
