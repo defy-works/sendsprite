@@ -1,0 +1,55 @@
+import { describe, expect, it } from "vitest";
+import { parseEnv } from "@/env";
+
+const BASE = {
+  APP_URL: "https://mail.example.com",
+  APP_SECRET: "a".repeat(32),
+  DATABASE_URL: "postgres://u:p@localhost:5432/db",
+};
+
+describe("parseEnv", () => {
+  it("applies defaults", () => {
+    const env = parseEnv(BASE);
+    expect(env.WORKER_MODE).toBe("inline");
+    expect(env.SMTP_ENABLED).toBe(true);
+    expect(env.LANDING_ENABLED).toBe(true);
+    expect(env.SIGNUP_MODE).toBe("auto");
+    expect(env.EMAIL_RETENTION_DAYS).toBe(90);
+    expect(env.EMAIL_PASSWORD_ENABLED).toBe(false);
+  });
+  it("derives auth provider flags from presence of both id and secret", () => {
+    const env = parseEnv({
+      ...BASE,
+      GOOGLE_CLIENT_ID: "x",
+      GOOGLE_CLIENT_SECRET: "y",
+      GITHUB_CLIENT_ID: "only-id",
+    });
+    expect(env.providers.google).toBe(true);
+    expect(env.providers.github).toBe(false);
+  });
+  it("rejects short APP_SECRET", () => {
+    expect(() => parseEnv({ ...BASE, APP_SECRET: "short" })).toThrow(
+      /APP_SECRET/,
+    );
+  });
+  it("rejects APP_URL without protocol", () => {
+    expect(() => parseEnv({ ...BASE, APP_URL: "mail.example.com" })).toThrow(
+      /APP_URL/,
+    );
+  });
+  it("parses booleans from strings", () => {
+    const env = parseEnv({
+      ...BASE,
+      SMTP_ENABLED: "false",
+      LANDING_ENABLED: "0",
+      EMAIL_PASSWORD_ENABLED: "true",
+    });
+    expect(env.SMTP_ENABLED).toBe(false);
+    expect(env.LANDING_ENABLED).toBe(false);
+    expect(env.EMAIL_PASSWORD_ENABLED).toBe(true);
+  });
+  it("requires at least one auth provider", () => {
+    expect(() => parseEnv(BASE)).not.toThrow(); // email/password off, no social → allowed but flagged
+    expect(parseEnv(BASE).providers.any).toBe(false);
+  });
+});
