@@ -1021,7 +1021,7 @@ Run → PASS. `git add apps/web && git commit -m "feat(web): one-time setup toke
 - Create: `apps/web/src/services/aws-connect.ts`
 - Test: `apps/web/tests/integration/aws-connect.test.ts`
 
-- [ ] **Step 1: Failing test**
+- [x] **Step 1: Failing test**
 
 ```ts
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -1247,7 +1247,7 @@ describe("detectInstanceRole", () => {
 
 Run: `cd apps/web && bun run test:integration -- aws-connect` → FAIL.
 
-- [ ] **Step 2: Implement**
+- [x] **Step 2: Implement**
 
 `apps/web/src/services/aws-connect.ts`:
 
@@ -1508,7 +1508,7 @@ export async function disconnectAws(actor: Actor): Promise<Result> {
 
 Move `Result` to `apps/web/src/lib/result.ts` (`export type Result<T = undefined> = …`) and re-export from `services/team.ts` so both services share it without a circular import.
 
-- [ ] **Step 3: Run, commit**
+- [x] **Step 3: Run, commit**
 
 Run: `cd apps/web && bun run test:integration -- aws-connect && bun run typecheck` → PASS.
 

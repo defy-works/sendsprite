@@ -9,8 +9,9 @@ import { computeDiff, recordAudit, type RequestMeta } from "@/lib/audit";
 // Not `@/env`: that module is `server-only` and throws under vitest.
 import { loadEnv } from "@/env.schema";
 
-export type Result<T = undefined> =
-  { ok: true; data: T } | { ok: false; error: string };
+import type { Result } from "@/lib/result";
+
+export type { Result };
 
 /** The slice of `TeamContext` the team mutations need. No `next/*` here. */
 export interface TeamActor {
