@@ -2210,7 +2210,7 @@ git commit -m "feat: CloudFormation one-click connect template, callback and sta
 - Test: `apps/web/tests/unit/sns-message.test.ts`, `apps/web/tests/integration/ses-webhook.test.ts`
 - Modify: `apps/web/package.json` (`sns-validator`)
 
-- [ ] **Step 1: Install and wrap the validator (failing unit test first)**
+- [x] **Step 1: Install and wrap the validator (failing unit test first)**
 
 Run: `cd apps/web && bun add sns-validator && bun add -d @types/sns-validator` (if no types exist, add `apps/web/src/types/sns-validator.d.ts`: `declare module "sns-validator" { export default class MessageValidator { constructor(hostPattern?: RegExp, encoding?: string); validate(message: unknown, cb: (err: Error | null, message?: unknown) => void): void; } }`).
 
@@ -2279,7 +2279,7 @@ export function verifySnsMessage(raw: unknown): Promise<SnsMessage> {
 
 Run `bun run test` → PASS. (Signature verification with real certs is exercised in Phase 3 against recorded SNS payloads; here we test the guardrails.)
 
-- [ ] **Step 2: Failing integration test for the route (validator injected)**
+- [x] **Step 2: Failing integration test for the route (validator injected)**
 
 `tests/integration/ses-webhook.test.ts`:
 
@@ -2369,7 +2369,7 @@ describe("POST /api/webhooks/ses", () => {
 });
 ```
 
-- [ ] **Step 3: Route**
+- [x] **Step 3: Route**
 
 `apps/web/src/app/api/webhooks/ses/route.ts`:
 
@@ -2429,7 +2429,7 @@ export async function POST(req: Request) {
 }
 ```
 
-- [ ] **Step 4: Run, commit**
+- [x] **Step 4: Run, commit**
 
 Run: `cd apps/web && bun run test && bun run test:integration -- ses-webhook && bun run typecheck` → PASS.
 
