@@ -2197,7 +2197,7 @@ git commit -m "feat(web): session/team helpers and redacting audit recorder"
 
 - Create: `apps/web/src/components/auth/AuthForm.tsx`, `apps/web/src/app/(auth)/layout.tsx`, `apps/web/src/app/(auth)/login/page.tsx`, `apps/web/src/app/(auth)/signup/page.tsx`, `apps/web/src/app/invite/[id]/page.tsx`, `apps/web/src/app/invite/[id]/AcceptInvite.tsx`
 
-- [ ] **Step 1: Auth layout (centered glass card)**
+- [x] **Step 1: Auth layout (centered glass card)**
 
 `apps/web/src/app/(auth)/layout.tsx`:
 
@@ -2219,7 +2219,7 @@ export default function AuthLayout({ children }: { children: ReactNode }) {
 }
 ```
 
-- [ ] **Step 2: AuthForm (client)**
+- [x] **Step 2: AuthForm (client)**
 
 `apps/web/src/components/auth/AuthForm.tsx`:
 
@@ -2343,7 +2343,7 @@ export function AuthForm({ mode, providers, next = "/app" }: AuthFormProps) {
 }
 ```
 
-- [ ] **Step 3: Login and signup pages**
+- [x] **Step 3: Login and signup pages**
 
 `apps/web/src/app/(auth)/login/page.tsx`:
 
@@ -2413,7 +2413,7 @@ export default async function SignupPage(props: PageProps<"/signup">) {
 
 Run `cd apps/web && bunx next typegen` once so the global `PageProps<...>` helper types exist.
 
-- [ ] **Step 4: Invite page**
+- [x] **Step 4: Invite page**
 
 `apps/web/src/app/invite/[id]/page.tsx`:
 
@@ -2520,14 +2520,14 @@ export function AcceptInvite(p: {
 }
 ```
 
-- [ ] **Step 5: Typecheck and run dev server manually**
+- [x] **Step 5: Typecheck and run dev server manually**
 
 Run: `cd apps/web && bun run typecheck`
 Expected: no errors in `src/app/(auth)/**`, `src/app/invite/**`, `src/components/auth/**`.
 
 Start Postgres for local dev (`docker run -d --name ss-pg -e POSTGRES_USER=sendsprite -e POSTGRES_PASSWORD=sendsprite -e POSTGRES_DB=sendsprite -p 5432:5432 postgres:16-alpine`), copy `.env.example` → `apps/web/.env.local`, run `bun run db:migrate` then `bun run dev`, open `http://localhost:3000/signup`, create the first account. Expected: redirected to `/app` (404 until Task 11 — that's fine).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/web/src/app apps/web/src/components/auth
