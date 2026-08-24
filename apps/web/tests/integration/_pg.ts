@@ -36,7 +36,7 @@ export async function startPg(): Promise<TestPg> {
     async stop() {
       await db.$client.end();
       await closeDb();
-      await pg.stop();
+      await stopEmbedded(pg);
       try {
         await rm(databaseDir, {
           recursive: true,
@@ -80,6 +80,27 @@ async function startExternal(adminUrl: string): Promise<TestPg> {
   };
 }
 
+/**
+ * `persistent: false` makes embedded-postgres `rm` its data dir inside
+ * `stop()` with no retries, and on Windows the just-killed postgres can still
+ * hold it (EBUSY/EPERM). The process is already gone by then (a second
+ * `stop()` is a no-op), so retry once and leave the dir to the caller's
+ * retrying `rm`; a stale temp dir is not worth failing the run.
+ */
+async function stopEmbedded(pg: EmbeddedPostgres, attempt = 1): Promise<void> {
+  try {
+    await pg.stop();
+  } catch (e) {
+    const code = (e as { code?: string })?.code;
+    if (code !== "EBUSY" && code !== "EPERM") throw e;
+    if (attempt === 1) {
+      await new Promise((r) => setTimeout(r, 500));
+      return stopEmbedded(pg, 2);
+    }
+    console.warn("[pg] stop cleanup failed", code);
+  }
+}
+
 /** Start an embedded Postgres; retry once on a fresh dir/port (port clash). */
 async function bootEmbedded(attempt = 1): Promise<{
   pg: EmbeddedPostgres;
@@ -104,7 +125,7 @@ async function bootEmbedded(attempt = 1): Promise<{
     await pg.createDatabase("test");
     return { pg, databaseDir, port };
   } catch (err) {
-    await pg.stop().catch(() => undefined);
+    await stopEmbedded(pg).catch(() => undefined);
     await rm(databaseDir, {
       recursive: true,
       force: true,

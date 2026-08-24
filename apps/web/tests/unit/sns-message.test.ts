@@ -14,7 +14,7 @@ describe("verifySnsMessage", () => {
         Signature: "x",
         SigningCertURL: "https://evil.com/cert.pem",
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/invalid domain/);
   });
   it("rejects a message with no signature fields", async () => {
     await expect(verifySnsMessage({ Type: "Notification" })).rejects.toThrow();

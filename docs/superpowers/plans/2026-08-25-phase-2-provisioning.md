@@ -2441,7 +2441,7 @@ describe("verifySnsMessage", () => {
         Signature: "x",
         SigningCertURL: "https://evil.com/cert.pem",
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/invalid domain/);
   });
   it("rejects a message with no signature fields", async () => {
     await expect(verifySnsMessage({ Type: "Notification" })).rejects.toThrow();
@@ -2475,7 +2475,12 @@ const validator = new MessageValidator(
   /^sns\.[a-z0-9-]+\.amazonaws\.com(\.cn)?$/,
 );
 
-/** Verifies the SNS signature (cert fetched from amazonaws.com only). Throws on failure. */
+/**
+ * Verifies the SNS signature (cert fetched from amazonaws.com only). Throws
+ * on failure. This wrapper is the seam for replacing `sns-validator`
+ * (unmaintained, CommonJS, callback API): callers and tests depend only on
+ * this function and the `SnsMessage` type.
+ */
 export function verifySnsMessage(raw: unknown): Promise<SnsMessage> {
   return new Promise((resolve, reject) => {
     validator.validate(raw, (err, msg) =>
@@ -2487,91 +2492,200 @@ export function verifySnsMessage(raw: unknown): Promise<SnsMessage> {
 
 Run `bun run test` → PASS. (Signature verification with real certs is exercised in Phase 3 against recorded SNS payloads; here we test the guardrails.)
 
-- [x] **Step 2: Failing integration test for the route (validator injected)**
+- [x] **Step 2: Failing integration test for the route (validator injected, SNS client mocked)**
+
+The SDK path is preferred: `ConfirmSubscriptionCommand` returns a typed ARN (no XML) and `AuthenticateOnUnsubscribe: "true"` makes unsubscribing require a signed request. The `SubscribeURL` GET is only the fallback when AWS is not connected. The body is capped at 512 KiB; `UnsubscribeConfirmation` clears the stored ARN.
 
 `tests/integration/ses-webhook.test.ts`:
 
 ```ts
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import { mockClient } from "aws-sdk-client-mock";
+import { ConfirmSubscriptionCommand, SNSClient } from "@aws-sdk/client-sns";
 import { startPg } from "./_pg";
 
 vi.mock("@/lib/sns-message", () => ({
   verifySnsMessage: async (raw: unknown) => raw,
 }));
 
+const TOPIC = "arn:aws:sns:us-east-1:1:sendsprite-events";
+const SUB = `${TOPIC}:sub-1`;
+const sns = mockClient(SNSClient);
+
 let pg: Awaited<ReturnType<typeof startPg>>;
-const fetchCalls: string[] = [];
+let fetchCalls: { url: string; init?: RequestInit }[] = [];
+let fetchBody = "";
 beforeAll(async () => {
   pg = await startPg();
   process.env.APP_SECRET = "x".repeat(40);
   process.env.APP_URL = "https://mail.acme.com";
-  vi.stubGlobal("fetch", async (url: string) => {
-    fetchCalls.push(String(url));
-    return new Response("ok", { status: 200 });
+  vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+    fetchCalls.push({ url: String(url), init });
+    return new Response(fetchBody, { status: 200 });
   });
 });
 afterAll(async () => {
   vi.unstubAllGlobals();
   await pg.stop();
 });
+beforeEach(() => {
+  sns.reset();
+  fetchCalls = [];
+  fetchBody = `<ConfirmSubscriptionResponse><ConfirmSubscriptionResult><SubscriptionArn>${SUB}</SubscriptionArn></ConfirmSubscriptionResult></ConfirmSubscriptionResponse>`;
+});
 
-const post = async (body: unknown, type: string) => {
-  const { POST } = await import("@/app/api/webhooks/ses/route");
+const settings = () => import("@/services/instance-settings");
+const route = () => import("@/app/api/webhooks/ses/route");
+const post = async (body: { Type: string } & Record<string, unknown>) => {
+  const { POST } = await route();
   return POST(
     new Request("https://mail.acme.com/api/webhooks/ses", {
       method: "POST",
-      headers: { "x-amz-sns-message-type": type, "content-type": "text/plain" },
+      headers: {
+        "x-amz-sns-message-type": body.Type,
+        "content-type": "text/plain",
+      },
       body: JSON.stringify(body),
     }),
   );
 };
+const confirmation = (over: Record<string, unknown> = {}) => ({
+  Type: "SubscriptionConfirmation",
+  TopicArn: TOPIC,
+  Token: "t",
+  SubscribeURL:
+    "https://sns.us-east-1.amazonaws.com/?Action=ConfirmSubscription&Token=t",
+  MessageId: "m1",
+  ...over,
+});
 
+// Ordered: connected (SDK path) first, then disconnected (fallback path).
 describe("POST /api/webhooks/ses", () => {
-  it("confirms a subscription by fetching SubscribeURL and stores the arn", async () => {
-    const { updateInstanceSettings, getInstanceSettings } =
-      await import("@/services/instance-settings");
+  it("confirms via the SDK with AuthenticateOnUnsubscribe when AWS is connected", async () => {
+    const { updateInstanceSettings, getInstanceSettings } = await settings();
     await updateInstanceSettings({
-      snsTopicArn: "arn:aws:sns:us-east-1:1:sendsprite-events",
+      awsMode: "keys",
+      awsRegion: "us-east-1",
+      awsAccessKey: "AKIAEXAMPLEEXAMPLE",
+      awsSecret: "s3cr3ts3cr3ts3cr3ts3cr3t",
+      snsTopicArn: TOPIC,
     });
-    const res = await post(
-      {
-        Type: "SubscriptionConfirmation",
-        TopicArn: "arn:aws:sns:us-east-1:1:sendsprite-events",
-        Token: "t",
-        SubscribeURL:
-          "https://sns.us-east-1.amazonaws.com/?Action=ConfirmSubscription&Token=t",
-        MessageId: "m1",
-      },
-      "SubscriptionConfirmation",
-    );
+    sns.on(ConfirmSubscriptionCommand).resolves({ SubscriptionArn: SUB });
+    const res = await post(confirmation());
     expect(res.status).toBe(200);
-    expect(fetchCalls[0]).toContain("ConfirmSubscription");
-    expect((await getInstanceSettings()).snsSubscriptionArn).toBeTruthy();
+    expect(
+      sns.commandCalls(ConfirmSubscriptionCommand)[0]!.args[0].input,
+    ).toEqual({
+      TopicArn: TOPIC,
+      Token: "t",
+      AuthenticateOnUnsubscribe: "true",
+    });
+    expect(fetchCalls).toHaveLength(0);
+    expect((await getInstanceSettings()).snsSubscriptionArn).toBe(SUB);
   });
+
+  it("does not overwrite the stored ARN when SNS returns none", async () => {
+    const { getInstanceSettings } = await settings();
+    sns.on(ConfirmSubscriptionCommand).resolves({});
+    const res = await post(confirmation({ MessageId: "m1b" }));
+    expect(res.status).toBe(200);
+    expect((await getInstanceSettings()).snsSubscriptionArn).toBe(SUB);
+  });
+
+  it("clears the ARN on UnsubscribeConfirmation", async () => {
+    const { getInstanceSettings } = await settings();
+    const res = await post({
+      Type: "UnsubscribeConfirmation",
+      TopicArn: TOPIC,
+      MessageId: "m4",
+    });
+    expect(res.status).toBe(200);
+    expect((await getInstanceSettings()).snsSubscriptionArn).toBeNull();
+  });
+
+  it("falls back to fetching SubscribeURL with a timeout when AWS is not connected", async () => {
+    const { updateInstanceSettings, getInstanceSettings } = await settings();
+    await updateInstanceSettings({
+      awsMode: "none",
+      awsAccessKey: null,
+      awsSecret: null,
+    });
+    const res = await post(confirmation({ MessageId: "m5" }));
+    expect(res.status).toBe(200);
+    expect(sns.calls()).toHaveLength(0);
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0]!.url).toContain("ConfirmSubscription");
+    expect(fetchCalls[0]!.init?.signal).toBeInstanceOf(AbortSignal);
+    expect((await getInstanceSettings()).snsSubscriptionArn).toBe(SUB);
+  });
+
+  it("keeps the stored ARN when the fallback response has no SubscriptionArn", async () => {
+    const { getInstanceSettings } = await settings();
+    fetchBody = "<ConfirmSubscriptionResponse/>";
+    const res = await post(confirmation({ MessageId: "m6" }));
+    expect(res.status).toBe(200);
+    expect((await getInstanceSettings()).snsSubscriptionArn).toBe(SUB);
+  });
+
+  it("rejects a look-alike SubscribeURL host without fetching", async () => {
+    const res = await post(
+      confirmation({
+        SubscribeURL: "https://sns.us-east-1.amazonaws.com.evil.com/?x",
+        MessageId: "m7",
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(fetchCalls).toHaveLength(0);
+  });
+
   it("ignores confirmations for a foreign topic", async () => {
     const res = await post(
-      {
-        Type: "SubscriptionConfirmation",
+      confirmation({
         TopicArn: "arn:aws:sns:us-east-1:999:other",
-        Token: "t",
-        SubscribeURL: "https://sns.us-east-1.amazonaws.com/?x",
         MessageId: "m2",
-      },
-      "SubscriptionConfirmation",
+      }),
     );
     expect(res.status).toBe(403);
+    expect(fetchCalls).toHaveLength(0);
+    expect(sns.calls()).toHaveLength(0);
   });
-  it("acknowledges notifications (processing lands in Phase 3)", async () => {
-    const res = await post(
-      {
-        Type: "Notification",
-        TopicArn: "arn:aws:sns:us-east-1:1:sendsprite-events",
-        Message: JSON.stringify({ eventType: "Send" }),
-        MessageId: "m3",
-        Timestamp: "2026-08-25T00:00:00Z",
-      },
-      "Notification",
+
+  it("rejects oversized bodies with 413", async () => {
+    const { POST } = await route();
+    const big = "x".repeat(524_289);
+    const declared = await POST(
+      new Request("https://mail.acme.com/api/webhooks/ses", {
+        method: "POST",
+        headers: { "content-length": String(big.length) },
+        body: "{}",
+      }),
     );
+    expect(declared.status).toBe(413);
+    const actual = await POST(
+      new Request("https://mail.acme.com/api/webhooks/ses", {
+        method: "POST",
+        body: big,
+      }),
+    );
+    expect(actual.status).toBe(413);
+  });
+
+  it("acknowledges notifications (processing lands in Phase 3)", async () => {
+    const res = await post({
+      Type: "Notification",
+      TopicArn: TOPIC,
+      Message: JSON.stringify({ eventType: "Send" }),
+      MessageId: "m3",
+      Timestamp: "2026-08-25T00:00:00Z",
+    });
     expect(res.status).toBe(200);
   });
 });
@@ -2583,6 +2697,9 @@ describe("POST /api/webhooks/ses", () => {
 
 ```ts
 import { NextResponse } from "next/server";
+import { ConfirmSubscriptionCommand } from "@aws-sdk/client-sns";
+import { makeSns } from "@/lib/aws/clients";
+import { resolveAwsContext } from "@/lib/aws/credentials";
 import { verifySnsMessage } from "@/lib/sns-message";
 import {
   getInstanceSettings,
@@ -2591,14 +2708,62 @@ import {
 
 export const dynamic = "force-dynamic";
 
+/** SNS messages are a few KB; anything near this is not SNS. */
+const MAX_BODY_BYTES = 524_288;
+const SUBSCRIBE_URL = /^https:\/\/sns\.[a-z0-9-]+\.amazonaws\.com(\.cn)?\//;
+const isArn = (v: string | undefined): v is string => !!v?.startsWith("arn:");
+
+type Confirm = { arn: string | null } | { error: string; status: number };
+
+/**
+ * Confirm via the SDK when AWS is connected: the response is a typed ARN (no
+ * XML scraping) and `AuthenticateOnUnsubscribe` makes SNS require a signed
+ * request to unsubscribe, so a leaked SubscribeURL/Token cannot be replayed
+ * to drop the subscription. Only when there are no credentials to sign with
+ * does it fall back to GET SubscribeURL (the unauthenticated confirm SNS
+ * documents), host-guarded and time-limited.
+ */
+async function confirmSubscription(msg: {
+  TopicArn: string;
+  Token: string;
+  SubscribeURL: string;
+}): Promise<Confirm> {
+  const ctx = await resolveAwsContext().catch(() => null);
+  if (ctx) {
+    const r = await makeSns(ctx).send(
+      new ConfirmSubscriptionCommand({
+        TopicArn: msg.TopicArn,
+        Token: msg.Token,
+        AuthenticateOnUnsubscribe: "true",
+      }),
+    );
+    return { arn: isArn(r.SubscriptionArn) ? r.SubscriptionArn : null };
+  }
+  if (!SUBSCRIBE_URL.test(msg.SubscribeURL))
+    return { error: "bad_subscribe_url", status: 400 };
+  const r = await fetch(msg.SubscribeURL, {
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!r.ok) return { error: "confirm_failed", status: 502 };
+  const arn = /<SubscriptionArn>([^<]+)<\/SubscriptionArn>/.exec(
+    await r.text(),
+  )?.[1];
+  return { arn: isArn(arn) ? arn : null };
+}
+
 /**
  * SNS → Sendsprite. Phase 2: verify signature, confirm subscription, ack.
  * Phase 3 replaces the Notification branch with event ingestion.
  */
 export async function POST(req: Request) {
+  if (Number(req.headers.get("content-length") ?? 0) > MAX_BODY_BYTES)
+    return NextResponse.json({ error: "too_large" }, { status: 413 });
+  const text = await req.text();
+  if (text.length > MAX_BODY_BYTES)
+    return NextResponse.json({ error: "too_large" }, { status: 413 });
   let raw: unknown;
   try {
-    raw = JSON.parse(await req.text());
+    raw = JSON.parse(text);
   } catch {
     return NextResponse.json({ error: "bad_json" }, { status: 400 });
   }
@@ -2613,26 +2778,24 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "unknown_topic" }, { status: 403 });
 
   if (msg.Type === "SubscriptionConfirmation") {
-    if (
-      !/^https:\/\/sns\.[a-z0-9-]+\.amazonaws\.com(\.cn)?\//.test(
-        msg.SubscribeURL,
-      )
-    )
-      return NextResponse.json({ error: "bad_subscribe_url" }, { status: 400 });
-    const r = await fetch(msg.SubscribeURL);
-    if (!r.ok)
-      return NextResponse.json({ error: "confirm_failed" }, { status: 502 });
-    const xml = await r.text();
-    const arn =
-      /<SubscriptionArn>([^<]+)<\/SubscriptionArn>/.exec(xml)?.[1] ??
-      "confirmed";
-    await updateInstanceSettings({ snsSubscriptionArn: arn });
+    const r = await confirmSubscription(msg);
+    if ("error" in r)
+      return NextResponse.json({ error: r.error }, { status: r.status });
+    // Never replace a real ARN with a sentinel; a later reconnect fills it in.
+    if (r.arn)
+      await updateInstanceSettings({ snsSubscriptionArn: r.arn }, undefined, {
+        audit: false,
+      });
+    else console.warn("[ses] subscription confirmed but no ARN was returned");
     return NextResponse.json({ ok: true });
   }
-  if (msg.Type === "Notification") {
-    console.info("[ses] notification", msg.MessageId); // Phase 3: enqueue ses.ingest
+  if (msg.Type === "UnsubscribeConfirmation") {
+    await updateInstanceSettings({ snsSubscriptionArn: null }, undefined, {
+      audit: false,
+    });
     return NextResponse.json({ ok: true });
   }
+  console.info("[ses] notification", msg.MessageId); // Phase 3: enqueue ses.ingest
   return NextResponse.json({ ok: true });
 }
 ```
