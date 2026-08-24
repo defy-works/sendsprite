@@ -27,9 +27,13 @@ describe("migrations", () => {
     const name = `race_${randomBytes(4).toString("hex")}`;
     await pg.db.execute(sql.raw(`create database ${name}`));
     const raceUrl = pg.url.replace(/\/[^/]*$/, `/${name}`);
-    await expect(
-      Promise.all([runMigrations(raceUrl), runMigrations(raceUrl)]),
-    ).resolves.toBeDefined();
+    try {
+      await expect(
+        Promise.all([runMigrations(raceUrl), runMigrations(raceUrl)]),
+      ).resolves.toBeDefined();
+    } finally {
+      await pg.db.execute(sql.raw(`drop database ${name}`));
+    }
   });
   it("are idempotent", async () => {
     const { runMigrations } = await import("@/db/migrate");

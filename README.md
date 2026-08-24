@@ -56,8 +56,8 @@ bun run test:e2e             # Playwright
 bun run db:generate          # new migration from schema changes
 ```
 
-The Docker image is built and smoke-tested in CI; `docker compose build` does
-the same locally.
+CI builds the image (see `.github/workflows/ci.yml`); `docker compose build`
+does the same locally.
 
 ## Environment reference
 
@@ -66,6 +66,7 @@ the same locally.
 | `APP_URL`                                            | —        | Public URL, with protocol                                                |
 | `APP_SECRET`                                         | —        | ≥ 32 chars; encrypts stored credentials                                  |
 | `DATABASE_URL`                                       | —        | Postgres connection string                                               |
+| `POSTGRES_PASSWORD`                                  | —        | Compose only; alphanumeric recommended (interpolated unencoded into URL) |
 | `SIGNUP_MODE`                                        | `auto`   | `auto` → open until first user, then invite; or `open`/`invite`/`closed` |
 | `EMAIL_PASSWORD_ENABLED`                             | `false`  | Email + password sign-in                                                 |
 | `GOOGLE_CLIENT_ID/SECRET`, `GITHUB_CLIENT_ID/SECRET` | —        | OAuth providers                                                          |

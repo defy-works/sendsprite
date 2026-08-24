@@ -4317,7 +4317,9 @@ git commit -m "feat(web): pg-boss worker with boot-time migrations via instrumen
 
 ```dockerfile
 # syntax=docker/dockerfile:1
-FROM oven/bun:1 AS base
+FROM oven/bun:1.3.14 AS base
+# /app must be the same absolute root in `build` and `runner`: the traced
+# node_modules symlinks in the standalone output may be absolute.
 WORKDIR /app
 
 # Dependencies only: workspace manifests + lockfile so this layer is cached
@@ -4353,11 +4355,13 @@ ENV APP_VERSION=$APP_VERSION NEXT_MANUAL_SIG_HANDLE=true
 #   .next/standalone/node_modules/.bun/       traced runtime packages
 # It deliberately omits .next/static and public/, so those are copied
 # alongside; leaving either out serves pages without CSS or fonts.
-COPY --from=build /app/apps/web/.next/standalone ./
-COPY --from=build /app/apps/web/.next/static ./apps/web/.next/static
-COPY --from=build /app/apps/web/public ./apps/web/public
+COPY --from=build --chown=bun:bun /app/apps/web/.next/standalone ./
+COPY --from=build --chown=bun:bun /app/apps/web/.next/static ./apps/web/.next/static
+COPY --from=build --chown=bun:bun /app/apps/web/public ./apps/web/public
+USER bun
 WORKDIR /app/apps/web
-EXPOSE 3000 587
+# SMTP relay (587) arrives in Phase 3.
+EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
   CMD bun -e "fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["bun", "server.js"]
@@ -4372,10 +4376,10 @@ services:
     build: .
     ports:
       - "${APP_PORT:-3000}:3000"
-      - "${SMTP_PORT:-587}:587"
+      # SMTP relay (587) arrives in Phase 3.
     env_file: .env
     environment:
-      DATABASE_URL: postgres://sendsprite:${POSTGRES_PASSWORD}@db:5432/sendsprite
+      DATABASE_URL: postgres://sendsprite:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/sendsprite
     depends_on:
       db:
         condition: service_healthy
@@ -4385,7 +4389,7 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: sendsprite
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: sendsprite
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -4406,7 +4410,7 @@ services:
     build: .
     env_file: .env
     environment:
-      DATABASE_URL: postgres://sendsprite:${POSTGRES_PASSWORD}@db:5432/sendsprite
+      DATABASE_URL: postgres://sendsprite:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/sendsprite
       WORKER_MODE: inline
     depends_on:
       db:
@@ -4439,7 +4443,14 @@ if [ ! -f .env ]; then
   printf "Public URL of this instance (e.g. https://mail.example.com) [http://localhost:3000]: "
   read -r APP_URL </dev/tty || APP_URL=""
   APP_URL="${APP_URL:-http://localhost:3000}"
+  APP_URL="${APP_URL%/}"
+  case "$APP_URL" in
+    http://*|https://*) ;;
+    *) echo "APP_URL must start with http:// or https:// (got: $APP_URL)"; exit 1 ;;
+  esac
   gen() { head -c 48 /dev/urandom | base64 | tr -d '/+=\n' | cut -c1-"$1"; }
+  # .env holds APP_SECRET and the DB password: owner-only from the first byte.
+  umask 077
   cat > .env <<EOF
 APP_URL=$APP_URL
 APP_SECRET=$(gen 48)
@@ -4451,10 +4462,12 @@ SMTP_ENABLED=true
 WORKER_MODE=inline
 EMAIL_RETENTION_DAYS=90
 EOF
+  chmod 600 .env
   echo "Wrote $DIR/.env (keep APP_SECRET safe — it encrypts your AWS/Cloudflare credentials)."
 fi
 
-docker compose pull
+# A failed pull is fine when the image is already present locally.
+docker compose pull || docker image inspect ghcr.io/defyworks/sendsprite:latest >/dev/null 2>&1 || { echo "Image not available yet"; exit 1; }
 docker compose up -d
 echo
 echo "Sendsprite is starting. Open $(grep '^APP_URL=' .env | cut -d= -f2-)/signup to create the first account."
@@ -4630,6 +4643,80 @@ Bun · Next.js 16 · Postgres · Drizzle · pg-boss · BetterAuth · MIT
 ```bash
 curl -fsSL https://sendsprite.dev/install.sh | sh
 ```
+
+That writes `~/sendsprite/.env` with generated secrets, starts the app and
+Postgres, and prints the signup URL. The first account becomes the instance
+owner; after that, sign-ups are invite-only unless you change `SIGNUP_MODE`.
+
+Manual alternative: copy `.env.example` to `.env`, set `APP_URL`, `APP_SECRET`
+(≥ 32 random chars) and `POSTGRES_PASSWORD`, then `docker compose up -d`.
+
+## Why it works the way it does
+
+**One container, one database.** Everything — web, REST API, background jobs,
+SMTP relay — runs in the Next.js process. Jobs use pg-boss on the same Postgres,
+so there is no Redis and no second service to operate. Set `WORKER_MODE=separate`
+and run the `worker` compose profile when you outgrow one box.
+
+**Secrets never live in env.** AWS keys and the Cloudflare token are entered in
+the browser and stored encrypted (AES-256-GCM, key derived from `APP_SECRET`).
+Losing `APP_SECRET` means re-connecting AWS/Cloudflare, not losing data.
+
+**Auth providers are switched on by presence.** Set `GOOGLE_CLIENT_ID` +
+`GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID` + `GITHUB_CLIENT_SECRET`, and/or
+`EMAIL_PASSWORD_ENABLED=true`. Nothing else to configure.
+
+**Migrations run on boot.** The image applies pending migrations before it
+serves traffic, so upgrading is `docker compose pull && docker compose up -d`.
+
+## Development
+
+```bash
+bun install
+bun run --filter @sendsprite/web db:dev   # embedded Postgres 16 in apps/web/.pgdata (no Docker needed); or point DATABASE_URL at your own
+cp .env.example apps/web/.env.local
+bun run db:migrate
+bun dev                      # http://localhost:3000
+```
+
+```bash
+bun run typecheck            # next typegen + tsc, every workspace
+bun run lint · format · format:check
+bun run test                 # unit (vitest)
+bun run test:integration     # vitest against an embedded Postgres (or TEST_DATABASE_URL)
+bun run test:e2e             # Playwright
+bun run db:generate          # new migration from schema changes
+```
+
+CI builds the image (see `.github/workflows/ci.yml`); `docker compose build`
+does the same locally.
+
+## Environment reference
+
+| Variable                                             | Default  | Notes                                                                    |
+| ---------------------------------------------------- | -------- | ------------------------------------------------------------------------ |
+| `APP_URL`                                            | —        | Public URL, with protocol                                                |
+| `APP_SECRET`                                         | —        | ≥ 32 chars; encrypts stored credentials                                  |
+| `DATABASE_URL`                                       | —        | Postgres connection string                                               |
+| `POSTGRES_PASSWORD`                                  | —        | Compose only; alphanumeric recommended (interpolated unencoded into URL) |
+| `SIGNUP_MODE`                                        | `auto`   | `auto` → open until first user, then invite; or `open`/`invite`/`closed` |
+| `EMAIL_PASSWORD_ENABLED`                             | `false`  | Email + password sign-in                                                 |
+| `GOOGLE_CLIENT_ID/SECRET`, `GITHUB_CLIENT_ID/SECRET` | —        | OAuth providers                                                          |
+| `WORKER_MODE`                                        | `inline` | `inline` / `separate` / `none`                                           |
+| `SMTP_ENABLED`                                       | `true`   | SMTP relay on 587 (Phase 3)                                              |
+| `LANDING_ENABLED`                                    | `true`   | `false` sends `/` to `/app`                                              |
+| `EMAIL_RETENTION_DAYS`                               | `90`     | Body/attachment purge window                                             |
+
+## Roadmap
+
+Phase 1 (this): foundation. Phase 2: AWS one-click connect, Cloudflare, domains.
+Phase 3: sending API, events, webhooks, SMTP. Phase 4: SDK, CLI, MCP, docs,
+landing. Phase 5: templates, preview, contacts, campaigns, audit UI.
+Design: `docs/superpowers/specs/2026-08-24-sendsprite-design.md`.
+
+## License
+
+MIT
 ````
 
 That writes `~/sendsprite/.env` with generated secrets, starts the app and

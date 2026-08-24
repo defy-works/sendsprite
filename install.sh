@@ -15,7 +15,14 @@ if [ ! -f .env ]; then
   printf "Public URL of this instance (e.g. https://mail.example.com) [http://localhost:3000]: "
   read -r APP_URL </dev/tty || APP_URL=""
   APP_URL="${APP_URL:-http://localhost:3000}"
+  APP_URL="${APP_URL%/}"
+  case "$APP_URL" in
+    http://*|https://*) ;;
+    *) echo "APP_URL must start with http:// or https:// (got: $APP_URL)"; exit 1 ;;
+  esac
   gen() { head -c 48 /dev/urandom | base64 | tr -d '/+=\n' | cut -c1-"$1"; }
+  # .env holds APP_SECRET and the DB password: owner-only from the first byte.
+  umask 077
   cat > .env <<EOF
 APP_URL=$APP_URL
 APP_SECRET=$(gen 48)
@@ -27,10 +34,12 @@ SMTP_ENABLED=true
 WORKER_MODE=inline
 EMAIL_RETENTION_DAYS=90
 EOF
+  chmod 600 .env
   echo "Wrote $DIR/.env (keep APP_SECRET safe — it encrypts your AWS/Cloudflare credentials)."
 fi
 
-docker compose pull
+# A failed pull is fine when the image is already present locally.
+docker compose pull || docker image inspect ghcr.io/defyworks/sendsprite:latest >/dev/null 2>&1 || { echo "Image not available yet"; exit 1; }
 docker compose up -d
 echo
 echo "Sendsprite is starting. Open $(grep '^APP_URL=' .env | cut -d= -f2-)/signup to create the first account."

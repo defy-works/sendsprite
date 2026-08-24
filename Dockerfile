@@ -1,5 +1,7 @@
 # syntax=docker/dockerfile:1
-FROM oven/bun:1 AS base
+FROM oven/bun:1.3.14 AS base
+# /app must be the same absolute root in `build` and `runner`: the traced
+# node_modules symlinks in the standalone output may be absolute.
 WORKDIR /app
 
 # Dependencies only: workspace manifests + lockfile so this layer is cached
@@ -35,11 +37,13 @@ ENV APP_VERSION=$APP_VERSION NEXT_MANUAL_SIG_HANDLE=true
 #   .next/standalone/node_modules/.bun/       traced runtime packages
 # It deliberately omits .next/static and public/, so those are copied
 # alongside; leaving either out serves pages without CSS or fonts.
-COPY --from=build /app/apps/web/.next/standalone ./
-COPY --from=build /app/apps/web/.next/static ./apps/web/.next/static
-COPY --from=build /app/apps/web/public ./apps/web/public
+COPY --from=build --chown=bun:bun /app/apps/web/.next/standalone ./
+COPY --from=build --chown=bun:bun /app/apps/web/.next/static ./apps/web/.next/static
+COPY --from=build --chown=bun:bun /app/apps/web/public ./apps/web/public
+USER bun
 WORKDIR /app/apps/web
-EXPOSE 3000 587
+# SMTP relay (587) arrives in Phase 3.
+EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
   CMD bun -e "fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["bun", "server.js"]
