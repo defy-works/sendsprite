@@ -3921,7 +3921,7 @@ git commit -m "feat(web): team settings — rename, members, roles, link-based i
 
 - Create: `apps/web/src/lib/health.ts`, `apps/web/src/app/api/health/route.ts`, `apps/web/tests/unit/health.test.ts`
 
-- [ ] **Step 1: Failing test**
+- [x] **Step 1: Failing test**
 
 `apps/web/tests/unit/health.test.ts`:
 
@@ -3949,12 +3949,12 @@ describe("health summarize", () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `cd apps/web && bun run test`
 Expected: FAIL — cannot find `@/lib/health`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `apps/web/src/lib/health.ts`:
 
@@ -4013,12 +4013,12 @@ export async function GET() {
 
 (`getWorkerState` comes from Task 14; create it there. For now add a temporary `apps/web/src/jobs/boss.ts` exporting `export function getWorkerState(): "running" | "disabled" | "stopped" { return "disabled"; }` — Task 14 replaces it.)
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `cd apps/web && bun run test`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/lib/health.ts apps/web/src/app/api/health apps/web/src/jobs/boss.ts apps/web/tests/unit/health.test.ts
