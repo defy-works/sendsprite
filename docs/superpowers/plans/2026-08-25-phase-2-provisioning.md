@@ -287,7 +287,7 @@ git commit -m "feat(web): team_settings table; timestamptz convention"
 - Modify: `apps/web/src/lib/audit.ts`, `apps/web/src/lib/auth.ts`, `apps/web/src/services/team.ts`, `apps/web/src/services/instance-settings.ts`, `apps/web/src/app/app/settings/actions.ts`
 - Test: `apps/web/tests/integration/audit-hooks.test.ts`, `apps/web/tests/integration/instance-settings.test.ts`
 
-- [ ] **Step 1: Request meta helper**
+- [x] **Step 1: Request meta helper**
 
 In `apps/web/src/lib/audit.ts` add:
 
@@ -307,7 +307,7 @@ export function requestMeta(h: Headers): RequestMeta {
 
 and log only `err.message`/`err.code` in the catch (`console.error("[audit] failed", (err as {code?:string}).code, (err as Error).message)`).
 
-- [ ] **Step 2: Failing test — hooks write audit rows**
+- [x] **Step 2: Failing test — hooks write audit rows**
 
 `apps/web/tests/integration/audit-hooks.test.ts`:
 
@@ -366,7 +366,7 @@ describe("organization hooks → audit", () => {
 
 Run: `cd apps/web && bun run test:integration -- audit-hooks` → FAIL (0 rows).
 
-- [ ] **Step 3: Wire organization hooks**
+- [x] **Step 3: Wire organization hooks**
 
 In `apps/web/src/lib/auth.ts`, inside `organization({...})`, add (verify hook names/args in `node_modules/better-auth/dist/plugins/organization/*.d.ts`; adjust to the real signatures and report):
 
@@ -383,11 +383,11 @@ organizationHooks: {
 
 Import `recordAudit` from `@/lib/audit` (no `next/*` — safe here). Keep the service-layer audit calls for rename/invite/cancel/remove/changeRole (they carry ip/UA; hooks don't).
 
-- [ ] **Step 4: ip/UA through the service layer**
+- [x] **Step 4: ip/UA through the service layer**
 
 `apps/web/src/services/team.ts`: add `meta?: RequestMeta` to `TeamActor`; every `recordAudit({...})` call spreads `...actor.meta`. `apps/web/src/app/app/settings/actions.ts` `actor()` sets `meta: requestMeta(await headers())`.
 
-- [ ] **Step 5: Instance self-audit**
+- [x] **Step 5: Instance self-audit**
 
 `apps/web/src/services/instance-settings.ts`: `updateInstanceSettings(patch, actor?: { userId: string; meta?: RequestMeta })` — after the upsert, `recordAudit({ teamId: null, actorUserId: actor?.userId ?? null, action: "instance.update", targetType: "instance", targetId: "1", diff: computeDiff(beforePlain, afterPlain), ...actor?.meta })` where `beforePlain/afterPlain` are the row minus `*Enc` columns, plus `{ awsSecretEnc: "[set]" }`-style markers when a secret was set/cleared (`computeDiff` redacts by key anyway). Add to `instance-settings.test.ts`:
 
@@ -409,7 +409,7 @@ it("writes an instance-level audit row on update", async () => {
 });
 ```
 
-- [ ] **Step 6: Verify and commit**
+- [x] **Step 6: Verify and commit**
 
 Run: `cd apps/web && bun run test:integration && bun run typecheck` → green (team-actions tests unchanged; `meta` is optional).
 

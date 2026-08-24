@@ -20,6 +20,18 @@ export function computeDiff(
   return Object.keys(diff).length ? diff : null;
 }
 
+export interface RequestMeta {
+  ip: string | null;
+  userAgent: string | null;
+}
+
+/** Pull client ip / UA from request headers (proxy-aware). No `next/*` import. */
+export function requestMeta(h: Headers): RequestMeta {
+  const fwd = h.get("x-forwarded-for");
+  const ip = (fwd ? fwd.split(",")[0]?.trim() : h.get("x-real-ip")) || null;
+  return { ip, userAgent: h.get("user-agent") };
+}
+
 export interface AuditInput {
   teamId?: string | null;
   actorUserId?: string | null;
@@ -42,6 +54,11 @@ export async function recordAudit(input: AuditInput): Promise<void> {
       .insert(auditLog)
       .values({ id: newId("aud"), ...input });
   } catch (err) {
-    console.error("[audit] failed", err);
+    // Message + code only: the failing row may carry user data.
+    console.error(
+      "[audit] failed",
+      (err as { code?: string }).code,
+      (err as Error).message,
+    );
   }
 }

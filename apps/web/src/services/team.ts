@@ -5,7 +5,7 @@ import { can, type Action, type TeamRole } from "@sendsprite/shared";
 import { auth } from "@/lib/auth";
 import { db } from "@/db";
 import { invitation } from "@/db/schema";
-import { computeDiff, recordAudit } from "@/lib/audit";
+import { computeDiff, recordAudit, type RequestMeta } from "@/lib/audit";
 // Not `@/env`: that module is `server-only` and throws under vitest.
 import { loadEnv } from "@/env.schema";
 
@@ -18,6 +18,8 @@ export interface TeamActor {
   teamId: string;
   teamName: string;
   role: TeamRole;
+  /** Client ip / UA for the audit row; absent outside a request. */
+  meta?: RequestMeta;
 }
 
 const DENIED: Result<never> = {
@@ -60,6 +62,7 @@ export function renameTeam(
     await recordAudit({
       teamId: actor.teamId,
       actorUserId: actor.userId,
+      ...actor.meta,
       action: "team.rename",
       targetType: "team",
       targetId: actor.teamId,
@@ -96,6 +99,7 @@ export function inviteMember(
     await recordAudit({
       teamId: actor.teamId,
       actorUserId: actor.userId,
+      ...actor.meta,
       action: "members.invite",
       targetType: "invitation",
       targetId: inv.id,
@@ -130,6 +134,7 @@ export function cancelInvitation(
     await recordAudit({
       teamId: actor.teamId,
       actorUserId: actor.userId,
+      ...actor.meta,
       action: "members.invite.cancel",
       targetType: "invitation",
       targetId: invitationId,
@@ -151,6 +156,7 @@ export function removeMember(
     await recordAudit({
       teamId: actor.teamId,
       actorUserId: actor.userId,
+      ...actor.meta,
       action: "members.remove",
       targetType: "member",
       targetId: memberIdOrEmail,
@@ -175,6 +181,7 @@ export function changeRole(
     await recordAudit({
       teamId: actor.teamId,
       actorUserId: actor.userId,
+      ...actor.meta,
       action: "members.changeRole",
       targetType: "member",
       targetId: memberId,

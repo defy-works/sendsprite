@@ -2,6 +2,7 @@ import { cache } from "react";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { instanceSettings } from "@/db/schema";
+import { computeDiff, recordAudit, type RequestMeta } from "@/lib/audit";
 import { getCipher } from "@/lib/crypto";
 
 export type InstanceSettings = typeof instanceSettings.$inferSelect;
@@ -48,13 +49,35 @@ type Secrets = {
   cloudflareToken?: string | null;
 };
 
+const ENC_COLUMNS = [
+  "awsAccessKeyEnc",
+  "awsSecretEnc",
+  "cloudflareTokenEnc",
+] as const;
+
+/**
+ * Row as it appears in the audit diff: bookkeeping columns dropped, secret
+ * columns reduced to a set/cleared marker (`computeDiff` redacts them by key
+ * anyway, so only the fact that they changed is recorded).
+ */
+function auditView(row: InstanceSettings | undefined): Record<string, unknown> {
+  if (!row) return {};
+  const view: Record<string, unknown> = { ...row };
+  for (const col of ["id", "createdAt", "updatedAt"]) delete view[col];
+  for (const col of ENC_COLUMNS) view[col] = row[col] ? "[set]" : null;
+  return view;
+}
+
 /**
  * Update plain columns; secret inputs are encrypted before writing.
  * Upsert, so it works on a fresh instance without a prior read.
+ * Writes an instance-level audit row (`teamId: null`) describing the change.
  */
 export async function updateInstanceSettings(
   patch: Plain & Secrets,
+  actor?: { userId: string; meta?: RequestMeta },
 ): Promise<InstanceSettings> {
+  const before = await selectSingleton();
   const { awsAccessKey, awsSecret, cloudflareToken, ...plain } = patch;
   const c = getCipher();
   const enc = {
@@ -75,6 +98,15 @@ export async function updateInstanceSettings(
     .onConflictDoUpdate({ target: instanceSettings.id, set })
     .returning();
   if (!row) throw new Error("instance_settings upsert returned no row");
+  await recordAudit({
+    teamId: null,
+    actorUserId: actor?.userId ?? null,
+    action: "instance.update",
+    targetType: "instance",
+    targetId: "1",
+    diff: computeDiff(auditView(before), auditView(row)),
+    ...actor?.meta,
+  });
   return row;
 }
 

@@ -2,6 +2,7 @@
 import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
 import { TEAM_ROLES, type TeamRole } from "@sendsprite/shared";
+import { requestMeta } from "@/lib/audit";
 import { requireTeam } from "@/lib/session";
 import * as team from "@/services/team";
 
@@ -10,14 +11,16 @@ export type { Result } from "@/services/team";
 /** Server actions are thin: resolve the actor, delegate, revalidate. */
 async function actor() {
   const ctx = await requireTeam();
+  const h = await headers();
   return {
     actor: {
       userId: ctx.userId,
       teamId: ctx.team.id,
       teamName: ctx.team.name,
       role: ctx.role,
+      meta: requestMeta(h),
     },
-    headers: await headers(),
+    headers: h,
   };
 }
 

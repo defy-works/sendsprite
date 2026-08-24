@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { startPg } from "./_pg";
 
 let pg: Awaited<ReturnType<typeof startPg>>;
@@ -51,5 +52,31 @@ describe("instance settings", () => {
     expect(after.awsAccessKeyEnc).toBe(before.awsAccessKeyEnc);
     expect(after.cloudflareTokenEnc).toBe(before.cloudflareTokenEnc);
     expect((await getDecryptedSecrets()).cloudflareToken).toBe("cf-tok");
+  });
+  it("writes an instance-level audit row on update", async () => {
+    const { updateInstanceSettings } =
+      await import("@/services/instance-settings");
+    await updateInstanceSettings(
+      { retentionDays: 30, awsSecret: "again" },
+      { userId: "u_audit", meta: { ip: "10.0.0.1", userAgent: "vitest" } },
+    );
+    const { auditLog } = await import("@/db/schema");
+    const rows = await pg.db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.action, "instance.update"));
+    expect(rows.at(-1)).toMatchObject({
+      teamId: null,
+      actorUserId: "u_audit",
+      targetType: "instance",
+      targetId: "1",
+      ip: "10.0.0.1",
+      userAgent: "vitest",
+      diff: {
+        retentionDays: { from: 90, to: 30 },
+        awsSecretEnc: { from: "[redacted]", to: "[redacted]" },
+      },
+    });
+    expect(JSON.stringify(rows.at(-1)!.diff)).not.toContain("again");
   });
 });

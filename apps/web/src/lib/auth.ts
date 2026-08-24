@@ -7,6 +7,7 @@ import { and, count, eq, gt } from "drizzle-orm";
 import { db } from "@/db";
 import * as schema from "@/db/schema";
 import { loadEnv, type Env } from "@/env.schema";
+import { recordAudit } from "@/lib/audit";
 import { canSignUp, resolveSignupMode } from "./signup-policy";
 
 /**
@@ -115,6 +116,36 @@ function createAuth() {
           if (env.NODE_ENV !== "production") {
             console.info(`[invite] ${email} → ${env.APP_URL}/invite/${id}`);
           }
+        },
+        // Mutations that bypass the service layer (org creation, invitation
+        // acceptance) are audited here. Rename/invite/remove/changeRole stay
+        // in `services/team.ts`, which also carries ip/UA. `recordAudit`
+        // never throws, so a failed write cannot break the mutation.
+        organizationHooks: {
+          afterCreateOrganization: async ({ organization: org, user }) => {
+            await recordAudit({
+              teamId: org.id,
+              actorUserId: user.id,
+              action: "team.create",
+              targetType: "team",
+              targetId: org.id,
+              diff: { name: { to: org.name }, slug: { to: org.slug } },
+            });
+          },
+          afterAcceptInvitation: async ({
+            invitation: inv,
+            member: m,
+            user,
+          }) => {
+            await recordAudit({
+              teamId: inv.organizationId,
+              actorUserId: user.id,
+              action: "members.join",
+              targetType: "member",
+              targetId: m.id,
+              diff: { role: { to: m.role }, invitationId: { to: inv.id } },
+            });
+          },
         },
       }),
       nextCookies(),
