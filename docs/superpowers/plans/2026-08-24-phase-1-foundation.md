@@ -4244,7 +4244,7 @@ serves traffic, so upgrading is `docker compose pull && docker compose up -d`.
 
 ```bash
 bun install
-docker run -d --name ss-pg -e POSTGRES_USER=sendsprite -e POSTGRES_PASSWORD=sendsprite -e POSTGRES_DB=sendsprite -p 5432:5432 postgres:16-alpine
+bun run --filter @sendsprite/web db:dev   # embedded Postgres 16 in apps/web/.pgdata (no Docker needed); or point DATABASE_URL at your own
 cp .env.example apps/web/.env.local
 bun run db:migrate
 bun dev                      # http://localhost:3000
