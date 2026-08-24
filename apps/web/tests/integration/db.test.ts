@@ -20,6 +20,14 @@ describe("migrations", () => {
       expect.arrayContaining(["instance_settings", "audit_log"]),
     );
   });
+  it("tolerate two processes migrating at once", async () => {
+    const { runMigrations } = await import("@/db/migrate");
+    await pg.db.execute(sql`create database race`);
+    const raceUrl = pg.url.replace(/\/[^/]*$/, "/race");
+    await expect(
+      Promise.all([runMigrations(raceUrl), runMigrations(raceUrl)]),
+    ).resolves.toBeDefined();
+  });
   it("are idempotent", async () => {
     const { runMigrations } = await import("@/db/migrate");
     await expect(runMigrations(pg.url)).resolves.toBeUndefined();

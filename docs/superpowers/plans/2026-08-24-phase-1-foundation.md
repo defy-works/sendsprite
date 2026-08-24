@@ -20,6 +20,7 @@
 - Every route is dynamic: the root layout exports `dynamic = "force-dynamic"`. Never rely on static prerendering; `next build` must succeed with no env set.
 - `@/env` is `server-only`. Client components never import it; pass `env.providers` etc. down as props from server components. Pure schema lives in `@/env.schema` (safe for tests).
 - Run `bun run format` before every commit so `format:check` stays green.
+- Health `worker` state is per-process; with `WORKER_MODE=separate` the web container reports `disabled` — Phase 2 adds heartbeat persistence so health reflects the separate worker.
 
 **Reference repos (read-only, copy from):**
 
@@ -1224,7 +1225,17 @@ import postgres from "postgres";
 import path from "node:path";
 
 /**
- * Apply pending migrations from ./drizzle. Safe to run on every boot.
+ * Session-level advisory lock key. The web server and a separate worker
+ * (WORKER_MODE=separate) may boot at the same moment and both run
+ * migrations; drizzle's migrator takes no lock of its own, so two racers
+ * would each try to create the same tables. The lock serialises them on a
+ * single dedicated connection (`max: 1`) so lock and unlock share a session.
+ */
+const MIGRATION_LOCK = 7245631;
+
+/**
+ * Apply pending migrations from ./drizzle. Safe to run on every boot and
+ * concurrently from several processes.
  *
  * The default folder is resolved from `process.cwd()`, which is correct for
  * both `next dev` (cwd = apps/web) and the standalone image (`server.js`
@@ -1237,7 +1248,12 @@ export async function runMigrations(
 ) {
   const client = postgres(url, { max: 1 });
   try {
-    await migrate(drizzle(client), { migrationsFolder: folder });
+    await client`select pg_advisory_lock(${MIGRATION_LOCK})`;
+    try {
+      await migrate(drizzle(client), { migrationsFolder: folder });
+    } finally {
+      await client`select pg_advisory_unlock(${MIGRATION_LOCK})`;
+    }
   } finally {
     await client.end();
   }
@@ -3966,6 +3982,7 @@ import { getWorkerState } from "@/jobs/boss";
 export interface Checks {
   db: "ok" | "error";
   worker: "running" | "disabled" | "stopped";
+  /** Seconds the oldest runnable job has been waiting; -1 if unmeasurable. */
   queueLag: number;
 }
 export interface Health extends Checks {
@@ -3976,24 +3993,45 @@ export interface Health extends Checks {
 export function summarize(c: Checks): Health {
   const status =
     c.db === "error" ? "error" : c.queueLag > 60 ? "degraded" : "ok";
-  return { ...c, status, version: process.env.npm_package_version ?? "dev" };
+  return { ...c, status, version: process.env.APP_VERSION ?? "dev" };
+}
+
+// Postgres SQLSTATEs: undefined_table / invalid_schema_name. pg-boss creates
+// its schema on first start, so neither exists while the worker is disabled.
+const MISSING_RELATION = new Set(["42P01", "3F000"]);
+
+function sqlState(err: unknown): string | undefined {
+  const e = err as { code?: unknown; cause?: { code?: unknown } } | undefined;
+  const code = e?.code ?? e?.cause?.code;
+  return typeof code === "string" ? code : undefined;
+}
+
+/** Age in seconds of the oldest job that is due but not yet picked up. */
+async function queueLag(): Promise<number> {
+  try {
+    const rows = await db().execute(
+      sql`select coalesce(extract(epoch from (now() - min(start_after))), 0)::int as lag
+          from pgboss.job
+          where state in ('created', 'retry') and start_after <= now()`,
+    );
+    return Number((rows[0] as { lag?: number } | undefined)?.lag ?? 0);
+  } catch (err) {
+    if (MISSING_RELATION.has(sqlState(err) ?? "")) return 0;
+    console.error("[health] queue lag query failed", err);
+    return -1;
+  }
 }
 
 export async function collect(): Promise<Health> {
   let dbState: Checks["db"] = "ok";
-  let queueLag = 0;
+  let lag = 0;
   try {
     await db().execute(sql`select 1`);
-    const rows = await db()
-      .execute(
-        sql`select coalesce(extract(epoch from (now() - min(created_on))), 0)::int as lag from pgboss.job where state = 'created'`,
-      )
-      .catch(() => [{ lag: 0 }]);
-    queueLag = Number((rows[0] as { lag?: number } | undefined)?.lag ?? 0);
+    lag = await queueLag();
   } catch {
     dbState = "error";
   }
-  return summarize({ db: dbState, worker: getWorkerState(), queueLag });
+  return summarize({ db: dbState, worker: getWorkerState(), queueLag: lag });
 }
 ```
 
@@ -4031,8 +4069,8 @@ git commit -m "feat(web): /api/health with db + queue lag checks"
 
 **Files:**
 
-- Create: `apps/web/src/jobs/queues.ts`, `apps/web/src/jobs/handlers/heartbeat.ts`, `apps/web/src/instrumentation.ts`, `apps/web/src/worker.ts`
-- Modify: `apps/web/src/jobs/boss.ts`, `apps/web/package.json` (add `"worker": "bun run src/worker.ts"`)
+- Create: `apps/web/src/jobs/queues.ts`, `apps/web/src/jobs/handlers/{index,heartbeat}.ts`, `apps/web/src/jobs/shutdown.ts`, `apps/web/src/instrumentation.ts`, `apps/web/src/worker.ts`, `apps/web/tests/integration/worker.test.ts`
+- Modify: `apps/web/src/jobs/boss.ts`, `apps/web/src/db/migrate.ts` (advisory lock), `apps/web/package.json` (add `"worker": "bun run src/worker.ts"`)
 
 - [x] **Step 1: Queue names and a heartbeat handler**
 
@@ -4049,10 +4087,23 @@ export type QueueName = (typeof Q)[keyof typeof Q];
 `apps/web/src/jobs/handlers/heartbeat.ts`:
 
 ```ts
+import { registerQueue } from "../boss";
+import { Q } from "../queues";
+
 export async function heartbeat() {
   // Proves the worker loop is alive; visible in logs and used by e2e.
   console.info(`[worker] heartbeat ${new Date().toISOString()}`);
 }
+
+registerQueue(Q.heartbeat, () => heartbeat(), { cron: "*/5 * * * *" });
+```
+
+`apps/web/src/jobs/handlers/index.ts` (explicit handler module list; `startWorker()` imports it):
+
+```ts
+// Every handler module registers its queue(s) on import. `startWorker()`
+// imports this file so the registry is populated before queues are created.
+import "./heartbeat";
 ```
 
 - [x] **Step 2: pg-boss singleton**
@@ -4060,46 +4111,109 @@ export async function heartbeat() {
 `apps/web/src/jobs/boss.ts` (replace the stub):
 
 ```ts
-import { PgBoss } from "pg-boss";
-import { Q } from "./queues";
-import { heartbeat } from "./handlers/heartbeat";
+import { PgBoss, type Job } from "pg-boss";
 
 type WorkerState = "running" | "disabled" | "stopped";
-let state: WorkerState = "disabled";
-let boss: PgBoss | undefined;
+export type JobHandler<T extends object = object> = (
+  jobs: Job<T>[],
+) => Promise<unknown>;
+
+interface Registration {
+  name: string;
+  handler: JobHandler<never>;
+  cron?: string;
+}
+
+interface Shared {
+  state: WorkerState;
+  boss?: PgBoss;
+  starting?: Promise<void>;
+  registry: Map<string, Registration>;
+}
+
+// Shared across bundles: Next evaluates this module once for the
+// instrumentation hook and again for route handlers, and dev HMR
+// re-evaluates it on reload. A plain module variable would report
+// "disabled" from /api/health while the worker is running.
+//
+// HMR caveat: handlers are attached to pg-boss once at start. Editing a
+// handler in dev updates the module but not the running worker — restart
+// `next dev` to pick the change up.
+const g = globalThis as { __sendspriteBoss?: Shared };
+const shared: Shared = (g.__sendspriteBoss ??= {
+  state: "disabled",
+  registry: new Map(),
+});
 
 export function getWorkerState(): WorkerState {
-  return state;
+  return shared.state;
+}
+
+async function attach(b: PgBoss, { name, handler, cron }: Registration) {
+  await b.createQueue(name);
+  if (cron) await b.schedule(name, cron);
+  await b.work(name, handler as JobHandler);
+}
+
+/**
+ * Register a queue and its handler. Before `startWorker()` the entry is
+ * queued up; while running, the queue is created and attached right away.
+ * Registering the same name again replaces the earlier entry.
+ */
+export function registerQueue<T extends object>(
+  name: string,
+  handler: JobHandler<T>,
+  opts: { cron?: string } = {},
+) {
+  const reg: Registration = { name, handler, cron: opts.cron };
+  shared.registry.set(name, reg);
+  if (shared.state === "running" && shared.boss) {
+    void attach(shared.boss, reg).catch((err) =>
+      console.error(`[worker] failed to attach queue ${name}`, err),
+    );
+  }
 }
 
 export async function getBoss(): Promise<PgBoss> {
-  if (boss) return boss;
-  boss = new PgBoss({
-    connectionString: process.env.DATABASE_URL!,
-    schema: "pgboss",
-  });
+  if (shared.boss) return shared.boss;
+  const url = process.env.DATABASE_URL;
+  if (!url) throw new Error("DATABASE_URL is not set");
+  const boss = new PgBoss({ connectionString: url, schema: "pgboss" });
   boss.on("error", (e) => console.error("[pg-boss]", e));
   await boss.start();
+  shared.boss = boss;
   return boss;
 }
 
-/** Register every queue + handler and begin polling. Idempotent. */
-export async function startWorker() {
-  if (state === "running") return;
-  const b = await getBoss();
-  await b.createQueue(Q.heartbeat);
-  await b.schedule(Q.heartbeat, "*/5 * * * *"); // every 5 minutes
-  await b.work(Q.heartbeat, async () => {
-    await heartbeat();
+/**
+ * Create every registered queue, attach handlers and begin polling.
+ * Idempotent and re-entrant: concurrent callers await the same start.
+ */
+export async function startWorker(): Promise<void> {
+  if (shared.state === "running") return;
+  if (shared.starting) return shared.starting;
+  shared.starting = (async () => {
+    await import("./handlers");
+    const b = await getBoss();
+    for (const reg of shared.registry.values()) await attach(b, reg);
+    shared.state = "running";
+    console.info(
+      `[worker] started (${[...shared.registry.keys()].join(", ")})`,
+    );
+  })().finally(() => {
+    shared.starting = undefined;
   });
-  state = "running";
-  console.info("[worker] started");
+  return shared.starting;
 }
 
+/** Stop polling and close the pool. State stays "disabled" if never started. */
 export async function stopWorker() {
-  if (!boss) return;
-  await boss.stop({ graceful: true, timeout: 10_000 });
-  state = "stopped";
+  if (shared.starting) await shared.starting.catch(() => undefined);
+  const b = shared.boss;
+  if (!b) return;
+  await b.stop({ graceful: true, timeout: 10_000 });
+  shared.boss = undefined;
+  shared.state = "stopped";
 }
 ```
 
@@ -4110,18 +4224,52 @@ export async function stopWorker() {
 ```ts
 /**
  * Runs once per Next.js server process (nodejs runtime only).
- * 1. Apply DB migrations (safe/idempotent).
+ * 1. Apply DB migrations (safe/idempotent, advisory-locked).
  * 2. Start the in-process job worker unless WORKER_MODE says otherwise.
+ * 3. With NEXT_MANUAL_SIG_HANDLE=true (set in the Docker image), stop the
+ *    worker gracefully on SIGTERM/SIGINT before exiting.
  */
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
-  const { env } = await import("@/env");
+  const { loadEnv } = await import("@/env.schema");
   const { runMigrations } = await import("@/db/migrate");
+  const env = loadEnv();
   await runMigrations(env.DATABASE_URL);
   console.info("[boot] migrations applied");
-  if (env.WORKER_MODE === "inline") {
-    const { startWorker } = await import("@/jobs/boss");
-    await startWorker();
+  if (env.WORKER_MODE !== "inline") return;
+
+  const { startWorker } = await import("@/jobs/boss");
+  await startWorker();
+
+  if (process.env.NEXT_MANUAL_SIG_HANDLE === "true") {
+    const { installShutdownHandlers } = await import("@/jobs/shutdown");
+    installShutdownHandlers();
+  }
+}
+```
+
+`apps/web/src/jobs/shutdown.ts` (shared SIGTERM/SIGINT handling; kept out of `instrumentation.ts`, which Next also compiles for the Edge runtime):
+
+```ts
+import { stopWorker } from "./boss";
+
+/**
+ * Stop the worker gracefully on SIGTERM/SIGINT, then exit. A second signal
+ * while stopping exits immediately. Kept out of instrumentation.ts because
+ * Next also compiles that file for the Edge runtime and flags `process.on`.
+ */
+export function installShutdownHandlers() {
+  let stopping = false;
+  for (const sig of ["SIGTERM", "SIGINT"] as const) {
+    process.on(sig, async () => {
+      if (stopping) process.exit(1);
+      stopping = true;
+      try {
+        await stopWorker();
+      } finally {
+        process.exit(0);
+      }
+    });
   }
 }
 ```
@@ -4129,18 +4277,16 @@ export async function register() {
 `apps/web/src/worker.ts` (standalone worker process for `WORKER_MODE=separate`):
 
 ```ts
-import { env } from "@/env";
+// Standalone worker process for WORKER_MODE=separate (`bun run worker`).
+import { loadEnv } from "@/env.schema";
 import { runMigrations } from "@/db/migrate";
-import { startWorker, stopWorker } from "@/jobs/boss";
+import { startWorker } from "@/jobs/boss";
+import { installShutdownHandlers } from "@/jobs/shutdown";
 
+const env = loadEnv();
 await runMigrations(env.DATABASE_URL);
 await startWorker();
-for (const sig of ["SIGINT", "SIGTERM"] as const) {
-  process.on(sig, async () => {
-    await stopWorker();
-    process.exit(0);
-  });
-}
+installShutdownHandlers();
 ```
 
 Add to `apps/web/package.json` scripts: `"worker": "bun run src/worker.ts"`.
@@ -4187,7 +4333,10 @@ COPY --from=deps /app/apps/web/node_modules ./apps/web/node_modules
 RUN --mount=type=cache,target=/app/apps/web/.next/cache cd apps/web && bun run build
 
 FROM base AS runner
+ARG APP_VERSION=dev
 ENV NODE_ENV=production HOSTNAME=0.0.0.0 PORT=3000 NEXT_TELEMETRY_DISABLED=1
+# Reported by /api/health; instrumentation.ts stops pg-boss on SIGTERM.
+ENV APP_VERSION=$APP_VERSION NEXT_MANUAL_SIG_HANDLE=true
 # Standalone output already contains the traced node_modules and server.js.
 COPY --from=build /app/apps/web/.next/standalone ./
 COPY --from=build /app/apps/web/.next/static ./apps/web/.next/static

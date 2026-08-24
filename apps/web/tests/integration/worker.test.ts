@@ -1,6 +1,23 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startPg, type TestPg } from "./_pg";
 
+function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let t: NodeJS.Timeout;
+  const timeout = new Promise<never>((_, reject) => {
+    t = setTimeout(() => reject(new Error(`${what} not done in ${ms}ms`)), ms);
+    t.unref();
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(t));
+}
+
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => (resolve = r));
+  return { promise, resolve };
+}
+
+// Tests are ordered: health is probed before any worker start (no pgboss
+// schema yet), then the worker is started, then stopped.
 describe("worker", () => {
   let pg: TestPg;
   let boss: typeof import("@/jobs/boss");
@@ -17,38 +34,62 @@ describe("worker", () => {
     await pg.stop();
   });
 
-  it("runs registered handlers and reports running", async () => {
-    let resolveEcho!: (v: unknown) => void;
-    const echoed = new Promise<unknown>((r) => (resolveEcho = r));
-    boss.registerQueue("test.echo", async (jobs) => {
-      resolveEcho(jobs[0]?.data);
+  it("health reports disabled worker and zero lag without pgboss schema", async () => {
+    const h = await health.collect();
+    expect(h).toMatchObject({
+      db: "ok",
+      worker: "disabled",
+      queueLag: 0,
+      status: "ok",
+    });
+  });
+
+  it("runs handlers registered before start and reports running", async () => {
+    const echo = deferred<unknown>();
+    boss.registerQueue<{ hello: string }>("test.echo", async (jobs) => {
+      echo.resolve(jobs[0]?.data);
     });
 
-    expect(boss.getWorkerState()).toBe("disabled");
-    await boss.startWorker();
+    await Promise.all([boss.startWorker(), boss.startWorker()]);
     expect(boss.getWorkerState()).toBe("running");
 
     const b = await boss.getBoss();
-    const id = await b.send("test.echo", { hello: "world" });
-    expect(id).toBeTruthy();
-
-    const timeout = new Promise((_, reject) =>
-      setTimeout(
-        () => reject(new Error("echo job not handled in 10s")),
-        10_000,
-      ),
-    );
-    await expect(Promise.race([echoed, timeout])).resolves.toEqual({
+    expect(await b.send("test.echo", { hello: "world" })).toBeTruthy();
+    await expect(within(echo.promise, 10_000, "echo job")).resolves.toEqual({
       hello: "world",
+    });
+  });
+
+  it("runs handlers registered after start", async () => {
+    const late = deferred<unknown>();
+    boss.registerQueue<{ n: number }>("test.late", async (jobs) => {
+      late.resolve(jobs[0]?.data);
+    });
+    const b = await boss.getBoss();
+    // The queue is created asynchronously; retry send until it exists.
+    await within(
+      (async () => {
+        for (;;) {
+          try {
+            await b.send("test.late", { n: 1 });
+            return;
+          } catch {
+            await new Promise((r) => setTimeout(r, 100));
+          }
+        }
+      })(),
+      10_000,
+      "late queue send",
+    );
+    await expect(within(late.promise, 10_000, "late job")).resolves.toEqual({
+      n: 1,
     });
   });
 
   it("health reports db ok and worker running", async () => {
     const h = await health.collect();
-    expect(h.db).toBe("ok");
-    expect(h.worker).toBe("running");
-    expect(h.status).toBe("ok");
-    expect(typeof h.queueLag).toBe("number");
+    expect(h).toMatchObject({ db: "ok", worker: "running", status: "ok" });
+    expect(h.queueLag).toBeGreaterThanOrEqual(0);
   });
 
   it("stopWorker flips state to stopped", async () => {
