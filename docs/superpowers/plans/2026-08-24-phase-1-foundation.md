@@ -29,6 +29,20 @@
 
 ---
 
+## Phase 1 status: COMPLETE (2026-08-25, HEAD after `91f3e57`)
+
+Final integration review verdict: ready. Open these as the **first tasks of the Phase 2 plan** (extension-point decisions, not Phase 1 defects):
+
+1. Audit completeness — wire better-auth `organizationHooks` (`afterCreateOrganization`, `afterAcceptInvitation`, `afterRemoveMember`, `afterUpdateMemberRole`) into `recordAudit`; pass `ip`/`userAgent` from `actions.ts`; make `updateInstanceSettings` self-audit (`teamId: null`).
+2. `registerQueue(name, handler, { cron?, queue?: QueueOptions })` so handlers own retry/expiry policy (`email.send` needs retryLimit 5 + backoff).
+3. Home for team-level settings (`daily_limit`, `monthly_limit`, `track_opens`, `track_clicks`): a `team_settings` 1:1 table keyed by organization id (keeps `schema/auth.ts` purely generated).
+4. Convention: every new table uses `timestamp(..., { withTimezone: true })`; better-auth tables are the only `timestamp` without tz.
+5. Session hook `session.create.before` should order memberships like `resolveTeam` (oldest first) or call it.
+6. Health for `WORKER_MODE=separate`: persist heartbeat so the web container reports the worker.
+7. `_pg.ts` embedded mode: `rm(..., { maxRetries: 5, retryDelay: 200 })` for Windows EBUSY.
+
+Docker image/compose are validated only by the CI `docker` job (no Docker on the dev machine); the first CI run is the real test of the standalone + Bun symlink layout.
+
 ## File structure (end state of Phase 1)
 
 ```

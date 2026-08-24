@@ -23,8 +23,12 @@ Manual alternative: copy `.env.example` to `.env`, set `APP_URL`, `APP_SECRET`
 
 **One container, one database.** Everything — web, REST API, background jobs,
 SMTP relay — runs in the Next.js process. Jobs use pg-boss on the same Postgres,
-so there is no Redis and no second service to operate. Set `WORKER_MODE=separate`
-and run the `worker` compose profile when you outgrow one box.
+so there is no Redis and no second service to operate. When you outgrow one
+box, set `WORKER_MODE=separate` on `app` and start the `worker` compose
+profile: it runs the same image with `WORKER_MODE=inline` and no published
+port, so jobs move to that replica while `app` only serves HTTP.
+(`bun run worker` is for non-Docker installs; the standalone image has no
+`src/`.)
 
 **Secrets never live in env.** AWS keys and the Cloudflare token are entered in
 the browser and stored encrypted (AES-256-GCM, key derived from `APP_SECRET`).
