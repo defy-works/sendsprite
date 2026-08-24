@@ -40,7 +40,8 @@ const txt = (chunks: string[]) => normaliseTxt(chunks.join("")).toLowerCase();
  * Kind-aware presence check. SPF/DMARC are judged on what matters for mail
  * rather than byte equality, since operators legitimately extend them
  * (extra `include:`s, `pct=`, a different `rua=`):
- * - MAIL_FROM_SPF: a `v=spf1` TXT at the name that includes amazonses.com.
+ * - MAIL_FROM_SPF: a `v=spf1` TXT at the name with an `include:amazonses.com`
+ *   term (whole token: `include:amazonses.com.evil.net` does not count).
  * - DMARC: any `v=DMARC1` TXT at `_dmarc.<domain>`.
  * - CNAME/MX: exact target (MX priority is informational).
  */
@@ -57,7 +58,9 @@ async function present(rec: ExpectedRecord, res: Resolver): Promise<boolean> {
     const answers = (await res.resolveTxt(rec.name)).map(txt);
     if (rec.kind === "MAIL_FROM_SPF")
       return answers.some(
-        (a) => a.startsWith("v=spf1") && a.includes("include:amazonses.com"),
+        (a) =>
+          a.startsWith("v=spf1") &&
+          /(^|\s)include:amazonses\.com(\s|$)/.test(a),
       );
     if (rec.kind === "DMARC")
       return answers.some((a) => a.startsWith("v=dmarc1"));

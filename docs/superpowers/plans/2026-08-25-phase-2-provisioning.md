@@ -3531,8 +3531,8 @@ Run → PASS. Commit: `git add apps/web && git commit -m "feat(web): DNS expecte
 
 **Files:**
 
-- Create: `apps/web/src/services/domains.ts`, `apps/web/src/jobs/handlers/domain-provision.ts`, `apps/web/src/jobs/handlers/domain-verify.ts`
-- Modify: `apps/web/src/jobs/handlers/index.ts`
+- Create: `apps/web/src/services/domains.ts`, `apps/web/src/jobs/enqueue.ts`, `apps/web/src/jobs/handlers/domain-provision.ts`, `apps/web/src/jobs/handlers/domain-verify.ts`
+- Modify: `apps/web/src/jobs/handlers/index.ts`, `apps/web/src/jobs/boss.ts` (`QueueOptions.policy`)
 - Test: `apps/web/tests/integration/domains.test.ts`
 
 - [x] **Step 1: Failing test**
@@ -3542,6 +3542,7 @@ import {
   afterAll,
   afterEach,
   beforeAll,
+  beforeEach,
   describe,
   expect,
   it,
@@ -3556,58 +3557,93 @@ import {
   DeleteEmailIdentityCommand,
 } from "@aws-sdk/client-sesv2";
 import { eq } from "drizzle-orm";
+import type { FetchLike } from "@/lib/cloudflare/client";
+import type { Resolver } from "@/lib/dns/check";
+import { auditLog, domains } from "@/db/schema";
 import { startPg } from "./_pg";
 
 const ses = mockClient(SESv2Client);
 let pg: Awaited<ReturnType<typeof startPg>>;
 const cfCalls: { url: string; method?: string }[] = [];
-const cfFetch = (async (url: string, init?: RequestInit) => {
+const ok = (result: unknown) =>
+  new Response(JSON.stringify({ success: true, result }));
+/** Empty zone: every upsert creates (POST), every delete succeeds. */
+const cfFetch: FetchLike = async (url, init) => {
   cfCalls.push({ url: String(url), method: init?.method });
-  if (String(url).includes("/user/tokens/verify"))
-    return new Response(
-      JSON.stringify({ success: true, result: { status: "active" } }),
-    );
-  if (String(url).match(/\/zones\?/))
-    return new Response(
-      JSON.stringify({
-        success: true,
-        result: [{ id: "z1", name: "acme.com" }],
-      }),
-    );
-  if (String(url).includes("/dns_records?"))
-    return new Response(JSON.stringify({ success: true, result: [] }));
-  if (String(url).includes("/dns_records"))
-    return new Response(
-      JSON.stringify({ success: true, result: { id: `r${cfCalls.length}` } }),
-    );
+  if (url.includes("/user/tokens/verify")) return ok({ status: "active" });
+  if (/\/zones\?/.test(url)) return ok([{ id: "z1", name: "acme.com" }]);
+  if (url.includes("/dns_records?")) return ok([]);
+  if (url.includes("/dns_records")) return ok({ id: `r${cfCalls.length}` });
   return new Response("{}", { status: 404 });
-}) as typeof fetch;
+};
+/** Zone that already holds every record: upserts PATCH the existing ids. */
+const cfExisting: FetchLike = async (url, init) => {
+  cfCalls.push({ url: String(url), method: init?.method });
+  const u = new URL(url);
+  if (u.pathname.endsWith("/dns_records") && init?.method === undefined) {
+    const type = u.searchParams.get("type")!;
+    const name = u.searchParams.get("name")!;
+    const content =
+      type !== "TXT"
+        ? "old"
+        : name.startsWith("_dmarc")
+          ? "v=DMARC1; p=reject"
+          : "v=spf1 -all";
+    return ok([{ id: `e-${type}-${name}`, type, name, content }]);
+  }
+  if (init?.method === "PATCH") return ok({ id: u.pathname.split("/").pop() });
+  return cfFetch(url, init);
+};
+/** Cloudflare refuses every DELETE. */
+const cfNoDelete: FetchLike = async (url, init) =>
+  init?.method === "DELETE"
+    ? new Response(
+        JSON.stringify({
+          success: false,
+          errors: [{ code: 10000, message: "Authentication error" }],
+        }),
+        { status: 403 },
+      )
+    : cfFetch(url, init);
+const awsErr = (name: string, message: string) =>
+  Object.assign(new Error(message), { name });
 
 beforeAll(async () => {
   pg = await startPg();
   process.env.APP_SECRET = "x".repeat(40);
   process.env.APP_URL = "https://mail.acme.com";
-  const { updateInstanceSettings } =
-    await import("@/services/instance-settings");
-  await updateInstanceSettings({
-    awsMode: "keys",
-    awsRegion: "eu-west-1",
-    awsAccessKey: "AKIAEXAMPLE",
-    awsSecret: "s3cr3t",
-    sesConfigSet: "sendsprite",
-  });
-  const { connectCloudflare } = await import("@/services/cloudflare-connect");
-  await connectCloudflare(
-    "cf-token-value-0123456789",
-    { userId: "u1" },
-    cfFetch,
-  );
+  const { resetEnvCache } = await import("@/env.schema");
+  resetEnvCache();
   await pg.db.execute(
-    `insert into "organization"(id,name,slug,"createdAt") values ('org_1','Acme','acme',now())`,
+    `insert into "organization"(id,name,slug,created_at) values ('org_1','Acme','acme',now())`,
   );
 });
 afterAll(async () => {
   await pg.stop();
+});
+/** Every test starts with AWS (keys) and Cloudflare connected. */
+beforeEach(async () => {
+  const { updateInstanceSettings } =
+    await import("@/services/instance-settings");
+  await updateInstanceSettings(
+    {
+      awsMode: "keys",
+      awsRegion: "eu-west-1",
+      awsAccessKey: "AKIAEXAMPLE",
+      awsSecret: "s3cr3t",
+      sesConfigSet: "sendsprite",
+    },
+    undefined,
+    { audit: false },
+  );
+  const { connectCloudflare } = await import("@/services/cloudflare-connect");
+  const cf = await connectCloudflare(
+    "cf-token-value-0123456789",
+    { userId: "u1" },
+    cfFetch,
+  );
+  if (!cf.ok) throw new Error(cf.error);
+  cfCalls.length = 0;
 });
 afterEach(() => {
   ses.reset();
@@ -3620,7 +3656,41 @@ const actor = {
   teamName: "Acme",
   role: "owner" as const,
 };
+const noop = { enqueue: async () => "", fetch: cfFetch };
+const emptyDns: Resolver = {
+  resolveCname: async () => [],
+  resolveMx: async () => [],
+  resolveTxt: async () => [],
+};
+const pendingIdentity = {
+  DkimAttributes: { Status: "PENDING" as const, Tokens: ["t1", "t2", "t3"] },
+  MailFromAttributes: {
+    MailFromDomain: "bounce.x",
+    MailFromDomainStatus: "PENDING" as const,
+    BehaviorOnMxFailure: "USE_DEFAULT_VALUE" as const,
+  },
+};
 
+async function byName(name: string) {
+  const [d] = await pg.db.select().from(domains).where(eq(domains.name, name));
+  if (!d) throw new Error(`domain ${name} missing`);
+  return d;
+}
+async function disconnectCloudflare() {
+  const { updateInstanceSettings } =
+    await import("@/services/instance-settings");
+  await updateInstanceSettings({ cloudflareToken: null }, undefined, {
+    audit: false,
+  });
+}
+function happyProvision() {
+  ses.on(CreateEmailIdentityCommand).resolves({
+    DkimAttributes: { Tokens: ["t1", "t2", "t3"], Status: "PENDING" },
+  });
+  ses.on(PutEmailIdentityMailFromAttributesCommand).resolves({});
+}
+
+/** One domain's life: create → provision → verify → delete, in order. */
 describe("domains", () => {
   it("createDomain picks auto mode when a zone matches and enqueues provisioning", async () => {
     const enqueue = vi.fn(async () => "job");
@@ -3640,66 +3710,176 @@ describe("domains", () => {
       mailFromDomain: "bounce.mail.acme.com",
       region: "eu-west-1",
     });
+    expect(res.data.verifyUntil!.getTime()).toBeGreaterThan(Date.now());
     expect(enqueue).toHaveBeenCalledWith("domain.provision", {
       domainId: res.data.id,
     });
   });
-  it("rejects duplicates and invalid names; member cannot create", async () => {
+  it("createDomain strips a trailing dot before validating", async () => {
+    const { createDomain } = await import("@/services/domains");
+    const res = await createDomain(actor, { name: "dot.acme.com." }, noop);
+    expect(res).toMatchObject({
+      ok: true,
+      data: { name: "dot.acme.com", dnsMode: "auto" },
+    });
+    // Later tests count rows; drop this one.
+    await pg.db.delete(domains).where(eq(domains.name, "dot.acme.com"));
+  });
+  it("manual mode when no zone matches: provisioning touches SES only", async () => {
+    const { createDomain, provisionDomain, deleteDomain } =
+      await import("@/services/domains");
+    const res = await createDomain(actor, { name: "mail.other.io" }, noop);
+    expect(res).toMatchObject({
+      ok: true,
+      data: { dnsMode: "manual", cloudflareZoneId: null },
+    });
+    if (!res.ok) return;
+    happyProvision();
+    cfCalls.length = 0;
+    const enqueue = vi.fn(async () => "job");
+    await provisionDomain(res.data.id, { enqueue, fetch: cfFetch });
+    const after = await byName("mail.other.io");
+    expect(after.expectedRecords).toHaveLength(6);
+    expect(after.expectedRecords.some((r) => r.cloudflareId)).toBe(false);
+    expect(cfCalls).toHaveLength(0);
+    expect(enqueue).toHaveBeenCalledWith(
+      "domain.verify",
+      { domainId: res.data.id },
+      { startAfter: 30, singletonKey: res.data.id },
+    );
+    ses.on(DeleteEmailIdentityCommand).resolves({});
+    cfCalls.length = 0;
+    expect(await deleteDomain(actor, res.data.id, noop)).toEqual({
+      ok: true,
+      data: { leftoverDnsRecords: 0 },
+    });
+    expect(cfCalls).toHaveLength(0);
+  });
+  it("rejects duplicates and invalid names; member cannot create; needs AWS", async () => {
     const { createDomain } = await import("@/services/domains");
     expect(
-      (
-        await createDomain(
-          actor,
-          { name: "mail.acme.com" },
-          { enqueue: async () => "", fetch: cfFetch },
-        )
-      ).ok,
+      (await createDomain(actor, { name: "mail.acme.com" }, noop)).ok,
     ).toBe(false);
     expect(
-      (
-        await createDomain(
-          actor,
-          { name: "not a domain" },
-          { enqueue: async () => "", fetch: cfFetch },
-        )
-      ).ok,
+      (await createDomain(actor, { name: "MAIL.acme.com " }, noop)).ok,
     ).toBe(false);
+    expect((await createDomain(actor, { name: "not a domain" }, noop)).ok).toBe(
+      false,
+    );
     expect(
       (
         await createDomain(
           { ...actor, role: "member" },
           { name: "x.acme.com" },
-          { enqueue: async () => "", fetch: cfFetch },
+          noop,
         )
       ).ok,
     ).toBe(false);
+    const { updateInstanceSettings } =
+      await import("@/services/instance-settings");
+    await updateInstanceSettings({ awsMode: "none" }, undefined, {
+      audit: false,
+    });
+    const res = await createDomain(actor, { name: "y.acme.com" }, noop);
+    expect(res).toMatchObject({ ok: false, error: /Connect AWS/ });
+    expect(await pg.db.select().from(domains)).toHaveLength(1);
   });
   it("provisionDomain creates the identity, MAIL FROM, writes records to Cloudflare", async () => {
-    ses.on(CreateEmailIdentityCommand).resolves({
-      DkimAttributes: { Tokens: ["t1", "t2", "t3"], Status: "PENDING" },
-    });
-    ses.on(PutEmailIdentityMailFromAttributesCommand).resolves({});
+    happyProvision();
     const { provisionDomain } = await import("@/services/domains");
-    const { domains } = await import("@/db/schema");
-    const [d] = await pg.db
-      .select()
-      .from(domains)
-      .where(eq(domains.name, "mail.acme.com"));
+    const d = await byName("mail.acme.com");
     const enqueue = vi.fn(async () => "job");
-    await provisionDomain(d!.id, { enqueue, fetch: cfFetch });
-    const [after] = await pg.db
-      .select()
-      .from(domains)
-      .where(eq(domains.id, d!.id));
-    expect(after!.dkimTokens).toEqual(["t1", "t2", "t3"]);
-    expect(after!.expectedRecords).toHaveLength(6);
-    expect(after!.expectedRecords.every((r) => r.cloudflareId)).toBe(true);
+    await provisionDomain(d.id, { enqueue, fetch: cfFetch });
+    const after = await byName("mail.acme.com");
+    expect(after.dkimTokens).toEqual(["t1", "t2", "t3"]);
+    expect(after.dkimStatus).toBe("PENDING");
+    expect(after.lastError).toBeNull();
+    expect(after.expectedRecords).toHaveLength(6);
+    expect(after.expectedRecords.every((r) => r.cloudflareId)).toBe(true);
     expect(cfCalls.filter((c) => c.method === "POST")).toHaveLength(6);
+    expect(
+      ses.commandCalls(CreateEmailIdentityCommand)[0]!.args[0].input,
+    ).toEqual({
+      EmailIdentity: "mail.acme.com",
+      ConfigurationSetName: "sendsprite",
+      DkimSigningAttributes: { NextSigningKeyLength: "RSA_2048_BIT" },
+    });
+    expect(
+      ses.commandCalls(PutEmailIdentityMailFromAttributesCommand)[0]!.args[0]
+        .input,
+    ).toEqual({
+      EmailIdentity: "mail.acme.com",
+      MailFromDomain: "bounce.mail.acme.com",
+      BehaviorOnMxFailure: "USE_DEFAULT_VALUE",
+    });
     expect(enqueue).toHaveBeenCalledWith(
       "domain.verify",
-      { domainId: d!.id },
-      expect.objectContaining({ startAfter: expect.any(Number) }),
+      { domainId: d.id },
+      { startAfter: 30, singletonKey: d.id },
     );
+  });
+  it("re-provisioning patches the records Cloudflare already has and keeps their ids", async () => {
+    happyProvision();
+    const { provisionDomain } = await import("@/services/domains");
+    const d = await byName("mail.acme.com");
+    await provisionDomain(d.id, { enqueue: async () => "", fetch: cfExisting });
+    const after = await byName("mail.acme.com");
+    expect(cfCalls.filter((c) => c.method === "POST")).toHaveLength(0);
+    expect(cfCalls.filter((c) => c.method === "PATCH")).toHaveLength(6);
+    expect(after.expectedRecords.map((r) => r.cloudflareId)).toEqual(
+      after.expectedRecords.map((r) => `e-${r.type}-${r.name}`),
+    );
+    // Restore the ids the delete test expects to remove.
+    await provisionDomain(d.id, { enqueue: async () => "", fetch: cfFetch });
+  });
+  it("provisionDomain converges when the identity already exists", async () => {
+    ses
+      .on(CreateEmailIdentityCommand)
+      .rejects(awsErr("AlreadyExistsException", "exists"));
+    ses.on(GetEmailIdentityCommand).resolves(pendingIdentity);
+    ses.on(PutEmailIdentityMailFromAttributesCommand).resolves({});
+    const { provisionDomain } = await import("@/services/domains");
+    const d = await byName("mail.acme.com");
+    await provisionDomain(d.id, { enqueue: async () => "", fetch: cfFetch });
+    expect((await byName("mail.acme.com")).dkimTokens).toEqual([
+      "t1",
+      "t2",
+      "t3",
+    ]);
+  });
+  it("provisionDomain records the error and rethrows so pg-boss retries", async () => {
+    ses
+      .on(CreateEmailIdentityCommand)
+      .rejects(awsErr("TooManyRequestsException", "Rate exceeded"));
+    const { provisionDomain } = await import("@/services/domains");
+    const d = await byName("mail.acme.com");
+    const enqueue = vi.fn(async () => "job");
+    await expect(
+      provisionDomain(d.id, { enqueue, fetch: cfFetch }),
+    ).rejects.toThrow(/Rate exceeded/);
+    expect((await byName("mail.acme.com")).lastError).toMatch(/Rate exceeded/);
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+  it("auto mode degrades to manual when Cloudflare is disconnected mid-flight", async () => {
+    const { createDomain, provisionDomain, deleteDomain } =
+      await import("@/services/domains");
+    const res = await createDomain(actor, { name: "deg.acme.com" }, noop);
+    if (!res.ok) throw new Error(res.error);
+    expect(res.data.dnsMode).toBe("auto");
+    await disconnectCloudflare();
+    happyProvision();
+    const enqueue = vi.fn(async () => "job");
+    await provisionDomain(res.data.id, { enqueue, fetch: cfFetch });
+    const after = await byName("deg.acme.com");
+    expect(after).toMatchObject({
+      dnsMode: "manual",
+      lastError: /Cloudflare is not connected/,
+    });
+    expect(after.expectedRecords).toHaveLength(6);
+    expect(after.expectedRecords.some((r) => r.cloudflareId)).toBe(false);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    ses.on(DeleteEmailIdentityCommand).resolves({});
+    expect((await deleteDomain(actor, res.data.id, noop)).ok).toBe(true);
   });
   it("verifyDomain flips to verified when SES + DNS agree, else re-enqueues", async () => {
     ses.on(GetEmailIdentityCommand).resolves({
@@ -3707,83 +3887,239 @@ describe("domains", () => {
       MailFromAttributes: {
         MailFromDomainStatus: "SUCCESS",
         MailFromDomain: "bounce.mail.acme.com",
+        BehaviorOnMxFailure: "USE_DEFAULT_VALUE",
       },
       VerifiedForSendingStatus: true,
     });
-    const resolver = {
+    const resolver: Resolver = {
       resolveCname: async () => ["t1.dkim.amazonses.com"],
       resolveMx: async () => [
         { exchange: "feedback-smtp.eu-west-1.amazonses.com", priority: 10 },
       ],
-      resolveTxt: async (n: string) =>
+      resolveTxt: async (n) =>
         n.startsWith("_dmarc")
-          ? [["v=DMARC1; p=none; rua=mailto:dmarc@mail.acme.com"]]
+          ? [["v=DMARC1; p=none"]]
           : [["v=spf1 include:amazonses.com ~all"]],
     };
     const { verifyDomain } = await import("@/services/domains");
-    const { domains } = await import("@/db/schema");
-    const [d] = await pg.db
-      .select()
-      .from(domains)
-      .where(eq(domains.name, "mail.acme.com"));
+    const d = await byName("mail.acme.com");
     const enqueue = vi.fn(async () => "job");
-    await verifyDomain(d!.id, { enqueue, resolver });
-    const [after] = await pg.db
-      .select()
-      .from(domains)
-      .where(eq(domains.id, d!.id));
-    expect(after!.status).toBe("verified");
-    expect(after!.verifiedAt).toBeTruthy();
-    expect(enqueue).not.toHaveBeenCalled();
-  });
-  it("verifyDomain re-enqueues while pending and fails after verifyUntil", async () => {
-    ses.on(GetEmailIdentityCommand).resolves({
-      DkimAttributes: { Status: "PENDING", Tokens: ["t1", "t2", "t3"] },
-      MailFromAttributes: { MailFromDomainStatus: "PENDING" },
+    await verifyDomain(d.id, { enqueue, resolver });
+    const after = await byName("mail.acme.com");
+    expect(after).toMatchObject({
+      status: "verified",
+      dkimStatus: "SUCCESS",
+      mailFromStatus: "SUCCESS",
+      spfOk: true,
+      dmarcOk: true,
+      lastError: null,
     });
+    expect(after.verifiedAt).toBeInstanceOf(Date);
+    expect(after.lastCheckedAt).toBeInstanceOf(Date);
+    expect(enqueue).not.toHaveBeenCalled();
+    // Already verified: a stray re-run is a no-op.
+    ses.reset();
+    await verifyDomain(d.id, { enqueue, resolver });
+    expect(ses.commandCalls(GetEmailIdentityCommand)).toHaveLength(0);
+  });
+  it("verifyDomain re-enqueues one keyed job while pending and fails after verifyUntil", async () => {
+    ses.on(GetEmailIdentityCommand).resolves(pendingIdentity);
     const { verifyDomain, createDomain } = await import("@/services/domains");
-    const { domains } = await import("@/db/schema");
-    const created = await createDomain(
-      actor,
-      { name: "slow.acme.com" },
-      { enqueue: async () => "", fetch: cfFetch },
-    );
+    const created = await createDomain(actor, { name: "slow.acme.com" }, noop);
     if (!created.ok) throw new Error(created.error);
+    const id = created.data.id;
     const enqueue = vi.fn(async () => "job");
-    const resolver = {
-      resolveCname: async () => [],
-      resolveMx: async () => [],
-      resolveTxt: async () => [],
-    };
-    await verifyDomain(created.data.id, { enqueue, resolver });
-    expect(enqueue).toHaveBeenCalledTimes(1);
+    await verifyDomain(id, { enqueue, resolver: emptyDns });
+    await verifyDomain(id, { enqueue, resolver: emptyDns });
+    expect(enqueue).toHaveBeenCalledTimes(2);
+    for (const call of enqueue.mock.calls)
+      expect(call).toEqual([
+        "domain.verify",
+        { domainId: id },
+        { startAfter: 120, singletonKey: id },
+      ]);
+    expect((await byName("slow.acme.com")).status).toBe("pending");
     await pg.db
       .update(domains)
       .set({ verifyUntil: new Date(Date.now() - 1000) })
-      .where(eq(domains.id, created.data.id));
+      .where(eq(domains.id, id));
     enqueue.mockClear();
-    await verifyDomain(created.data.id, { enqueue, resolver });
-    const [after] = await pg.db
-      .select()
-      .from(domains)
-      .where(eq(domains.id, created.data.id));
-    expect(after!.status).toBe("failed");
+    await verifyDomain(id, { enqueue, resolver: emptyDns });
+    const after = await byName("slow.acme.com");
+    expect(after.status).toBe("failed");
+    expect(after.lastError).toMatch(/timed out/);
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+  it("reverifyDomain resets the window, audits, and checks inline", async () => {
+    ses.on(GetEmailIdentityCommand).resolves(pendingIdentity);
+    const { reverifyDomain } = await import("@/services/domains");
+    const d = await byName("slow.acme.com");
+    const enqueue = vi.fn(async () => "job");
+    const deps = { enqueue, resolver: emptyDns };
+    expect(
+      (await reverifyDomain({ ...actor, role: "member" }, d.id, deps)).ok,
+    ).toBe(false);
+    expect(await reverifyDomain(actor, d.id, deps)).toEqual({
+      ok: true,
+      data: undefined,
+    });
+    expect(ses.commandCalls(GetEmailIdentityCommand)).toHaveLength(1);
+    const after = await byName("slow.acme.com");
+    expect(after.status).toBe("pending");
+    expect(after.lastError).toBeNull();
+    expect(after.verifyUntil!.getTime()).toBeGreaterThan(Date.now());
+    expect(after.lastCheckedAt!.getTime()).toBeGreaterThan(
+      d.lastCheckedAt!.getTime(),
+    );
+    expect(enqueue).toHaveBeenCalledWith(
+      "domain.verify",
+      { domainId: d.id },
+      { startAfter: 120, singletonKey: d.id },
+    );
+    expect(
+      await pg.db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.action, "domains.reverify")),
+    ).toHaveLength(1);
+    // A failing check is reported, not thrown.
+    ses.reset();
+    ses
+      .on(GetEmailIdentityCommand)
+      .rejects(awsErr("TooManyRequestsException", "Rate exceeded"));
+    expect(await reverifyDomain(actor, d.id, deps)).toMatchObject({
+      ok: false,
+      error: /Rate exceeded/,
+    });
+  });
+  it("verifyDomain stops polling (no throw, no re-enqueue) when AWS is disconnected", async () => {
+    const { updateInstanceSettings } =
+      await import("@/services/instance-settings");
+    await updateInstanceSettings({ awsMode: "none" }, undefined, {
+      audit: false,
+    });
+    const { verifyDomain } = await import("@/services/domains");
+    const d = await byName("slow.acme.com");
+    const enqueue = vi.fn(async () => "job");
+    await verifyDomain(d.id, { enqueue, resolver: emptyDns });
+    const after = await byName("slow.acme.com");
+    expect(after.status).toBe("pending");
+    expect(after.lastError).toMatch(/AWS is not connected/);
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(ses.commandCalls(GetEmailIdentityCommand)).toHaveLength(0);
+  });
+  it("verifyDomain records other SES errors and rethrows for retry", async () => {
+    ses
+      .on(GetEmailIdentityCommand)
+      .rejects(awsErr("TooManyRequestsException", "Rate exceeded"));
+    const { verifyDomain } = await import("@/services/domains");
+    const d = await byName("slow.acme.com");
+    const enqueue = vi.fn(async () => "job");
+    await expect(
+      verifyDomain(d.id, { enqueue, resolver: emptyDns }),
+    ).rejects.toThrow(/Rate exceeded/);
+    const after = await byName("slow.acme.com");
+    expect(after.status).toBe("pending");
+    expect(after.lastError).toMatch(/Rate exceeded/);
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+  it("verifyDomain fails the domain when the SES identity has vanished", async () => {
+    ses
+      .on(GetEmailIdentityCommand)
+      .rejects(awsErr("NotFoundException", "identity not found"));
+    const { verifyDomain } = await import("@/services/domains");
+    const d = await byName("slow.acme.com");
+    const enqueue = vi.fn(async () => "job");
+    await verifyDomain(d.id, { enqueue, resolver: emptyDns });
+    const after = await byName("slow.acme.com");
+    expect(after.status).toBe("failed");
+    expect(after.lastError).toMatch(/identity was removed/);
     expect(enqueue).not.toHaveBeenCalled();
   });
   it("deleteDomain removes the identity and the Cloudflare records it created", async () => {
     ses.on(DeleteEmailIdentityCommand).resolves({});
-    const { deleteDomain } = await import("@/services/domains");
-    const { domains } = await import("@/db/schema");
-    const [d] = await pg.db
-      .select()
-      .from(domains)
-      .where(eq(domains.name, "mail.acme.com"));
-    const res = await deleteDomain(actor, d!.id, { fetch: cfFetch });
-    expect(res.ok).toBe(true);
+    const { deleteDomain, listDomains } = await import("@/services/domains");
+    const d = await byName("mail.acme.com");
+    expect(
+      (await deleteDomain({ ...actor, role: "member" }, d.id, noop)).ok,
+    ).toBe(false);
+    expect(
+      (await deleteDomain({ ...actor, teamId: "org_other" }, d.id, noop)).ok,
+    ).toBe(false);
+    expect(await deleteDomain(actor, d.id, { fetch: cfFetch })).toEqual({
+      ok: true,
+      data: { leftoverDnsRecords: 0 },
+    });
     expect(cfCalls.filter((c) => c.method === "DELETE")).toHaveLength(6);
     expect(
-      await pg.db.select().from(domains).where(eq(domains.id, d!.id)),
+      ses.commandCalls(DeleteEmailIdentityCommand)[0]!.args[0].input,
+    ).toEqual({ EmailIdentity: "mail.acme.com" });
+    expect(
+      await pg.db.select().from(domains).where(eq(domains.id, d.id)),
     ).toHaveLength(0);
+    expect((await listDomains("org_1")).map((x) => x.name)).toEqual([
+      "slow.acme.com",
+    ]);
+  });
+  it("deleteDomain reports Cloudflare records it could not remove", async () => {
+    happyProvision();
+    ses.on(DeleteEmailIdentityCommand).resolves({});
+    const { createDomain, provisionDomain, deleteDomain } =
+      await import("@/services/domains");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // Cloudflare refuses the deletes.
+      const a = await createDomain(actor, { name: "left.acme.com" }, noop);
+      if (!a.ok) throw new Error(a.error);
+      await provisionDomain(a.data.id, {
+        enqueue: async () => "",
+        fetch: cfFetch,
+      });
+      expect(
+        await deleteDomain(actor, a.data.id, { fetch: cfNoDelete }),
+      ).toEqual({ ok: true, data: { leftoverDnsRecords: 6 } });
+      expect(warn).toHaveBeenCalledTimes(6);
+      expect(warn.mock.calls[0]![0]).toMatch(/could not delete Cloudflare/);
+      // Cloudflare disconnected: nothing is attempted, everything is left.
+      warn.mockClear();
+      const b = await createDomain(actor, { name: "gone.acme.com" }, noop);
+      if (!b.ok) throw new Error(b.error);
+      await provisionDomain(b.data.id, {
+        enqueue: async () => "",
+        fetch: cfFetch,
+      });
+      await disconnectCloudflare();
+      cfCalls.length = 0;
+      expect(await deleteDomain(actor, b.data.id, { fetch: cfFetch })).toEqual({
+        ok: true,
+        data: { leftoverDnsRecords: 6 },
+      });
+      expect(cfCalls).toHaveLength(0);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+    expect((await pg.db.select().from(domains)).map((d) => d.name)).toEqual([
+      "slow.acme.com",
+    ]);
+  });
+  it("deleteDomain tolerates a missing identity and keeps the row when SES fails", async () => {
+    const { deleteDomain } = await import("@/services/domains");
+    const d = await byName("slow.acme.com");
+    ses
+      .on(DeleteEmailIdentityCommand)
+      .rejects(awsErr("AccessDeniedException", "not authorized"));
+    expect(await deleteDomain(actor, d.id, noop)).toMatchObject({
+      ok: false,
+      error: /not authorized/,
+    });
+    expect(await byName("slow.acme.com")).toBeTruthy();
+    ses.reset();
+    ses
+      .on(DeleteEmailIdentityCommand)
+      .rejects(awsErr("NotFoundException", "gone"));
+    expect((await deleteDomain(actor, d.id, noop)).ok).toBe(true);
+    expect(await pg.db.select().from(domains)).toHaveLength(0);
   });
 });
 ```
@@ -3805,9 +4141,10 @@ import {
 } from "@aws-sdk/client-sesv2";
 import { can, newId } from "@sendsprite/shared";
 import { db } from "@/db";
-import { domains, type ExpectedRecord } from "@/db/schema";
+import { domains } from "@/db/schema";
 import { makeSes } from "@/lib/aws/clients";
 import { resolveAwsContext } from "@/lib/aws/credentials";
+import type { FetchLike } from "@/lib/cloudflare/client";
 import { expectedRecords } from "@/lib/dns/records";
 import { matchZone } from "@/lib/dns/zone-match";
 import { checkRecords, type Resolver } from "@/lib/dns/check";
@@ -3818,22 +4155,52 @@ import { cloudflareClient, listZones } from "./cloudflare-connect";
 import type { TeamActor } from "./team";
 
 export type Domain = typeof domains.$inferSelect;
+
+/**
+ * `startAfter` is a delay in seconds (pg-boss casts a number to an interval).
+ * `singletonKey` dedups on a queue with a policy that enforces it: the
+ * `domain.verify` queue is `exclusive`, so one verify job per domain can be
+ * created/retry/active at a time and a duplicate send is dropped (null).
+ */
 export type Enqueue = (
   queue: string,
   data: object,
-  opts?: { startAfter?: number },
+  opts?: { startAfter?: number; singletonKey?: string },
 ) => Promise<unknown>;
+
+/** Injection points: the job queue, Cloudflare's fetch, and the DNS resolver. */
 interface Deps {
   enqueue: Enqueue;
-  fetch?: typeof fetch;
+  fetch?: FetchLike;
   resolver?: Resolver;
 }
 
+/** How often a pending domain is re-checked, and for how long before it fails. */
 const VERIFY_EVERY_S = 120;
+const FIRST_VERIFY_AFTER_S = 30;
 const VERIFY_WINDOW_MS = 72 * 3600 * 1000;
 const DOMAIN_RE =
   /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+const DENIED: Result<never> = {
+  ok: false,
+  error: "You don't have permission to do that.",
+};
+const DUPLICATE: Result<never> = {
+  ok: false,
+  error: "That domain is already added on this instance.",
+};
+const CF_DISCONNECTED =
+  "Cloudflare is not connected; add the records manually.";
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const errName = (e: unknown) =>
+  typeof e === "object" && e !== null
+    ? (e as { name?: string }).name
+    : undefined;
+/** Postgres SQLSTATE, on the driver error or (drizzle) its `cause`. */
+const pgCode = (e: unknown): string | undefined => {
+  const o = e as { code?: string; cause?: { code?: string } } | null;
+  return o?.code ?? o?.cause?.code;
+};
 
 export async function listDomains(teamId: string): Promise<Domain[]> {
   return db()
@@ -3842,6 +4209,7 @@ export async function listDomains(teamId: string): Promise<Domain[]> {
     .where(eq(domains.teamId, teamId))
     .orderBy(domains.createdAt);
 }
+
 export async function getDomain(
   teamId: string,
   id: string,
@@ -3854,15 +4222,39 @@ export async function getDomain(
   return d ?? null;
 }
 
+async function loadById(id: string): Promise<Domain | undefined> {
+  const [d] = await db()
+    .select()
+    .from(domains)
+    .where(eq(domains.id, id))
+    .limit(1);
+  return d;
+}
+
+function enqueueVerify(enqueue: Enqueue, domainId: string, startAfter = 0) {
+  return enqueue(
+    "domain.verify",
+    { domainId },
+    { startAfter, singletonKey: domainId },
+  );
+}
+
+/**
+ * Add a sending domain. Picks `auto` DNS mode when a connected Cloudflare
+ * zone covers the name, `manual` otherwise, then queues provisioning.
+ */
 export async function createDomain(
   actor: TeamActor,
   input: unknown,
   deps: Deps,
 ): Promise<Result<Domain>> {
-  if (!can(actor.role, "domains.manage"))
-    return { ok: false, error: "You don't have permission to do that." };
+  if (!can(actor.role, "domains.manage")) return DENIED;
   const parsed = z
-    .object({ name: z.string().transform((s) => s.trim().toLowerCase()) })
+    .object({
+      name: z
+        .string()
+        .transform((s) => s.trim().toLowerCase().replace(/\.$/, "")),
+    })
     .safeParse(input);
   if (!parsed.success || !DOMAIN_RE.test(parsed.data.name))
     return { ok: false, error: "Enter a valid domain like mail.example.com." };
@@ -3875,56 +4267,62 @@ export async function createDomain(
     .from(domains)
     .where(eq(domains.name, name))
     .limit(1);
-  if (dupe)
-    return {
-      ok: false,
-      error: "That domain is already added on this instance.",
-    };
+  if (dupe) return DUPLICATE;
   const zone = matchZone(name, await listZones(deps.fetch));
   const id = newId("dom");
-  const [row] = await db()
-    .insert(domains)
-    .values({
-      id,
-      teamId: actor.teamId,
-      name,
-      region: settings.awsRegion,
-      cloudflareZoneId: zone?.id ?? null,
-      dnsMode: zone ? "auto" : "manual",
-      mailFromDomain: `bounce.${name}`,
-      verifyUntil: new Date(Date.now() + VERIFY_WINDOW_MS),
-      createdBy: actor.userId,
-    })
-    .returning();
+  let row: Domain | undefined;
+  try {
+    [row] = await db()
+      .insert(domains)
+      .values({
+        id,
+        teamId: actor.teamId,
+        name,
+        region: settings.awsRegion,
+        cloudflareZoneId: zone?.id ?? null,
+        dnsMode: zone ? "auto" : "manual",
+        mailFromDomain: `bounce.${name}`,
+        verifyUntil: new Date(Date.now() + VERIFY_WINDOW_MS),
+        createdBy: actor.userId,
+      })
+      .returning();
+  } catch (e) {
+    // Two concurrent adds of the same name: the unique index decides.
+    if (pgCode(e) === "23505") return DUPLICATE;
+    throw e;
+  }
+  if (!row) throw new Error("domains insert returned no row");
   await recordAudit({
     teamId: actor.teamId,
     actorUserId: actor.userId,
     action: "domains.create",
     targetType: "domain",
     targetId: id,
-    diff: { name: { to: name }, dnsMode: { to: row!.dnsMode } },
+    diff: { name: { to: name }, dnsMode: { to: row.dnsMode } },
     ...actor.meta,
   });
   await deps.enqueue("domain.provision", { domainId: id });
-  return { ok: true, data: row! };
+  return { ok: true, data: row };
 }
 
-/** Job: SES identity + MAIL FROM + (auto) Cloudflare records; then schedule verification. */
+/**
+ * Job: SES identity + MAIL FROM + (auto mode) Cloudflare records, then
+ * schedule the first verification. Idempotent: an existing identity is
+ * read back for its tokens and Cloudflare upserts by (type, name[, content]).
+ * Auto mode with Cloudflare disconnected degrades to manual (records are
+ * still computed for the user to add by hand). Throws after recording
+ * `lastError` so pg-boss retries.
+ */
 export async function provisionDomain(
   domainId: string,
   deps: Deps,
 ): Promise<void> {
-  const [d] = await db()
-    .select()
-    .from(domains)
-    .where(eq(domains.id, domainId))
-    .limit(1);
+  const d = await loadById(domainId);
   if (!d) return;
   try {
-    const ctx = await resolveAwsContext();
-    const ses = makeSes(ctx);
+    const ses = makeSes(await resolveAwsContext());
     const settings = await getInstanceSettings();
-    const created = await ses
+    const identity = await ses
       .send(
         new CreateEmailIdentityCommand({
           EmailIdentity: d.name,
@@ -3932,11 +4330,11 @@ export async function provisionDomain(
           DkimSigningAttributes: { NextSigningKeyLength: "RSA_2048_BIT" },
         }),
       )
-      .catch(async (e) => {
-        if ((e as { name?: string }).name !== "AlreadyExistsException") throw e;
+      .catch((e: unknown) => {
+        if (errName(e) !== "AlreadyExistsException") throw e;
         return ses.send(new GetEmailIdentityCommand({ EmailIdentity: d.name }));
       });
-    const tokens = created.DkimAttributes?.Tokens ?? [];
+    const tokens = identity.DkimAttributes?.Tokens ?? [];
     await ses.send(
       new PutEmailIdentityMailFromAttributesCommand({
         EmailIdentity: d.name,
@@ -3950,66 +4348,107 @@ export async function provisionDomain(
       dkimTokens: tokens,
       mailFromDomain: d.mailFromDomain,
     });
+    let dnsMode = d.dnsMode;
+    let lastError: string | null = null;
     if (d.dnsMode === "auto" && d.cloudflareZoneId) {
+      const zoneId = d.cloudflareZoneId;
       const cf = await cloudflareClient(deps.fetch);
-      if (!cf) throw new Error("Cloudflare is no longer connected");
-      recs = await Promise.all(
-        recs.map(async (r) => ({
-          ...r,
-          cloudflareId: (
-            await cf.upsertRecord(d.cloudflareZoneId!, {
-              type: r.type,
-              name: r.name,
-              content: r.value,
-              priority: r.priority,
-            })
-          ).id,
-        })),
-      );
+      if (cf) {
+        recs = await Promise.all(
+          recs.map(async (r) => ({
+            ...r,
+            cloudflareId: (
+              await cf.upsertRecord(zoneId, {
+                type: r.type,
+                name: r.name,
+                content: r.value,
+                priority: r.priority,
+              })
+            ).id,
+          })),
+        );
+      } else {
+        dnsMode = "manual";
+        lastError = CF_DISCONNECTED;
+      }
     }
     await db()
       .update(domains)
       .set({
         dkimTokens: tokens,
-        dkimStatus: created.DkimAttributes?.Status ?? null,
+        dkimStatus: identity.DkimAttributes?.Status ?? null,
         expectedRecords: recs,
-        lastError: null,
+        dnsMode,
+        lastError,
       })
       .where(eq(domains.id, d.id));
-    await deps.enqueue("domain.verify", { domainId: d.id }, { startAfter: 30 });
+    await enqueueVerify(deps.enqueue, d.id, FIRST_VERIFY_AFTER_S);
   } catch (e) {
     await db()
       .update(domains)
       .set({ lastError: errMsg(e) })
       .where(eq(domains.id, d.id));
-    throw e; // let pg-boss retry
+    throw e;
   }
 }
 
-/** Job: poll SES + DNS; verified → stop; pending → re-enqueue; past window → failed. */
+async function setError(id: string, lastError: string) {
+  await db()
+    .update(domains)
+    .set({ lastError, lastCheckedAt: new Date() })
+    .where(eq(domains.id, id));
+}
+
+/**
+ * Job: poll SES + DNS. Verified → stop; pending → re-enqueue; past the
+ * window → failed. Two paths stop the loop without throwing: AWS
+ * disconnected (lastError set, status untouched; Re-verify restarts it) and
+ * the SES identity gone (`failed`; the user deletes and re-adds). Any other
+ * SES error records `lastError` and rethrows so pg-boss retries.
+ */
 export async function verifyDomain(
   domainId: string,
   deps: Pick<Deps, "enqueue" | "resolver">,
 ): Promise<void> {
-  const [d] = await db()
-    .select()
-    .from(domains)
-    .where(eq(domains.id, domainId))
-    .limit(1);
+  const d = await loadById(domainId);
   if (!d || d.status === "verified") return;
-  const ctx = await resolveAwsContext();
-  const ident = await makeSes(ctx).send(
-    new GetEmailIdentityCommand({ EmailIdentity: d.name }),
-  );
+  let ses;
+  try {
+    ses = makeSes(await resolveAwsContext());
+  } catch (e) {
+    await setError(d.id, errMsg(e));
+    return;
+  }
+  let ident;
+  try {
+    ident = await ses.send(
+      new GetEmailIdentityCommand({ EmailIdentity: d.name }),
+    );
+  } catch (e) {
+    if (errName(e) === "NotFoundException") {
+      await db()
+        .update(domains)
+        .set({
+          status: "failed",
+          lastCheckedAt: new Date(),
+          lastError: "SES identity was removed; delete and re-add the domain.",
+        })
+        .where(eq(domains.id, d.id));
+      return;
+    }
+    await setError(d.id, errMsg(e));
+    throw e;
+  }
   const recs = await checkRecords(d.expectedRecords, deps.resolver);
   const dkimOk = ident.DkimAttributes?.Status === "SUCCESS";
   const mailFromOk =
     ident.MailFromAttributes?.MailFromDomainStatus === "SUCCESS";
   const spfOk = recs.some((r) => r.kind === "MAIL_FROM_SPF" && r.ok);
   const dmarcOk = recs.some((r) => r.kind === "DMARC" && r.ok);
+  // SES is the authority on sending; SPF/DMARC are advisory and shown per-record.
   const verified = dkimOk && mailFromOk;
   const expired =
-    !verified && d.verifyUntil && d.verifyUntil.getTime() < Date.now();
+    !verified && !!d.verifyUntil && d.verifyUntil.getTime() < Date.now();
   await db()
     .update(domains)
     .set({
@@ -4027,21 +4466,20 @@ export async function verifyDomain(
     })
     .where(eq(domains.id, d.id));
   if (!verified && !expired)
-    await deps.enqueue(
-      "domain.verify",
-      { domainId: d.id },
-      { startAfter: VERIFY_EVERY_S },
-    );
+    await enqueueVerify(deps.enqueue, d.id, VERIFY_EVERY_S);
 }
 
-/** Manual "Re-verify": resets the window and runs one check now. */
+/**
+ * Manual "Re-verify": resets the window and runs one check inline so the
+ * click answers right away; the check re-enqueues the loop itself if the
+ * domain is still pending (the singleton key keeps it to one loop).
+ */
 export async function reverifyDomain(
   actor: TeamActor,
   id: string,
-  deps: Pick<Deps, "enqueue">,
+  deps: Pick<Deps, "enqueue" | "resolver">,
 ): Promise<Result> {
-  if (!can(actor.role, "domains.manage"))
-    return { ok: false, error: "You don't have permission to do that." };
+  if (!can(actor.role, "domains.manage")) return DENIED;
   const d = await getDomain(actor.teamId, id);
   if (!d) return { ok: false, error: "Domain not found." };
   await db()
@@ -4052,37 +4490,71 @@ export async function reverifyDomain(
       lastError: null,
     })
     .where(eq(domains.id, id));
-  await deps.enqueue("domain.verify", { domainId: id });
+  await recordAudit({
+    teamId: actor.teamId,
+    actorUserId: actor.userId,
+    action: "domains.reverify",
+    targetType: "domain",
+    targetId: id,
+    diff: { status: { from: d.status, to: "pending" } },
+    ...actor.meta,
+  });
+  try {
+    await verifyDomain(id, deps);
+  } catch (e) {
+    return { ok: false, error: `Check failed: ${errMsg(e)}` };
+  }
   return { ok: true, data: undefined };
 }
 
+export interface DeleteOutcome {
+  /** Cloudflare records we created but could not remove (0 in manual mode). */
+  leftoverDnsRecords: number;
+}
+
+/**
+ * Remove the SES identity and the Cloudflare records we created, then the
+ * row. The row survives an SES failure so the user can retry; Cloudflare
+ * failures are reported as `leftoverDnsRecords` rather than blocking.
+ */
 export async function deleteDomain(
   actor: TeamActor,
   id: string,
   deps: Pick<Deps, "fetch">,
-): Promise<Result> {
-  if (!can(actor.role, "domains.manage"))
-    return { ok: false, error: "You don't have permission to do that." };
+): Promise<Result<DeleteOutcome>> {
+  if (!can(actor.role, "domains.manage")) return DENIED;
   const d = await getDomain(actor.teamId, id);
   if (!d) return { ok: false, error: "Domain not found." };
   try {
-    const ctx = await resolveAwsContext();
-    await makeSes(ctx)
+    const ses = makeSes(await resolveAwsContext());
+    await ses
       .send(new DeleteEmailIdentityCommand({ EmailIdentity: d.name }))
-      .catch((e) => {
-        if ((e as { name?: string }).name !== "NotFoundException") throw e;
+      .catch((e: unknown) => {
+        if (errName(e) !== "NotFoundException") throw e;
       });
-    if (d.dnsMode === "auto" && d.cloudflareZoneId) {
-      const cf = await cloudflareClient(deps.fetch);
-      if (cf)
-        for (const r of d.expectedRecords)
-          if (r.cloudflareId)
-            await cf
-              .deleteRecord(d.cloudflareZoneId, r.cloudflareId)
-              .catch(() => {});
-    }
   } catch (e) {
     return { ok: false, error: `Could not remove: ${errMsg(e)}` };
+  }
+  let leftoverDnsRecords = 0;
+  if (d.dnsMode === "auto" && d.cloudflareZoneId) {
+    const zoneId = d.cloudflareZoneId;
+    const cf = await cloudflareClient(deps.fetch);
+    for (const r of d.expectedRecords) {
+      if (!r.cloudflareId) continue;
+      if (!cf) {
+        leftoverDnsRecords++;
+        continue;
+      }
+      try {
+        await cf.deleteRecord(zoneId, r.cloudflareId);
+      } catch (e) {
+        leftoverDnsRecords++;
+        console.warn(
+          `[domains] could not delete Cloudflare record ${r.type} ${r.name} (${r.cloudflareId}):`,
+          errMsg(e),
+        );
+      }
+    }
   }
   await db().delete(domains).where(eq(domains.id, id));
   await recordAudit({
@@ -4094,25 +4566,40 @@ export async function deleteDomain(
     diff: { name: { from: d.name } },
     ...actor.meta,
   });
-  return { ok: true, data: undefined };
+  return { ok: true, data: { leftoverDnsRecords } };
 }
 ```
 
 - [x] **Step 3: Job handlers**
 
+`apps/web/src/jobs/enqueue.ts` (shared by handlers and, later, server actions):
+
+```ts
+import { getBoss } from "./boss";
+import type { Enqueue } from "@/services/domains";
+
+/**
+ * Service → pg-boss bridge, shared by job handlers and server actions.
+ * `startAfter` stays a number of seconds: pg-boss 12 stringifies a number
+ * and Postgres casts it to an interval. `singletonKey` passes through; it
+ * only dedups on a queue whose policy enforces it (see `domain-verify.ts`).
+ */
+export const enqueue: Enqueue = async (queue, data, opts) =>
+  (await getBoss()).send(queue, data, {
+    ...(opts?.startAfter !== undefined && { startAfter: opts.startAfter }),
+    ...(opts?.singletonKey !== undefined && {
+      singletonKey: opts.singletonKey,
+    }),
+  });
+```
+
 `apps/web/src/jobs/handlers/domain-provision.ts`:
 
 ```ts
-import { registerQueue, getBoss } from "../boss";
+import { registerQueue } from "../boss";
+import { enqueue } from "../enqueue";
 import { Q } from "../queues";
-import { provisionDomain, type Enqueue } from "@/services/domains";
-
-export const enqueue: Enqueue = async (queue, data, opts) =>
-  (await getBoss()).send(
-    queue,
-    data,
-    opts?.startAfter ? { startAfter: opts.startAfter } : undefined,
-  );
+import { provisionDomain } from "@/services/domains";
 
 registerQueue<{ domainId: string }>(
   Q.domainProvision,
@@ -4135,20 +4622,32 @@ registerQueue<{ domainId: string }>(
 
 ```ts
 import { registerQueue } from "../boss";
+import { enqueue } from "../enqueue";
 import { Q } from "../queues";
 import { verifyDomain } from "@/services/domains";
-import { enqueue } from "./domain-provision";
 
 registerQueue<{ domainId: string }>(
   Q.domainVerify,
   async (jobs) => {
     for (const job of jobs) await verifyDomain(job.data.domainId, { enqueue });
   },
-  { queue: { retryLimit: 3, retryDelay: 60, expireInSeconds: 120 } },
+  {
+    // `exclusive`: pg-boss 12 keeps one job per (queue, singletonKey) across
+    // created/retry/active (unique index job_i6, `state <= 'active'`); a
+    // duplicate `send` returns null. On the default `standard` policy a bare
+    // singletonKey dedups nothing. Every verify send keys on the domain id,
+    // so Re-verify plus the running loop never fan out into two loops.
+    queue: {
+      policy: "exclusive",
+      retryLimit: 3,
+      retryDelay: 60,
+      expireInSeconds: 120,
+    },
+  },
 );
 ```
 
-`handlers/index.ts`: import both. Confirm pg-boss `send(name, data, { startAfter })` accepts seconds (number) in 12.x (`node_modules/pg-boss/dist/index.d.ts`); if it expects a Date/ISO string, convert.
+`handlers/index.ts`: import both. pg-boss 12 `startAfter?: number | string | Date`: a number is stringified and cast to a Postgres interval, i.e. seconds — no conversion.
 
 - [x] **Step 4: Run, commit**
 
@@ -4160,6 +4659,17 @@ git commit -m "feat(web): domains service — create, provision (SES + Cloudflar
 ```
 
 ---
+
+**Review follow-ups (applied after the Task 13 commit):**
+
+- One verify loop per domain: the `domain.verify` queue uses `policy: "exclusive"` (`QueueOptions.policy`, create-time only) and every verify send carries `singletonKey: domainId`. pg-boss 12 keeps one job per (queue, key) across created/retry/active under that policy (unique index `job_i6`, `state <= 'active'`); a duplicate `send` returns null. A bare `singletonKey` on the default `standard` policy dedups nothing.
+- `reverifyDomain` resets status/window, audits `domains.reverify`, then runs `verifyDomain` inline (a thrown check → `ok:false`); the check re-enqueues the loop itself while pending.
+- `verifyDomain`: `NotFoundException` from `GetEmailIdentity` → `status: "failed"`, `lastError: "SES identity was removed; delete and re-add the domain."`, no re-enqueue, no throw. Any other SES error writes `lastError` and rethrows (pg-boss retries). AWS disconnected → `lastError`, status untouched, loop stops.
+- `provisionDomain` in auto mode with Cloudflare disconnected degrades to `dnsMode: "manual"` (records computed, no `cloudflareId`), `lastError: "Cloudflare is not connected; add the records manually."`, still schedules verify.
+- `createDomain` maps Postgres `23505` (error `code` or `cause.code`) from the insert to the "already added" error (concurrent adds).
+- `deleteDomain` returns `Result<{ leftoverDnsRecords }>`: a failed Cloudflare delete is `console.warn`ed and counted; with Cloudflare disconnected in auto mode every record with a `cloudflareId` counts. The row is deleted either way; only an SES failure keeps it.
+- `enqueue` bridge lives in `src/jobs/enqueue.ts` (`startAfter !== undefined`, `singletonKey` passthrough); `errName` is null-safe.
+- `lib/dns/check.ts` SPF predicate matches `include:amazonses.com` as a whole token (`include:amazonses.com.evil.net` no longer passes).
 
 ### Task 14: Setup wizard UI + owner gating
 

@@ -5,10 +5,14 @@ export type JobHandler<T extends object = object> = (
   jobs: Job<T>[],
 ) => Promise<unknown>;
 
-/** Per-queue policy a handler owns (retry, expiry, retention, dead-letter). */
+/**
+ * Per-queue policy a handler owns (retry, expiry, retention, dead-letter,
+ * queue policy). `policy` is fixed at creation: pg-boss cannot update it.
+ */
 export type QueueOptions = Partial<
   Pick<
     Queue,
+    | "policy"
     | "retryLimit"
     | "retryDelay"
     | "retryBackoff"
@@ -54,7 +58,11 @@ export function getWorkerState(): WorkerState {
 async function attach(b: PgBoss, { name, handler, cron, queue }: Registration) {
   await b.createQueue(name, queue);
   // createQueue is a no-op for an existing queue; apply changed options.
-  if (queue) await b.updateQueue(name, queue);
+  if (queue) {
+    const { policy, ...updatable } = queue;
+    void policy; // fixed at creation; updateQueue rejects it
+    await b.updateQueue(name, updatable);
+  }
   if (cron) await b.schedule(name, cron);
   await b.work(name, handler as JobHandler);
 }

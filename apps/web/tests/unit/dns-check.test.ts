@@ -57,6 +57,14 @@ describe("checkRecords", () => {
       true,
       false,
     ]);
+    // Whole-token match: a look-alike suffix must not pass.
+    expect(
+      await withTxt([["v=spf1 include:amazonses.com.evil.net -all"]]),
+    ).toEqual([false, false]);
+    expect(await withTxt([["v=spf1 include:amazonses.com"]])).toEqual([
+      true,
+      false,
+    ]);
     expect(await withTxt([["v=DMARC1; p=none"]])).toEqual([false, true]);
     expect(await withTxt([["v=DMARC1 p=none"]])).toEqual([false, true]);
     expect(await withTxt([["dmarc1; p=none"]])).toEqual([false, false]);
