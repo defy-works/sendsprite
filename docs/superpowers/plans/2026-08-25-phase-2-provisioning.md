@@ -1,0 +1,3737 @@
+# Sendsprite Phase 2 — Provisioning Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** An owner can connect AWS (instance role, one-click CloudFormation, or pasted keys) and Cloudflare from the browser, request SES production access, and add sending domains that Sendsprite provisions in SES and Cloudflare DNS and verifies automatically.
+
+**Architecture:** All cloud calls live in `src/lib/aws/*` and `src/lib/cloudflare/*` (thin, injectable clients) and are orchestrated by `src/services/*` (no `next/*` imports, unit/integration-testable). Long-running work (provision, verify, account refresh) runs as pg-boss jobs registered through `registerQueue`. Credentials come from `instance_settings` (encrypted) or the SDK default chain when `aws_mode = instance_role`. The one-click path is a CloudFormation quick-create link to a template published on S3; a Lambda custom resource POSTs the created keys back to a one-time callback URL. Phase 2 also lands the "openers" the Phase 1 final review asked for.
+
+**Tech Stack:** `@aws-sdk/client-sesv2`, `@aws-sdk/client-sns`, `@aws-sdk/client-sts` (3.1117), `aws-sdk-client-mock` 4.1 (tests), `sns-validator` 0.3.5, Node `dns/promises`, Cloudflare API v4 via `fetch`, pg-boss queues, Drizzle migrations `0003`+.
+
+**Spec:** `docs/superpowers/specs/2026-08-24-sendsprite-design.md` §6 (provisioning), §5 (`domains`, `instance_settings`), §12 (errors). Phase 1 plan: `docs/superpowers/plans/2026-08-24-phase-1-foundation.md` ("Rules learned in review" and "Phase 1 status" apply).
+
+**Decisions made while planning (deviations/clarifications):**
+
+- **Quick-create requires an S3 `templateURL`** (AWS docs: only S3 URL formats are accepted). The template is published by CI to `s3://sendsprite-cfn/v<version>/sendsprite-connect.yaml` (public-read). The instance builds the link from `CFN_TEMPLATE_URL` (default `https://sendsprite-cfn.s3.us-east-1.amazonaws.com/latest/sendsprite-connect.yaml`). Creating that bucket is a one-time maintainer step (documented in Task 17). Self-hosters who don't trust it can set `CFN_TEMPLATE_URL` to their own copy or use the manual path.
+- `PutAccountDetails` requires `MailType` (`TRANSACTIONAL|MARKETING`) and `WebsiteURL`; `UseCaseDescription` is deprecated but still accepted — we send it. `ContactLanguage` `EN`.
+- REST `/api/v1/domains` is deferred to Phase 3 (it needs API keys). Phase 2 ships the dashboard + services; Phase 3 wraps them.
+- Phase 2 SNS endpoint only confirms the subscription and acknowledges notifications; Phase 3 processes events.
+- Domain verification is a per-domain re-enqueued job (pg-boss `startAfter`), not a global cron, so each domain polls on its own schedule and stops when verified or after 72 h.
+
+---
+
+## File structure (Phase 2 additions)
+
+```
+apps/web/
+├─ src/env.schema.ts                       + CFN_TEMPLATE_URL, AWS_DEFAULT_REGION
+├─ src/db/schema/
+│  ├─ instance.ts                          + sns_subscription_arn, ses_review_status, aws_account_id, cloudflare_account_name
+│  ├─ team-settings.ts                     team_settings (opener #3)
+│  ├─ setup-tokens.ts                      one-time tokens for the CFN callback
+│  ├─ domains.ts                           domains
+│  └─ index.ts                             re-exports
+├─ drizzle/0003_*.sql … 0005_*.sql
+├─ src/lib/audit.ts                        + RequestMeta (ip, userAgent) helper
+├─ src/lib/auth.ts                         + organizationHooks → audit (opener #1); session hook ordering (opener #5)
+├─ src/lib/aws/
+│  ├─ credentials.ts                       resolveAwsCredentials(): keys | instance role
+│  ├─ clients.ts                           sesv2()/sns()/sts() factories (injectable for tests)
+│  ├─ quick-create.ts                      buildQuickCreateUrl() (pure)
+│  └─ ses-account.ts                       mapAccount() (pure) — GetAccount → status/quota
+├─ src/lib/cloudflare/client.ts            CloudflareClient (fetch-injectable)
+├─ src/lib/dns/
+│  ├─ records.ts                           expectedRecords() (pure)
+│  ├─ zone-match.ts                        matchZone() (pure)
+│  └─ check.ts                             checkRecords() with injectable resolver
+├─ src/lib/sns-message.ts                  verifySnsMessage() wrapper around sns-validator
+├─ src/services/
+│  ├─ instance-settings.ts                 + self-audit (opener #1)
+│  ├─ setup-tokens.ts                      issue/consume
+│  ├─ aws-connect.ts                       detectInstanceRole, connectWithKeys, ensureSesInfrastructure, refreshSesAccount, requestProductionAccess, disconnectAws
+│  ├─ cloudflare-connect.ts                connectCloudflare, disconnectCloudflare, listZones
+│  └─ domains.ts                           createDomain, provisionDomain, verifyDomain, deleteDomain, listDomains
+├─ src/jobs/handlers/
+│  ├─ index.ts                             + imports below
+│  ├─ ses-refresh-account.ts               cron hourly
+│  ├─ domain-provision.ts
+│  └─ domain-verify.ts
+├─ src/jobs/boss.ts                        registerQueue opts.queue (opener #2)
+├─ src/app/api/setup/aws/callback/route.ts POST from Lambda
+├─ src/app/api/setup/aws/status/route.ts   GET polled by wizard
+├─ src/app/api/webhooks/ses/route.ts       SNS endpoint (confirm + ack)
+├─ src/app/setup/                          wizard: page.tsx, actions.ts, steps/*.tsx
+├─ src/app/app/settings/instance/          owner-only instance tab (reuses wizard step components)
+├─ src/app/app/domains/                    page.tsx, new/page.tsx, [id]/page.tsx, actions.ts, components
+├─ src/app/app/layout.tsx                  redirect owner to /setup until setupCompleted
+├─ src/app/app/page.tsx                    checklist reads real domain state
+└─ tests/
+   ├─ unit/{quick-create,ses-account,dns-records,zone-match,dns-check,sns-message}.test.ts
+   └─ integration/{aws-connect,cloudflare-connect,domains,setup-callback,ses-webhook,audit-hooks}.test.ts
+infra/aws/sendsprite-connect.yaml          CloudFormation template
+.github/workflows/ci.yml                   + cfn-lint job; + publish template on tag (commented until bucket exists)
+```
+
+---
+
+### Task 1: Openers — queue options, session ordering, test harness retry
+
+**Files:**
+
+- Modify: `apps/web/src/jobs/boss.ts`, `apps/web/src/lib/auth.ts`, `apps/web/tests/integration/_pg.ts`
+- Test: `apps/web/tests/integration/worker.test.ts` (add one case)
+
+- [ ] **Step 1: Failing test — queue options are applied**
+
+Append to `apps/web/tests/integration/worker.test.ts` inside the existing `describe` (after the worker is running):
+
+```ts
+it("registerQueue passes queue options to pg-boss", async () => {
+  const { registerQueue, getBoss } = await import("@/jobs/boss");
+  registerQueue("test.opts", async () => {}, {
+    queue: {
+      retryLimit: 7,
+      retryDelay: 3,
+      retryBackoff: true,
+      expireInSeconds: 120,
+    },
+  });
+  const boss = await getBoss();
+  // attach is fire-and-forget after start; wait for the queue to exist
+  let q = await boss.getQueue("test.opts");
+  for (let i = 0; !q && i < 50; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    q = await boss.getQueue("test.opts");
+  }
+  expect(q).toMatchObject({
+    retryLimit: 7,
+    retryDelay: 3,
+    retryBackoff: true,
+    expireInSeconds: 120,
+  });
+});
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `cd apps/web && bun run test:integration -- worker`
+Expected: FAIL — `retryLimit` is the pg-boss default (2), not 7.
+
+- [ ] **Step 3: Implement queue options**
+
+In `apps/web/src/jobs/boss.ts`:
+
+```ts
+import { PgBoss, type Job, type Queue } from "pg-boss";
+// …
+export type QueueOptions = Partial<
+  Pick<
+    Queue,
+    | "retryLimit"
+    | "retryDelay"
+    | "retryBackoff"
+    | "expireInSeconds"
+    | "retentionSeconds"
+    | "deadLetter"
+  >
+>;
+
+interface Registration {
+  name: string;
+  handler: JobHandler<never>;
+  cron?: string;
+  queue?: QueueOptions;
+}
+
+async function attach(b: PgBoss, { name, handler, cron, queue }: Registration) {
+  await b.createQueue(name, queue ? { name, ...queue } : undefined);
+  if (queue) await b.updateQueue(name, { name, ...queue }); // createQueue is a no-op when it exists
+  if (cron) await b.schedule(name, cron);
+  await b.work(name, handler as JobHandler);
+}
+
+export function registerQueue<T extends object>(
+  name: string,
+  handler: JobHandler<T>,
+  opts: { cron?: string; queue?: QueueOptions } = {},
+) {
+  const reg: Registration = {
+    name,
+    handler,
+    cron: opts.cron,
+    queue: opts.queue,
+  };
+  // … unchanged
+}
+```
+
+Check the exact `createQueue`/`updateQueue`/`getQueue` signatures in `node_modules/pg-boss/dist/index.d.ts` and adjust the option object shape (pg-boss 12 takes `Queue` objects with `name`).
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `cd apps/web && bun run test:integration -- worker`
+Expected: PASS.
+
+- [ ] **Step 5: Session hook ordering (opener #5)**
+
+In `apps/web/src/lib/auth.ts`, replace the body of `session.create.before` so it uses the same rule as `resolveTeam`:
+
+```ts
+before: async (session) => {
+  const { resolveTeam } = await import("@/lib/team");
+  const t = await resolveTeam(session.userId, null);
+  return { data: { ...session, activeOrganizationId: t?.team.id ?? null } };
+},
+```
+
+(`resolveTeam` has no `next/*` imports, so this is safe inside the hook.)
+
+- [ ] **Step 6: Harness rm retry (opener #7)**
+
+In `apps/web/tests/integration/_pg.ts`, every `rm(dir, { recursive: true, force: true })` becomes `rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })`.
+
+- [ ] **Step 7: Verify and commit**
+
+Run: `cd apps/web && bun run test:integration && bun run typecheck`
+Expected: all green (auth tests still pass — the second-login test asserts `org_1`, which is the oldest membership).
+
+```bash
+git add apps/web/src/jobs/boss.ts apps/web/src/lib/auth.ts apps/web/tests
+git commit -m "feat(web): per-queue pg-boss options; session hook uses resolveTeam ordering; harness rm retry"
+```
+
+---
+
+### Task 2: Openers — team_settings table and timestamp convention
+
+**Files:**
+
+- Create: `apps/web/src/db/schema/team-settings.ts`
+- Modify: `apps/web/src/db/schema/index.ts`, `docs/superpowers/plans/2026-08-24-phase-1-foundation.md` (no), `apps/web/src/db/schema/audit.ts` (comment only)
+- Test: `apps/web/tests/integration/db.test.ts`
+
+- [ ] **Step 1: Schema**
+
+`apps/web/src/db/schema/team-settings.ts`:
+
+```ts
+import {
+  boolean,
+  integer,
+  pgTable,
+  text,
+  timestamp,
+} from "drizzle-orm/pg-core";
+import { organization } from "./auth";
+
+/**
+ * Per-team knobs the spec puts on `teams` (§5). Kept 1:1 with better-auth's
+ * `organization` so `schema/auth.ts` stays purely generated.
+ * Convention (all Sendsprite tables): timestamps are `withTimezone: true`.
+ */
+export const teamSettings = pgTable("team_settings", {
+  teamId: text("team_id")
+    .primaryKey()
+    .references(() => organization.id, { onDelete: "cascade" }),
+  dailyLimit: integer("daily_limit"),
+  monthlyLimit: integer("monthly_limit"),
+  trackOpens: boolean("track_opens").notNull().default(true),
+  trackClicks: boolean("track_clicks").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow()
+    .$onUpdate(() => new Date()),
+});
+```
+
+Add `export * from "./team-settings";` to `apps/web/src/db/schema/index.ts` (and remove the stale "generated in Task 7" comment).
+
+- [ ] **Step 2: Failing test**
+
+Append to `tests/integration/db.test.ts`:
+
+```ts
+it("creates team_settings with cascade to organization", async () => {
+  const rows = await pg.db.execute(
+    sql`select table_name from information_schema.tables where table_schema='public'`,
+  );
+  expect(rows.map((r) => r.table_name)).toContain("team_settings");
+});
+```
+
+Run: `cd apps/web && bun run test:integration -- db` → FAIL (table missing).
+
+- [ ] **Step 3: Generate migration**
+
+Run: `cd apps/web && bun run db:generate`
+Expected: `drizzle/0003_*.sql` with `CREATE TABLE "team_settings"` and the FK.
+
+- [ ] **Step 4: Verify and commit**
+
+Run: `cd apps/web && bun run test:integration -- db` → PASS.
+
+```bash
+git add apps/web/src/db apps/web/drizzle apps/web/tests/integration/db.test.ts
+git commit -m "feat(web): team_settings table; timestamptz convention"
+```
+
+---
+
+### Task 3: Openers — audit completeness (organization hooks, request meta, instance self-audit)
+
+**Files:**
+
+- Modify: `apps/web/src/lib/audit.ts`, `apps/web/src/lib/auth.ts`, `apps/web/src/services/team.ts`, `apps/web/src/services/instance-settings.ts`, `apps/web/src/app/app/settings/actions.ts`
+- Test: `apps/web/tests/integration/audit-hooks.test.ts`, `apps/web/tests/integration/instance-settings.test.ts`
+
+- [ ] **Step 1: Request meta helper**
+
+In `apps/web/src/lib/audit.ts` add:
+
+```ts
+export interface RequestMeta {
+  ip: string | null;
+  userAgent: string | null;
+}
+
+/** Pull client ip / UA from request headers (proxy-aware). No `next/*` import. */
+export function requestMeta(h: Headers): RequestMeta {
+  const fwd = h.get("x-forwarded-for");
+  const ip = (fwd ? fwd.split(",")[0]?.trim() : h.get("x-real-ip")) || null;
+  return { ip, userAgent: h.get("user-agent") };
+}
+```
+
+and log only `err.message`/`err.code` in the catch (`console.error("[audit] failed", (err as {code?:string}).code, (err as Error).message)`).
+
+- [ ] **Step 2: Failing test — hooks write audit rows**
+
+`apps/web/tests/integration/audit-hooks.test.ts`:
+
+```ts
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
+import { startPg } from "./_pg";
+
+let pg: Awaited<ReturnType<typeof startPg>>;
+beforeAll(async () => {
+  pg = await startPg();
+  process.env.APP_URL = "http://localhost:3000";
+  process.env.APP_SECRET = "x".repeat(40);
+  process.env.EMAIL_PASSWORD_ENABLED = "true";
+  process.env.SIGNUP_MODE = "open";
+  const { resetEnvCache } = await import("@/env.schema");
+  resetEnvCache();
+  const { resetAuthForTests } = await import("@/lib/auth");
+  resetAuthForTests();
+});
+afterAll(async () => {
+  await pg.stop();
+});
+
+async function audits(action: string) {
+  const { auditLog } = await import("@/db/schema");
+  return pg.db.select().from(auditLog).where(eq(auditLog.action, action));
+}
+
+describe("organization hooks → audit", () => {
+  it("records team.create on organization creation", async () => {
+    const { auth } = await import("@/lib/auth");
+    const { headers } = await auth.api.signUpEmail({
+      body: {
+        email: "h@example.com",
+        password: "correct-horse-battery",
+        name: "H",
+      },
+      returnHeaders: true,
+    });
+    const cookie = headers.get("set-cookie") ?? "";
+    const org = await auth.api.createOrganization({
+      headers: new Headers({ cookie }),
+      body: { name: "Hooked", slug: "hooked" },
+    });
+    const rows = await audits("team.create");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      teamId: org!.id,
+      targetType: "team",
+      targetId: org!.id,
+    });
+  });
+});
+```
+
+Run: `cd apps/web && bun run test:integration -- audit-hooks` → FAIL (0 rows).
+
+- [ ] **Step 3: Wire organization hooks**
+
+In `apps/web/src/lib/auth.ts`, inside `organization({...})`, add (verify hook names/args in `node_modules/better-auth/dist/plugins/organization/*.d.ts`; adjust to the real signatures and report):
+
+```ts
+organizationHooks: {
+  afterCreateOrganization: async ({ organization: org, user }) => {
+    await recordAudit({ teamId: org.id, actorUserId: user.id, action: "team.create", targetType: "team", targetId: org.id, diff: { name: { to: org.name }, slug: { to: org.slug } } });
+  },
+  afterAcceptInvitation: async ({ invitation: inv, member: m, user }) => {
+    await recordAudit({ teamId: inv.organizationId, actorUserId: user.id, action: "members.join", targetType: "member", targetId: m.id, diff: { role: { to: m.role }, invitationId: { to: inv.id } } });
+  },
+},
+```
+
+Import `recordAudit` from `@/lib/audit` (no `next/*` — safe here). Keep the service-layer audit calls for rename/invite/cancel/remove/changeRole (they carry ip/UA; hooks don't).
+
+- [ ] **Step 4: ip/UA through the service layer**
+
+`apps/web/src/services/team.ts`: add `meta?: RequestMeta` to `TeamActor`; every `recordAudit({...})` call spreads `...actor.meta`. `apps/web/src/app/app/settings/actions.ts` `actor()` sets `meta: requestMeta(await headers())`.
+
+- [ ] **Step 5: Instance self-audit**
+
+`apps/web/src/services/instance-settings.ts`: `updateInstanceSettings(patch, actor?: { userId: string; meta?: RequestMeta })` — after the upsert, `recordAudit({ teamId: null, actorUserId: actor?.userId ?? null, action: "instance.update", targetType: "instance", targetId: "1", diff: computeDiff(beforePlain, afterPlain), ...actor?.meta })` where `beforePlain/afterPlain` are the row minus `*Enc` columns, plus `{ awsSecretEnc: "[set]" }`-style markers when a secret was set/cleared (`computeDiff` redacts by key anyway). Add to `instance-settings.test.ts`:
+
+```ts
+it("writes an instance-level audit row on update", async () => {
+  const { updateInstanceSettings } =
+    await import("@/services/instance-settings");
+  await updateInstanceSettings({ retentionDays: 30 }, { userId: "u_audit" });
+  const { auditLog } = await import("@/db/schema");
+  const rows = await pg.db
+    .select()
+    .from(auditLog)
+    .where(eq(auditLog.action, "instance.update"));
+  expect(rows.at(-1)).toMatchObject({
+    teamId: null,
+    actorUserId: "u_audit",
+    diff: { retentionDays: { from: 90, to: 30 } },
+  });
+});
+```
+
+- [ ] **Step 6: Verify and commit**
+
+Run: `cd apps/web && bun run test:integration && bun run typecheck` → green (team-actions tests unchanged; `meta` is optional).
+
+```bash
+git add apps/web/src apps/web/tests
+git commit -m "feat(web): audit organization hooks, request meta, instance self-audit"
+```
+
+---
+
+### Task 4: Env + schema for provisioning
+
+**Files:**
+
+- Modify: `apps/web/src/env.schema.ts`, `apps/web/src/db/schema/instance.ts`, `.env.example`, `README.md` (env table)
+- Create: `apps/web/src/db/schema/setup-tokens.ts`, `apps/web/src/db/schema/domains.ts`
+- Test: `apps/web/tests/unit/env.test.ts`, `apps/web/tests/integration/db.test.ts`
+
+- [ ] **Step 1: Env additions (failing test first)**
+
+Add to `tests/unit/env.test.ts`:
+
+```ts
+it("has provisioning defaults", () => {
+  const env = parseEnv(BASE);
+  expect(env.CFN_TEMPLATE_URL).toBe(
+    "https://sendsprite-cfn.s3.us-east-1.amazonaws.com/latest/sendsprite-connect.yaml",
+  );
+  expect(env.AWS_DEFAULT_REGION).toBe("us-east-1");
+});
+it("rejects a non-S3 CFN_TEMPLATE_URL", () => {
+  expect(() =>
+    parseEnv({
+      ...BASE,
+      CFN_TEMPLATE_URL: "https://raw.githubusercontent.com/x/y.yaml",
+    }),
+  ).toThrow(/S3/);
+});
+```
+
+Run: `cd apps/web && bun run test` → FAIL. Then in `env.schema.ts`:
+
+```ts
+CFN_TEMPLATE_URL: z.url().refine((u) => /^https:\/\/([a-z0-9.-]+\.)?s3[.-][a-z0-9-]+\.amazonaws\.com\//.test(u) || /^https:\/\/[a-z0-9.-]+\.s3\.amazonaws\.com\//.test(u), "CFN_TEMPLATE_URL must be an S3 URL (CloudFormation quick-create only accepts S3)").default("https://sendsprite-cfn.s3.us-east-1.amazonaws.com/latest/sendsprite-connect.yaml"),
+AWS_DEFAULT_REGION: z.string().default("us-east-1"),
+```
+
+Run → PASS. Add both to `.env.example` (commented) and README env table.
+
+- [ ] **Step 2: instance_settings additions**
+
+`apps/web/src/db/schema/instance.ts` — add columns:
+
+```ts
+awsAccountId: text("aws_account_id"),
+snsSubscriptionArn: text("sns_subscription_arn"),
+sesReviewStatus: text("ses_review_status", { enum: ["PENDING", "GRANTED", "DENIED", "FAILED"] }),
+sesLastCheckedAt: timestamp("ses_last_checked_at", { withTimezone: true }),
+cloudflareAccountName: text("cloudflare_account_name"),
+cloudflareConnectedAt: timestamp("cloudflare_connected_at", { withTimezone: true }),
+awsConnectedAt: timestamp("aws_connected_at", { withTimezone: true }),
+```
+
+- [ ] **Step 3: setup_tokens and domains**
+
+`apps/web/src/db/schema/setup-tokens.ts`:
+
+```ts
+import { pgTable, text, timestamp } from "drizzle-orm/pg-core";
+
+/** One-time tokens for out-of-band callbacks (CloudFormation → Sendsprite). Stored hashed. */
+export const setupTokens = pgTable("setup_tokens", {
+  id: text("id").primaryKey(), // stok_<ulid>
+  purpose: text("purpose", { enum: ["aws_callback"] }).notNull(),
+  tokenHash: text("token_hash").notNull().unique(),
+  issuedBy: text("issued_by").notNull(), // user id
+  region: text("region").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+```
+
+`apps/web/src/db/schema/domains.ts`:
+
+```ts
+import {
+  boolean,
+  index,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
+import { organization } from "./auth";
+
+export type DnsRecordKind = "DKIM" | "MAIL_FROM_MX" | "MAIL_FROM_SPF" | "DMARC";
+export interface ExpectedRecord {
+  kind: DnsRecordKind;
+  type: "CNAME" | "MX" | "TXT";
+  name: string; // fully-qualified, no trailing dot
+  value: string;
+  priority?: number; // MX only
+  cloudflareId?: string; // set in auto mode after upsert
+  ok: boolean; // last check result
+}
+
+export const domains = pgTable(
+  "domains",
+  {
+    id: text("id").primaryKey(), // dom_<ulid>
+    teamId: text("team_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    region: text("region").notNull(),
+    cloudflareZoneId: text("cloudflare_zone_id"),
+    dnsMode: text("dns_mode", { enum: ["auto", "manual"] }).notNull(),
+    status: text("status", { enum: ["pending", "verified", "failed"] })
+      .notNull()
+      .default("pending"),
+    dkimTokens: jsonb("dkim_tokens").$type<string[]>().notNull().default([]),
+    dkimStatus: text("dkim_status"),
+    mailFromDomain: text("mail_from_domain").notNull(),
+    mailFromStatus: text("mail_from_status"),
+    spfOk: boolean("spf_ok").notNull().default(false),
+    dmarcOk: boolean("dmarc_ok").notNull().default(false),
+    expectedRecords: jsonb("expected_records")
+      .$type<ExpectedRecord[]>()
+      .notNull()
+      .default([]),
+    lastError: text("last_error"),
+    lastCheckedAt: timestamp("last_checked_at", { withTimezone: true }),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    verifyUntil: timestamp("verify_until", { withTimezone: true }),
+    createdBy: text("created_by"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (t) => [
+    uniqueIndex("domains_name_uidx").on(t.name),
+    index("domains_team_idx").on(t.teamId),
+  ],
+);
+```
+
+Add `"dom"` and `"stok"` to `ID_PREFIXES` in `packages/shared/src/ids.ts` (`dom` exists; add `stok`). Export both tables from `schema/index.ts`.
+
+- [ ] **Step 4: Migration + test**
+
+Append to `db.test.ts` the expectation that `setup_tokens` and `domains` exist and that `domains_name_uidx` is unique. Run `bun run db:generate` → `0004_*.sql`. Run `bun run test:integration -- db` → PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add apps/web packages/shared .env.example README.md
+git commit -m "feat(web): provisioning env, setup_tokens and domains schema"
+```
+
+---
+
+### Task 5: AWS credentials, clients, pure helpers (TDD)
+
+**Files:**
+
+- Create: `apps/web/src/lib/aws/credentials.ts`, `apps/web/src/lib/aws/clients.ts`, `apps/web/src/lib/aws/quick-create.ts`, `apps/web/src/lib/aws/ses-account.ts`
+- Test: `apps/web/tests/unit/quick-create.test.ts`, `apps/web/tests/unit/ses-account.test.ts`
+- Modify: `apps/web/package.json` (deps), `apps/web/next.config.ts` (`serverExternalPackages` += the three AWS clients)
+
+- [ ] **Step 1: Install**
+
+Run: `cd apps/web && bun add @aws-sdk/client-sesv2 @aws-sdk/client-sns @aws-sdk/client-sts && bun add -d aws-sdk-client-mock`
+
+- [ ] **Step 2: Failing unit tests**
+
+`tests/unit/quick-create.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { buildQuickCreateUrl } from "@/lib/aws/quick-create";
+
+describe("buildQuickCreateUrl", () => {
+  const url = buildQuickCreateUrl({
+    region: "eu-west-1",
+    templateUrl:
+      "https://sendsprite-cfn.s3.us-east-1.amazonaws.com/latest/sendsprite-connect.yaml",
+    callbackUrl: "https://mail.acme.com/api/setup/aws/callback",
+    callbackToken: "abc123",
+    stackName: "sendsprite-connect",
+  });
+  it("targets the region's console and the quick-create review page", () => {
+    expect(
+      url.startsWith(
+        "https://eu-west-1.console.aws.amazon.com/cloudformation/home?region=eu-west-1#/stacks/create/review?",
+      ),
+    ).toBe(true);
+  });
+  it("carries template, stack name and both params URL-encoded", () => {
+    const q = new URLSearchParams(url.split("#/stacks/create/review?")[1]);
+    expect(q.get("templateURL")).toBe(
+      "https://sendsprite-cfn.s3.us-east-1.amazonaws.com/latest/sendsprite-connect.yaml",
+    );
+    expect(q.get("stackName")).toBe("sendsprite-connect");
+    expect(q.get("param_CallbackUrl")).toBe(
+      "https://mail.acme.com/api/setup/aws/callback",
+    );
+    expect(q.get("param_CallbackToken")).toBe("abc123");
+  });
+  it("rejects a non-S3 template url", () => {
+    expect(() =>
+      buildQuickCreateUrl({
+        region: "us-east-1",
+        templateUrl: "https://example.com/t.yaml",
+        callbackUrl: "https://x/cb",
+        callbackToken: "t",
+        stackName: "s",
+      }),
+    ).toThrow(/S3/);
+  });
+});
+```
+
+`tests/unit/ses-account.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { mapAccount } from "@/lib/aws/ses-account";
+
+describe("mapAccount", () => {
+  it("maps sandbox account", () => {
+    expect(
+      mapAccount({
+        ProductionAccessEnabled: false,
+        SendQuota: { Max24HourSend: 200, MaxSendRate: 1, SentLast24Hours: 0 },
+      }),
+    ).toEqual({
+      status: "sandbox",
+      reviewStatus: null,
+      dailyQuota: 200,
+      maxSendRate: 1,
+    });
+  });
+  it("maps pending review", () => {
+    expect(
+      mapAccount({
+        ProductionAccessEnabled: false,
+        Details: { ReviewDetails: { Status: "PENDING" } },
+        SendQuota: { Max24HourSend: 200, MaxSendRate: 1 },
+      }),
+    ).toMatchObject({ status: "requested", reviewStatus: "PENDING" });
+  });
+  it("maps production", () => {
+    expect(
+      mapAccount({
+        ProductionAccessEnabled: true,
+        SendQuota: { Max24HourSend: 50000, MaxSendRate: 14 },
+      }),
+    ).toMatchObject({
+      status: "production",
+      dailyQuota: 50000,
+      maxSendRate: 14,
+    });
+  });
+  it("tolerates missing quota", () => {
+    expect(mapAccount({ ProductionAccessEnabled: false })).toMatchObject({
+      dailyQuota: null,
+      maxSendRate: null,
+    });
+  });
+});
+```
+
+Run: `cd apps/web && bun run test` → FAIL (modules missing).
+
+- [ ] **Step 3: Implement**
+
+`apps/web/src/lib/aws/quick-create.ts`:
+
+```ts
+const S3_URL =
+  /^https:\/\/(([a-z0-9.-]+\.)?s3[.-][a-z0-9-]+|[a-z0-9.-]+\.s3)\.amazonaws\.com\//;
+
+export interface QuickCreateInput {
+  region: string;
+  templateUrl: string;
+  callbackUrl: string;
+  callbackToken: string;
+  stackName: string;
+}
+
+/**
+ * CloudFormation quick-create link. AWS only accepts S3 template URLs here,
+ * which is why the template is published to a bucket rather than served by
+ * the instance. Parameters map to `param_<Name>` and must match the template.
+ */
+export function buildQuickCreateUrl(i: QuickCreateInput): string {
+  if (!S3_URL.test(i.templateUrl))
+    throw new Error(
+      "templateUrl must be an S3 URL (CloudFormation quick-create only accepts S3)",
+    );
+  const q = new URLSearchParams({
+    templateURL: i.templateUrl,
+    stackName: i.stackName,
+    param_CallbackUrl: i.callbackUrl,
+    param_CallbackToken: i.callbackToken,
+  });
+  return `https://${i.region}.console.aws.amazon.com/cloudformation/home?region=${i.region}#/stacks/create/review?${q.toString()}`;
+}
+```
+
+`apps/web/src/lib/aws/ses-account.ts`:
+
+```ts
+import type { GetAccountResponse } from "@aws-sdk/client-sesv2";
+
+export type SesAccountStatus = "sandbox" | "requested" | "production";
+export type SesReviewStatus = "PENDING" | "GRANTED" | "DENIED" | "FAILED";
+export interface SesAccount {
+  status: SesAccountStatus;
+  reviewStatus: SesReviewStatus | null;
+  dailyQuota: number | null;
+  maxSendRate: number | null;
+}
+
+export function mapAccount(a: GetAccountResponse): SesAccount {
+  const review =
+    (a.Details?.ReviewDetails?.Status as SesReviewStatus | undefined) ?? null;
+  const status: SesAccountStatus = a.ProductionAccessEnabled
+    ? "production"
+    : review === "PENDING"
+      ? "requested"
+      : "sandbox";
+  return {
+    status,
+    reviewStatus: review,
+    dailyQuota: a.SendQuota?.Max24HourSend ?? null,
+    maxSendRate: a.SendQuota?.MaxSendRate ?? null,
+  };
+}
+```
+
+`apps/web/src/lib/aws/credentials.ts`:
+
+```ts
+import type { AwsCredentialIdentity, Provider } from "@aws-sdk/types";
+import {
+  getInstanceSettings,
+  getDecryptedSecrets,
+} from "@/services/instance-settings";
+
+export interface AwsContext {
+  region: string;
+  credentials?: AwsCredentialIdentity | Provider<AwsCredentialIdentity>;
+}
+
+/**
+ * Where AWS calls get their identity from:
+ *  - `keys`: stored (encrypted) access key + secret
+ *  - `instance_role`: SDK default chain (EC2/ECS/Lambda role, env, profile)
+ *  - `none`: throws — callers must check `awsMode` first
+ */
+export async function resolveAwsContext(): Promise<AwsContext> {
+  const s = await getInstanceSettings();
+  if (s.awsMode === "none" || !s.awsRegion)
+    throw new Error("AWS is not connected");
+  if (s.awsMode === "instance_role") return { region: s.awsRegion };
+  const sec = await getDecryptedSecrets();
+  if (!sec.awsAccessKey || !sec.awsSecret) throw new Error("AWS keys missing");
+  return {
+    region: s.awsRegion,
+    credentials: {
+      accessKeyId: sec.awsAccessKey,
+      secretAccessKey: sec.awsSecret,
+    },
+  };
+}
+```
+
+`apps/web/src/lib/aws/clients.ts`:
+
+```ts
+import { SESv2Client } from "@aws-sdk/client-sesv2";
+import { SNSClient } from "@aws-sdk/client-sns";
+import { STSClient } from "@aws-sdk/client-sts";
+import type { AwsContext } from "./credentials";
+
+/** Factories are the seam for tests (aws-sdk-client-mock mocks the classes). */
+export const makeSes = (c: AwsContext) =>
+  new SESv2Client({ region: c.region, credentials: c.credentials });
+export const makeSns = (c: AwsContext) =>
+  new SNSClient({ region: c.region, credentials: c.credentials });
+export const makeSts = (c: AwsContext) =>
+  new STSClient({ region: c.region, credentials: c.credentials });
+
+export const SES_REGIONS = [
+  "us-east-1",
+  "us-east-2",
+  "us-west-1",
+  "us-west-2",
+  "ca-central-1",
+  "eu-west-1",
+  "eu-west-2",
+  "eu-west-3",
+  "eu-central-1",
+  "eu-north-1",
+  "eu-south-1",
+  "ap-south-1",
+  "ap-southeast-1",
+  "ap-southeast-2",
+  "ap-northeast-1",
+  "ap-northeast-2",
+  "ap-northeast-3",
+  "sa-east-1",
+  "af-south-1",
+  "me-south-1",
+  "il-central-1",
+] as const;
+export type SesRegion = (typeof SES_REGIONS)[number];
+```
+
+Add `"@aws-sdk/client-sesv2", "@aws-sdk/client-sns", "@aws-sdk/client-sts"` to `serverExternalPackages` in `next.config.ts`.
+
+- [ ] **Step 4: Run tests, commit**
+
+Run: `cd apps/web && bun run test && bun run typecheck` → PASS.
+
+```bash
+git add apps/web
+git commit -m "feat(web): AWS client factories, credential resolution, quick-create and account mapping"
+```
+
+---
+
+### Task 6: Setup tokens service (TDD)
+
+**Files:**
+
+- Create: `apps/web/src/services/setup-tokens.ts`
+- Test: `apps/web/tests/integration/setup-tokens.test.ts`
+
+- [ ] **Step 1: Failing test**
+
+```ts
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { startPg } from "./_pg";
+
+let pg: Awaited<ReturnType<typeof startPg>>;
+beforeAll(async () => {
+  pg = await startPg();
+});
+afterAll(async () => {
+  await pg.stop();
+});
+
+describe("setup tokens", () => {
+  it("issues a token that can be consumed exactly once", async () => {
+    const { issueSetupToken, consumeSetupToken } =
+      await import("@/services/setup-tokens");
+    const { token, id } = await issueSetupToken({
+      purpose: "aws_callback",
+      issuedBy: "u1",
+      region: "us-east-1",
+      ttlMs: 60_000,
+    });
+    expect(token).toMatch(/^[A-Za-z0-9_-]{43,}$/);
+    const first = await consumeSetupToken("aws_callback", token);
+    expect(first).toMatchObject({ id, region: "us-east-1", issuedBy: "u1" });
+    expect(await consumeSetupToken("aws_callback", token)).toBeNull();
+  });
+  it("rejects expired and unknown tokens", async () => {
+    const { issueSetupToken, consumeSetupToken } =
+      await import("@/services/setup-tokens");
+    const { token } = await issueSetupToken({
+      purpose: "aws_callback",
+      issuedBy: "u1",
+      region: "us-east-1",
+      ttlMs: -1,
+    });
+    expect(await consumeSetupToken("aws_callback", token)).toBeNull();
+    expect(await consumeSetupToken("aws_callback", "nope")).toBeNull();
+  });
+});
+```
+
+Run: `cd apps/web && bun run test:integration -- setup-tokens` → FAIL.
+
+- [ ] **Step 2: Implement**
+
+`apps/web/src/services/setup-tokens.ts`:
+
+```ts
+import { createHash, randomBytes } from "node:crypto";
+import { and, eq, gt, isNull } from "drizzle-orm";
+import { newId } from "@sendsprite/shared";
+import { db } from "@/db";
+import { setupTokens } from "@/db/schema";
+
+type Purpose = "aws_callback";
+const hash = (t: string) => createHash("sha256").update(t).digest("hex");
+
+export async function issueSetupToken(i: {
+  purpose: Purpose;
+  issuedBy: string;
+  region: string;
+  ttlMs: number;
+}) {
+  const token = randomBytes(32).toString("base64url");
+  const id = newId("stok");
+  await db()
+    .insert(setupTokens)
+    .values({
+      id,
+      purpose: i.purpose,
+      tokenHash: hash(token),
+      issuedBy: i.issuedBy,
+      region: i.region,
+      expiresAt: new Date(Date.now() + i.ttlMs),
+    });
+  return { token, id };
+}
+
+/** Atomically marks the token consumed; null when unknown, expired or already used. */
+export async function consumeSetupToken(purpose: Purpose, token: string) {
+  const [row] = await db()
+    .update(setupTokens)
+    .set({ consumedAt: new Date() })
+    .where(
+      and(
+        eq(setupTokens.purpose, purpose),
+        eq(setupTokens.tokenHash, hash(token)),
+        isNull(setupTokens.consumedAt),
+        gt(setupTokens.expiresAt, new Date()),
+      ),
+    )
+    .returning();
+  return row ?? null;
+}
+
+/** Latest unconsumed token for the wizard's status poll. */
+export async function pendingSetupToken(purpose: Purpose, issuedBy: string) {
+  const [row] = await db()
+    .select()
+    .from(setupTokens)
+    .where(
+      and(
+        eq(setupTokens.purpose, purpose),
+        eq(setupTokens.issuedBy, issuedBy),
+        isNull(setupTokens.consumedAt),
+        gt(setupTokens.expiresAt, new Date()),
+      ),
+    )
+    .orderBy(setupTokens.createdAt)
+    .limit(1);
+  return row ?? null;
+}
+```
+
+- [ ] **Step 3: Verify, commit**
+
+Run → PASS. `git add apps/web && git commit -m "feat(web): one-time setup tokens"`
+
+---
+
+### Task 7: AWS connect service (TDD with aws-sdk-client-mock)
+
+**Files:**
+
+- Create: `apps/web/src/services/aws-connect.ts`
+- Test: `apps/web/tests/integration/aws-connect.test.ts`
+
+- [ ] **Step 1: Failing test**
+
+```ts
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { mockClient } from "aws-sdk-client-mock";
+import {
+  SESv2Client,
+  GetAccountCommand,
+  CreateConfigurationSetCommand,
+  CreateConfigurationSetEventDestinationCommand,
+  PutAccountDetailsCommand,
+} from "@aws-sdk/client-sesv2";
+import {
+  SNSClient,
+  CreateTopicCommand,
+  SubscribeCommand,
+} from "@aws-sdk/client-sns";
+import { STSClient, GetCallerIdentityCommand } from "@aws-sdk/client-sts";
+import { startPg } from "./_pg";
+
+const ses = mockClient(SESv2Client);
+const sns = mockClient(SNSClient);
+const sts = mockClient(STSClient);
+
+let pg: Awaited<ReturnType<typeof startPg>>;
+beforeAll(async () => {
+  pg = await startPg();
+  process.env.APP_SECRET = "x".repeat(40);
+  process.env.APP_URL = "https://mail.acme.com";
+  const { resetEnvCache } = await import("@/env.schema");
+  resetEnvCache();
+});
+afterAll(async () => {
+  await pg.stop();
+});
+afterEach(() => {
+  ses.reset();
+  sns.reset();
+  sts.reset();
+});
+
+function happyMocks() {
+  sts
+    .on(GetCallerIdentityCommand)
+    .resolves({
+      Account: "123456789012",
+      Arn: "arn:aws:iam::123456789012:user/sendsprite",
+    });
+  ses
+    .on(GetAccountCommand)
+    .resolves({
+      ProductionAccessEnabled: false,
+      SendQuota: { Max24HourSend: 200, MaxSendRate: 1 },
+    });
+  ses.on(CreateConfigurationSetCommand).resolves({});
+  ses.on(CreateConfigurationSetEventDestinationCommand).resolves({});
+  sns
+    .on(CreateTopicCommand)
+    .resolves({
+      TopicArn: "arn:aws:sns:us-east-1:123456789012:sendsprite-events",
+    });
+  sns
+    .on(SubscribeCommand)
+    .resolves({ SubscriptionArn: "pending confirmation" });
+}
+
+describe("connectWithKeys", () => {
+  it("verifies, stores encrypted keys, provisions SES infra, records account", async () => {
+    happyMocks();
+    const { connectWithKeys } = await import("@/services/aws-connect");
+    const res = await connectWithKeys(
+      {
+        accessKeyId: "AKIAEXAMPLE",
+        secretAccessKey: "s3cr3t",
+        region: "us-east-1",
+      },
+      { userId: "u1" },
+    );
+    expect(res).toEqual({
+      ok: true,
+      data: { accountId: "123456789012", status: "sandbox" },
+    });
+    const { getInstanceSettings, getDecryptedSecrets } =
+      await import("@/services/instance-settings");
+    const s = await getInstanceSettings();
+    expect(s).toMatchObject({
+      awsMode: "keys",
+      awsRegion: "us-east-1",
+      awsAccountId: "123456789012",
+      sesConfigSet: "sendsprite",
+      snsTopicArn: "arn:aws:sns:us-east-1:123456789012:sendsprite-events",
+      sesAccountStatus: "sandbox",
+      sesDailyQuota: 200,
+      sesMaxSendRate: 1,
+    });
+    expect(s.awsAccessKeyEnc).toMatch(/^v1\./);
+    expect(await getDecryptedSecrets()).toMatchObject({
+      awsAccessKey: "AKIAEXAMPLE",
+    });
+    expect(
+      ses.commandCalls(CreateConfigurationSetEventDestinationCommand)[0]!
+        .args[0].input,
+    ).toMatchObject({
+      ConfigurationSetName: "sendsprite",
+      EventDestination: {
+        SnsDestination: {
+          TopicArn: "arn:aws:sns:us-east-1:123456789012:sendsprite-events",
+        },
+      },
+    });
+    expect(sns.commandCalls(SubscribeCommand)[0]!.args[0].input).toMatchObject({
+      Protocol: "https",
+      Endpoint: "https://mail.acme.com/api/webhooks/ses",
+    });
+  });
+  it("returns a Result error (no state change) when credentials are rejected", async () => {
+    sts
+      .on(GetCallerIdentityCommand)
+      .rejects(
+        Object.assign(
+          new Error("The security token included in the request is invalid."),
+          { name: "InvalidClientTokenId" },
+        ),
+      );
+    const { connectWithKeys } = await import("@/services/aws-connect");
+    const res = await connectWithKeys(
+      { accessKeyId: "bad", secretAccessKey: "bad", region: "us-east-1" },
+      { userId: "u1" },
+    );
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/security token/i);
+  });
+  it("is idempotent when the configuration set already exists", async () => {
+    happyMocks();
+    ses
+      .on(CreateConfigurationSetCommand)
+      .rejects(
+        Object.assign(new Error("exists"), { name: "AlreadyExistsException" }),
+      );
+    ses
+      .on(CreateConfigurationSetEventDestinationCommand)
+      .rejects(
+        Object.assign(new Error("exists"), { name: "AlreadyExistsException" }),
+      );
+    const { connectWithKeys } = await import("@/services/aws-connect");
+    expect(
+      (
+        await connectWithKeys(
+          {
+            accessKeyId: "AKIAEXAMPLE",
+            secretAccessKey: "s3cr3t",
+            region: "us-east-1",
+          },
+          { userId: "u1" },
+        )
+      ).ok,
+    ).toBe(true);
+  });
+});
+
+describe("requestProductionAccess / refreshSesAccount", () => {
+  it("submits details and flips status to requested", async () => {
+    happyMocks();
+    ses.on(PutAccountDetailsCommand).resolves({});
+    ses
+      .on(GetAccountCommand)
+      .resolves({
+        ProductionAccessEnabled: false,
+        Details: { ReviewDetails: { Status: "PENDING" } },
+        SendQuota: { Max24HourSend: 200, MaxSendRate: 1 },
+      });
+    const { requestProductionAccess } = await import("@/services/aws-connect");
+    const res = await requestProductionAccess(
+      {
+        websiteUrl: "https://acme.com",
+        mailType: "TRANSACTIONAL",
+        useCase: "Order receipts and password resets.",
+        contactEmail: "ops@acme.com",
+      },
+      { userId: "u1" },
+    );
+    expect(res.ok).toBe(true);
+    expect(
+      ses.commandCalls(PutAccountDetailsCommand)[0]!.args[0].input,
+    ).toMatchObject({
+      MailType: "TRANSACTIONAL",
+      WebsiteURL: "https://acme.com",
+      ProductionAccessEnabled: true,
+      AdditionalContactEmailAddresses: ["ops@acme.com"],
+    });
+    const { getInstanceSettings } =
+      await import("@/services/instance-settings");
+    expect(await getInstanceSettings()).toMatchObject({
+      sesAccountStatus: "requested",
+      sesReviewStatus: "PENDING",
+    });
+  });
+});
+
+describe("detectInstanceRole", () => {
+  it("connects with instance role when the default chain works", async () => {
+    happyMocks();
+    const { detectInstanceRole } = await import("@/services/aws-connect");
+    const res = await detectInstanceRole("us-east-1", { userId: "u1" });
+    expect(res).toMatchObject({
+      ok: true,
+      data: { accountId: "123456789012" },
+    });
+    const { getInstanceSettings } =
+      await import("@/services/instance-settings");
+    expect(await getInstanceSettings()).toMatchObject({
+      awsMode: "instance_role",
+      awsAccessKeyEnc: null,
+    });
+  });
+  it("returns ok:false without throwing when no credentials are available", async () => {
+    sts
+      .on(GetCallerIdentityCommand)
+      .rejects(
+        Object.assign(
+          new Error("Could not load credentials from any providers"),
+          { name: "CredentialsProviderError" },
+        ),
+      );
+    const { detectInstanceRole } = await import("@/services/aws-connect");
+    expect((await detectInstanceRole("us-east-1", { userId: "u1" })).ok).toBe(
+      false,
+    );
+  });
+});
+```
+
+Run: `cd apps/web && bun run test:integration -- aws-connect` → FAIL.
+
+- [ ] **Step 2: Implement**
+
+`apps/web/src/services/aws-connect.ts`:
+
+```ts
+import { GetCallerIdentityCommand } from "@aws-sdk/client-sts";
+import {
+  CreateConfigurationSetCommand,
+  CreateConfigurationSetEventDestinationCommand,
+  GetAccountCommand,
+  PutAccountDetailsCommand,
+} from "@aws-sdk/client-sesv2";
+import { CreateTopicCommand, SubscribeCommand } from "@aws-sdk/client-sns";
+import { z } from "zod";
+import { loadEnv } from "@/env.schema";
+import { makeSes, makeSns, makeSts } from "@/lib/aws/clients";
+import type { AwsContext } from "@/lib/aws/credentials";
+import { resolveAwsContext } from "@/lib/aws/credentials";
+import { mapAccount } from "@/lib/aws/ses-account";
+import type { RequestMeta } from "@/lib/audit";
+import {
+  getInstanceSettings,
+  updateInstanceSettings,
+} from "./instance-settings";
+import type { Result } from "./team";
+
+export const CONFIG_SET = "sendsprite";
+export const TOPIC_NAME = "sendsprite-events";
+const EVENT_TYPES = [
+  "SEND",
+  "REJECT",
+  "BOUNCE",
+  "COMPLAINT",
+  "DELIVERY",
+  "OPEN",
+  "CLICK",
+  "RENDERING_FAILURE",
+  "DELIVERY_DELAY",
+  "SUBSCRIPTION",
+] as const;
+
+export interface Actor {
+  userId: string;
+  meta?: RequestMeta;
+}
+
+const isAlreadyExists = (e: unknown) =>
+  (e as { name?: string })?.name === "AlreadyExistsException";
+const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+async function verifyIdentity(ctx: AwsContext) {
+  const id = await makeSts(ctx).send(new GetCallerIdentityCommand({}));
+  const account = await makeSes(ctx).send(new GetAccountCommand({}));
+  return {
+    accountId: id.Account!,
+    arn: id.Arn ?? null,
+    account: mapAccount(account),
+  };
+}
+
+/** Creates config set + SNS topic + event destination + HTTPS subscription. Idempotent. */
+export async function ensureSesInfrastructure(ctx: AwsContext) {
+  const ses = makeSes(ctx);
+  const sns = makeSns(ctx);
+  try {
+    await ses.send(
+      new CreateConfigurationSetCommand({ ConfigurationSetName: CONFIG_SET }),
+    );
+  } catch (e) {
+    if (!isAlreadyExists(e)) throw e;
+  }
+  const topic = await sns.send(new CreateTopicCommand({ Name: TOPIC_NAME })); // idempotent by name
+  const topicArn = topic.TopicArn!;
+  try {
+    await ses.send(
+      new CreateConfigurationSetEventDestinationCommand({
+        ConfigurationSetName: CONFIG_SET,
+        EventDestinationName: "sendsprite-sns",
+        EventDestination: {
+          Enabled: true,
+          MatchingEventTypes: [...EVENT_TYPES],
+          SnsDestination: { TopicArn: topicArn },
+        },
+      }),
+    );
+  } catch (e) {
+    if (!isAlreadyExists(e)) throw e;
+  }
+  const endpoint = `${loadEnv().APP_URL}/api/webhooks/ses`;
+  const sub = await sns.send(
+    new SubscribeCommand({
+      TopicArn: topicArn,
+      Protocol: "https",
+      Endpoint: endpoint,
+      ReturnSubscriptionArn: true,
+    }),
+  );
+  return { topicArn, subscriptionArn: sub.SubscriptionArn ?? null };
+}
+
+async function finishConnect(
+  ctx: AwsContext,
+  mode: "keys" | "instance_role",
+  keys: { accessKeyId?: string; secretAccessKey?: string },
+  actor: Actor,
+): Promise<Result<{ accountId: string; status: string }>> {
+  const { accountId, account } = await verifyIdentity(ctx);
+  const infra = await ensureSesInfrastructure(ctx);
+  await updateInstanceSettings(
+    {
+      awsMode: mode,
+      awsRegion: ctx.region,
+      awsAccountId: accountId,
+      awsConnectedAt: new Date(),
+      awsAccessKey: mode === "keys" ? keys.accessKeyId! : null,
+      awsSecret: mode === "keys" ? keys.secretAccessKey! : null,
+      sesConfigSet: CONFIG_SET,
+      snsTopicArn: infra.topicArn,
+      snsSubscriptionArn: infra.subscriptionArn,
+      sesAccountStatus: account.status,
+      sesReviewStatus: account.reviewStatus,
+      sesDailyQuota: account.dailyQuota,
+      sesMaxSendRate: account.maxSendRate,
+      sesLastCheckedAt: new Date(),
+    },
+    actor,
+  );
+  return { ok: true, data: { accountId, status: account.status } };
+}
+
+const keysSchema = z.object({
+  accessKeyId: z.string().min(16).max(128),
+  secretAccessKey: z.string().min(16).max(128),
+  region: z.string().min(1),
+});
+
+export async function connectWithKeys(
+  input: unknown,
+  actor: Actor,
+): Promise<Result<{ accountId: string; status: string }>> {
+  const parsed = keysSchema.safeParse(input);
+  if (!parsed.success)
+    return { ok: false, error: "Access key, secret and region are required." };
+  const { accessKeyId, secretAccessKey, region } = parsed.data;
+  try {
+    return await finishConnect(
+      { region, credentials: { accessKeyId, secretAccessKey } },
+      "keys",
+      { accessKeyId, secretAccessKey },
+      actor,
+    );
+  } catch (e) {
+    return { ok: false, error: `AWS rejected the connection: ${errMsg(e)}` };
+  }
+}
+
+/** Try the SDK default credential chain (EC2/ECS role, env). Never throws. */
+export async function detectInstanceRole(
+  region: string,
+  actor: Actor,
+): Promise<Result<{ accountId: string; status: string }>> {
+  try {
+    return await finishConnect({ region }, "instance_role", {}, actor);
+  } catch (e) {
+    return {
+      ok: false,
+      error: `No usable AWS credentials on this host: ${errMsg(e)}`,
+    };
+  }
+}
+
+export async function refreshSesAccount(
+  actor?: Actor,
+): Promise<Result<{ status: string }>> {
+  try {
+    const ctx = await resolveAwsContext();
+    const account = mapAccount(
+      await makeSes(ctx).send(new GetAccountCommand({})),
+    );
+    await updateInstanceSettings(
+      {
+        sesAccountStatus: account.status,
+        sesReviewStatus: account.reviewStatus,
+        sesDailyQuota: account.dailyQuota,
+        sesMaxSendRate: account.maxSendRate,
+        sesLastCheckedAt: new Date(),
+      },
+      actor,
+    );
+    return { ok: true, data: { status: account.status } };
+  } catch (e) {
+    return { ok: false, error: errMsg(e) };
+  }
+}
+
+const prodSchema = z.object({
+  websiteUrl: z.url(),
+  mailType: z.enum(["TRANSACTIONAL", "MARKETING"]),
+  useCase: z.string().min(20).max(5000),
+  contactEmail: z.email().optional(),
+});
+
+export async function requestProductionAccess(
+  input: unknown,
+  actor: Actor,
+): Promise<Result<{ status: string }>> {
+  const p = prodSchema.safeParse(input);
+  if (!p.success)
+    return {
+      ok: false,
+      error:
+        "Website URL, mail type and a use-case description (20+ chars) are required.",
+    };
+  try {
+    const ctx = await resolveAwsContext();
+    await makeSes(ctx).send(
+      new PutAccountDetailsCommand({
+        MailType: p.data.mailType,
+        WebsiteURL: p.data.websiteUrl,
+        UseCaseDescription: p.data.useCase,
+        ContactLanguage: "EN",
+        ProductionAccessEnabled: true,
+        ...(p.data.contactEmail && {
+          AdditionalContactEmailAddresses: [p.data.contactEmail],
+        }),
+      }),
+    );
+    return await refreshSesAccount(actor);
+  } catch (e) {
+    return { ok: false, error: `SES rejected the request: ${errMsg(e)}` };
+  }
+}
+
+/** Forget credentials; SES resources are left in the account (stack deletion cleans them). */
+export async function disconnectAws(actor: Actor): Promise<Result> {
+  const s = await getInstanceSettings();
+  if (s.awsMode === "none")
+    return { ok: false, error: "AWS is not connected." };
+  await updateInstanceSettings(
+    {
+      awsMode: "none",
+      awsAccessKey: null,
+      awsSecret: null,
+      awsAccountId: null,
+      awsConnectedAt: null,
+      snsTopicArn: null,
+      snsSubscriptionArn: null,
+      sesConfigSet: null,
+      sesAccountStatus: null,
+      sesReviewStatus: null,
+      sesDailyQuota: null,
+      sesMaxSendRate: null,
+    },
+    actor,
+  );
+  return { ok: true, data: undefined };
+}
+```
+
+Move `Result` to `apps/web/src/lib/result.ts` (`export type Result<T = undefined> = …`) and re-export from `services/team.ts` so both services share it without a circular import.
+
+- [ ] **Step 3: Run, commit**
+
+Run: `cd apps/web && bun run test:integration -- aws-connect && bun run typecheck` → PASS.
+
+```bash
+git add apps/web
+git commit -m "feat(web): AWS connect service — keys/instance role, SES infra, production access"
+```
+
+---
+
+### Task 8: CloudFormation template + callback + status endpoints
+
+**Files:**
+
+- Create: `infra/aws/sendsprite-connect.yaml`, `apps/web/src/app/api/setup/aws/callback/route.ts`, `apps/web/src/app/api/setup/aws/status/route.ts`
+- Test: `apps/web/tests/integration/setup-callback.test.ts`
+- Modify: `.github/workflows/ci.yml` (cfn-lint job)
+
+- [ ] **Step 1: Template**
+
+`infra/aws/sendsprite-connect.yaml`:
+
+```yaml
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Sendsprite - least-privilege IAM user for Amazon SES + SNS events. Credentials are posted once to your Sendsprite instance.
+Parameters:
+  CallbackUrl:
+    Type: String
+    Description: Your Sendsprite instance callback (prefilled).
+  CallbackToken:
+    Type: String
+    NoEcho: true
+    Description: One-time token (prefilled). Expires in 15 minutes.
+Resources:
+  SendspriteUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub "sendsprite-${AWS::StackName}"
+      Policies:
+        - PolicyName: sendsprite-ses
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ses:GetAccount
+                  - ses:PutAccountDetails
+                  - ses:PutAccountSendingAttributes
+                  - ses:CreateEmailIdentity
+                  - ses:DeleteEmailIdentity
+                  - ses:GetEmailIdentity
+                  - ses:ListEmailIdentities
+                  - ses:PutEmailIdentityMailFromAttributes
+                  - ses:PutEmailIdentityDkimAttributes
+                  - ses:PutEmailIdentityConfigurationSetAttributes
+                  - ses:CreateConfigurationSet
+                  - ses:GetConfigurationSet
+                  - ses:CreateConfigurationSetEventDestination
+                  - ses:UpdateConfigurationSetEventDestination
+                  - ses:GetConfigurationSetEventDestinations
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - sns:CreateTopic
+                  - sns:Subscribe
+                  - sns:Unsubscribe
+                  - sns:GetTopicAttributes
+                  - sns:SetTopicAttributes
+                  - sns:ListSubscriptionsByTopic
+                Resource: !Sub "arn:aws:sns:*:${AWS::AccountId}:sendsprite-*"
+              - Effect: Allow
+                Action: sts:GetCallerIdentity
+                Resource: "*"
+  SendspriteAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref SendspriteUser
+  CallbackFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+  CallbackFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 30
+      Role: !GetAtt CallbackFunctionRole.Arn
+      Code:
+        ZipFile: |
+          import json, urllib.request
+          def respond(event, context, status, reason=""):
+              body = json.dumps({"Status": status, "Reason": reason or "See CloudWatch logs",
+                  "PhysicalResourceId": event.get("PhysicalResourceId") or context.log_stream_name,
+                  "StackId": event["StackId"], "RequestId": event["RequestId"], "LogicalResourceId": event["LogicalResourceId"]}).encode()
+              req = urllib.request.Request(event["ResponseURL"], data=body, method="PUT", headers={"content-type": ""})
+              urllib.request.urlopen(req, timeout=10)
+          def handler(event, context):
+              try:
+                  if event["RequestType"] == "Create":
+                      p = event["ResourceProperties"]
+                      payload = json.dumps({"token": p["CallbackToken"], "accessKeyId": p["AccessKeyId"],
+                          "secretAccessKey": p["SecretAccessKey"], "region": p["Region"], "accountId": p["AccountId"]}).encode()
+                      req = urllib.request.Request(p["CallbackUrl"], data=payload, method="POST", headers={"content-type": "application/json"})
+                      with urllib.request.urlopen(req, timeout=20) as r:
+                          if r.status >= 300: raise Exception("callback returned %d" % r.status)
+                  respond(event, context, "SUCCESS")
+              except Exception as e:
+                  respond(event, context, "FAILED", str(e))
+  Callback:
+    Type: Custom::SendspriteCallback
+    Properties:
+      ServiceToken: !GetAtt CallbackFunction.Arn
+      CallbackUrl: !Ref CallbackUrl
+      CallbackToken: !Ref CallbackToken
+      AccessKeyId: !Ref SendspriteAccessKey
+      SecretAccessKey: !GetAtt SendspriteAccessKey.SecretAccessKey
+      Region: !Ref AWS::Region
+      AccountId: !Ref AWS::AccountId
+Outputs:
+  UserName:
+    Value: !Ref SendspriteUser
+  Note:
+    Value: "Delete this stack to revoke Sendsprite's access."
+```
+
+Note: `NoEcho` parameters are ignored in quick-create URLs (AWS docs). `CallbackToken` therefore must NOT be `NoEcho` — remove `NoEcho: true` from it and add a comment; the token is single-use and expires in 15 minutes, which is the mitigation.
+
+- [ ] **Step 2: Validate the template**
+
+Load the IaC MCP tool with ToolSearch `select:mcp__plugin_deploy-on-aws_awsiac__validate_cloudformation_template` and run it on the file (or `pip install cfn-lint && cfn-lint infra/aws/sendsprite-connect.yaml` if available). Expected: no errors (warnings about wildcard SES resources are acceptable — SES identity ARNs aren't known at stack time).
+
+- [ ] **Step 3: Failing integration test for the callback**
+
+`apps/web/tests/integration/setup-callback.test.ts`:
+
+```ts
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { mockClient } from "aws-sdk-client-mock";
+import {
+  SESv2Client,
+  GetAccountCommand,
+  CreateConfigurationSetCommand,
+  CreateConfigurationSetEventDestinationCommand,
+} from "@aws-sdk/client-sesv2";
+import {
+  SNSClient,
+  CreateTopicCommand,
+  SubscribeCommand,
+} from "@aws-sdk/client-sns";
+import { STSClient, GetCallerIdentityCommand } from "@aws-sdk/client-sts";
+import { startPg } from "./_pg";
+
+const ses = mockClient(SESv2Client),
+  sns = mockClient(SNSClient),
+  sts = mockClient(STSClient);
+let pg: Awaited<ReturnType<typeof startPg>>;
+beforeAll(async () => {
+  pg = await startPg();
+  process.env.APP_SECRET = "x".repeat(40);
+  process.env.APP_URL = "https://mail.acme.com";
+  const { resetEnvCache } = await import("@/env.schema");
+  resetEnvCache();
+  sts.on(GetCallerIdentityCommand).resolves({ Account: "123456789012" });
+  ses
+    .on(GetAccountCommand)
+    .resolves({
+      ProductionAccessEnabled: false,
+      SendQuota: { Max24HourSend: 200, MaxSendRate: 1 },
+    });
+  ses.on(CreateConfigurationSetCommand).resolves({});
+  ses.on(CreateConfigurationSetEventDestinationCommand).resolves({});
+  sns
+    .on(CreateTopicCommand)
+    .resolves({
+      TopicArn: "arn:aws:sns:us-east-1:123456789012:sendsprite-events",
+    });
+  sns.on(SubscribeCommand).resolves({ SubscriptionArn: "x" });
+});
+afterAll(async () => {
+  await pg.stop();
+});
+afterEach(() => {
+  ses.resetHistory();
+});
+
+const post = async (body: unknown) => {
+  const { POST } = await import("@/app/api/setup/aws/callback/route");
+  return POST(
+    new Request("https://mail.acme.com/api/setup/aws/callback", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+};
+
+describe("POST /api/setup/aws/callback", () => {
+  it("consumes a valid token and connects", async () => {
+    const { issueSetupToken } = await import("@/services/setup-tokens");
+    const { token } = await issueSetupToken({
+      purpose: "aws_callback",
+      issuedBy: "u1",
+      region: "us-east-1",
+      ttlMs: 60_000,
+    });
+    const res = await post({
+      token,
+      accessKeyId: "AKIAEXAMPLEKEY12",
+      secretAccessKey: "s3cr3ts3cr3ts3cr3t",
+      region: "us-east-1",
+      accountId: "123456789012",
+    });
+    expect(res.status).toBe(200);
+    const { getInstanceSettings } =
+      await import("@/services/instance-settings");
+    expect(await getInstanceSettings()).toMatchObject({
+      awsMode: "keys",
+      awsAccountId: "123456789012",
+    });
+  });
+  it("rejects a reused or unknown token with 403 and no AWS calls", async () => {
+    const res = await post({
+      token: "nope",
+      accessKeyId: "AKIAEXAMPLEKEY12",
+      secretAccessKey: "s3cr3ts3cr3ts3cr3t",
+      region: "us-east-1",
+      accountId: "1",
+    });
+    expect(res.status).toBe(403);
+    expect(ses.commandCalls(GetAccountCommand)).toHaveLength(0);
+  });
+  it("rejects a region mismatch", async () => {
+    const { issueSetupToken } = await import("@/services/setup-tokens");
+    const { token } = await issueSetupToken({
+      purpose: "aws_callback",
+      issuedBy: "u1",
+      region: "eu-west-1",
+      ttlMs: 60_000,
+    });
+    const res = await post({
+      token,
+      accessKeyId: "AKIAEXAMPLEKEY12",
+      secretAccessKey: "s3cr3ts3cr3ts3cr3t",
+      region: "us-east-1",
+      accountId: "1",
+    });
+    expect(res.status).toBe(400);
+  });
+});
+```
+
+Run → FAIL (route missing).
+
+- [ ] **Step 4: Routes**
+
+`apps/web/src/app/api/setup/aws/callback/route.ts`:
+
+```ts
+import { NextResponse } from "next/server";
+import { z } from "zod";
+import { consumeSetupToken } from "@/services/setup-tokens";
+import { connectWithKeys } from "@/services/aws-connect";
+
+export const dynamic = "force-dynamic";
+const body = z.object({
+  token: z.string().min(20),
+  accessKeyId: z.string(),
+  secretAccessKey: z.string(),
+  region: z.string(),
+  accountId: z.string().optional(),
+});
+
+/** Called once by the CloudFormation custom resource. Auth = one-time token. */
+export async function POST(req: Request) {
+  const parsed = body.safeParse(await req.json().catch(() => null));
+  if (!parsed.success)
+    return NextResponse.json({ error: "bad_request" }, { status: 400 });
+  const tok = await consumeSetupToken("aws_callback", parsed.data.token);
+  if (!tok)
+    return NextResponse.json({ error: "invalid_token" }, { status: 403 });
+  if (tok.region !== parsed.data.region)
+    return NextResponse.json({ error: "region_mismatch" }, { status: 400 });
+  const res = await connectWithKeys(
+    {
+      accessKeyId: parsed.data.accessKeyId,
+      secretAccessKey: parsed.data.secretAccessKey,
+      region: parsed.data.region,
+    },
+    { userId: tok.issuedBy },
+  );
+  if (!res.ok) return NextResponse.json({ error: res.error }, { status: 502 });
+  return NextResponse.json({ ok: true });
+}
+```
+
+`apps/web/src/app/api/setup/aws/status/route.ts`:
+
+```ts
+import { NextResponse } from "next/server";
+import { requireSession } from "@/lib/session";
+import { getInstanceSettings } from "@/services/instance-settings";
+import { pendingSetupToken } from "@/services/setup-tokens";
+
+export const dynamic = "force-dynamic";
+
+/** Polled by the wizard while the user is in the AWS console. */
+export async function GET() {
+  const s = await requireSession();
+  const settings = await getInstanceSettings();
+  const pending = await pendingSetupToken("aws_callback", s.user.id);
+  return NextResponse.json({
+    connected: settings.awsMode !== "none",
+    awsMode: settings.awsMode,
+    accountId: settings.awsAccountId,
+    status: settings.sesAccountStatus,
+    pendingToken: Boolean(pending),
+    expiresAt: pending?.expiresAt ?? null,
+  });
+}
+```
+
+- [ ] **Step 5: CI cfn-lint job**
+
+Add to `.github/workflows/ci.yml`:
+
+```yaml
+cfn:
+  runs-on: ubuntu-latest
+  steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with: { python-version: "3.12" }
+    - run: pip install cfn-lint
+    - run: cfn-lint infra/aws/sendsprite-connect.yaml
+    # Publish on tags once the bucket exists (maintainer step, see Task 17):
+    # - run: aws s3 cp infra/aws/sendsprite-connect.yaml s3://sendsprite-cfn/${GITHUB_REF_NAME}/sendsprite-connect.yaml --acl public-read
+    # - run: aws s3 cp infra/aws/sendsprite-connect.yaml s3://sendsprite-cfn/latest/sendsprite-connect.yaml --acl public-read
+```
+
+- [ ] **Step 6: Run, commit**
+
+Run: `cd apps/web && bun run test:integration -- setup-callback && bun run typecheck` → PASS.
+
+```bash
+git add infra apps/web .github
+git commit -m "feat: CloudFormation one-click connect template, callback and status endpoints"
+```
+
+---
+
+### Task 9: SNS endpoint — signature verification, subscription confirmation
+
+**Files:**
+
+- Create: `apps/web/src/lib/sns-message.ts`, `apps/web/src/app/api/webhooks/ses/route.ts`
+- Test: `apps/web/tests/unit/sns-message.test.ts`, `apps/web/tests/integration/ses-webhook.test.ts`
+- Modify: `apps/web/package.json` (`sns-validator`)
+
+- [ ] **Step 1: Install and wrap the validator (failing unit test first)**
+
+Run: `cd apps/web && bun add sns-validator && bun add -d @types/sns-validator` (if no types exist, add `apps/web/src/types/sns-validator.d.ts`: `declare module "sns-validator" { export default class MessageValidator { constructor(hostPattern?: RegExp, encoding?: string); validate(message: unknown, cb: (err: Error | null, message?: unknown) => void): void; } }`).
+
+`tests/unit/sns-message.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { verifySnsMessage } from "@/lib/sns-message";
+
+describe("verifySnsMessage", () => {
+  it("rejects a message whose SigningCertURL is not on amazonaws.com", async () => {
+    await expect(
+      verifySnsMessage({
+        Type: "Notification",
+        MessageId: "1",
+        TopicArn: "arn",
+        Message: "{}",
+        Timestamp: "2026-01-01T00:00:00Z",
+        SignatureVersion: "1",
+        Signature: "x",
+        SigningCertURL: "https://evil.com/cert.pem",
+      }),
+    ).rejects.toThrow();
+  });
+  it("rejects a message with no signature fields", async () => {
+    await expect(verifySnsMessage({ Type: "Notification" })).rejects.toThrow();
+  });
+});
+```
+
+`apps/web/src/lib/sns-message.ts`:
+
+```ts
+import MessageValidator from "sns-validator";
+
+export type SnsMessage =
+  | {
+      Type: "SubscriptionConfirmation";
+      TopicArn: string;
+      Token: string;
+      SubscribeURL: string;
+      MessageId: string;
+    }
+  | {
+      Type: "Notification";
+      TopicArn: string;
+      Message: string;
+      MessageId: string;
+      Timestamp: string;
+    }
+  | { Type: "UnsubscribeConfirmation"; TopicArn: string; MessageId: string };
+
+const validator = new MessageValidator(
+  /^sns\.[a-z0-9-]+\.amazonaws\.com(\.cn)?$/,
+);
+
+/** Verifies the SNS signature (cert fetched from amazonaws.com only). Throws on failure. */
+export function verifySnsMessage(raw: unknown): Promise<SnsMessage> {
+  return new Promise((resolve, reject) => {
+    validator.validate(raw, (err, msg) =>
+      err ? reject(err) : resolve(msg as SnsMessage),
+    );
+  });
+}
+```
+
+Run `bun run test` → PASS. (Signature verification with real certs is exercised in Phase 3 against recorded SNS payloads; here we test the guardrails.)
+
+- [ ] **Step 2: Failing integration test for the route (validator injected)**
+
+`tests/integration/ses-webhook.test.ts`:
+
+```ts
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { startPg } from "./_pg";
+
+vi.mock("@/lib/sns-message", () => ({
+  verifySnsMessage: async (raw: unknown) => raw,
+}));
+
+let pg: Awaited<ReturnType<typeof startPg>>;
+const fetchCalls: string[] = [];
+beforeAll(async () => {
+  pg = await startPg();
+  process.env.APP_SECRET = "x".repeat(40);
+  process.env.APP_URL = "https://mail.acme.com";
+  vi.stubGlobal("fetch", async (url: string) => {
+    fetchCalls.push(String(url));
+    return new Response("ok", { status: 200 });
+  });
+});
+afterAll(async () => {
+  vi.unstubAllGlobals();
+  await pg.stop();
+});
+
+const post = async (body: unknown, type: string) => {
+  const { POST } = await import("@/app/api/webhooks/ses/route");
+  return POST(
+    new Request("https://mail.acme.com/api/webhooks/ses", {
+      method: "POST",
+      headers: { "x-amz-sns-message-type": type, "content-type": "text/plain" },
+      body: JSON.stringify(body),
+    }),
+  );
+};
+
+describe("POST /api/webhooks/ses", () => {
+  it("confirms a subscription by fetching SubscribeURL and stores the arn", async () => {
+    const { updateInstanceSettings, getInstanceSettings } =
+      await import("@/services/instance-settings");
+    await updateInstanceSettings({
+      snsTopicArn: "arn:aws:sns:us-east-1:1:sendsprite-events",
+    });
+    const res = await post(
+      {
+        Type: "SubscriptionConfirmation",
+        TopicArn: "arn:aws:sns:us-east-1:1:sendsprite-events",
+        Token: "t",
+        SubscribeURL:
+          "https://sns.us-east-1.amazonaws.com/?Action=ConfirmSubscription&Token=t",
+        MessageId: "m1",
+      },
+      "SubscriptionConfirmation",
+    );
+    expect(res.status).toBe(200);
+    expect(fetchCalls[0]).toContain("ConfirmSubscription");
+    expect((await getInstanceSettings()).snsSubscriptionArn).toBeTruthy();
+  });
+  it("ignores confirmations for a foreign topic", async () => {
+    const res = await post(
+      {
+        Type: "SubscriptionConfirmation",
+        TopicArn: "arn:aws:sns:us-east-1:999:other",
+        Token: "t",
+        SubscribeURL: "https://sns.us-east-1.amazonaws.com/?x",
+        MessageId: "m2",
+      },
+      "SubscriptionConfirmation",
+    );
+    expect(res.status).toBe(403);
+  });
+  it("acknowledges notifications (processing lands in Phase 3)", async () => {
+    const res = await post(
+      {
+        Type: "Notification",
+        TopicArn: "arn:aws:sns:us-east-1:1:sendsprite-events",
+        Message: JSON.stringify({ eventType: "Send" }),
+        MessageId: "m3",
+        Timestamp: "2026-08-25T00:00:00Z",
+      },
+      "Notification",
+    );
+    expect(res.status).toBe(200);
+  });
+});
+```
+
+- [ ] **Step 3: Route**
+
+`apps/web/src/app/api/webhooks/ses/route.ts`:
+
+```ts
+import { NextResponse } from "next/server";
+import { verifySnsMessage } from "@/lib/sns-message";
+import {
+  getInstanceSettings,
+  updateInstanceSettings,
+} from "@/services/instance-settings";
+
+export const dynamic = "force-dynamic";
+
+/**
+ * SNS → Sendsprite. Phase 2: verify signature, confirm subscription, ack.
+ * Phase 3 replaces the Notification branch with event ingestion.
+ */
+export async function POST(req: Request) {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await req.text());
+  } catch {
+    return NextResponse.json({ error: "bad_json" }, { status: 400 });
+  }
+  let msg;
+  try {
+    msg = await verifySnsMessage(raw);
+  } catch {
+    return NextResponse.json({ error: "bad_signature" }, { status: 403 });
+  }
+  const settings = await getInstanceSettings();
+  if (!settings.snsTopicArn || msg.TopicArn !== settings.snsTopicArn)
+    return NextResponse.json({ error: "unknown_topic" }, { status: 403 });
+
+  if (msg.Type === "SubscriptionConfirmation") {
+    if (
+      !/^https:\/\/sns\.[a-z0-9-]+\.amazonaws\.com(\.cn)?\//.test(
+        msg.SubscribeURL,
+      )
+    )
+      return NextResponse.json({ error: "bad_subscribe_url" }, { status: 400 });
+    const r = await fetch(msg.SubscribeURL);
+    if (!r.ok)
+      return NextResponse.json({ error: "confirm_failed" }, { status: 502 });
+    const xml = await r.text();
+    const arn =
+      /<SubscriptionArn>([^<]+)<\/SubscriptionArn>/.exec(xml)?.[1] ??
+      "confirmed";
+    await updateInstanceSettings({ snsSubscriptionArn: arn });
+    return NextResponse.json({ ok: true });
+  }
+  if (msg.Type === "Notification") {
+    console.info("[ses] notification", msg.MessageId); // Phase 3: enqueue ses.ingest
+    return NextResponse.json({ ok: true });
+  }
+  return NextResponse.json({ ok: true });
+}
+```
+
+- [ ] **Step 4: Run, commit**
+
+Run: `cd apps/web && bun run test && bun run test:integration -- ses-webhook && bun run typecheck` → PASS.
+
+```bash
+git add apps/web
+git commit -m "feat(web): SNS endpoint with signature verification and subscription confirmation"
+```
+
+---
+
+### Task 10: Hourly SES account refresh job
+
+**Files:**
+
+- Create: `apps/web/src/jobs/handlers/ses-refresh-account.ts`
+- Modify: `apps/web/src/jobs/handlers/index.ts`, `apps/web/src/jobs/queues.ts`
+- Test: `apps/web/tests/integration/worker.test.ts` (registration smoke)
+
+- [ ] **Step 1: Queue name + handler**
+
+`queues.ts`: add `sesRefreshAccount: "ses.refresh-account"`, `domainProvision: "domain.provision"`, `domainVerify: "domain.verify"`.
+
+`handlers/ses-refresh-account.ts`:
+
+```ts
+import { registerQueue } from "../boss";
+import { Q } from "../queues";
+import { getInstanceSettings } from "@/services/instance-settings";
+import { refreshSesAccount } from "@/services/aws-connect";
+
+registerQueue(
+  Q.sesRefreshAccount,
+  async () => {
+    const s = await getInstanceSettings();
+    if (s.awsMode === "none") return;
+    const r = await refreshSesAccount();
+    if (!r.ok) console.warn("[ses] account refresh failed:", r.error);
+  },
+  { cron: "17 * * * *", queue: { retryLimit: 0 } },
+);
+```
+
+`handlers/index.ts`: `import "./ses-refresh-account";`
+
+- [ ] **Step 2: Test — queue is registered on start**
+
+Append to `worker.test.ts`: after `startWorker()`, `expect(await (await getBoss()).getQueue("ses.refresh-account")).toBeTruthy()`.
+
+- [ ] **Step 3: Run, commit**
+
+`cd apps/web && bun run test:integration -- worker` → PASS. `git add apps/web && git commit -m "feat(web): hourly SES account status refresh job"`
+
+---
+
+### Task 11: Cloudflare client + connect service (TDD, fetch-injected)
+
+**Files:**
+
+- Create: `apps/web/src/lib/cloudflare/client.ts`, `apps/web/src/services/cloudflare-connect.ts`
+- Test: `apps/web/tests/unit/cloudflare-client.test.ts`, `apps/web/tests/integration/cloudflare-connect.test.ts`
+
+- [ ] **Step 1: Failing unit test**
+
+`tests/unit/cloudflare-client.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { CloudflareClient } from "@/lib/cloudflare/client";
+
+function fake(routes: Record<string, (init?: RequestInit) => unknown>) {
+  const calls: { url: string; init?: RequestInit }[] = [];
+  const f = async (url: string, init?: RequestInit) => {
+    calls.push({ url, init });
+    const key = Object.keys(routes).find((k) => url.includes(k));
+    if (!key)
+      return new Response(
+        JSON.stringify({
+          success: false,
+          errors: [{ code: 404, message: "no route" }],
+        }),
+        { status: 404 },
+      );
+    return new Response(
+      JSON.stringify({ success: true, result: routes[key]!(init) }),
+      { status: 200 },
+    );
+  };
+  return { fetch: f as typeof fetch, calls };
+}
+
+describe("CloudflareClient", () => {
+  it("verifies token and lists zones", async () => {
+    const { fetch, calls } = fake({
+      "/user/tokens/verify": () => ({ status: "active" }),
+      "/zones": () => [{ id: "z1", name: "acme.com" }],
+    });
+    const cf = new CloudflareClient("tok", fetch);
+    expect(await cf.verifyToken()).toEqual({ status: "active" });
+    expect(await cf.listZones()).toEqual([{ id: "z1", name: "acme.com" }]);
+    expect(calls[0]!.init?.headers).toMatchObject({
+      authorization: "Bearer tok",
+    });
+  });
+  it("upserts by name+type: creates when absent, updates when present", async () => {
+    const { fetch, calls } = fake({
+      "/zones/z1/dns_records?": () => [
+        { id: "r1", type: "TXT", name: "_dmarc.acme.com", content: "old" },
+      ],
+      "/zones/z1/dns_records/r1": () => ({ id: "r1" }),
+      "/zones/z1/dns_records": () => ({ id: "r2" }),
+    });
+    const cf = new CloudflareClient("tok", fetch);
+    expect(
+      await cf.upsertRecord("z1", {
+        type: "TXT",
+        name: "_dmarc.acme.com",
+        content: "new",
+      }),
+    ).toEqual({ id: "r1" });
+    expect(
+      calls.some(
+        (c) => c.url.endsWith("/dns_records/r1") && c.init?.method === "PATCH",
+      ),
+    ).toBe(true);
+    expect(
+      await cf.upsertRecord("z1", {
+        type: "CNAME",
+        name: "x._domainkey.acme.com",
+        content: "y",
+      }),
+    ).toEqual({ id: "r2" });
+  });
+  it("surfaces Cloudflare error messages", async () => {
+    const f = (async () =>
+      new Response(
+        JSON.stringify({
+          success: false,
+          errors: [{ code: 10000, message: "Authentication error" }],
+        }),
+        { status: 403 },
+      )) as typeof fetch;
+    await expect(new CloudflareClient("bad", f).verifyToken()).rejects.toThrow(
+      /Authentication error/,
+    );
+  });
+});
+```
+
+- [ ] **Step 2: Client**
+
+`apps/web/src/lib/cloudflare/client.ts`:
+
+```ts
+export interface CfZone {
+  id: string;
+  name: string;
+}
+export interface CfRecordInput {
+  type: "CNAME" | "MX" | "TXT";
+  name: string;
+  content: string;
+  priority?: number;
+  ttl?: number;
+  proxied?: boolean;
+}
+export interface CfRecord extends CfRecordInput {
+  id: string;
+}
+
+export class CloudflareError extends Error {
+  constructor(
+    msg: string,
+    readonly code?: number,
+  ) {
+    super(msg);
+  }
+}
+
+/** Minimal Cloudflare v4 client. `fetch` is injectable for tests. */
+export class CloudflareClient {
+  constructor(
+    private token: string,
+    private f: typeof fetch = fetch,
+    private base = "https://api.cloudflare.com/client/v4",
+  ) {}
+
+  private async call<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const res = await this.f(`${this.base}${path}`, {
+      ...init,
+      headers: {
+        authorization: `Bearer ${this.token}`,
+        "content-type": "application/json",
+        ...(init.headers ?? {}),
+      },
+    });
+    const body = (await res.json().catch(() => ({}))) as {
+      success?: boolean;
+      result?: T;
+      errors?: { code: number; message: string }[];
+    };
+    if (!res.ok || body.success === false) {
+      const e = body.errors?.[0];
+      throw new CloudflareError(
+        e?.message ?? `Cloudflare ${res.status}`,
+        e?.code,
+      );
+    }
+    return body.result as T;
+  }
+
+  verifyToken() {
+    return this.call<{ status: string }>("/user/tokens/verify");
+  }
+  listZones() {
+    return this.call<CfZone[]>("/zones?per_page=100&status=active");
+  }
+  listRecords(zoneId: string, q: { type?: string; name?: string } = {}) {
+    const p = new URLSearchParams({
+      per_page: "100",
+      ...(q.type && { type: q.type }),
+      ...(q.name && { name: q.name }),
+    });
+    return this.call<CfRecord[]>(`/zones/${zoneId}/dns_records?${p}`);
+  }
+  async upsertRecord(
+    zoneId: string,
+    r: CfRecordInput,
+  ): Promise<{ id: string }> {
+    const body = { ttl: 1, proxied: false, ...r };
+    const existing = await this.listRecords(zoneId, {
+      type: r.type,
+      name: r.name,
+    });
+    const match = existing.find(
+      (e) =>
+        e.type === r.type &&
+        e.name === r.name &&
+        (r.type !== "TXT" || e.content === r.content || existing.length === 1),
+    );
+    if (match)
+      return this.call(`/zones/${zoneId}/dns_records/${match.id}`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      });
+    return this.call(`/zones/${zoneId}/dns_records`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+  deleteRecord(zoneId: string, id: string) {
+    return this.call<{ id: string }>(`/zones/${zoneId}/dns_records/${id}`, {
+      method: "DELETE",
+    });
+  }
+}
+```
+
+Run `cd apps/web && bun run test` → PASS.
+
+- [ ] **Step 3: Connect service + integration test**
+
+`tests/integration/cloudflare-connect.test.ts`:
+
+```ts
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { startPg } from "./_pg";
+
+let pg: Awaited<ReturnType<typeof startPg>>;
+beforeAll(async () => {
+  pg = await startPg();
+  process.env.APP_SECRET = "x".repeat(40);
+});
+afterAll(async () => {
+  await pg.stop();
+});
+
+const okFetch = (async (url: string) => {
+  if (String(url).includes("/user/tokens/verify"))
+    return new Response(
+      JSON.stringify({ success: true, result: { status: "active" } }),
+    );
+  if (String(url).includes("/zones"))
+    return new Response(
+      JSON.stringify({
+        success: true,
+        result: [{ id: "z1", name: "acme.com" }],
+      }),
+    );
+  return new Response("{}", { status: 404 });
+}) as typeof fetch;
+
+describe("connectCloudflare", () => {
+  it("validates the token, stores it encrypted and lists zones", async () => {
+    const { connectCloudflare, listZones } =
+      await import("@/services/cloudflare-connect");
+    const res = await connectCloudflare(
+      "cf-token-value-0123456789",
+      { userId: "u1" },
+      okFetch,
+    );
+    expect(res).toMatchObject({
+      ok: true,
+      data: { zones: [{ id: "z1", name: "acme.com" }] },
+    });
+    const { getInstanceSettings } =
+      await import("@/services/instance-settings");
+    expect((await getInstanceSettings()).cloudflareTokenEnc).toMatch(/^v1\./);
+    expect(await listZones(okFetch)).toEqual([{ id: "z1", name: "acme.com" }]);
+  });
+  it("returns an error for an invalid token and stores nothing", async () => {
+    const { connectCloudflare } = await import("@/services/cloudflare-connect");
+    const bad = (async () =>
+      new Response(
+        JSON.stringify({
+          success: false,
+          errors: [{ code: 1000, message: "Invalid API Token" }],
+        }),
+        { status: 401 },
+      )) as typeof fetch;
+    const res = await connectCloudflare("bad", { userId: "u1" }, bad);
+    expect(res).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/Invalid API Token/),
+    });
+  });
+});
+```
+
+`apps/web/src/services/cloudflare-connect.ts`:
+
+```ts
+import { CloudflareClient, type CfZone } from "@/lib/cloudflare/client";
+import type { Result } from "@/lib/result";
+import {
+  getDecryptedSecrets,
+  updateInstanceSettings,
+} from "./instance-settings";
+import type { Actor } from "./aws-connect";
+
+const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+export async function connectCloudflare(
+  token: string,
+  actor: Actor,
+  f: typeof fetch = fetch,
+): Promise<Result<{ zones: CfZone[] }>> {
+  if (typeof token !== "string" || token.trim().length < 10)
+    return { ok: false, error: "Paste the API token Cloudflare showed you." };
+  const cf = new CloudflareClient(token.trim(), f);
+  try {
+    const v = await cf.verifyToken();
+    if (v.status !== "active")
+      return { ok: false, error: `Token status is ${v.status}.` };
+    const zones = await cf.listZones();
+    await updateInstanceSettings(
+      {
+        cloudflareToken: token.trim(),
+        cloudflareConnectedAt: new Date(),
+        cloudflareAccountName: zones[0]?.name ?? null,
+      },
+      actor,
+    );
+    return { ok: true, data: { zones } };
+  } catch (e) {
+    return { ok: false, error: `Cloudflare rejected the token: ${errMsg(e)}` };
+  }
+}
+
+export async function disconnectCloudflare(actor: Actor): Promise<Result> {
+  await updateInstanceSettings(
+    {
+      cloudflareToken: null,
+      cloudflareConnectedAt: null,
+      cloudflareAccountName: null,
+    },
+    actor,
+  );
+  return { ok: true, data: undefined };
+}
+
+/** Client bound to the stored token, or null when Cloudflare isn't connected. */
+export async function cloudflareClient(
+  f: typeof fetch = fetch,
+): Promise<CloudflareClient | null> {
+  const { cloudflareToken } = await getDecryptedSecrets();
+  return cloudflareToken ? new CloudflareClient(cloudflareToken, f) : null;
+}
+
+export async function listZones(f: typeof fetch = fetch): Promise<CfZone[]> {
+  const cf = await cloudflareClient(f);
+  return cf ? cf.listZones() : [];
+}
+```
+
+- [ ] **Step 4: Run, commit**
+
+Run → PASS. `git add apps/web && git commit -m "feat(web): Cloudflare client and connect service"`
+
+---
+
+### Task 12: DNS pure helpers — expected records, zone matching, checks (TDD)
+
+**Files:**
+
+- Create: `apps/web/src/lib/dns/records.ts`, `apps/web/src/lib/dns/zone-match.ts`, `apps/web/src/lib/dns/check.ts`
+- Test: `apps/web/tests/unit/dns-records.test.ts`, `apps/web/tests/unit/zone-match.test.ts`, `apps/web/tests/unit/dns-check.test.ts`
+
+- [ ] **Step 1: Failing tests**
+
+`tests/unit/dns-records.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { expectedRecords } from "@/lib/dns/records";
+
+describe("expectedRecords", () => {
+  const recs = expectedRecords({
+    domain: "mail.acme.com",
+    region: "eu-west-1",
+    dkimTokens: ["a1", "b2", "c3"],
+    mailFromDomain: "bounce.mail.acme.com",
+  });
+  it("emits 3 DKIM CNAMEs, MAIL FROM MX + SPF, and DMARC", () => {
+    expect(recs.map((r) => r.kind)).toEqual([
+      "DKIM",
+      "DKIM",
+      "DKIM",
+      "MAIL_FROM_MX",
+      "MAIL_FROM_SPF",
+      "DMARC",
+    ]);
+    expect(recs[0]).toMatchObject({
+      type: "CNAME",
+      name: "a1._domainkey.mail.acme.com",
+      value: "a1.dkim.amazonses.com",
+      ok: false,
+    });
+    expect(recs[3]).toMatchObject({
+      type: "MX",
+      name: "bounce.mail.acme.com",
+      value: "feedback-smtp.eu-west-1.amazonses.com",
+      priority: 10,
+    });
+    expect(recs[4]).toMatchObject({
+      type: "TXT",
+      name: "bounce.mail.acme.com",
+      value: "v=spf1 include:amazonses.com ~all",
+    });
+    expect(recs[5]).toMatchObject({
+      type: "TXT",
+      name: "_dmarc.mail.acme.com",
+      value: "v=DMARC1; p=none; rua=mailto:dmarc@mail.acme.com",
+    });
+  });
+});
+```
+
+`tests/unit/zone-match.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { matchZone } from "@/lib/dns/zone-match";
+const zones = [
+  { id: "z1", name: "acme.com" },
+  { id: "z2", name: "mail.acme.com" },
+  { id: "z3", name: "other.io" },
+];
+describe("matchZone", () => {
+  it("picks the longest suffix zone", () => {
+    expect(matchZone("x.mail.acme.com", zones)?.id).toBe("z2");
+    expect(matchZone("acme.com", zones)?.id).toBe("z1");
+  });
+  it("returns null when no zone matches", () => {
+    expect(matchZone("acme.com.evil.net", zones)).toBeNull();
+    expect(matchZone("notacme.com", zones)).toBeNull();
+  });
+});
+```
+
+`tests/unit/dns-check.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { checkRecords, type Resolver } from "@/lib/dns/check";
+import { expectedRecords } from "@/lib/dns/records";
+
+const resolver: Resolver = {
+  resolveCname: async (n) =>
+    n.startsWith("a1._domainkey") ? ["a1.dkim.amazonses.com"] : [],
+  resolveMx: async (n) =>
+    n === "bounce.mail.acme.com"
+      ? [{ exchange: "feedback-smtp.eu-west-1.amazonses.com", priority: 10 }]
+      : [],
+  resolveTxt: async (n) =>
+    n === "_dmarc.mail.acme.com"
+      ? [["v=DMARC1; p=none; rua=mailto:dmarc@mail.acme.com"]]
+      : n === "bounce.mail.acme.com"
+        ? [["v=spf1 ", "include:amazonses.com ~all"]]
+        : [],
+};
+
+describe("checkRecords", () => {
+  it("marks each expected record ok/not-ok from live DNS", async () => {
+    const recs = expectedRecords({
+      domain: "mail.acme.com",
+      region: "eu-west-1",
+      dkimTokens: ["a1", "b2", "c3"],
+      mailFromDomain: "bounce.mail.acme.com",
+    });
+    const out = await checkRecords(recs, resolver);
+    expect(out.map((r) => r.ok)).toEqual([
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+    ]);
+  });
+  it("treats resolver errors (NXDOMAIN) as not-ok", async () => {
+    const throwing: Resolver = {
+      resolveCname: async () => {
+        throw Object.assign(new Error("x"), { code: "ENOTFOUND" });
+      },
+      resolveMx: async () => {
+        throw new Error("x");
+      },
+      resolveTxt: async () => {
+        throw new Error("x");
+      },
+    };
+    const out = await checkRecords(
+      expectedRecords({
+        domain: "a.com",
+        region: "us-east-1",
+        dkimTokens: ["t"],
+        mailFromDomain: "b.a.com",
+      }),
+      throwing,
+    );
+    expect(out.every((r) => r.ok === false)).toBe(true);
+  });
+});
+```
+
+Run: `cd apps/web && bun run test` → FAIL.
+
+- [ ] **Step 2: Implement**
+
+`apps/web/src/lib/dns/records.ts`:
+
+```ts
+import type { ExpectedRecord } from "@/db/schema/domains";
+
+export interface RecordInput {
+  domain: string;
+  region: string;
+  dkimTokens: string[];
+  mailFromDomain: string;
+  dmarcPolicy?: "none" | "quarantine" | "reject";
+}
+
+/** The DNS every SES domain needs. Pure; order is stable for display. */
+export function expectedRecords(i: RecordInput): ExpectedRecord[] {
+  const dkim: ExpectedRecord[] = i.dkimTokens.map((t) => ({
+    kind: "DKIM",
+    type: "CNAME",
+    name: `${t}._domainkey.${i.domain}`,
+    value: `${t}.dkim.amazonses.com`,
+    ok: false,
+  }));
+  return [
+    ...dkim,
+    {
+      kind: "MAIL_FROM_MX",
+      type: "MX",
+      name: i.mailFromDomain,
+      value: `feedback-smtp.${i.region}.amazonses.com`,
+      priority: 10,
+      ok: false,
+    },
+    {
+      kind: "MAIL_FROM_SPF",
+      type: "TXT",
+      name: i.mailFromDomain,
+      value: "v=spf1 include:amazonses.com ~all",
+      ok: false,
+    },
+    {
+      kind: "DMARC",
+      type: "TXT",
+      name: `_dmarc.${i.domain}`,
+      value: `v=DMARC1; p=${i.dmarcPolicy ?? "none"}; rua=mailto:dmarc@${i.domain}`,
+      ok: false,
+    },
+  ];
+}
+```
+
+`apps/web/src/lib/dns/zone-match.ts`:
+
+```ts
+export function matchZone<Z extends { name: string }>(
+  domain: string,
+  zones: Z[],
+): Z | null {
+  const d = domain.toLowerCase();
+  let best: Z | null = null;
+  for (const z of zones) {
+    const n = z.name.toLowerCase();
+    if (
+      (d === n || d.endsWith(`.${n}`)) &&
+      (!best || n.length > best.name.length)
+    )
+      best = z;
+  }
+  return best;
+}
+```
+
+`apps/web/src/lib/dns/check.ts`:
+
+```ts
+import { promises as dns } from "node:dns";
+import type { ExpectedRecord } from "@/db/schema/domains";
+
+export interface Resolver {
+  resolveCname(name: string): Promise<string[]>;
+  resolveMx(name: string): Promise<{ exchange: string; priority: number }[]>;
+  resolveTxt(name: string): Promise<string[][]>;
+}
+/** Public resolvers so we see what the world sees, not the host's split-horizon view. */
+export function publicResolver(): Resolver {
+  const r = new dns.Resolver();
+  r.setServers(["1.1.1.1", "8.8.8.8"]);
+  return {
+    resolveCname: (n) => r.resolveCname(n),
+    resolveMx: (n) => r.resolveMx(n),
+    resolveTxt: (n) => r.resolveTxt(n),
+  };
+}
+const norm = (s: string) => s.toLowerCase().replace(/\.$/, "");
+
+async function ok(rec: ExpectedRecord, res: Resolver): Promise<boolean> {
+  try {
+    if (rec.type === "CNAME")
+      return (await res.resolveCname(rec.name)).some(
+        (v) => norm(v) === norm(rec.value),
+      );
+    if (rec.type === "MX")
+      return (await res.resolveMx(rec.name)).some(
+        (m) => norm(m.exchange) === norm(rec.value),
+      );
+    return (await res.resolveTxt(rec.name)).some(
+      (chunks) => chunks.join("").replace(/\s+/g, " ").trim() === rec.value,
+    );
+  } catch {
+    return false;
+  }
+}
+
+export async function checkRecords(
+  recs: ExpectedRecord[],
+  res: Resolver = publicResolver(),
+): Promise<ExpectedRecord[]> {
+  return Promise.all(recs.map(async (r) => ({ ...r, ok: await ok(r, res) })));
+}
+```
+
+Run → PASS. Commit: `git add apps/web && git commit -m "feat(web): DNS expected records, zone matching, live checks"`
+
+---
+
+### Task 13: Domains service + jobs (TDD with mocks)
+
+**Files:**
+
+- Create: `apps/web/src/services/domains.ts`, `apps/web/src/jobs/handlers/domain-provision.ts`, `apps/web/src/jobs/handlers/domain-verify.ts`
+- Modify: `apps/web/src/jobs/handlers/index.ts`
+- Test: `apps/web/tests/integration/domains.test.ts`
+
+- [ ] **Step 1: Failing test**
+
+```ts
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import { mockClient } from "aws-sdk-client-mock";
+import {
+  SESv2Client,
+  CreateEmailIdentityCommand,
+  PutEmailIdentityMailFromAttributesCommand,
+  GetEmailIdentityCommand,
+  DeleteEmailIdentityCommand,
+} from "@aws-sdk/client-sesv2";
+import { eq } from "drizzle-orm";
+import { startPg } from "./_pg";
+
+const ses = mockClient(SESv2Client);
+let pg: Awaited<ReturnType<typeof startPg>>;
+const cfCalls: { url: string; method?: string }[] = [];
+const cfFetch = (async (url: string, init?: RequestInit) => {
+  cfCalls.push({ url: String(url), method: init?.method });
+  if (String(url).includes("/user/tokens/verify"))
+    return new Response(
+      JSON.stringify({ success: true, result: { status: "active" } }),
+    );
+  if (String(url).match(/\/zones\?/))
+    return new Response(
+      JSON.stringify({
+        success: true,
+        result: [{ id: "z1", name: "acme.com" }],
+      }),
+    );
+  if (String(url).includes("/dns_records?"))
+    return new Response(JSON.stringify({ success: true, result: [] }));
+  if (String(url).includes("/dns_records"))
+    return new Response(
+      JSON.stringify({ success: true, result: { id: `r${cfCalls.length}` } }),
+    );
+  return new Response("{}", { status: 404 });
+}) as typeof fetch;
+
+beforeAll(async () => {
+  pg = await startPg();
+  process.env.APP_SECRET = "x".repeat(40);
+  process.env.APP_URL = "https://mail.acme.com";
+  const { updateInstanceSettings } =
+    await import("@/services/instance-settings");
+  await updateInstanceSettings({
+    awsMode: "keys",
+    awsRegion: "eu-west-1",
+    awsAccessKey: "AKIAEXAMPLE",
+    awsSecret: "s3cr3t",
+    sesConfigSet: "sendsprite",
+  });
+  const { connectCloudflare } = await import("@/services/cloudflare-connect");
+  await connectCloudflare(
+    "cf-token-value-0123456789",
+    { userId: "u1" },
+    cfFetch,
+  );
+  await pg.db.execute(
+    `insert into "organization"(id,name,slug,"createdAt") values ('org_1','Acme','acme',now())`,
+  );
+});
+afterAll(async () => {
+  await pg.stop();
+});
+afterEach(() => {
+  ses.reset();
+  cfCalls.length = 0;
+});
+
+const actor = {
+  userId: "u1",
+  teamId: "org_1",
+  teamName: "Acme",
+  role: "owner" as const,
+};
+
+describe("domains", () => {
+  it("createDomain picks auto mode when a zone matches and enqueues provisioning", async () => {
+    const enqueue = vi.fn(async () => "job");
+    const { createDomain } = await import("@/services/domains");
+    const res = await createDomain(
+      actor,
+      { name: "Mail.Acme.com" },
+      { enqueue, fetch: cfFetch },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({
+      name: "mail.acme.com",
+      dnsMode: "auto",
+      cloudflareZoneId: "z1",
+      status: "pending",
+      mailFromDomain: "bounce.mail.acme.com",
+      region: "eu-west-1",
+    });
+    expect(enqueue).toHaveBeenCalledWith("domain.provision", {
+      domainId: res.data.id,
+    });
+  });
+  it("rejects duplicates and invalid names; member cannot create", async () => {
+    const { createDomain } = await import("@/services/domains");
+    expect(
+      (
+        await createDomain(
+          actor,
+          { name: "mail.acme.com" },
+          { enqueue: async () => "", fetch: cfFetch },
+        )
+      ).ok,
+    ).toBe(false);
+    expect(
+      (
+        await createDomain(
+          actor,
+          { name: "not a domain" },
+          { enqueue: async () => "", fetch: cfFetch },
+        )
+      ).ok,
+    ).toBe(false);
+    expect(
+      (
+        await createDomain(
+          { ...actor, role: "member" },
+          { name: "x.acme.com" },
+          { enqueue: async () => "", fetch: cfFetch },
+        )
+      ).ok,
+    ).toBe(false);
+  });
+  it("provisionDomain creates the identity, MAIL FROM, writes records to Cloudflare", async () => {
+    ses
+      .on(CreateEmailIdentityCommand)
+      .resolves({
+        DkimAttributes: { Tokens: ["t1", "t2", "t3"], Status: "PENDING" },
+      });
+    ses.on(PutEmailIdentityMailFromAttributesCommand).resolves({});
+    const { provisionDomain } = await import("@/services/domains");
+    const { domains } = await import("@/db/schema");
+    const [d] = await pg.db
+      .select()
+      .from(domains)
+      .where(eq(domains.name, "mail.acme.com"));
+    const enqueue = vi.fn(async () => "job");
+    await provisionDomain(d!.id, { enqueue, fetch: cfFetch });
+    const [after] = await pg.db
+      .select()
+      .from(domains)
+      .where(eq(domains.id, d!.id));
+    expect(after!.dkimTokens).toEqual(["t1", "t2", "t3"]);
+    expect(after!.expectedRecords).toHaveLength(6);
+    expect(after!.expectedRecords.every((r) => r.cloudflareId)).toBe(true);
+    expect(cfCalls.filter((c) => c.method === "POST")).toHaveLength(6);
+    expect(enqueue).toHaveBeenCalledWith(
+      "domain.verify",
+      { domainId: d!.id },
+      expect.objectContaining({ startAfter: expect.any(Number) }),
+    );
+  });
+  it("verifyDomain flips to verified when SES + DNS agree, else re-enqueues", async () => {
+    ses
+      .on(GetEmailIdentityCommand)
+      .resolves({
+        DkimAttributes: { Status: "SUCCESS", Tokens: ["t1", "t2", "t3"] },
+        MailFromAttributes: {
+          MailFromDomainStatus: "SUCCESS",
+          MailFromDomain: "bounce.mail.acme.com",
+        },
+        VerifiedForSendingStatus: true,
+      });
+    const resolver = {
+      resolveCname: async () => ["t1.dkim.amazonses.com"],
+      resolveMx: async () => [
+        { exchange: "feedback-smtp.eu-west-1.amazonses.com", priority: 10 },
+      ],
+      resolveTxt: async (n: string) =>
+        n.startsWith("_dmarc")
+          ? [["v=DMARC1; p=none; rua=mailto:dmarc@mail.acme.com"]]
+          : [["v=spf1 include:amazonses.com ~all"]],
+    };
+    const { verifyDomain } = await import("@/services/domains");
+    const { domains } = await import("@/db/schema");
+    const [d] = await pg.db
+      .select()
+      .from(domains)
+      .where(eq(domains.name, "mail.acme.com"));
+    const enqueue = vi.fn(async () => "job");
+    await verifyDomain(d!.id, { enqueue, resolver });
+    const [after] = await pg.db
+      .select()
+      .from(domains)
+      .where(eq(domains.id, d!.id));
+    expect(after!.status).toBe("verified");
+    expect(after!.verifiedAt).toBeTruthy();
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+  it("verifyDomain re-enqueues while pending and fails after verifyUntil", async () => {
+    ses
+      .on(GetEmailIdentityCommand)
+      .resolves({
+        DkimAttributes: { Status: "PENDING", Tokens: ["t1", "t2", "t3"] },
+        MailFromAttributes: { MailFromDomainStatus: "PENDING" },
+      });
+    const { verifyDomain, createDomain } = await import("@/services/domains");
+    const { domains } = await import("@/db/schema");
+    const created = await createDomain(
+      actor,
+      { name: "slow.acme.com" },
+      { enqueue: async () => "", fetch: cfFetch },
+    );
+    if (!created.ok) throw new Error(created.error);
+    const enqueue = vi.fn(async () => "job");
+    const resolver = {
+      resolveCname: async () => [],
+      resolveMx: async () => [],
+      resolveTxt: async () => [],
+    };
+    await verifyDomain(created.data.id, { enqueue, resolver });
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    await pg.db
+      .update(domains)
+      .set({ verifyUntil: new Date(Date.now() - 1000) })
+      .where(eq(domains.id, created.data.id));
+    enqueue.mockClear();
+    await verifyDomain(created.data.id, { enqueue, resolver });
+    const [after] = await pg.db
+      .select()
+      .from(domains)
+      .where(eq(domains.id, created.data.id));
+    expect(after!.status).toBe("failed");
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+  it("deleteDomain removes the identity and the Cloudflare records it created", async () => {
+    ses.on(DeleteEmailIdentityCommand).resolves({});
+    const { deleteDomain } = await import("@/services/domains");
+    const { domains } = await import("@/db/schema");
+    const [d] = await pg.db
+      .select()
+      .from(domains)
+      .where(eq(domains.name, "mail.acme.com"));
+    const res = await deleteDomain(actor, d!.id, { fetch: cfFetch });
+    expect(res.ok).toBe(true);
+    expect(cfCalls.filter((c) => c.method === "DELETE")).toHaveLength(6);
+    expect(
+      await pg.db.select().from(domains).where(eq(domains.id, d!.id)),
+    ).toHaveLength(0);
+  });
+});
+```
+
+Run: `cd apps/web && bun run test:integration -- domains` → FAIL.
+
+- [ ] **Step 2: Service**
+
+`apps/web/src/services/domains.ts`:
+
+```ts
+import { and, eq } from "drizzle-orm";
+import { z } from "zod";
+import {
+  CreateEmailIdentityCommand,
+  DeleteEmailIdentityCommand,
+  GetEmailIdentityCommand,
+  PutEmailIdentityMailFromAttributesCommand,
+} from "@aws-sdk/client-sesv2";
+import { can, newId } from "@sendsprite/shared";
+import { db } from "@/db";
+import { domains, type ExpectedRecord } from "@/db/schema";
+import { makeSes } from "@/lib/aws/clients";
+import { resolveAwsContext } from "@/lib/aws/credentials";
+import { expectedRecords } from "@/lib/dns/records";
+import { matchZone } from "@/lib/dns/zone-match";
+import { checkRecords, type Resolver } from "@/lib/dns/check";
+import { recordAudit } from "@/lib/audit";
+import type { Result } from "@/lib/result";
+import { getInstanceSettings } from "./instance-settings";
+import { cloudflareClient, listZones } from "./cloudflare-connect";
+import type { TeamActor } from "./team";
+
+export type Domain = typeof domains.$inferSelect;
+export type Enqueue = (
+  queue: string,
+  data: object,
+  opts?: { startAfter?: number },
+) => Promise<unknown>;
+interface Deps {
+  enqueue: Enqueue;
+  fetch?: typeof fetch;
+  resolver?: Resolver;
+}
+
+const VERIFY_EVERY_S = 120;
+const VERIFY_WINDOW_MS = 72 * 3600 * 1000;
+const DOMAIN_RE =
+  /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+export async function listDomains(teamId: string): Promise<Domain[]> {
+  return db()
+    .select()
+    .from(domains)
+    .where(eq(domains.teamId, teamId))
+    .orderBy(domains.createdAt);
+}
+export async function getDomain(
+  teamId: string,
+  id: string,
+): Promise<Domain | null> {
+  const [d] = await db()
+    .select()
+    .from(domains)
+    .where(and(eq(domains.id, id), eq(domains.teamId, teamId)))
+    .limit(1);
+  return d ?? null;
+}
+
+export async function createDomain(
+  actor: TeamActor,
+  input: unknown,
+  deps: Deps,
+): Promise<Result<Domain>> {
+  if (!can(actor.role, "domains.manage"))
+    return { ok: false, error: "You don't have permission to do that." };
+  const parsed = z
+    .object({ name: z.string().transform((s) => s.trim().toLowerCase()) })
+    .safeParse(input);
+  if (!parsed.success || !DOMAIN_RE.test(parsed.data.name))
+    return { ok: false, error: "Enter a valid domain like mail.example.com." };
+  const name = parsed.data.name;
+  const settings = await getInstanceSettings();
+  if (settings.awsMode === "none" || !settings.awsRegion)
+    return { ok: false, error: "Connect AWS first (Settings → Instance)." };
+  const [dupe] = await db()
+    .select({ id: domains.id })
+    .from(domains)
+    .where(eq(domains.name, name))
+    .limit(1);
+  if (dupe)
+    return {
+      ok: false,
+      error: "That domain is already added on this instance.",
+    };
+  const zone = matchZone(name, await listZones(deps.fetch));
+  const id = newId("dom");
+  const [row] = await db()
+    .insert(domains)
+    .values({
+      id,
+      teamId: actor.teamId,
+      name,
+      region: settings.awsRegion,
+      cloudflareZoneId: zone?.id ?? null,
+      dnsMode: zone ? "auto" : "manual",
+      mailFromDomain: `bounce.${name}`,
+      verifyUntil: new Date(Date.now() + VERIFY_WINDOW_MS),
+      createdBy: actor.userId,
+    })
+    .returning();
+  await recordAudit({
+    teamId: actor.teamId,
+    actorUserId: actor.userId,
+    action: "domains.create",
+    targetType: "domain",
+    targetId: id,
+    diff: { name: { to: name }, dnsMode: { to: row!.dnsMode } },
+    ...actor.meta,
+  });
+  await deps.enqueue("domain.provision", { domainId: id });
+  return { ok: true, data: row! };
+}
+
+/** Job: SES identity + MAIL FROM + (auto) Cloudflare records; then schedule verification. */
+export async function provisionDomain(
+  domainId: string,
+  deps: Deps,
+): Promise<void> {
+  const [d] = await db()
+    .select()
+    .from(domains)
+    .where(eq(domains.id, domainId))
+    .limit(1);
+  if (!d) return;
+  try {
+    const ctx = await resolveAwsContext();
+    const ses = makeSes(ctx);
+    const settings = await getInstanceSettings();
+    const created = await ses
+      .send(
+        new CreateEmailIdentityCommand({
+          EmailIdentity: d.name,
+          ConfigurationSetName: settings.sesConfigSet ?? undefined,
+          DkimSigningAttributes: { NextSigningKeyLength: "RSA_2048_BIT" },
+        }),
+      )
+      .catch(async (e) => {
+        if ((e as { name?: string }).name !== "AlreadyExistsException") throw e;
+        return ses.send(new GetEmailIdentityCommand({ EmailIdentity: d.name }));
+      });
+    const tokens = created.DkimAttributes?.Tokens ?? [];
+    await ses.send(
+      new PutEmailIdentityMailFromAttributesCommand({
+        EmailIdentity: d.name,
+        MailFromDomain: d.mailFromDomain,
+        BehaviorOnMxFailure: "USE_DEFAULT_VALUE",
+      }),
+    );
+    let recs = expectedRecords({
+      domain: d.name,
+      region: d.region,
+      dkimTokens: tokens,
+      mailFromDomain: d.mailFromDomain,
+    });
+    if (d.dnsMode === "auto" && d.cloudflareZoneId) {
+      const cf = await cloudflareClient(deps.fetch);
+      if (!cf) throw new Error("Cloudflare is no longer connected");
+      recs = await Promise.all(
+        recs.map(async (r) => ({
+          ...r,
+          cloudflareId: (
+            await cf.upsertRecord(d.cloudflareZoneId!, {
+              type: r.type,
+              name: r.name,
+              content: r.value,
+              priority: r.priority,
+            })
+          ).id,
+        })),
+      );
+    }
+    await db()
+      .update(domains)
+      .set({
+        dkimTokens: tokens,
+        dkimStatus: created.DkimAttributes?.Status ?? null,
+        expectedRecords: recs,
+        lastError: null,
+      })
+      .where(eq(domains.id, d.id));
+    await deps.enqueue("domain.verify", { domainId: d.id }, { startAfter: 30 });
+  } catch (e) {
+    await db()
+      .update(domains)
+      .set({ lastError: errMsg(e) })
+      .where(eq(domains.id, d.id));
+    throw e; // let pg-boss retry
+  }
+}
+
+/** Job: poll SES + DNS; verified → stop; pending → re-enqueue; past window → failed. */
+export async function verifyDomain(
+  domainId: string,
+  deps: Pick<Deps, "enqueue" | "resolver">,
+): Promise<void> {
+  const [d] = await db()
+    .select()
+    .from(domains)
+    .where(eq(domains.id, domainId))
+    .limit(1);
+  if (!d || d.status === "verified") return;
+  const ctx = await resolveAwsContext();
+  const ident = await makeSes(ctx).send(
+    new GetEmailIdentityCommand({ EmailIdentity: d.name }),
+  );
+  const recs = await checkRecords(d.expectedRecords, deps.resolver);
+  const dkimOk = ident.DkimAttributes?.Status === "SUCCESS";
+  const mailFromOk =
+    ident.MailFromAttributes?.MailFromDomainStatus === "SUCCESS";
+  const spfOk = recs.some((r) => r.kind === "MAIL_FROM_SPF" && r.ok);
+  const dmarcOk = recs.some((r) => r.kind === "DMARC" && r.ok);
+  const verified = dkimOk && mailFromOk;
+  const expired =
+    !verified && d.verifyUntil && d.verifyUntil.getTime() < Date.now();
+  await db()
+    .update(domains)
+    .set({
+      expectedRecords: recs,
+      dkimStatus: ident.DkimAttributes?.Status ?? null,
+      mailFromStatus: ident.MailFromAttributes?.MailFromDomainStatus ?? null,
+      spfOk,
+      dmarcOk,
+      lastCheckedAt: new Date(),
+      status: verified ? "verified" : expired ? "failed" : "pending",
+      verifiedAt: verified ? new Date() : null,
+      lastError: expired
+        ? "Verification timed out after 72 hours. Check the records and click Re-verify."
+        : null,
+    })
+    .where(eq(domains.id, d.id));
+  if (!verified && !expired)
+    await deps.enqueue(
+      "domain.verify",
+      { domainId: d.id },
+      { startAfter: VERIFY_EVERY_S },
+    );
+}
+
+/** Manual "Re-verify": resets the window and runs one check now. */
+export async function reverifyDomain(
+  actor: TeamActor,
+  id: string,
+  deps: Pick<Deps, "enqueue">,
+): Promise<Result> {
+  if (!can(actor.role, "domains.manage"))
+    return { ok: false, error: "You don't have permission to do that." };
+  const d = await getDomain(actor.teamId, id);
+  if (!d) return { ok: false, error: "Domain not found." };
+  await db()
+    .update(domains)
+    .set({
+      status: "pending",
+      verifyUntil: new Date(Date.now() + VERIFY_WINDOW_MS),
+      lastError: null,
+    })
+    .where(eq(domains.id, id));
+  await deps.enqueue("domain.verify", { domainId: id });
+  return { ok: true, data: undefined };
+}
+
+export async function deleteDomain(
+  actor: TeamActor,
+  id: string,
+  deps: Pick<Deps, "fetch">,
+): Promise<Result> {
+  if (!can(actor.role, "domains.manage"))
+    return { ok: false, error: "You don't have permission to do that." };
+  const d = await getDomain(actor.teamId, id);
+  if (!d) return { ok: false, error: "Domain not found." };
+  try {
+    const ctx = await resolveAwsContext();
+    await makeSes(ctx)
+      .send(new DeleteEmailIdentityCommand({ EmailIdentity: d.name }))
+      .catch((e) => {
+        if ((e as { name?: string }).name !== "NotFoundException") throw e;
+      });
+    if (d.dnsMode === "auto" && d.cloudflareZoneId) {
+      const cf = await cloudflareClient(deps.fetch);
+      if (cf)
+        for (const r of d.expectedRecords)
+          if (r.cloudflareId)
+            await cf
+              .deleteRecord(d.cloudflareZoneId, r.cloudflareId)
+              .catch(() => {});
+    }
+  } catch (e) {
+    return { ok: false, error: `Could not remove: ${errMsg(e)}` };
+  }
+  await db().delete(domains).where(eq(domains.id, id));
+  await recordAudit({
+    teamId: actor.teamId,
+    actorUserId: actor.userId,
+    action: "domains.delete",
+    targetType: "domain",
+    targetId: id,
+    diff: { name: { from: d.name } },
+    ...actor.meta,
+  });
+  return { ok: true, data: undefined };
+}
+```
+
+- [ ] **Step 3: Job handlers**
+
+`apps/web/src/jobs/handlers/domain-provision.ts`:
+
+```ts
+import { registerQueue, getBoss } from "../boss";
+import { Q } from "../queues";
+import { provisionDomain, type Enqueue } from "@/services/domains";
+
+export const enqueue: Enqueue = async (queue, data, opts) =>
+  (await getBoss()).send(
+    queue,
+    data,
+    opts?.startAfter ? { startAfter: opts.startAfter } : undefined,
+  );
+
+registerQueue<{ domainId: string }>(
+  Q.domainProvision,
+  async (jobs) => {
+    for (const job of jobs)
+      await provisionDomain(job.data.domainId, { enqueue });
+  },
+  {
+    queue: {
+      retryLimit: 5,
+      retryDelay: 30,
+      retryBackoff: true,
+      expireInSeconds: 300,
+    },
+  },
+);
+```
+
+`apps/web/src/jobs/handlers/domain-verify.ts`:
+
+```ts
+import { registerQueue } from "../boss";
+import { Q } from "../queues";
+import { verifyDomain } from "@/services/domains";
+import { enqueue } from "./domain-provision";
+
+registerQueue<{ domainId: string }>(
+  Q.domainVerify,
+  async (jobs) => {
+    for (const job of jobs) await verifyDomain(job.data.domainId, { enqueue });
+  },
+  { queue: { retryLimit: 3, retryDelay: 60, expireInSeconds: 120 } },
+);
+```
+
+`handlers/index.ts`: import both. Confirm pg-boss `send(name, data, { startAfter })` accepts seconds (number) in 12.x (`node_modules/pg-boss/dist/index.d.ts`); if it expects a Date/ISO string, convert.
+
+- [ ] **Step 4: Run, commit**
+
+Run: `cd apps/web && bun run test:integration && bun run typecheck` → PASS.
+
+```bash
+git add apps/web
+git commit -m "feat(web): domains service — create, provision (SES + Cloudflare), verify loop, delete"
+```
+
+---
+
+### Task 14: Setup wizard UI + owner gating
+
+**Files:**
+
+- Create: `apps/web/src/app/setup/page.tsx`, `apps/web/src/app/setup/actions.ts`, `apps/web/src/app/setup/SetupWizard.tsx`, `apps/web/src/app/setup/steps/AwsStep.tsx`, `apps/web/src/app/setup/steps/ProductionStep.tsx`, `apps/web/src/app/setup/steps/CloudflareStep.tsx`, `apps/web/src/app/setup/steps/DoneStep.tsx`, `apps/web/src/app/app/waiting/page.tsx`
+- Modify: `apps/web/src/app/app/layout.tsx`, `apps/web/src/lib/session.ts` (`requireOwner`)
+
+- [ ] **Step 1: Owner helper + gating**
+
+`session.ts`: add
+
+```ts
+/** Instance-level actions: any owner of any team may perform them (§6.1: "first user"; later owners too). */
+export async function requireOwner() {
+  const ctx = await requireTeam();
+  if (ctx.role !== "owner") redirect("/app");
+  return ctx;
+}
+```
+
+`app/app/layout.tsx`: after `requireTeam()`, `const s = await getInstanceSettings(); if (!s.setupCompleted) { if (ctx.role === "owner") redirect("/setup"); else redirect("/app/waiting"); }` — but `/app/waiting` is under this layout; render it without the redirect by checking `headers().get("x-invoke-path")`? No — simpler: move waiting to `apps/web/src/app/(onboarding)/waiting/page.tsx` (outside `/app`) and redirect there. It says "An owner is finishing setup. Refresh in a minute." with the owner emails.
+
+- [ ] **Step 2: Server actions**
+
+`apps/web/src/app/setup/actions.ts`:
+
+```ts
+"use server";
+import { headers } from "next/headers";
+import { revalidatePath } from "next/cache";
+import { loadEnv } from "@/env.schema";
+import { requireOwner } from "@/lib/session";
+import { requestMeta } from "@/lib/audit";
+import { buildQuickCreateUrl } from "@/lib/aws/quick-create";
+import { SES_REGIONS } from "@/lib/aws/clients";
+import * as aws from "@/services/aws-connect";
+import * as cf from "@/services/cloudflare-connect";
+import { issueSetupToken } from "@/services/setup-tokens";
+import { updateInstanceSettings } from "@/services/instance-settings";
+export type { Result } from "@/lib/result";
+
+async function actor() {
+  const ctx = await requireOwner();
+  return { userId: ctx.userId, meta: requestMeta(await headers()) };
+}
+const region = (v: unknown) =>
+  (SES_REGIONS as readonly string[]).includes(String(v))
+    ? String(v)
+    : loadEnv().AWS_DEFAULT_REGION;
+
+export async function startQuickCreate(fd: FormData) {
+  const a = await actor();
+  const r = region(fd.get("region"));
+  const { token } = await issueSetupToken({
+    purpose: "aws_callback",
+    issuedBy: a.userId,
+    region: r,
+    ttlMs: 15 * 60_000,
+  });
+  const env = loadEnv();
+  return {
+    ok: true as const,
+    data: {
+      url: buildQuickCreateUrl({
+        region: r,
+        templateUrl: env.CFN_TEMPLATE_URL,
+        callbackUrl: `${env.APP_URL}/api/setup/aws/callback`,
+        callbackToken: token,
+        stackName: "sendsprite-connect",
+      }),
+    },
+  };
+}
+export async function detectRole(fd: FormData) {
+  const a = await actor();
+  const res = await aws.detectInstanceRole(region(fd.get("region")), a);
+  revalidatePath("/setup");
+  return res;
+}
+export async function connectKeys(fd: FormData) {
+  const a = await actor();
+  const res = await aws.connectWithKeys(
+    {
+      accessKeyId: fd.get("accessKeyId"),
+      secretAccessKey: fd.get("secretAccessKey"),
+      region: region(fd.get("region")),
+    },
+    a,
+  );
+  revalidatePath("/setup");
+  return res;
+}
+export async function requestProduction(fd: FormData) {
+  const a = await actor();
+  const res = await aws.requestProductionAccess(
+    {
+      websiteUrl: fd.get("websiteUrl"),
+      mailType: fd.get("mailType"),
+      useCase: fd.get("useCase"),
+      contactEmail: fd.get("contactEmail") || undefined,
+    },
+    a,
+  );
+  revalidatePath("/setup");
+  return res;
+}
+export async function refreshAccount() {
+  const a = await actor();
+  const res = await aws.refreshSesAccount(a);
+  revalidatePath("/setup");
+  return res;
+}
+export async function connectCloudflareAction(fd: FormData) {
+  const a = await actor();
+  const res = await cf.connectCloudflare(String(fd.get("token") ?? ""), a);
+  revalidatePath("/setup");
+  return res;
+}
+export async function disconnectAws() {
+  const a = await actor();
+  const res = await aws.disconnectAws(a);
+  revalidatePath("/setup");
+  return res;
+}
+export async function disconnectCloudflareAction() {
+  const a = await actor();
+  const res = await cf.disconnectCloudflare(a);
+  revalidatePath("/setup");
+  return res;
+}
+export async function finishSetup() {
+  const a = await actor();
+  await updateInstanceSettings({ setupCompleted: true }, a);
+  revalidatePath("/app", "layout");
+  return { ok: true as const, data: undefined };
+}
+```
+
+- [ ] **Step 3: Wizard page and steps**
+
+`apps/web/src/app/setup/page.tsx` (server): `requireOwner()`, load settings, compute `step` from `?step=` (default: aws if not connected, else production if sandbox, else cloudflare, else done), render `<SetupWizard settings={plain} step={step} regions={SES_REGIONS} defaultRegion={env.AWS_DEFAULT_REGION} />` inside the auth layout style (`glass-strong` card, max-w-2xl, step indicator with `num-stamp`). Pass only serialisable, non-secret fields (`awsMode, awsRegion, awsAccountId, sesAccountStatus, sesReviewStatus, sesDailyQuota, sesMaxSendRate, cloudflareConnectedAt, cloudflareAccountName, setupCompleted`).
+
+`SetupWizard.tsx` (client): renders the step component; nav links to `?step=`.
+
+`steps/AwsStep.tsx` (client) — three panels:
+
+1. **Detect instance role**: region `Select` + `Button` "Use this server's AWS role" → `detectRole`; on `ok:false` show the message inline ("No role found — that's normal off AWS").
+2. **One-click (recommended)**: region `Select`, `Button` "Open AWS console" → `startQuickCreate` → `window.open(url, "_blank")`, then start polling `GET /api/setup/aws/status` every 3 s (stop when `connected` or `pendingToken===false`), showing `Spinner` + "Waiting for CloudFormation… click Create stack in the tab we opened. Acknowledge the IAM capability checkbox." On connected → `router.refresh()`.
+3. **Manual**: access key, secret (`type=password`), region → `connectKeys`.
+   When connected: show account id, region, mode `Badge`, "Disconnect" (confirm) and "Continue".
+
+`steps/ProductionStep.tsx` — shows `StatusDot` for sandbox/requested/production with quota; if sandbox: form (website URL, mail type select, use case textarea min 20, contact email) → `requestProduction`; if requested: "AWS is reviewing (usually < 24 h)" + "Check now" → `refreshAccount`; "Skip for now" always available.
+
+`steps/CloudflareStep.tsx` — instruction card: link `https://dash.cloudflare.com/profile/api-tokens` (`target=_blank`), bullet list _Zone → Zone → Read_, _Zone → DNS → Edit_, zone scope; token `Input type=password` → `connectCloudflareAction`; on success list zone names; "Skip (I'll add DNS records manually)".
+
+`steps/DoneStep.tsx` — summary + `Button` "Go to dashboard" → `finishSetup` then `router.push("/app")`.
+
+Every form uses `useActionState` + `pending` disable + `role="alert"` errors, same as Phase 1's `RenameForm`.
+
+- [ ] **Step 4: Typecheck and manual run**
+
+Run: `cd apps/web && bun run typecheck` → clean. Dev check (`bun run db:dev` + `bun run dev -- -p 3001`): first owner is redirected `/app` → `/setup`; manual path with fake keys shows the AWS error inline; "Skip" through to Done; `/app` renders after `finishSetup`. Kill background processes.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add apps/web
+git commit -m "feat(web): setup wizard — AWS (role/one-click/manual), SES production access, Cloudflare"
+```
+
+---
+
+### Task 15: Instance settings tab + domains UI
+
+**Files:**
+
+- Create: `apps/web/src/app/app/settings/instance/page.tsx`, `apps/web/src/app/app/domains/page.tsx`, `apps/web/src/app/app/domains/new/page.tsx`, `apps/web/src/app/app/domains/[id]/page.tsx`, `apps/web/src/app/app/domains/actions.ts`, `apps/web/src/app/app/domains/DomainForm.tsx`, `apps/web/src/app/app/domains/RecordsTable.tsx`, `apps/web/src/app/app/domains/DomainActions.tsx`
+- Modify: `apps/web/src/app/app/settings/page.tsx` (link to Instance tab for owners), `apps/web/src/app/app/page.tsx` (checklist)
+
+- [ ] **Step 1: Instance tab**
+
+`settings/instance/page.tsx`: `requireOwner()`; reuse `AwsStep`, `ProductionStep`, `CloudflareStep` in three `Card`s with the same actions (import from `@/app/setup/actions`), plus a "Signup mode" select (`open|invite|closed|auto`) and "Landing page enabled" toggle written via a new `updateInstanceAction(fd)` in `setup/actions.ts` (`updateInstanceSettings({ signupMode, landingEnabled }, a)`), and "Retention days" number. Add a "Instance" link in `settings/page.tsx` when `ctx.role === "owner"`.
+
+- [ ] **Step 2: Domain actions**
+
+`domains/actions.ts`:
+
+```ts
+"use server";
+import { revalidatePath } from "next/cache";
+import { headers } from "next/headers";
+import { requireTeam } from "@/lib/session";
+import { requestMeta } from "@/lib/audit";
+import * as domains from "@/services/domains";
+import { enqueue } from "@/jobs/handlers/domain-provision";
+export type { Result } from "@/lib/result";
+
+async function actor() {
+  const ctx = await requireTeam();
+  return {
+    userId: ctx.userId,
+    teamId: ctx.team.id,
+    teamName: ctx.team.name,
+    role: ctx.role,
+    meta: requestMeta(await headers()),
+  };
+}
+
+export async function createDomain(fd: FormData) {
+  const res = await domains.createDomain(
+    await actor(),
+    { name: fd.get("name") },
+    { enqueue },
+  );
+  if (res.ok) revalidatePath("/app/domains");
+  return res;
+}
+export async function reverifyDomain(id: string) {
+  const res = await domains.reverifyDomain(await actor(), id, { enqueue });
+  revalidatePath(`/app/domains/${id}`);
+  return res;
+}
+export async function deleteDomain(id: string) {
+  const res = await domains.deleteDomain(await actor(), id, {});
+  if (res.ok) revalidatePath("/app/domains");
+  return res;
+}
+```
+
+Note: importing `@/jobs/handlers/domain-provision` from a route bundle registers the queue in that bundle too — harmless (registry is on `globalThis`; `startWorker` only runs in instrumentation).
+
+- [ ] **Step 3: Pages**
+
+- `domains/page.tsx`: `requireTeam()`, `listDomains(team.id)`; `EmptyState` when none ("Add your first sending domain"); otherwise a table: name, `StatusDot` (pending→`pending`, verified→`ok`, failed→`error`), DNS mode `Badge` (auto/manual), region, last checked, link to detail. Button "Add domain" → `/app/domains/new`. If `awsMode==="none"`, show a banner linking owners to `/app/settings/instance`.
+- `domains/new/page.tsx` + `DomainForm.tsx` (client): single `Input` "mail.example.com", helper text on subdomain recommendation; on success `router.push(`/app/domains/${id}`)`. Show whether Cloudflare auto mode will apply (server passes `hasCloudflare`).
+- `domains/[id]/page.tsx`: `getDomain(team.id, id)` or `notFound()`; header with status, mode, `lastError` banner; `RecordsTable` (kind label, type, name, value with `CopyField`-style `select-all` code, priority, ✓/✗ from `ok`) — explain manual mode ("Add these at your DNS provider; we re-check every 2 minutes for 72 h"); `DomainActions` (client): "Re-verify" (transition, disabled while pending), "Delete" (confirm) → `router.push("/app/domains")`. Auto-refresh: client `useEffect` `router.refresh()` every 15 s while status is `pending` (SSE arrives in Phase 3).
+- `app/page.tsx` checklist: "Add a sending domain" done when `listDomains(team.id).some(d => d.status === "verified")`; link each step to its page.
+
+Add a `CopyField` primitive in `components/ui/CopyField.tsx` (client: `navigator.clipboard.writeText`, "Copied" state) — the spec lists it and the records table needs it.
+
+- [ ] **Step 4: Typecheck, manual run, commit**
+
+Run: `cd apps/web && bun run typecheck` → clean. Dev check: with AWS not connected, `/app/domains/new` shows the connect banner and the service returns the "Connect AWS first" error. Kill processes.
+
+```bash
+git add apps/web
+git commit -m "feat(web): instance settings tab, domains list/new/detail with live record checks"
+```
+
+---
+
+### Task 16: E2E — setup wizard (manual path, mocked AWS) and domains page
+
+**Files:**
+
+- Create: `apps/web/tests/e2e/setup.spec.ts`
+- Modify: `apps/web/playwright.config.ts` (webServer env `AWS_E2E_MOCK=1`), `apps/web/src/lib/aws/clients.ts` (mock seam)
+
+- [ ] **Step 1: Mock seam**
+
+E2E runs a real Next server, so AWS calls need an in-process fake. In `clients.ts`, when `process.env.AWS_E2E_MOCK === "1"`, return clients whose `send()` resolves canned responses (`GetCallerIdentity` → account `111111111111`; `GetAccount` → sandbox; `CreateConfigurationSet*`/`CreateTopic`/`Subscribe` → ok; `CreateEmailIdentity` → tokens `e1,e2,e3`; `GetEmailIdentity` → PENDING). Implement as a small `FakeClient` class with a `send(cmd)` switch on `cmd.constructor.name`, guarded so it can never activate in production (`NODE_ENV !== "production"` AND the env var).
+
+- [ ] **Step 2: Spec**
+
+`tests/e2e/setup.spec.ts`:
+
+```ts
+import { expect, test } from "@playwright/test";
+
+test("owner completes setup via manual keys, adds a domain, sees records", async ({
+  page,
+}) => {
+  const email = `owner-${Date.now()}@example.com`;
+  await page.goto("/signup");
+  await page.fill("#name", "Owner");
+  await page.fill("#email", email);
+  await page.fill("#password", "correct-horse-battery");
+  await page.click("button[type=submit]");
+  await expect(page.getByRole("button", { name: "Create team" })).toBeVisible();
+  await page.fill("#name", "Acme");
+  await page.click("button[type=submit]");
+  await expect(page).toHaveURL(/\/setup/);
+  await page.getByRole("button", { name: /paste keys manually/i }).click();
+  await page.fill("#accessKeyId", "AKIAE2EEXAMPLE0001");
+  await page.fill("#secretAccessKey", "e2e-secret-e2e-secret");
+  await page.getByRole("button", { name: /connect/i }).click();
+  await expect(page.getByText("111111111111")).toBeVisible();
+  await page.getByRole("link", { name: /continue/i }).click();
+  await page.getByRole("button", { name: /skip for now/i }).click(); // production
+  await page.getByRole("button", { name: /skip/i }).click(); // cloudflare
+  await page.getByRole("button", { name: /go to dashboard/i }).click();
+  await expect(page).toHaveURL(/\/app$/);
+  await page.goto("/app/domains/new");
+  await page.fill("#name", "mail.e2e-acme.com");
+  await page.click("button[type=submit]");
+  await expect(page).toHaveURL(/\/app\/domains\/dom_/);
+  await expect(page.getByText("e1._domainkey.mail.e2e-acme.com")).toBeVisible({
+    timeout: 20_000,
+  });
+  await expect(page.getByText("_dmarc.mail.e2e-acme.com")).toBeVisible();
+});
+```
+
+`playwright.config.ts` webServer env: add `AWS_E2E_MOCK: "1"`, and `WORKER_MODE: "inline"` for this project (provisioning runs as a job). Use ids `#accessKeyId`, `#secretAccessKey`, `#name` in the forms accordingly.
+
+- [ ] **Step 3: Run, commit**
+
+Run: `cd apps/web && bun run test:e2e` (db:dev running) → 2 passed.
+
+```bash
+git add apps/web
+git commit -m "test(web): e2e setup wizard (manual AWS) and domain provisioning with mocked AWS"
+```
+
+---
+
+### Task 17: Docs — README, maintainer notes, plan/spec sync
+
+**Files:**
+
+- Modify: `README.md`, `docs/superpowers/specs/2026-08-24-sendsprite-design.md` (§6 note on S3 template hosting), `infra/aws/README.md` (create)
+
+- [ ] **Step 1: infra/aws/README.md**
+
+Explain: what the stack creates, the callback flow, why quick-create needs S3, how to publish (`aws s3 mb s3://sendsprite-cfn --region us-east-1`, bucket policy for public `GetObject` on `/*`, `aws s3 cp … --acl public-read`, then uncomment the CI publish steps), how self-hosters override with `CFN_TEMPLATE_URL`, and how to revoke (delete the stack).
+
+- [ ] **Step 2: README**
+
+Add a "Connect AWS & Cloudflare" section (three AWS paths, sandbox caveat, Cloudflare token permissions, manual DNS mode), env table rows for `CFN_TEMPLATE_URL`, `AWS_DEFAULT_REGION`, and the roadmap line "Phase 2: done".
+
+- [ ] **Step 3: Spec note**
+
+In spec §6.1 append: "Quick-create only accepts S3 template URLs; the template is published to a public bucket (`CFN_TEMPLATE_URL`)." and in §7 note REST domains endpoints ship in Phase 3.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add README.md docs infra
+git commit -m "docs: Phase 2 provisioning — AWS/Cloudflare connect, template publishing, env"
+```
+
+---
+
+## Self-review
+
+**Spec coverage (§6):** wizard steps 1–5 → T14; instance-role detection → T7/T14; one-click CFN + callback + polling → T5/T6/T8/T14; manual keys → T7/T14; post-connect config set / SNS topic / subscription / GetAccount → T7/T9; production access request + hourly recheck → T7/T10/T14; Cloudflare deep link + verify + zones → T11/T14; re-enterable from Settings → T15; domains add (auto/manual), provision steps 1–5, per-record status, forced verify, delete cleanup, instance-wide uniqueness → T12/T13/T15. §5 `domains` columns → T4 (adds `verify_until`, `last_error`, `created_by`; `cloudflareId` lives inside `expected_records`). Openers 1–7 → T1–T3 (heartbeat persistence #6 deferred to Phase 3 where health gets its worker signal from real queues; noted in T10 comment — add this as a Phase 3 opener).
+
+**Placeholder scan:** none. The two "verify against installed types" instructions (organization hook signatures in T3, pg-boss `send`/`createQueue` option shapes in T1/T13) are explicit checks with the file to open, not deferred work.
+
+**Type consistency:** `Result` moves to `@/lib/result` in T7 and is imported from there in T11/T13/T14/T15 (T3's `services/team.ts` keeps re-exporting it). `Actor { userId, meta? }` (aws/cloudflare services) vs `TeamActor` (domains) — distinct on purpose: instance-level vs team-level. `Enqueue` type defined in T13 and implemented in T13 handlers, used by T15 actions. `ExpectedRecord` defined in T4 schema, produced by T12, consumed by T13/T15. `SES_REGIONS` from T5 used in T14. `requireOwner` from T14 used in T15.
