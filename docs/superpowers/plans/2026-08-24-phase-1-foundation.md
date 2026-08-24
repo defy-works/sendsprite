@@ -2542,7 +2542,7 @@ git commit -m "feat(web): login/signup pages and invitation acceptance"
 
 - Create: `apps/web/src/app/app/layout.tsx`, `apps/web/src/app/app/page.tsx`, `apps/web/src/app/(onboarding)/teams/new/page.tsx`, `apps/web/src/app/(onboarding)/teams/new/CreateTeamForm.tsx`, `apps/web/src/components/app/AppShell.tsx`, `apps/web/src/components/app/TeamSwitcher.tsx`, `apps/web/src/components/app/UserMenu.tsx`
 
-- [ ] **Step 1: Team creation page (needed before the shell can render for a user with no team)**
+- [x] **Step 1: Team creation page (needed before the shell can render for a user with no team)**
 
 `apps/web/src/app/(onboarding)/teams/new/page.tsx` (outside `/app` so the team-requiring layout doesn't apply):
 
@@ -2623,7 +2623,7 @@ export function CreateTeamForm() {
 }
 ```
 
-- [ ] **Step 2: Shell components**
+- [x] **Step 2: Shell components**
 
 `apps/web/src/components/app/TeamSwitcher.tsx`:
 
@@ -2765,7 +2765,7 @@ export function AppShell(p: {
 }
 ```
 
-- [ ] **Step 3: /app layout and overview page**
+- [x] **Step 3: /app layout and overview page**
 
 `apps/web/src/app/app/layout.tsx`:
 
@@ -2844,7 +2844,7 @@ export default async function OverviewPage() {
 }
 ```
 
-- [ ] **Step 4: Instance settings service (needed by the layout)**
+- [x] **Step 4: Instance settings service (needed by the layout)**
 
 `apps/web/src/services/instance-settings.ts`:
 
@@ -2918,7 +2918,7 @@ export async function getDecryptedSecrets() {
 }
 ```
 
-- [ ] **Step 5: Integration test for the service**
+- [x] **Step 5: Integration test for the service**
 
 `apps/web/tests/integration/instance-settings.test.ts`:
 
@@ -2965,11 +2965,11 @@ describe("instance settings", () => {
 Run: `cd apps/web && bun run test:integration`
 Expected: PASS.
 
-- [ ] **Step 6: Manual check**
+- [x] **Step 6: Manual check**
 
 `bun run dev` → sign in → `/app` shows the shell with the checklist and "AWS not connected" badge; team switcher lists your team.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add apps/web/src
