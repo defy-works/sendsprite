@@ -9,12 +9,14 @@
 **Tech Stack:** Bun 1.x, Next.js 16.3 (App Router, Turbopack), React 19.2, Tailwind v4, Drizzle ORM 0.45 + drizzle-kit 0.31, `postgres` (postgres-js) driver, better-auth 1.7 + `@better-auth/drizzle-adapter`, pg-boss 12, zod 4, Vitest 4, Testcontainers, Playwright, Docker.
 
 **Deviations from spec (deliberate, small):**
+
 - Spec said Next 15; latest stable is 16.3 — we use 16 (`proxy.ts` not `middleware.ts`, async `headers()`/`params`, Turbopack default).
 - Spec's `teams`/`team_members`/`team_invites` tables are provided by better-auth's `organization` plugin as `organization`/`member`/`invitation`. "Team" remains the product word in the UI; code uses `organization` where better-auth requires it.
 - Spec's custom `server.ts` is replaced by `instrumentation.ts` (`register()`), which Next runs once per server process. Same effect (worker in-process), but compatible with `output: "standalone"`.
 - Invitation emails cannot be sent before a domain is verified (Phase 3), so Phase 1 invites are **link-based**: the inviter copies the accept URL from the UI.
 
 **Reference repos (read-only, copy from):**
+
 - `D:\Documents\Work\aws-cost-dashboard` — `src/styles/globals.css`, `public/fonts/*`, `src/components/ui/*`, `src/lib/cn.ts`, `Dockerfile`, `docker-compose.yml`
 - `D:\Documents\Work\Defyworks\site_v2` — `src/components/ui/{Input,Label,Select,Textarea,Divider,Skeleton,Spinner,Link}.tsx`
 
@@ -92,9 +94,10 @@ sendsprite/
 ### Task 1: Monorepo scaffold
 
 **Files:**
+
 - Create: `package.json`, `bunfig.toml`, `tsconfig.base.json`, `.prettierrc`, `eslint.config.mjs`, `.gitignore`, `.dockerignore`, `LICENSE`, `packages/shared/package.json`, `packages/shared/tsconfig.json`, `packages/shared/src/index.ts`
 
-- [ ] **Step 1: Root package.json**
+- [x] **Step 1: Root package.json**
 
 ```json
 {
@@ -127,15 +130,17 @@ sendsprite/
 }
 ```
 
-- [ ] **Step 2: bunfig.toml, tsconfig.base.json, prettier, eslint**
+- [x] **Step 2: bunfig.toml, tsconfig.base.json, prettier, eslint**
 
 `bunfig.toml`:
+
 ```toml
 [install]
 exact = false
 ```
 
 `tsconfig.base.json`:
+
 ```json
 {
   "compilerOptions": {
@@ -156,18 +161,27 @@ exact = false
 ```
 
 `.prettierrc`:
+
 ```json
 { "semi": true, "singleQuote": false, "trailingComma": "all", "printWidth": 80 }
 ```
 
 `eslint.config.mjs`:
+
 ```js
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 import nextPlugin from "@next/eslint-plugin-next";
 
 export default tseslint.config(
-  { ignores: ["**/node_modules/**", "**/.next/**", "**/dist/**", "**/drizzle/**"] },
+  {
+    ignores: [
+      "**/node_modules/**",
+      "**/.next/**",
+      "**/dist/**",
+      "**/drizzle/**",
+    ],
+  },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
@@ -177,15 +191,19 @@ export default tseslint.config(
   },
   {
     rules: {
-      "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }],
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        { argsIgnorePattern: "^_" },
+      ],
     },
   },
 );
 ```
 
-- [ ] **Step 3: .gitignore, .dockerignore, LICENSE**
+- [x] **Step 3: .gitignore, .dockerignore, LICENSE**
 
 `.gitignore` (replace the existing one):
+
 ```
 node_modules/
 .next/
@@ -200,6 +218,7 @@ test-results/
 ```
 
 `.dockerignore`:
+
 ```
 node_modules
 **/node_modules
@@ -217,9 +236,10 @@ test-results
 
 `LICENSE`: standard MIT text, `Copyright (c) 2026 Defy Works`.
 
-- [ ] **Step 4: packages/shared skeleton**
+- [x] **Step 4: packages/shared skeleton**
 
 `packages/shared/package.json`:
+
 ```json
 {
   "name": "@sendsprite/shared",
@@ -238,11 +258,13 @@ test-results
 ```
 
 `packages/shared/tsconfig.json`:
+
 ```json
 { "extends": "../../tsconfig.base.json", "include": ["src", "tests"] }
 ```
 
 `packages/shared/src/index.ts`:
+
 ```ts
 export * from "./ids";
 export * from "./roles";
@@ -250,12 +272,12 @@ export * from "./roles";
 
 (`ids.ts` and `roles.ts` are written in Task 2.)
 
-- [ ] **Step 5: Install and verify**
+- [x] **Step 5: Install and verify**
 
 Run: `bun install`
 Expected: lockfile `bun.lock` created, no errors (packages/shared has no `ids.ts` yet — that's fine, nothing imports it).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
@@ -267,19 +289,22 @@ git commit -m "chore: monorepo scaffold (bun workspaces, eslint, prettier, MIT)"
 ### Task 2: Shared primitives — prefixed IDs and roles (TDD)
 
 **Files:**
+
 - Create: `packages/shared/src/ids.ts`, `packages/shared/src/roles.ts`, `packages/shared/tests/ids.test.ts`, `packages/shared/tests/roles.test.ts`, `packages/shared/vitest.config.ts`
 
-- [ ] **Step 1: vitest config**
+- [x] **Step 1: vitest config**
 
 `packages/shared/vitest.config.ts`:
+
 ```ts
 import { defineConfig } from "vitest/config";
 export default defineConfig({ test: { include: ["tests/**/*.test.ts"] } });
 ```
 
-- [ ] **Step 2: Failing tests**
+- [x] **Step 2: Failing tests**
 
 `packages/shared/tests/ids.test.ts`:
+
 ```ts
 import { describe, expect, it } from "vitest";
 import { newId, parseId, ID_PREFIXES } from "../src/ids";
@@ -309,6 +334,7 @@ describe("newId", () => {
 ```
 
 `packages/shared/tests/roles.test.ts`:
+
 ```ts
 import { describe, expect, it } from "vitest";
 import { can, TEAM_ROLES, type TeamRole } from "../src/roles";
@@ -332,20 +358,34 @@ describe("roles", () => {
 });
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [x] **Step 3: Run tests to verify they fail**
 
 Run: `cd packages/shared && bun run test`
 Expected: FAIL — cannot resolve `../src/ids` / `../src/roles`.
 
-- [ ] **Step 4: Implement**
+- [x] **Step 4: Implement**
 
 `packages/shared/src/ids.ts`:
+
 ```ts
 import { ulid } from "ulid";
 
 export const ID_PREFIXES = [
-  "usr", "team", "inv", "em", "evt", "dom", "key", "wh", "whd",
-  "tpl", "cb", "ct", "cmp", "sup", "aud",
+  "usr",
+  "team",
+  "inv",
+  "em",
+  "evt",
+  "dom",
+  "key",
+  "wh",
+  "whd",
+  "tpl",
+  "cb",
+  "ct",
+  "cmp",
+  "sup",
+  "aud",
 ] as const;
 export type IdPrefix = (typeof ID_PREFIXES)[number];
 
@@ -367,25 +407,49 @@ export function parseId(id: string): { prefix: IdPrefix; ulid: string } | null {
 ```
 
 `packages/shared/src/roles.ts`:
+
 ```ts
 export const TEAM_ROLES = ["owner", "admin", "member"] as const;
 export type TeamRole = (typeof TEAM_ROLES)[number];
 
 export const ACTIONS = [
-  "team.rename", "team.delete",
-  "members.invite", "members.remove", "members.changeRole",
-  "domains.manage", "apiKeys.create", "apiKeys.revoke",
-  "webhooks.manage", "emails.send", "emails.read",
-  "contacts.manage", "campaigns.manage", "templates.manage",
-  "settings.manage", "instance.manage",
+  "team.rename",
+  "team.delete",
+  "members.invite",
+  "members.remove",
+  "members.changeRole",
+  "domains.manage",
+  "apiKeys.create",
+  "apiKeys.revoke",
+  "webhooks.manage",
+  "emails.send",
+  "emails.read",
+  "contacts.manage",
+  "campaigns.manage",
+  "templates.manage",
+  "settings.manage",
+  "instance.manage",
 ] as const;
 export type Action = (typeof ACTIONS)[number];
 
-const MEMBER: readonly Action[] = ["emails.send", "emails.read", "templates.manage", "contacts.manage"];
+const MEMBER: readonly Action[] = [
+  "emails.send",
+  "emails.read",
+  "templates.manage",
+  "contacts.manage",
+];
 const ADMIN: readonly Action[] = [
-  ...MEMBER, "team.rename", "members.invite", "members.remove", "members.changeRole",
-  "domains.manage", "apiKeys.create", "apiKeys.revoke", "webhooks.manage",
-  "campaigns.manage", "settings.manage",
+  ...MEMBER,
+  "team.rename",
+  "members.invite",
+  "members.remove",
+  "members.changeRole",
+  "domains.manage",
+  "apiKeys.create",
+  "apiKeys.revoke",
+  "webhooks.manage",
+  "campaigns.manage",
+  "settings.manage",
 ];
 const OWNER: readonly Action[] = [...ADMIN, "team.delete", "instance.manage"];
 
@@ -400,12 +464,12 @@ export function can(role: TeamRole, action: Action): boolean {
 }
 ```
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run: `cd packages/shared && bun run test`
 Expected: PASS (2 files, all tests green).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add packages/shared
@@ -417,6 +481,7 @@ git commit -m "feat(shared): prefixed ULID ids and team role permission table"
 ### Task 3: Next.js app scaffold with theme
 
 **Files:**
+
 - Create: `apps/web/package.json`, `apps/web/tsconfig.json`, `apps/web/next.config.ts`, `apps/web/postcss.config.mjs`, `apps/web/next-env.d.ts` (generated), `apps/web/src/styles/globals.css`, `apps/web/public/fonts/*`, `apps/web/public/favicon.svg`, `apps/web/src/lib/cn.ts`, `apps/web/src/app/layout.tsx`, `apps/web/src/app/page.tsx`
 
 - [ ] **Step 1: apps/web/package.json**
@@ -472,6 +537,7 @@ git commit -m "feat(shared): prefixed ULID ids and team role permission table"
 - [ ] **Step 2: tsconfig, next.config, postcss**
 
 `apps/web/tsconfig.json`:
+
 ```json
 {
   "extends": "../../tsconfig.base.json",
@@ -489,6 +555,7 @@ git commit -m "feat(shared): prefixed ULID ids and team role permission table"
 ```
 
 `apps/web/next.config.ts`:
+
 ```ts
 import type { NextConfig } from "next";
 
@@ -507,6 +574,7 @@ export default nextConfig;
 ```
 
 `apps/web/postcss.config.mjs`:
+
 ```js
 const config = { plugins: { "@tailwindcss/postcss": {} } };
 export default config;
@@ -523,6 +591,7 @@ cp /d/Documents/Work/aws-cost-dashboard/src/lib/cn.ts apps/web/src/lib/cn.ts
 ```
 
 Then edit the header comment of `globals.css` so the first block reads:
+
 ```css
 /* ============================================================
  * Design language inherited from Defyworks site_v2 /
@@ -534,9 +603,11 @@ Then edit the header comment of `globals.css` so the first block reads:
  * cursor, no marquees. The landing page (Phase 4) may add them.
  * ============================================================ */
 ```
+
 Everything else in the file stays as copied.
 
 `apps/web/public/favicon.svg`:
+
 ```svg
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#0a0a0a"/><path d="M7 17l9-9 9 9-9 9z" fill="none" stroke="#818cf8" stroke-width="2.2" stroke-linejoin="round"/><circle cx="16" cy="17" r="2.2" fill="#6366f1"/></svg>
 ```
@@ -544,6 +615,7 @@ Everything else in the file stays as copied.
 - [ ] **Step 4: Root layout and placeholder home**
 
 `apps/web/src/app/layout.tsx`:
+
 ```tsx
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
@@ -558,13 +630,16 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body className="min-h-dvh bg-ink text-white antialiased">{children}</body>
+      <body className="min-h-dvh bg-ink text-white antialiased">
+        {children}
+      </body>
     </html>
   );
 }
 ```
 
 `apps/web/src/app/page.tsx` (placeholder until Phase 4; honours `LANDING_ENABLED`):
+
 ```tsx
 import { redirect } from "next/navigation";
 import Link from "next/link";
@@ -575,8 +650,15 @@ export default function HomePage() {
   return (
     <main className="grid-hairlines flex min-h-dvh flex-col items-center justify-center gap-6 p-8">
       <p className="num-stamp">Sendsprite</p>
-      <h1 className="metric-xl text-center">Self-hosted email API<br />on Amazon SES.</h1>
-      <Link href="/app" className="rounded-md bg-indigo-500 px-5 py-2.5 text-sm font-medium hover:bg-indigo-400">
+      <h1 className="metric-xl text-center">
+        Self-hosted email API
+        <br />
+        on Amazon SES.
+      </h1>
+      <Link
+        href="/app"
+        className="rounded-md bg-indigo-500 px-5 py-2.5 text-sm font-medium hover:bg-indigo-400"
+      >
         Open dashboard
       </Link>
     </main>
@@ -603,11 +685,13 @@ git commit -m "feat(web): Next.js 16 app scaffold with inherited theme"
 ### Task 4: Validated environment (`env.ts`) — TDD
 
 **Files:**
+
 - Create: `apps/web/src/env.ts`, `apps/web/tests/unit/env.test.ts`, `apps/web/vitest.config.ts`, `.env.example`
 
 - [ ] **Step 1: vitest config with two projects**
 
 `apps/web/vitest.config.ts`:
+
 ```ts
 import { defineConfig } from "vitest/config";
 import path from "node:path";
@@ -616,8 +700,24 @@ export default defineConfig({
   resolve: { alias: { "@": path.resolve(__dirname, "src") } },
   test: {
     projects: [
-      { extends: true, test: { name: "unit", include: ["tests/unit/**/*.test.ts"], environment: "node" } },
-      { extends: true, test: { name: "integration", include: ["tests/integration/**/*.test.ts"], environment: "node", testTimeout: 120_000, hookTimeout: 180_000 } },
+      {
+        extends: true,
+        test: {
+          name: "unit",
+          include: ["tests/unit/**/*.test.ts"],
+          environment: "node",
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "integration",
+          include: ["tests/integration/**/*.test.ts"],
+          environment: "node",
+          testTimeout: 120_000,
+          hookTimeout: 180_000,
+        },
+      },
     ],
   },
 });
@@ -626,6 +726,7 @@ export default defineConfig({
 - [ ] **Step 2: Failing test**
 
 `apps/web/tests/unit/env.test.ts`:
+
 ```ts
 import { describe, expect, it } from "vitest";
 import { parseEnv } from "@/env";
@@ -647,18 +748,32 @@ describe("parseEnv", () => {
     expect(env.EMAIL_PASSWORD_ENABLED).toBe(false);
   });
   it("derives auth provider flags from presence of both id and secret", () => {
-    const env = parseEnv({ ...BASE, GOOGLE_CLIENT_ID: "x", GOOGLE_CLIENT_SECRET: "y", GITHUB_CLIENT_ID: "only-id" });
+    const env = parseEnv({
+      ...BASE,
+      GOOGLE_CLIENT_ID: "x",
+      GOOGLE_CLIENT_SECRET: "y",
+      GITHUB_CLIENT_ID: "only-id",
+    });
     expect(env.providers.google).toBe(true);
     expect(env.providers.github).toBe(false);
   });
   it("rejects short APP_SECRET", () => {
-    expect(() => parseEnv({ ...BASE, APP_SECRET: "short" })).toThrow(/APP_SECRET/);
+    expect(() => parseEnv({ ...BASE, APP_SECRET: "short" })).toThrow(
+      /APP_SECRET/,
+    );
   });
   it("rejects APP_URL without protocol", () => {
-    expect(() => parseEnv({ ...BASE, APP_URL: "mail.example.com" })).toThrow(/APP_URL/);
+    expect(() => parseEnv({ ...BASE, APP_URL: "mail.example.com" })).toThrow(
+      /APP_URL/,
+    );
   });
   it("parses booleans from strings", () => {
-    const env = parseEnv({ ...BASE, SMTP_ENABLED: "false", LANDING_ENABLED: "0", EMAIL_PASSWORD_ENABLED: "true" });
+    const env = parseEnv({
+      ...BASE,
+      SMTP_ENABLED: "false",
+      LANDING_ENABLED: "0",
+      EMAIL_PASSWORD_ENABLED: "true",
+    });
     expect(env.SMTP_ENABLED).toBe(false);
     expect(env.LANDING_ENABLED).toBe(false);
     expect(env.EMAIL_PASSWORD_ENABLED).toBe(true);
@@ -678,16 +793,25 @@ Expected: FAIL — cannot find module `@/env`.
 - [ ] **Step 4: Implement**
 
 `apps/web/src/env.ts`:
+
 ```ts
 import { z } from "zod";
 
 const bool = z
   .union([z.boolean(), z.string()])
-  .transform((v) => (typeof v === "boolean" ? v : !["false", "0", "no", "off", ""].includes(v.toLowerCase())));
+  .transform((v) =>
+    typeof v === "boolean"
+      ? v
+      : !["false", "0", "no", "off", ""].includes(v.toLowerCase()),
+  );
 
 const schema = z.object({
-  NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
-  APP_URL: z.string().url({ message: "APP_URL must be a full URL incl. protocol" }),
+  NODE_ENV: z
+    .enum(["development", "test", "production"])
+    .default("development"),
+  APP_URL: z
+    .string()
+    .url({ message: "APP_URL must be a full URL incl. protocol" }),
   APP_SECRET: z.string().min(32, "APP_SECRET must be at least 32 characters"),
   DATABASE_URL: z.string().min(1),
   WORKER_MODE: z.enum(["inline", "separate", "none"]).default("inline"),
@@ -703,20 +827,35 @@ const schema = z.object({
 });
 
 export type Env = z.infer<typeof schema> & {
-  providers: { google: boolean; github: boolean; emailPassword: boolean; any: boolean };
+  providers: {
+    google: boolean;
+    github: boolean;
+    emailPassword: boolean;
+    any: boolean;
+  };
 };
 
 export function parseEnv(raw: Record<string, string | undefined>): Env {
   const parsed = schema.safeParse(raw);
   if (!parsed.success) {
-    const msg = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
+    const msg = parsed.error.issues
+      .map((i) => `${i.path.join(".")}: ${i.message}`)
+      .join("; ");
     throw new Error(`Invalid environment: ${msg}`);
   }
   const e = parsed.data;
   const google = Boolean(e.GOOGLE_CLIENT_ID && e.GOOGLE_CLIENT_SECRET);
   const github = Boolean(e.GITHUB_CLIENT_ID && e.GITHUB_CLIENT_SECRET);
   const emailPassword = e.EMAIL_PASSWORD_ENABLED;
-  return { ...e, providers: { google, github, emailPassword, any: google || github || emailPassword } };
+  return {
+    ...e,
+    providers: {
+      google,
+      github,
+      emailPassword,
+      any: google || github || emailPassword,
+    },
+  };
 }
 
 /** Lazily parsed so importing this module in tests doesn't require a real env. */
@@ -773,11 +912,13 @@ git commit -m "feat(web): zod-validated environment with provider auto-detection
 ### Task 5: Secret encryption (`lib/crypto.ts`) — TDD
 
 **Files:**
+
 - Create: `apps/web/src/lib/crypto.ts`, `apps/web/tests/unit/crypto.test.ts`
 
 - [ ] **Step 1: Failing test**
 
 `apps/web/tests/unit/crypto.test.ts`:
+
 ```ts
 import { describe, expect, it } from "vitest";
 import { createCipher } from "@/lib/crypto";
@@ -820,8 +961,14 @@ Expected: FAIL — cannot find `@/lib/crypto`.
 - [ ] **Step 3: Implement**
 
 `apps/web/src/lib/crypto.ts`:
+
 ```ts
-import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:crypto";
+import {
+  createCipheriv,
+  createDecipheriv,
+  hkdfSync,
+  randomBytes,
+} from "node:crypto";
 
 /**
  * AES-256-GCM with a key derived from APP_SECRET via HKDF-SHA256.
@@ -838,9 +985,14 @@ const b64u = {
   dec: (s: string) => Buffer.from(s, "base64url"),
 };
 
-export function createCipher(appSecret: string, info = "sendsprite/secrets/v1"): Cipher {
+export function createCipher(
+  appSecret: string,
+  info = "sendsprite/secrets/v1",
+): Cipher {
   if (appSecret.length < 32) throw new Error("appSecret too short");
-  const key = Buffer.from(hkdfSync("sha256", appSecret, "sendsprite", info, 32));
+  const key = Buffer.from(
+    hkdfSync("sha256", appSecret, "sendsprite", info, 32),
+  );
   return {
     encrypt(plaintext) {
       const iv = randomBytes(12);
@@ -850,10 +1002,13 @@ export function createCipher(appSecret: string, info = "sendsprite/secrets/v1"):
     },
     decrypt(payload) {
       const [v, iv, ct, tag] = payload.split(".");
-      if (v !== "v1" || !iv || !ct || !tag) throw new Error("bad ciphertext format");
+      if (v !== "v1" || !iv || !ct || !tag)
+        throw new Error("bad ciphertext format");
       const d = createDecipheriv("aes-256-gcm", key, b64u.dec(iv));
       d.setAuthTag(b64u.dec(tag));
-      return Buffer.concat([d.update(b64u.dec(ct)), d.final()]).toString("utf8");
+      return Buffer.concat([d.update(b64u.dec(ct)), d.final()]).toString(
+        "utf8",
+      );
     },
   };
 }
@@ -887,11 +1042,13 @@ git commit -m "feat(web): AES-256-GCM secret cipher derived from APP_SECRET"
 ### Task 6: Database client, schema, migrations (integration test on Testcontainers)
 
 **Files:**
+
 - Create: `apps/web/drizzle.config.ts`, `apps/web/src/db/index.ts`, `apps/web/src/db/schema/index.ts`, `apps/web/src/db/schema/instance.ts`, `apps/web/src/db/schema/audit.ts`, `apps/web/src/db/migrate.ts`, `apps/web/src/db/migrate-cli.ts`, `apps/web/tests/integration/_pg.ts`, `apps/web/tests/integration/db.test.ts`
 
 - [ ] **Step 1: drizzle config**
 
 `apps/web/drizzle.config.ts`:
+
 ```ts
 import { defineConfig } from "drizzle-kit";
 
@@ -899,7 +1056,11 @@ export default defineConfig({
   dialect: "postgresql",
   schema: "./src/db/schema/index.ts",
   out: "./drizzle",
-  dbCredentials: { url: process.env.DATABASE_URL ?? "postgres://sendsprite:sendsprite@localhost:5432/sendsprite" },
+  dbCredentials: {
+    url:
+      process.env.DATABASE_URL ??
+      "postgres://sendsprite:sendsprite@localhost:5432/sendsprite",
+  },
   strict: true,
   verbose: true,
 });
@@ -908,8 +1069,15 @@ export default defineConfig({
 - [ ] **Step 2: Schema files**
 
 `apps/web/src/db/schema/instance.ts`:
+
 ```ts
-import { boolean, integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import {
+  boolean,
+  integer,
+  pgTable,
+  text,
+  timestamp,
+} from "drizzle-orm/pg-core";
 
 /** Singleton row (id = 1). Encrypted columns end in `_enc`. */
 export const instanceSettings = pgTable("instance_settings", {
@@ -917,23 +1085,32 @@ export const instanceSettings = pgTable("instance_settings", {
   setupCompleted: boolean("setup_completed").notNull().default(false),
   signupMode: text("signup_mode", { enum: ["open", "invite", "closed"] }),
   landingEnabled: boolean("landing_enabled"),
-  awsMode: text("aws_mode", { enum: ["none", "instance_role", "keys"] }).notNull().default("none"),
+  awsMode: text("aws_mode", { enum: ["none", "instance_role", "keys"] })
+    .notNull()
+    .default("none"),
   awsRegion: text("aws_region"),
   awsAccessKeyEnc: text("aws_access_key_enc"),
   awsSecretEnc: text("aws_secret_enc"),
   snsTopicArn: text("sns_topic_arn"),
   sesConfigSet: text("ses_config_set"),
-  sesAccountStatus: text("ses_account_status", { enum: ["sandbox", "requested", "production"] }),
+  sesAccountStatus: text("ses_account_status", {
+    enum: ["sandbox", "requested", "production"],
+  }),
   sesMaxSendRate: integer("ses_max_send_rate"),
   sesDailyQuota: integer("ses_daily_quota"),
   cloudflareTokenEnc: text("cloudflare_token_enc"),
   retentionDays: integer("retention_days").notNull().default(90),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 ```
 
 `apps/web/src/db/schema/audit.ts`:
+
 ```ts
 import { index, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
@@ -946,16 +1123,21 @@ export const auditLog = pgTable(
     action: text("action").notNull(), // e.g. "team.rename"
     targetType: text("target_type").notNull(),
     targetId: text("target_id").notNull(),
-    diff: jsonb("diff").$type<Record<string, { from?: unknown; to?: unknown }>>(),
+    diff: jsonb("diff").$type<
+      Record<string, { from?: unknown; to?: unknown }>
+    >(),
     ip: text("ip"),
     userAgent: text("user_agent"),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [index("audit_log_team_created_idx").on(t.teamId, t.createdAt)],
 );
 ```
 
 `apps/web/src/db/schema/index.ts`:
+
 ```ts
 export * from "./auth"; // generated in Task 7 — create an empty file now: `export {};`
 export * from "./instance";
@@ -967,6 +1149,7 @@ Create `apps/web/src/db/schema/auth.ts` containing only `export {};` for now.
 - [ ] **Step 3: Client and migrator**
 
 `apps/web/src/db/index.ts`:
+
 ```ts
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
@@ -987,6 +1170,7 @@ export function db(): Db {
 ```
 
 `apps/web/src/db/migrate.ts`:
+
 ```ts
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { drizzle } from "drizzle-orm/postgres-js";
@@ -994,7 +1178,10 @@ import postgres from "postgres";
 import path from "node:path";
 
 /** Apply pending migrations from ./drizzle. Safe to run on every boot. */
-export async function runMigrations(url: string, folder = path.join(process.cwd(), "drizzle")) {
+export async function runMigrations(
+  url: string,
+  folder = path.join(process.cwd(), "drizzle"),
+) {
   const client = postgres(url, { max: 1 });
   try {
     await migrate(drizzle(client), { migrationsFolder: folder });
@@ -1005,6 +1192,7 @@ export async function runMigrations(url: string, folder = path.join(process.cwd(
 ```
 
 `apps/web/src/db/migrate-cli.ts`:
+
 ```ts
 import { runMigrations } from "./migrate";
 await runMigrations(process.env.DATABASE_URL!);
@@ -1019,13 +1207,19 @@ Expected: `apps/web/drizzle/0000_*.sql` + `drizzle/meta/` created, containing `C
 - [ ] **Step 5: Testcontainers helper + failing integration test**
 
 `apps/web/tests/integration/_pg.ts`:
+
 ```ts
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import {
+  PostgreSqlContainer,
+  type StartedPostgreSqlContainer,
+} from "@testcontainers/postgresql";
 import { runMigrations } from "@/db/migrate";
 import { createDb } from "@/db";
 
 export async function startPg() {
-  const container: StartedPostgreSqlContainer = await new PostgreSqlContainer("postgres:16-alpine").start();
+  const container: StartedPostgreSqlContainer = await new PostgreSqlContainer(
+    "postgres:16-alpine",
+  ).start();
   const url = container.getConnectionUri();
   await runMigrations(url);
   process.env.DATABASE_URL = url;
@@ -1034,20 +1228,29 @@ export async function startPg() {
 ```
 
 `apps/web/tests/integration/db.test.ts`:
+
 ```ts
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import { startPg } from "./_pg";
 
 let pg: Awaited<ReturnType<typeof startPg>>;
-beforeAll(async () => { pg = await startPg(); });
-afterAll(async () => { await pg.container.stop(); });
+beforeAll(async () => {
+  pg = await startPg();
+});
+afterAll(async () => {
+  await pg.container.stop();
+});
 
 describe("migrations", () => {
   it("create the foundation tables", async () => {
-    const rows = await pg.db.execute(sql`select table_name from information_schema.tables where table_schema='public' order by 1`);
+    const rows = await pg.db.execute(
+      sql`select table_name from information_schema.tables where table_schema='public' order by 1`,
+    );
     const names = rows.map((r) => r.table_name);
-    expect(names).toEqual(expect.arrayContaining(["instance_settings", "audit_log"]));
+    expect(names).toEqual(
+      expect.arrayContaining(["instance_settings", "audit_log"]),
+    );
   });
   it("are idempotent", async () => {
     const { runMigrations } = await import("@/db/migrate");
@@ -1073,12 +1276,14 @@ git commit -m "feat(web): drizzle client, instance_settings + audit_log schema, 
 ### Task 7: BetterAuth server, client, route handler, generated schema
 
 **Files:**
+
 - Create: `apps/web/src/lib/auth.ts`, `apps/web/src/lib/auth-client.ts`, `apps/web/src/app/api/auth/[...all]/route.ts`, `apps/web/src/lib/signup-policy.ts`, `apps/web/tests/unit/signup-policy.test.ts`
 - Modify: `apps/web/src/db/schema/auth.ts` (generated), new migration
 
 - [ ] **Step 1: Failing test for the signup policy (pure function)**
 
 `apps/web/tests/unit/signup-policy.test.ts`:
+
 ```ts
 import { describe, expect, it } from "vitest";
 import { resolveSignupMode, canSignUp } from "@/lib/signup-policy";
@@ -1100,7 +1305,8 @@ describe("canSignUp", () => {
     expect(canSignUp("invite", false)).toBe(false);
     expect(canSignUp("invite", true)).toBe(true);
   });
-  it("closed rejects even invited users", () => expect(canSignUp("closed", true)).toBe(false));
+  it("closed rejects even invited users", () =>
+    expect(canSignUp("closed", true)).toBe(false));
 });
 ```
 
@@ -1112,6 +1318,7 @@ Expected: FAIL — cannot find `@/lib/signup-policy`.
 - [ ] **Step 3: Implement the policy**
 
 `apps/web/src/lib/signup-policy.ts`:
+
 ```ts
 export type SignupMode = "open" | "invite" | "closed";
 export type EnvSignupMode = SignupMode | "auto";
@@ -1120,13 +1327,20 @@ export type EnvSignupMode = SignupMode | "auto";
  * Env wins when explicit. `auto` defers to the DB override if present,
  * otherwise opens signup only until the first user exists.
  */
-export function resolveSignupMode(envMode: EnvSignupMode, dbOverride: SignupMode | null, userCount: number): SignupMode {
+export function resolveSignupMode(
+  envMode: EnvSignupMode,
+  dbOverride: SignupMode | null,
+  userCount: number,
+): SignupMode {
   if (envMode !== "auto") return envMode;
   if (dbOverride) return dbOverride;
   return userCount === 0 ? "open" : "invite";
 }
 
-export function canSignUp(mode: SignupMode, hasPendingInvitation: boolean): boolean {
+export function canSignUp(
+  mode: SignupMode,
+  hasPendingInvitation: boolean,
+): boolean {
   if (mode === "open") return true;
   if (mode === "invite") return hasPendingInvitation;
   return false;
@@ -1141,6 +1355,7 @@ Expected: PASS.
 - [ ] **Step 5: Auth server**
 
 `apps/web/src/lib/auth.ts`:
+
 ```ts
 import { betterAuth } from "better-auth";
 import { APIError } from "better-auth/api";
@@ -1156,14 +1371,24 @@ import { canSignUp, resolveSignupMode } from "./signup-policy";
 async function currentSignupMode() {
   const [settings] = await db().select().from(schema.instanceSettings).limit(1);
   const [{ n }] = await db().select({ n: count() }).from(schema.user);
-  return resolveSignupMode(env.SIGNUP_MODE, (settings?.signupMode as never) ?? null, Number(n));
+  return resolveSignupMode(
+    env.SIGNUP_MODE,
+    (settings?.signupMode as never) ?? null,
+    Number(n),
+  );
 }
 
 async function hasPendingInvitation(email: string) {
   const [row] = await db()
     .select({ id: schema.invitation.id })
     .from(schema.invitation)
-    .where(and(eq(schema.invitation.email, email.toLowerCase()), eq(schema.invitation.status, "pending"), gt(schema.invitation.expiresAt, new Date())))
+    .where(
+      and(
+        eq(schema.invitation.email, email.toLowerCase()),
+        eq(schema.invitation.status, "pending"),
+        gt(schema.invitation.expiresAt, new Date()),
+      ),
+    )
     .limit(1);
   return Boolean(row);
 }
@@ -1179,18 +1404,32 @@ export const auth = betterAuth({
     requireEmailVerification: false,
   },
   socialProviders: {
-    ...(env.providers.google && { google: { clientId: env.GOOGLE_CLIENT_ID!, clientSecret: env.GOOGLE_CLIENT_SECRET! } }),
-    ...(env.providers.github && { github: { clientId: env.GITHUB_CLIENT_ID!, clientSecret: env.GITHUB_CLIENT_SECRET! } }),
+    ...(env.providers.google && {
+      google: {
+        clientId: env.GOOGLE_CLIENT_ID!,
+        clientSecret: env.GOOGLE_CLIENT_SECRET!,
+      },
+    }),
+    ...(env.providers.github && {
+      github: {
+        clientId: env.GITHUB_CLIENT_ID!,
+        clientSecret: env.GITHUB_CLIENT_SECRET!,
+      },
+    }),
   },
   databaseHooks: {
     user: {
       create: {
         before: async (user) => {
           const mode = await currentSignupMode();
-          const invited = mode === "invite" ? await hasPendingInvitation(user.email) : false;
+          const invited =
+            mode === "invite" ? await hasPendingInvitation(user.email) : false;
           if (!canSignUp(mode, invited)) {
             throw new APIError("FORBIDDEN", {
-              message: mode === "closed" ? "Sign-ups are closed on this instance." : "Sign-ups are invite-only. Ask a team admin for an invitation link.",
+              message:
+                mode === "closed"
+                  ? "Sign-ups are closed on this instance."
+                  : "Sign-ups are invite-only. Ask a team admin for an invitation link.",
             });
           }
           return { data: user };
@@ -1202,8 +1441,14 @@ export const auth = betterAuth({
         // Default the active team to the user's first membership so /app
         // never renders without a team.
         before: async (session) => {
-          const [m] = await db().select({ orgId: schema.member.organizationId }).from(schema.member).where(eq(schema.member.userId, session.userId)).limit(1);
-          return { data: { ...session, activeOrganizationId: m?.orgId ?? null } };
+          const [m] = await db()
+            .select({ orgId: schema.member.organizationId })
+            .from(schema.member)
+            .where(eq(schema.member.userId, session.userId))
+            .limit(1);
+          return {
+            data: { ...session, activeOrganizationId: m?.orgId ?? null },
+          };
         },
       },
     },
@@ -1237,6 +1482,7 @@ Expected: `drizzle/0001_*.sql` creating those seven tables.
 - [ ] **Step 7: Client + route handler**
 
 `apps/web/src/lib/auth-client.ts`:
+
 ```ts
 "use client";
 import { createAuthClient } from "better-auth/react";
@@ -1247,6 +1493,7 @@ export const { signIn, signUp, signOut, useSession } = authClient;
 ```
 
 `apps/web/src/app/api/auth/[...all]/route.ts`:
+
 ```ts
 import { auth } from "@/lib/auth";
 import { toNextJsHandler } from "better-auth/next-js";
@@ -1257,6 +1504,7 @@ export const { GET, POST } = toNextJsHandler(auth);
 - [ ] **Step 8: Integration test — signup modes**
 
 `apps/web/tests/integration/auth.test.ts`:
+
 ```ts
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startPg } from "./_pg";
@@ -1269,16 +1517,26 @@ beforeAll(async () => {
   process.env.EMAIL_PASSWORD_ENABLED = "true";
   process.env.SIGNUP_MODE = "auto";
 });
-afterAll(async () => { await pg.container.stop(); });
+afterAll(async () => {
+  await pg.container.stop();
+});
 
 async function signUp(email: string) {
   const { auth } = await import("@/lib/auth");
-  return auth.api.signUpEmail({ body: { email, password: "correct-horse-battery", name: email.split("@")[0]! } });
+  return auth.api.signUpEmail({
+    body: {
+      email,
+      password: "correct-horse-battery",
+      name: email.split("@")[0]!,
+    },
+  });
 }
 
 describe("signup policy (auto)", () => {
   it("first user may sign up", async () => {
-    await expect(signUp("first@example.com")).resolves.toMatchObject({ user: { email: "first@example.com" } });
+    await expect(signUp("first@example.com")).resolves.toMatchObject({
+      user: { email: "first@example.com" },
+    });
   });
   it("second user is rejected as invite-only", async () => {
     await expect(signUp("second@example.com")).rejects.toThrow(/invite-only/i);
@@ -1301,6 +1559,7 @@ git commit -m "feat(web): BetterAuth with organization plugin, signup policy, ge
 ### Task 8: UI primitives
 
 **Files:**
+
 - Create: `apps/web/src/components/ui/{Button,Card,Badge,Input,Label,Select,Textarea,Divider,Skeleton,Spinner,Link,StatusDot,EmptyState}.tsx`
 
 - [ ] **Step 1: Copy the existing primitives**
@@ -1317,14 +1576,19 @@ Open each copied file and remove any import that references the source project's
 - [ ] **Step 2: Badge (rewritten without the budget coupling)**
 
 `apps/web/src/components/ui/Badge.tsx`:
+
 ```tsx
 import { forwardRef, type HTMLAttributes } from "react";
 import { cn } from "@/lib/cn";
 
-export type BadgeVariant = "indigo" | "muted" | "success" | "warning" | "danger";
-export interface BadgeProps extends HTMLAttributes<HTMLSpanElement> { variant?: BadgeVariant }
+export type BadgeVariant =
+  "indigo" | "muted" | "success" | "warning" | "danger";
+export interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
+  variant?: BadgeVariant;
+}
 
-const BASE = "inline-flex items-center px-2 py-[3px] rounded-full text-[10px] font-semibold tracking-[0.08em] uppercase";
+const BASE =
+  "inline-flex items-center px-2 py-[3px] rounded-full text-[10px] font-semibold tracking-[0.08em] uppercase";
 const VARIANTS: Record<BadgeVariant, string> = {
   indigo: "bg-indigo-500/18 text-indigo-300",
   muted: "bg-white/8 text-white/65",
@@ -1333,14 +1597,24 @@ const VARIANTS: Record<BadgeVariant, string> = {
   danger: "bg-danger/18 text-red-300",
 };
 
-export const Badge = forwardRef<HTMLSpanElement, BadgeProps>(function Badge({ variant = "indigo", className, ...rest }, ref) {
-  return <span ref={ref} className={cn(BASE, VARIANTS[variant], className)} {...rest} />;
+export const Badge = forwardRef<HTMLSpanElement, BadgeProps>(function Badge(
+  { variant = "indigo", className, ...rest },
+  ref,
+) {
+  return (
+    <span
+      ref={ref}
+      className={cn(BASE, VARIANTS[variant], className)}
+      {...rest}
+    />
+  );
 });
 ```
 
 - [ ] **Step 3: StatusDot and EmptyState**
 
 `apps/web/src/components/ui/StatusDot.tsx`:
+
 ```tsx
 import { cn } from "@/lib/cn";
 
@@ -1353,7 +1627,15 @@ const COLOR: Record<Status, string> = {
   off: "bg-white/25",
 };
 
-export function StatusDot({ status, className, label }: { status: Status; className?: string; label?: string }) {
+export function StatusDot({
+  status,
+  className,
+  label,
+}: {
+  status: Status;
+  className?: string;
+  label?: string;
+}) {
   return (
     <span className={cn("inline-flex items-center gap-2", className)}>
       <span aria-hidden className={cn("h-2 w-2 rounded-full", COLOR[status])} />
@@ -1364,10 +1646,19 @@ export function StatusDot({ status, className, label }: { status: Status; classN
 ```
 
 `apps/web/src/components/ui/EmptyState.tsx`:
+
 ```tsx
 import type { ReactNode } from "react";
 
-export function EmptyState({ title, body, action }: { title: string; body?: string; action?: ReactNode }) {
+export function EmptyState({
+  title,
+  body,
+  action,
+}: {
+  title: string;
+  body?: string;
+  action?: ReactNode;
+}) {
   return (
     <div className="glass flex flex-col items-center gap-3 px-6 py-12 text-center">
       <p className="num-stamp">Nothing here yet</p>
@@ -1396,25 +1687,33 @@ git commit -m "feat(web): port UI primitives from Defyworks family, add StatusDo
 ### Task 9: Session helpers and audit helper (TDD for audit)
 
 **Files:**
+
 - Create: `apps/web/src/lib/session.ts`, `apps/web/src/lib/audit.ts`, `apps/web/tests/unit/audit.test.ts`
 
 - [ ] **Step 1: Failing test for diff computation**
 
 `apps/web/tests/unit/audit.test.ts`:
+
 ```ts
 import { describe, expect, it } from "vitest";
 import { computeDiff } from "@/lib/audit";
 
 describe("computeDiff", () => {
   it("records only changed keys", () => {
-    expect(computeDiff({ name: "A", slug: "a" }, { name: "B", slug: "a" })).toEqual({ name: { from: "A", to: "B" } });
+    expect(
+      computeDiff({ name: "A", slug: "a" }, { name: "B", slug: "a" }),
+    ).toEqual({ name: { from: "A", to: "B" } });
   });
   it("returns null when nothing changed", () => {
     expect(computeDiff({ a: 1 }, { a: 1 })).toBeNull();
   });
   it("redacts keys ending in Enc, Secret or Token", () => {
-    expect(computeDiff({ awsSecretEnc: "x" }, { awsSecretEnc: "y" })).toEqual({ awsSecretEnc: { from: "[redacted]", to: "[redacted]" } });
-    expect(computeDiff({ token: "1" }, { token: "2" })).toEqual({ token: { from: "[redacted]", to: "[redacted]" } });
+    expect(computeDiff({ awsSecretEnc: "x" }, { awsSecretEnc: "y" })).toEqual({
+      awsSecretEnc: { from: "[redacted]", to: "[redacted]" },
+    });
+    expect(computeDiff({ token: "1" }, { token: "2" })).toEqual({
+      token: { from: "[redacted]", to: "[redacted]" },
+    });
   });
 });
 ```
@@ -1427,6 +1726,7 @@ Expected: FAIL — cannot find `@/lib/audit`.
 - [ ] **Step 3: Implement audit + session helpers**
 
 `apps/web/src/lib/audit.ts`:
+
 ```ts
 import { newId } from "@sendsprite/shared";
 import { db } from "@/db";
@@ -1435,11 +1735,16 @@ import { auditLog } from "@/db/schema";
 export type Diff = Record<string, { from?: unknown; to?: unknown }>;
 const REDACT = /(enc|secret|token|password)$/i;
 
-export function computeDiff(before: Record<string, unknown>, after: Record<string, unknown>): Diff | null {
+export function computeDiff(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): Diff | null {
   const diff: Diff = {};
   for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
     if (Object.is(before[key], after[key])) continue;
-    diff[key] = REDACT.test(key) ? { from: "[redacted]", to: "[redacted]" } : { from: before[key], to: after[key] };
+    diff[key] = REDACT.test(key)
+      ? { from: "[redacted]", to: "[redacted]" }
+      : { from: before[key], to: after[key] };
   }
   return Object.keys(diff).length ? diff : null;
 }
@@ -1456,11 +1761,14 @@ export interface AuditInput {
 }
 
 export async function recordAudit(input: AuditInput) {
-  await db().insert(auditLog).values({ id: newId("aud"), ...input });
+  await db()
+    .insert(auditLog)
+    .values({ id: newId("aud"), ...input });
 }
 ```
 
 `apps/web/src/lib/session.ts`:
+
 ```ts
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
@@ -1492,14 +1800,27 @@ export async function requireTeam(): Promise<TeamContext> {
   const s = await requireSession();
   const activeId = s.session.activeOrganizationId ?? null;
   const rows = await db()
-    .select({ id: organization.id, name: organization.name, slug: organization.slug, role: member.role })
+    .select({
+      id: organization.id,
+      name: organization.name,
+      slug: organization.slug,
+      role: member.role,
+    })
     .from(member)
     .innerJoin(organization, eq(member.organizationId, organization.id))
-    .where(activeId ? and(eq(member.userId, s.user.id), eq(organization.id, activeId)) : eq(member.userId, s.user.id))
+    .where(
+      activeId
+        ? and(eq(member.userId, s.user.id), eq(organization.id, activeId))
+        : eq(member.userId, s.user.id),
+    )
     .limit(1);
   const row = rows[0];
   if (!row) redirect("/teams/new");
-  return { userId: s.user.id, team: { id: row.id, name: row.name, slug: row.slug }, role: row.role as TeamRole };
+  return {
+    userId: s.user.id,
+    team: { id: row.id, name: row.name, slug: row.slug },
+    role: row.role as TeamRole,
+  };
 }
 ```
 
@@ -1520,11 +1841,13 @@ git commit -m "feat(web): session/team helpers and redacting audit recorder"
 ### Task 10: Auth pages and invite acceptance
 
 **Files:**
+
 - Create: `apps/web/src/components/auth/AuthForm.tsx`, `apps/web/src/app/(auth)/layout.tsx`, `apps/web/src/app/(auth)/login/page.tsx`, `apps/web/src/app/(auth)/signup/page.tsx`, `apps/web/src/app/invite/[id]/page.tsx`, `apps/web/src/app/invite/[id]/AcceptInvite.tsx`
 
 - [ ] **Step 1: Auth layout (centered glass card)**
 
 `apps/web/src/app/(auth)/layout.tsx`:
+
 ```tsx
 import type { ReactNode } from "react";
 import Link from "next/link";
@@ -1533,7 +1856,9 @@ export default function AuthLayout({ children }: { children: ReactNode }) {
   return (
     <main className="grid-hairlines flex min-h-dvh items-center justify-center p-6">
       <div className="glass-strong w-full max-w-sm p-8">
-        <Link href="/" className="num-stamp">Sendsprite</Link>
+        <Link href="/" className="num-stamp">
+          Sendsprite
+        </Link>
         <div className="mt-6">{children}</div>
       </div>
     </main>
@@ -1544,6 +1869,7 @@ export default function AuthLayout({ children }: { children: ReactNode }) {
 - [ ] **Step 2: AuthForm (client)**
 
 `apps/web/src/components/auth/AuthForm.tsx`:
+
 ```tsx
 "use client";
 import { useState, type FormEvent } from "react";
@@ -1575,7 +1901,11 @@ export function AuthForm({ mode, providers, next = "/app" }: AuthFormProps) {
     const password = String(fd.get("password"));
     const res =
       mode === "signup"
-        ? await authClient.signUp.email({ email, password, name: String(fd.get("name") || email.split("@")[0]) })
+        ? await authClient.signUp.email({
+            email,
+            password,
+            name: String(fd.get("name") || email.split("@")[0]),
+          })
         : await authClient.signIn.email({ email, password });
     setBusy(false);
     if (res.error) return setError(res.error.message ?? "Something went wrong");
@@ -1583,29 +1913,77 @@ export function AuthForm({ mode, providers, next = "/app" }: AuthFormProps) {
     router.refresh();
   }
 
-  const social = (provider: "google" | "github") => authClient.signIn.social({ provider, callbackURL: next });
+  const social = (provider: "google" | "github") =>
+    authClient.signIn.social({ provider, callbackURL: next });
 
   return (
     <div className="flex flex-col gap-4">
-      <h1 className="text-xl font-medium">{mode === "login" ? "Sign in" : "Create your account"}</h1>
+      <h1 className="text-xl font-medium">
+        {mode === "login" ? "Sign in" : "Create your account"}
+      </h1>
       {(providers.google || providers.github) && (
         <div className="flex flex-col gap-2">
-          {providers.google && <Button variant="secondary" onClick={() => social("google")}>Continue with Google</Button>}
-          {providers.github && <Button variant="secondary" onClick={() => social("github")}>Continue with GitHub</Button>}
+          {providers.google && (
+            <Button variant="secondary" onClick={() => social("google")}>
+              Continue with Google
+            </Button>
+          )}
+          {providers.github && (
+            <Button variant="secondary" onClick={() => social("github")}>
+              Continue with GitHub
+            </Button>
+          )}
         </div>
       )}
-      {providers.emailPassword && (providers.google || providers.github) && <Divider />}
+      {providers.emailPassword && (providers.google || providers.github) && (
+        <Divider />
+      )}
       {providers.emailPassword && (
         <form onSubmit={onSubmit} className="flex flex-col gap-3">
-          {mode === "signup" && (<div><Label htmlFor="name">Name</Label><Input id="name" name="name" autoComplete="name" /></div>)}
-          <div><Label htmlFor="email">Email</Label><Input id="email" name="email" type="email" required autoComplete="email" /></div>
-          <div><Label htmlFor="password">Password</Label><Input id="password" name="password" type="password" required minLength={8} autoComplete={mode === "signup" ? "new-password" : "current-password"} /></div>
-          {error && <p role="alert" className="text-sm text-red-300">{error}</p>}
-          <Button type="submit" disabled={busy}>{busy ? "…" : mode === "login" ? "Sign in" : "Sign up"}</Button>
+          {mode === "signup" && (
+            <div>
+              <Label htmlFor="name">Name</Label>
+              <Input id="name" name="name" autoComplete="name" />
+            </div>
+          )}
+          <div>
+            <Label htmlFor="email">Email</Label>
+            <Input
+              id="email"
+              name="email"
+              type="email"
+              required
+              autoComplete="email"
+            />
+          </div>
+          <div>
+            <Label htmlFor="password">Password</Label>
+            <Input
+              id="password"
+              name="password"
+              type="password"
+              required
+              minLength={8}
+              autoComplete={
+                mode === "signup" ? "new-password" : "current-password"
+              }
+            />
+          </div>
+          {error && (
+            <p role="alert" className="text-sm text-red-300">
+              {error}
+            </p>
+          )}
+          <Button type="submit" disabled={busy}>
+            {busy ? "…" : mode === "login" ? "Sign in" : "Sign up"}
+          </Button>
         </form>
       )}
       {!providers.emailPassword && !providers.google && !providers.github && (
-        <p className="text-sm text-amber-300">No auth provider is configured. Set EMAIL_PASSWORD_ENABLED=true or a Google/GitHub client id + secret.</p>
+        <p className="text-sm text-amber-300">
+          No auth provider is configured. Set EMAIL_PASSWORD_ENABLED=true or a
+          Google/GitHub client id + secret.
+        </p>
       )}
     </div>
   );
@@ -1615,6 +1993,7 @@ export function AuthForm({ mode, providers, next = "/app" }: AuthFormProps) {
 - [ ] **Step 3: Login and signup pages**
 
 `apps/web/src/app/(auth)/login/page.tsx`:
+
 ```tsx
 import Link from "next/link";
 import { redirect } from "next/navigation";
@@ -1627,17 +2006,27 @@ export const metadata = { title: "Sign in" };
 export default async function LoginPage(props: PageProps<"/login">) {
   if (await getSession()) redirect("/app");
   const sp = await props.searchParams;
-  const next = typeof sp.next === "string" && sp.next.startsWith("/") ? sp.next : "/app";
+  const next =
+    typeof sp.next === "string" && sp.next.startsWith("/") ? sp.next : "/app";
   return (
     <>
       <AuthForm mode="login" providers={env.providers} next={next} />
-      <p className="mt-6 text-sm text-white/60">No account? <Link className="text-indigo-300" href={`/signup?next=${encodeURIComponent(next)}`}>Sign up</Link></p>
+      <p className="mt-6 text-sm text-white/60">
+        No account?{" "}
+        <Link
+          className="text-indigo-300"
+          href={`/signup?next=${encodeURIComponent(next)}`}
+        >
+          Sign up
+        </Link>
+      </p>
     </>
   );
 }
 ```
 
 `apps/web/src/app/(auth)/signup/page.tsx`:
+
 ```tsx
 import Link from "next/link";
 import { redirect } from "next/navigation";
@@ -1650,11 +2039,20 @@ export const metadata = { title: "Sign up" };
 export default async function SignupPage(props: PageProps<"/signup">) {
   if (await getSession()) redirect("/app");
   const sp = await props.searchParams;
-  const next = typeof sp.next === "string" && sp.next.startsWith("/") ? sp.next : "/app";
+  const next =
+    typeof sp.next === "string" && sp.next.startsWith("/") ? sp.next : "/app";
   return (
     <>
       <AuthForm mode="signup" providers={env.providers} next={next} />
-      <p className="mt-6 text-sm text-white/60">Already have an account? <Link className="text-indigo-300" href={`/login?next=${encodeURIComponent(next)}`}>Sign in</Link></p>
+      <p className="mt-6 text-sm text-white/60">
+        Already have an account?{" "}
+        <Link
+          className="text-indigo-300"
+          href={`/login?next=${encodeURIComponent(next)}`}
+        >
+          Sign in
+        </Link>
+      </p>
     </>
   );
 }
@@ -1665,6 +2063,7 @@ Run `cd apps/web && bunx next typegen` once so the global `PageProps<...>` helpe
 - [ ] **Step 4: Invite page**
 
 `apps/web/src/app/invite/[id]/page.tsx`:
+
 ```tsx
 import { redirect } from "next/navigation";
 import { eq } from "drizzle-orm";
@@ -1676,20 +2075,37 @@ import { AcceptInvite } from "./AcceptInvite";
 export default async function InvitePage(props: PageProps<"/invite/[id]">) {
   const { id } = await props.params;
   const [inv] = await db()
-    .select({ id: invitation.id, email: invitation.email, status: invitation.status, expiresAt: invitation.expiresAt, team: organization.name })
-    .from(invitation).innerJoin(organization, eq(invitation.organizationId, organization.id))
-    .where(eq(invitation.id, id)).limit(1);
+    .select({
+      id: invitation.id,
+      email: invitation.email,
+      status: invitation.status,
+      expiresAt: invitation.expiresAt,
+      team: organization.name,
+    })
+    .from(invitation)
+    .innerJoin(organization, eq(invitation.organizationId, organization.id))
+    .where(eq(invitation.id, id))
+    .limit(1);
   const session = await getSession();
   if (!session) redirect(`/signup?next=${encodeURIComponent(`/invite/${id}`)}`);
-  const valid = Boolean(inv && inv.status === "pending" && inv.expiresAt > new Date());
+  const valid = Boolean(
+    inv && inv.status === "pending" && inv.expiresAt > new Date(),
+  );
   return (
     <main className="grid-hairlines flex min-h-dvh items-center justify-center p-6">
       <div className="glass-strong w-full max-w-sm p-8">
         <p className="num-stamp">Invitation</p>
         {!valid ? (
-          <p className="mt-4 text-sm text-white/70">This invitation is invalid or has expired.</p>
+          <p className="mt-4 text-sm text-white/70">
+            This invitation is invalid or has expired.
+          </p>
         ) : (
-          <AcceptInvite invitationId={id} teamName={inv!.team} invitedEmail={inv!.email} currentEmail={session.user.email} />
+          <AcceptInvite
+            invitationId={id}
+            teamName={inv!.team}
+            invitedEmail={inv!.email}
+            currentEmail={session.user.email}
+          />
         )}
       </div>
     </main>
@@ -1698,6 +2114,7 @@ export default async function InvitePage(props: PageProps<"/invite/[id]">) {
 ```
 
 `apps/web/src/app/invite/[id]/AcceptInvite.tsx`:
+
 ```tsx
 "use client";
 import { useState } from "react";
@@ -1705,23 +2122,46 @@ import { useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
 import { Button } from "@/components/ui/Button";
 
-export function AcceptInvite(p: { invitationId: string; teamName: string; invitedEmail: string; currentEmail: string }) {
+export function AcceptInvite(p: {
+  invitationId: string;
+  teamName: string;
+  invitedEmail: string;
+  currentEmail: string;
+}) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
-  const mismatch = p.invitedEmail.toLowerCase() !== p.currentEmail.toLowerCase();
+  const mismatch =
+    p.invitedEmail.toLowerCase() !== p.currentEmail.toLowerCase();
   async function accept() {
-    const res = await authClient.organization.acceptInvitation({ invitationId: p.invitationId });
+    const res = await authClient.organization.acceptInvitation({
+      invitationId: p.invitationId,
+    });
     if (res.error) return setError(res.error.message ?? "Could not accept");
-    await authClient.organization.setActive({ organizationId: res.data.invitation.organizationId });
+    await authClient.organization.setActive({
+      organizationId: res.data.invitation.organizationId,
+    });
     router.push("/app");
     router.refresh();
   }
   return (
     <div className="mt-4 flex flex-col gap-4">
-      <p className="text-sm text-white/80">You've been invited to join <strong>{p.teamName}</strong>.</p>
-      {mismatch && <p className="text-sm text-amber-300">This invite was sent to {p.invitedEmail}, but you're signed in as {p.currentEmail}.</p>}
-      {error && <p role="alert" className="text-sm text-red-300">{error}</p>}
-      <Button onClick={accept} disabled={mismatch}>Accept invitation</Button>
+      <p className="text-sm text-white/80">
+        You've been invited to join <strong>{p.teamName}</strong>.
+      </p>
+      {mismatch && (
+        <p className="text-sm text-amber-300">
+          This invite was sent to {p.invitedEmail}, but you're signed in as{" "}
+          {p.currentEmail}.
+        </p>
+      )}
+      {error && (
+        <p role="alert" className="text-sm text-red-300">
+          {error}
+        </p>
+      )}
+      <Button onClick={accept} disabled={mismatch}>
+        Accept invitation
+      </Button>
     </div>
   );
 }
@@ -1746,11 +2186,13 @@ git commit -m "feat(web): login/signup pages and invitation acceptance"
 ### Task 11: App shell, team creation, team switcher
 
 **Files:**
+
 - Create: `apps/web/src/app/app/layout.tsx`, `apps/web/src/app/app/page.tsx`, `apps/web/src/app/(onboarding)/teams/new/page.tsx`, `apps/web/src/app/(onboarding)/teams/new/CreateTeamForm.tsx`, `apps/web/src/components/app/AppShell.tsx`, `apps/web/src/components/app/TeamSwitcher.tsx`, `apps/web/src/components/app/UserMenu.tsx`
 
 - [ ] **Step 1: Team creation page (needed before the shell can render for a user with no team)**
 
 `apps/web/src/app/(onboarding)/teams/new/page.tsx` (outside `/app` so the team-requiring layout doesn't apply):
+
 ```tsx
 import { requireSession } from "@/lib/session";
 import { CreateTeamForm } from "./CreateTeamForm";
@@ -1771,6 +2213,7 @@ export default async function NewTeamPage() {
 ```
 
 `apps/web/src/app/(onboarding)/teams/new/CreateTeamForm.tsx`:
+
 ```tsx
 "use client";
 import { useState, type FormEvent } from "react";
@@ -1780,7 +2223,13 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Label } from "@/components/ui/Label";
 
-const slugify = (s: string) => s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48);
+const slugify = (s: string) =>
+  s
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 48);
 
 export function CreateTeamForm() {
   const router = useRouter();
@@ -1788,16 +2237,33 @@ export function CreateTeamForm() {
   const [error, setError] = useState<string | null>(null);
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    const res = await authClient.organization.create({ name, slug: slugify(name) || `team-${Date.now()}` });
-    if (res.error) return setError(res.error.message ?? "Could not create team");
+    const res = await authClient.organization.create({
+      name,
+      slug: slugify(name) || `team-${Date.now()}`,
+    });
+    if (res.error)
+      return setError(res.error.message ?? "Could not create team");
     await authClient.organization.setActive({ organizationId: res.data.id });
     router.push("/app");
     router.refresh();
   }
   return (
     <form onSubmit={onSubmit} className="mt-4 flex flex-col gap-3">
-      <div><Label htmlFor="name">Team name</Label><Input id="name" value={name} onChange={(e) => setName(e.target.value)} required minLength={2} /></div>
-      {error && <p role="alert" className="text-sm text-red-300">{error}</p>}
+      <div>
+        <Label htmlFor="name">Team name</Label>
+        <Input
+          id="name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          required
+          minLength={2}
+        />
+      </div>
+      {error && (
+        <p role="alert" className="text-sm text-red-300">
+          {error}
+        </p>
+      )}
       <Button type="submit">Create team</Button>
     </form>
   );
@@ -1807,6 +2273,7 @@ export function CreateTeamForm() {
 - [ ] **Step 2: Shell components**
 
 `apps/web/src/components/app/TeamSwitcher.tsx`:
+
 ```tsx
 "use client";
 import { useRouter } from "next/navigation";
@@ -1827,7 +2294,11 @@ export function TeamSwitcher({ activeId }: { activeId: string }) {
       onChange={(e) => change(e.target.value)}
       className="w-full rounded-md border border-white/15 bg-shadow px-3 py-2 text-sm"
     >
-      {(orgs ?? []).map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+      {(orgs ?? []).map((o) => (
+        <option key={o.id} value={o.id}>
+          {o.name}
+        </option>
+      ))}
       <option value="__new">+ New team…</option>
     </select>
   );
@@ -1835,6 +2306,7 @@ export function TeamSwitcher({ activeId }: { activeId: string }) {
 ```
 
 `apps/web/src/components/app/UserMenu.tsx`:
+
 ```tsx
 "use client";
 import { useRouter } from "next/navigation";
@@ -1846,13 +2318,24 @@ export function UserMenu({ email }: { email: string }) {
   return (
     <div className="flex items-center gap-3">
       <span className="hidden text-sm text-white/60 sm:inline">{email}</span>
-      <Button size="sm" variant="ghost" onClick={async () => { await authClient.signOut(); router.push("/login"); router.refresh(); }}>Sign out</Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        onClick={async () => {
+          await authClient.signOut();
+          router.push("/login");
+          router.refresh();
+        }}
+      >
+        Sign out
+      </Button>
     </div>
   );
 }
 ```
 
 `apps/web/src/components/app/AppShell.tsx`:
+
 ```tsx
 import Link from "next/link";
 import type { ReactNode } from "react";
@@ -1872,29 +2355,53 @@ const NAV = [
   { href: "/app/settings", label: "Settings" },
 ];
 
-export function AppShell(p: { teamId: string; teamName: string; email: string; sesStatus: "sandbox" | "requested" | "production" | null; children: ReactNode }) {
+export function AppShell(p: {
+  teamId: string;
+  teamName: string;
+  email: string;
+  sesStatus: "sandbox" | "requested" | "production" | null;
+  children: ReactNode;
+}) {
   return (
     <div className="flex min-h-dvh">
       <aside className="hidden w-60 shrink-0 flex-col gap-6 border-r border-white/10 p-4 md:flex">
-        <Link href="/app" className="num-stamp">Sendsprite</Link>
+        <Link href="/app" className="num-stamp">
+          Sendsprite
+        </Link>
         <TeamSwitcher activeId={p.teamId} />
         <nav className="flex flex-col gap-1">
           {NAV.map((n) => (
-            <Link key={n.href} href={n.href} className="rounded-md px-3 py-2 text-sm text-white/75 hover:bg-white/6 hover:text-white">{n.label}</Link>
+            <Link
+              key={n.href}
+              href={n.href}
+              className="rounded-md px-3 py-2 text-sm text-white/75 hover:bg-white/6 hover:text-white"
+            >
+              {n.label}
+            </Link>
           ))}
         </nav>
         <div className="mt-auto">
-          {p.sesStatus === "production" ? <Badge variant="success">SES production</Badge>
-            : p.sesStatus === "requested" ? <Badge variant="warning">SES review pending</Badge>
-            : p.sesStatus === "sandbox" ? <Badge variant="warning">SES sandbox</Badge>
-            : <Badge variant="muted">AWS not connected</Badge>}
+          {p.sesStatus === "production" ? (
+            <Badge variant="success">SES production</Badge>
+          ) : p.sesStatus === "requested" ? (
+            <Badge variant="warning">SES review pending</Badge>
+          ) : p.sesStatus === "sandbox" ? (
+            <Badge variant="warning">SES sandbox</Badge>
+          ) : (
+            <Badge variant="muted">AWS not connected</Badge>
+          )}
         </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-14 items-center justify-between border-b border-white/10 px-4">
           <span className="text-sm text-white/60">{p.teamName}</span>
           <div className="flex items-center gap-3">
-            <Link href="/docs" className="text-sm text-white/60 hover:text-white">Docs</Link>
+            <Link
+              href="/docs"
+              className="text-sm text-white/60 hover:text-white"
+            >
+              Docs
+            </Link>
             <UserMenu email={p.email} />
           </div>
         </header>
@@ -1908,6 +2415,7 @@ export function AppShell(p: { teamId: string; teamName: string; email: string; s
 - [ ] **Step 3: /app layout and overview page**
 
 `apps/web/src/app/app/layout.tsx`:
+
 ```tsx
 import type { ReactNode } from "react";
 import { requireTeam, requireSession } from "@/lib/session";
@@ -1919,7 +2427,12 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   const ctx = await requireTeam();
   const settings = await getInstanceSettings();
   return (
-    <AppShell teamId={ctx.team.id} teamName={ctx.team.name} email={session.user.email} sesStatus={settings.sesAccountStatus ?? null}>
+    <AppShell
+      teamId={ctx.team.id}
+      teamName={ctx.team.name}
+      email={session.user.email}
+      sesStatus={settings.sesAccountStatus ?? null}
+    >
       {children}
     </AppShell>
   );
@@ -1927,6 +2440,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
 ```
 
 `apps/web/src/app/app/page.tsx`:
+
 ```tsx
 import { Card, CardHeader, CardTitle, CardBody } from "@/components/ui/Card";
 import { StatusDot } from "@/components/ui/StatusDot";
@@ -1938,7 +2452,10 @@ export default async function OverviewPage() {
   const s = await getInstanceSettings();
   const steps = [
     { label: "Connect AWS", done: s.awsMode !== "none" },
-    { label: "Connect Cloudflare (optional)", done: Boolean(s.cloudflareTokenEnc) },
+    {
+      label: "Connect Cloudflare (optional)",
+      done: Boolean(s.cloudflareTokenEnc),
+    },
     { label: "Add a sending domain", done: false },
     { label: "Create an API key", done: false },
     { label: "Send your first email", done: false },
@@ -1946,14 +2463,28 @@ export default async function OverviewPage() {
   return (
     <div className="grid gap-6 md:grid-cols-2">
       <Card>
-        <CardHeader><CardTitle>Setup checklist</CardTitle></CardHeader>
+        <CardHeader>
+          <CardTitle>Setup checklist</CardTitle>
+        </CardHeader>
         <CardBody className="flex flex-col gap-2">
-          {steps.map((st) => <StatusDot key={st.label} status={st.done ? "ok" : "off"} label={st.label} />)}
+          {steps.map((st) => (
+            <StatusDot
+              key={st.label}
+              status={st.done ? "ok" : "off"}
+              label={st.label}
+            />
+          ))}
         </CardBody>
       </Card>
       <Card>
-        <CardHeader><CardTitle>Team</CardTitle></CardHeader>
-        <CardBody><p className="text-sm text-white/70">{ctx.team.name} · you are <strong>{ctx.role}</strong></p></CardBody>
+        <CardHeader>
+          <CardTitle>Team</CardTitle>
+        </CardHeader>
+        <CardBody>
+          <p className="text-sm text-white/70">
+            {ctx.team.name} · you are <strong>{ctx.role}</strong>
+          </p>
+        </CardBody>
       </Card>
     </div>
   );
@@ -1963,6 +2494,7 @@ export default async function OverviewPage() {
 - [ ] **Step 4: Instance settings service (needed by the layout)**
 
 `apps/web/src/services/instance-settings.ts`:
+
 ```ts
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
@@ -1973,26 +2505,50 @@ export type InstanceSettings = typeof instanceSettings.$inferSelect;
 
 /** Creates the singleton row on first read. */
 export async function getInstanceSettings(): Promise<InstanceSettings> {
-  const [row] = await db().select().from(instanceSettings).where(eq(instanceSettings.id, 1)).limit(1);
+  const [row] = await db()
+    .select()
+    .from(instanceSettings)
+    .where(eq(instanceSettings.id, 1))
+    .limit(1);
   if (row) return row;
-  const [created] = await db().insert(instanceSettings).values({ id: 1 }).onConflictDoNothing().returning();
+  const [created] = await db()
+    .insert(instanceSettings)
+    .values({ id: 1 })
+    .onConflictDoNothing()
+    .returning();
   return created ?? (await getInstanceSettings());
 }
 
 type Plain = Partial<Omit<InstanceSettings, "id" | "createdAt" | "updatedAt">>;
-type Secrets = { awsAccessKey?: string | null; awsSecret?: string | null; cloudflareToken?: string | null };
+type Secrets = {
+  awsAccessKey?: string | null;
+  awsSecret?: string | null;
+  cloudflareToken?: string | null;
+};
 
 /** Update plain columns; secret inputs are encrypted before writing. */
-export async function updateInstanceSettings(patch: Plain & Secrets): Promise<InstanceSettings> {
+export async function updateInstanceSettings(
+  patch: Plain & Secrets,
+): Promise<InstanceSettings> {
   const { awsAccessKey, awsSecret, cloudflareToken, ...plain } = patch;
   const c = getCipher();
   const enc = {
-    ...(awsAccessKey !== undefined && { awsAccessKeyEnc: awsAccessKey ? c.encrypt(awsAccessKey) : null }),
-    ...(awsSecret !== undefined && { awsSecretEnc: awsSecret ? c.encrypt(awsSecret) : null }),
-    ...(cloudflareToken !== undefined && { cloudflareTokenEnc: cloudflareToken ? c.encrypt(cloudflareToken) : null }),
+    ...(awsAccessKey !== undefined && {
+      awsAccessKeyEnc: awsAccessKey ? c.encrypt(awsAccessKey) : null,
+    }),
+    ...(awsSecret !== undefined && {
+      awsSecretEnc: awsSecret ? c.encrypt(awsSecret) : null,
+    }),
+    ...(cloudflareToken !== undefined && {
+      cloudflareTokenEnc: cloudflareToken ? c.encrypt(cloudflareToken) : null,
+    }),
   };
   await getInstanceSettings();
-  const [row] = await db().update(instanceSettings).set({ ...plain, ...enc, updatedAt: new Date() }).where(eq(instanceSettings.id, 1)).returning();
+  const [row] = await db()
+    .update(instanceSettings)
+    .set({ ...plain, ...enc, updatedAt: new Date() })
+    .where(eq(instanceSettings.id, 1))
+    .returning();
   return row!;
 }
 
@@ -2002,7 +2558,9 @@ export async function getDecryptedSecrets() {
   return {
     awsAccessKey: s.awsAccessKeyEnc ? c.decrypt(s.awsAccessKeyEnc) : null,
     awsSecret: s.awsSecretEnc ? c.decrypt(s.awsSecretEnc) : null,
-    cloudflareToken: s.cloudflareTokenEnc ? c.decrypt(s.cloudflareTokenEnc) : null,
+    cloudflareToken: s.cloudflareTokenEnc
+      ? c.decrypt(s.cloudflareTokenEnc)
+      : null,
   };
 }
 ```
@@ -2010,27 +2568,43 @@ export async function getDecryptedSecrets() {
 - [ ] **Step 5: Integration test for the service**
 
 `apps/web/tests/integration/instance-settings.test.ts`:
+
 ```ts
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startPg } from "./_pg";
 
 let pg: Awaited<ReturnType<typeof startPg>>;
-beforeAll(async () => { pg = await startPg(); process.env.APP_SECRET = "x".repeat(40); });
-afterAll(async () => { await pg.container.stop(); });
+beforeAll(async () => {
+  pg = await startPg();
+  process.env.APP_SECRET = "x".repeat(40);
+});
+afterAll(async () => {
+  await pg.container.stop();
+});
 
 describe("instance settings", () => {
   it("creates the singleton lazily", async () => {
-    const { getInstanceSettings } = await import("@/services/instance-settings");
+    const { getInstanceSettings } =
+      await import("@/services/instance-settings");
     const s = await getInstanceSettings();
     expect(s.id).toBe(1);
     expect(s.awsMode).toBe("none");
   });
   it("encrypts secrets at rest and decrypts on read", async () => {
-    const { updateInstanceSettings, getDecryptedSecrets } = await import("@/services/instance-settings");
-    const s = await updateInstanceSettings({ awsMode: "keys", awsAccessKey: "AKIAEXAMPLE", awsSecret: "s3cr3t" });
+    const { updateInstanceSettings, getDecryptedSecrets } =
+      await import("@/services/instance-settings");
+    const s = await updateInstanceSettings({
+      awsMode: "keys",
+      awsAccessKey: "AKIAEXAMPLE",
+      awsSecret: "s3cr3t",
+    });
     expect(s.awsAccessKeyEnc).toMatch(/^v1\./);
     expect(s.awsAccessKeyEnc).not.toContain("AKIA");
-    expect(await getDecryptedSecrets()).toMatchObject({ awsAccessKey: "AKIAEXAMPLE", awsSecret: "s3cr3t", cloudflareToken: null });
+    expect(await getDecryptedSecrets()).toMatchObject({
+      awsAccessKey: "AKIAEXAMPLE",
+      awsSecret: "s3cr3t",
+      cloudflareToken: null,
+    });
   });
 });
 ```
@@ -2055,11 +2629,13 @@ git commit -m "feat(web): app shell, team creation/switching, instance settings 
 ### Task 12: Team settings — rename, members, invites, roles (server actions)
 
 **Files:**
+
 - Create: `apps/web/src/app/app/settings/page.tsx`, `apps/web/src/app/app/settings/actions.ts`, `apps/web/src/app/app/settings/MembersPanel.tsx`, `apps/web/src/app/app/settings/InvitePanel.tsx`, `apps/web/src/app/app/settings/RenameForm.tsx`
 
 - [ ] **Step 1: Server actions (authorize with `can()`, audit every mutation)**
 
 `apps/web/src/app/app/settings/actions.ts`:
+
 ```ts
 "use server";
 import { revalidatePath } from "next/cache";
@@ -2071,11 +2647,19 @@ import { requireTeam } from "@/lib/session";
 import { computeDiff, recordAudit } from "@/lib/audit";
 import { env } from "@/env";
 
-type Result<T = undefined> = { ok: true; data?: T } | { ok: false; error: string };
+type Result<T = undefined> =
+  { ok: true; data?: T } | { ok: false; error: string };
 
 async function guard(action: Parameters<typeof can>[1]) {
   const ctx = await requireTeam();
-  if (!can(ctx.role, action)) return { ctx, denied: { ok: false as const, error: "You don't have permission to do that." } };
+  if (!can(ctx.role, action))
+    return {
+      ctx,
+      denied: {
+        ok: false as const,
+        error: "You don't have permission to do that.",
+      },
+    };
   return { ctx, denied: null };
 }
 
@@ -2083,20 +2667,50 @@ export async function renameTeam(formData: FormData): Promise<Result> {
   const { ctx, denied } = await guard("team.rename");
   if (denied) return denied;
   const name = z.string().min(2).max(64).safeParse(formData.get("name"));
-  if (!name.success) return { ok: false, error: "Name must be 2–64 characters." };
-  await auth.api.updateOrganization({ headers: await headers(), body: { organizationId: ctx.team.id, data: { name: name.data } } });
-  await recordAudit({ teamId: ctx.team.id, actorUserId: ctx.userId, action: "team.rename", targetType: "team", targetId: ctx.team.id, diff: computeDiff({ name: ctx.team.name }, { name: name.data }) });
+  if (!name.success)
+    return { ok: false, error: "Name must be 2–64 characters." };
+  await auth.api.updateOrganization({
+    headers: await headers(),
+    body: { organizationId: ctx.team.id, data: { name: name.data } },
+  });
+  await recordAudit({
+    teamId: ctx.team.id,
+    actorUserId: ctx.userId,
+    action: "team.rename",
+    targetType: "team",
+    targetId: ctx.team.id,
+    diff: computeDiff({ name: ctx.team.name }, { name: name.data }),
+  });
   revalidatePath("/app", "layout");
   return { ok: true };
 }
 
-export async function inviteMember(formData: FormData): Promise<Result<{ link: string }>> {
+export async function inviteMember(
+  formData: FormData,
+): Promise<Result<{ link: string }>> {
   const { ctx, denied } = await guard("members.invite");
   if (denied) return denied;
-  const parsed = z.object({ email: z.string().email(), role: z.enum(["admin", "member"]) }).safeParse({ email: formData.get("email"), role: formData.get("role") });
-  if (!parsed.success) return { ok: false, error: "Enter a valid email and role." };
-  const inv = await auth.api.createInvitation({ headers: await headers(), body: { organizationId: ctx.team.id, email: parsed.data.email, role: parsed.data.role } });
-  await recordAudit({ teamId: ctx.team.id, actorUserId: ctx.userId, action: "members.invite", targetType: "invitation", targetId: inv.id, diff: { email: { to: parsed.data.email }, role: { to: parsed.data.role } } });
+  const parsed = z
+    .object({ email: z.string().email(), role: z.enum(["admin", "member"]) })
+    .safeParse({ email: formData.get("email"), role: formData.get("role") });
+  if (!parsed.success)
+    return { ok: false, error: "Enter a valid email and role." };
+  const inv = await auth.api.createInvitation({
+    headers: await headers(),
+    body: {
+      organizationId: ctx.team.id,
+      email: parsed.data.email,
+      role: parsed.data.role,
+    },
+  });
+  await recordAudit({
+    teamId: ctx.team.id,
+    actorUserId: ctx.userId,
+    action: "members.invite",
+    targetType: "invitation",
+    targetId: inv.id,
+    diff: { email: { to: parsed.data.email }, role: { to: parsed.data.role } },
+  });
   revalidatePath("/app/settings");
   return { ok: true, data: { link: `${env.APP_URL}/invite/${inv.id}` } };
 }
@@ -2104,8 +2718,17 @@ export async function inviteMember(formData: FormData): Promise<Result<{ link: s
 export async function cancelInvitation(invitationId: string): Promise<Result> {
   const { ctx, denied } = await guard("members.invite");
   if (denied) return denied;
-  await auth.api.cancelInvitation({ headers: await headers(), body: { invitationId } });
-  await recordAudit({ teamId: ctx.team.id, actorUserId: ctx.userId, action: "members.invite.cancel", targetType: "invitation", targetId: invitationId });
+  await auth.api.cancelInvitation({
+    headers: await headers(),
+    body: { invitationId },
+  });
+  await recordAudit({
+    teamId: ctx.team.id,
+    actorUserId: ctx.userId,
+    action: "members.invite.cancel",
+    targetType: "invitation",
+    targetId: invitationId,
+  });
   revalidatePath("/app/settings");
   return { ok: true };
 }
@@ -2113,18 +2736,41 @@ export async function cancelInvitation(invitationId: string): Promise<Result> {
 export async function removeMember(memberIdOrEmail: string): Promise<Result> {
   const { ctx, denied } = await guard("members.remove");
   if (denied) return denied;
-  await auth.api.removeMember({ headers: await headers(), body: { organizationId: ctx.team.id, memberIdOrEmail } });
-  await recordAudit({ teamId: ctx.team.id, actorUserId: ctx.userId, action: "members.remove", targetType: "member", targetId: memberIdOrEmail });
+  await auth.api.removeMember({
+    headers: await headers(),
+    body: { organizationId: ctx.team.id, memberIdOrEmail },
+  });
+  await recordAudit({
+    teamId: ctx.team.id,
+    actorUserId: ctx.userId,
+    action: "members.remove",
+    targetType: "member",
+    targetId: memberIdOrEmail,
+  });
   revalidatePath("/app/settings");
   return { ok: true };
 }
 
-export async function changeRole(memberId: string, role: TeamRole): Promise<Result> {
+export async function changeRole(
+  memberId: string,
+  role: TeamRole,
+): Promise<Result> {
   const { ctx, denied } = await guard("members.changeRole");
   if (denied) return denied;
-  if (role === "owner" && ctx.role !== "owner") return { ok: false, error: "Only an owner can promote to owner." };
-  await auth.api.updateMemberRole({ headers: await headers(), body: { organizationId: ctx.team.id, memberId, role } });
-  await recordAudit({ teamId: ctx.team.id, actorUserId: ctx.userId, action: "members.changeRole", targetType: "member", targetId: memberId, diff: { role: { to: role } } });
+  if (role === "owner" && ctx.role !== "owner")
+    return { ok: false, error: "Only an owner can promote to owner." };
+  await auth.api.updateMemberRole({
+    headers: await headers(),
+    body: { organizationId: ctx.team.id, memberId, role },
+  });
+  await recordAudit({
+    teamId: ctx.team.id,
+    actorUserId: ctx.userId,
+    action: "members.changeRole",
+    targetType: "member",
+    targetId: memberId,
+    diff: { role: { to: role } },
+  });
   revalidatePath("/app/settings");
   return { ok: true };
 }
@@ -2133,6 +2779,7 @@ export async function changeRole(memberId: string, role: TeamRole): Promise<Resu
 - [ ] **Step 2: Settings page (server) + panels (client)**
 
 `apps/web/src/app/app/settings/page.tsx`:
+
 ```tsx
 import { eq, and } from "drizzle-orm";
 import { can } from "@sendsprite/shared";
@@ -2149,25 +2796,59 @@ export const metadata = { title: "Settings" };
 export default async function SettingsPage() {
   const ctx = await requireTeam();
   const members = await db()
-    .select({ id: member.id, userId: member.userId, role: member.role, email: user.email, name: user.name })
-    .from(member).innerJoin(user, eq(member.userId, user.id)).where(eq(member.organizationId, ctx.team.id));
+    .select({
+      id: member.id,
+      userId: member.userId,
+      role: member.role,
+      email: user.email,
+      name: user.name,
+    })
+    .from(member)
+    .innerJoin(user, eq(member.userId, user.id))
+    .where(eq(member.organizationId, ctx.team.id));
   const invites = await db()
-    .select({ id: invitation.id, email: invitation.email, role: invitation.role, expiresAt: invitation.expiresAt })
-    .from(invitation).where(and(eq(invitation.organizationId, ctx.team.id), eq(invitation.status, "pending")));
+    .select({
+      id: invitation.id,
+      email: invitation.email,
+      role: invitation.role,
+      expiresAt: invitation.expiresAt,
+    })
+    .from(invitation)
+    .where(
+      and(
+        eq(invitation.organizationId, ctx.team.id),
+        eq(invitation.status, "pending"),
+      ),
+    );
   return (
     <div className="flex max-w-3xl flex-col gap-6">
       <Card>
-        <CardHeader><CardTitle>Team</CardTitle></CardHeader>
-        <CardBody><RenameForm name={ctx.team.name} disabled={!can(ctx.role, "team.rename")} /></CardBody>
+        <CardHeader>
+          <CardTitle>Team</CardTitle>
+        </CardHeader>
+        <CardBody>
+          <RenameForm
+            name={ctx.team.name}
+            disabled={!can(ctx.role, "team.rename")}
+          />
+        </CardBody>
       </Card>
       <Card>
-        <CardHeader><CardTitle>Members</CardTitle></CardHeader>
-        <CardBody><MembersPanel members={members} me={ctx.userId} myRole={ctx.role} /></CardBody>
+        <CardHeader>
+          <CardTitle>Members</CardTitle>
+        </CardHeader>
+        <CardBody>
+          <MembersPanel members={members} me={ctx.userId} myRole={ctx.role} />
+        </CardBody>
       </Card>
       {can(ctx.role, "members.invite") && (
         <Card>
-          <CardHeader><CardTitle>Invitations</CardTitle></CardHeader>
-          <CardBody><InvitePanel invites={invites} /></CardBody>
+          <CardHeader>
+            <CardTitle>Invitations</CardTitle>
+          </CardHeader>
+          <CardBody>
+            <InvitePanel invites={invites} />
+          </CardBody>
         </Card>
       )}
     </div>
@@ -2176,6 +2857,7 @@ export default async function SettingsPage() {
 ```
 
 `apps/web/src/app/app/settings/RenameForm.tsx`:
+
 ```tsx
 "use client";
 import { useActionState } from "react";
@@ -2184,19 +2866,38 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Label } from "@/components/ui/Label";
 
-export function RenameForm({ name, disabled }: { name: string; disabled: boolean }) {
-  const [state, action, pending] = useActionState(async (_prev: unknown, fd: FormData) => renameTeam(fd), null);
+export function RenameForm({
+  name,
+  disabled,
+}: {
+  name: string;
+  disabled: boolean;
+}) {
+  const [state, action, pending] = useActionState(
+    async (_prev: unknown, fd: FormData) => renameTeam(fd),
+    null,
+  );
   return (
     <form action={action} className="flex items-end gap-3">
-      <div className="flex-1"><Label htmlFor="name">Team name</Label><Input id="name" name="name" defaultValue={name} disabled={disabled} /></div>
-      <Button type="submit" disabled={disabled || pending}>Save</Button>
-      {state && !state.ok && <p role="alert" className="text-sm text-red-300">{state.error}</p>}
+      <div className="flex-1">
+        <Label htmlFor="name">Team name</Label>
+        <Input id="name" name="name" defaultValue={name} disabled={disabled} />
+      </div>
+      <Button type="submit" disabled={disabled || pending}>
+        Save
+      </Button>
+      {state && !state.ok && (
+        <p role="alert" className="text-sm text-red-300">
+          {state.error}
+        </p>
+      )}
     </form>
   );
 }
 ```
 
 `apps/web/src/app/app/settings/MembersPanel.tsx`:
+
 ```tsx
 "use client";
 import { useTransition } from "react";
@@ -2205,29 +2906,73 @@ import { changeRole, removeMember } from "./actions";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 
-type Member = { id: string; userId: string; role: string; email: string; name: string | null };
+type Member = {
+  id: string;
+  userId: string;
+  role: string;
+  email: string;
+  name: string | null;
+};
 
-export function MembersPanel({ members, me, myRole }: { members: Member[]; me: string; myRole: TeamRole }) {
+export function MembersPanel({
+  members,
+  me,
+  myRole,
+}: {
+  members: Member[];
+  me: string;
+  myRole: TeamRole;
+}) {
   const [pending, start] = useTransition();
   const canEdit = can(myRole, "members.changeRole");
   return (
     <ul className="divide-y divide-white/10">
       {members.map((m) => (
         <li key={m.id} className="flex items-center justify-between gap-3 py-3">
-          <div className="min-w-0"><p className="truncate text-sm">{m.name || m.email}</p><p className="truncate text-xs text-white/50">{m.email}</p></div>
+          <div className="min-w-0">
+            <p className="truncate text-sm">{m.name || m.email}</p>
+            <p className="truncate text-xs text-white/50">{m.email}</p>
+          </div>
           <div className="flex items-center gap-2">
             {canEdit && m.userId !== me ? (
               <select
                 className="rounded-md border border-white/15 bg-shadow px-2 py-1 text-xs"
                 value={m.role}
                 disabled={pending}
-                onChange={(e) => start(() => { void changeRole(m.id, e.target.value as TeamRole); })}
+                onChange={(e) =>
+                  start(() => {
+                    void changeRole(m.id, e.target.value as TeamRole);
+                  })
+                }
               >
-                {TEAM_ROLES.map((r) => <option key={r} value={r} disabled={r === "owner" && myRole !== "owner"}>{r}</option>)}
+                {TEAM_ROLES.map((r) => (
+                  <option
+                    key={r}
+                    value={r}
+                    disabled={r === "owner" && myRole !== "owner"}
+                  >
+                    {r}
+                  </option>
+                ))}
               </select>
-            ) : <Badge variant={m.role === "owner" ? "indigo" : "muted"}>{m.role}</Badge>}
+            ) : (
+              <Badge variant={m.role === "owner" ? "indigo" : "muted"}>
+                {m.role}
+              </Badge>
+            )}
             {can(myRole, "members.remove") && m.userId !== me && (
-              <Button size="sm" variant="ghost" disabled={pending} onClick={() => start(() => { void removeMember(m.id); })}>Remove</Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={pending}
+                onClick={() =>
+                  start(() => {
+                    void removeMember(m.id);
+                  })
+                }
+              >
+                Remove
+              </Button>
             )}
           </div>
         </li>
@@ -2238,6 +2983,7 @@ export function MembersPanel({ members, me, myRole }: { members: Member[]; me: s
 ```
 
 `apps/web/src/app/app/settings/InvitePanel.tsx`:
+
 ```tsx
 "use client";
 import { useActionState, useTransition } from "react";
@@ -2246,30 +2992,80 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Label } from "@/components/ui/Label";
 
-type Invite = { id: string; email: string; role: string | null; expiresAt: Date };
+type Invite = {
+  id: string;
+  email: string;
+  role: string | null;
+  expiresAt: Date;
+};
 
 export function InvitePanel({ invites }: { invites: Invite[] }) {
-  const [state, action, pending] = useActionState(async (_p: unknown, fd: FormData) => inviteMember(fd), null);
+  const [state, action, pending] = useActionState(
+    async (_p: unknown, fd: FormData) => inviteMember(fd),
+    null,
+  );
   const [, start] = useTransition();
   return (
     <div className="flex flex-col gap-4">
       <form action={action} className="flex items-end gap-3">
-        <div className="flex-1"><Label htmlFor="email">Email</Label><Input id="email" name="email" type="email" required /></div>
-        <div><Label htmlFor="role">Role</Label>
-          <select id="role" name="role" defaultValue="member" className="block h-10 rounded-md border border-white/15 bg-shadow px-3 text-sm"><option value="member">member</option><option value="admin">admin</option></select>
+        <div className="flex-1">
+          <Label htmlFor="email">Email</Label>
+          <Input id="email" name="email" type="email" required />
         </div>
-        <Button type="submit" disabled={pending}>Invite</Button>
+        <div>
+          <Label htmlFor="role">Role</Label>
+          <select
+            id="role"
+            name="role"
+            defaultValue="member"
+            className="block h-10 rounded-md border border-white/15 bg-shadow px-3 text-sm"
+          >
+            <option value="member">member</option>
+            <option value="admin">admin</option>
+          </select>
+        </div>
+        <Button type="submit" disabled={pending}>
+          Invite
+        </Button>
       </form>
-      {state && !state.ok && <p role="alert" className="text-sm text-red-300">{state.error}</p>}
+      {state && !state.ok && (
+        <p role="alert" className="text-sm text-red-300">
+          {state.error}
+        </p>
+      )}
       {state && state.ok && state.data && (
-        <p className="text-sm text-white/70">Invitation created. Share this link: <code className="select-all rounded bg-white/8 px-1.5 py-0.5 text-xs">{state.data.link}</code></p>
+        <p className="text-sm text-white/70">
+          Invitation created. Share this link:{" "}
+          <code className="select-all rounded bg-white/8 px-1.5 py-0.5 text-xs">
+            {state.data.link}
+          </code>
+        </p>
       )}
       {invites.length > 0 && (
         <ul className="divide-y divide-white/10">
           {invites.map((i) => (
-            <li key={i.id} className="flex items-center justify-between py-2 text-sm">
-              <span>{i.email} <span className="text-white/50">· {i.role ?? "member"} · expires {i.expiresAt.toLocaleDateString()}</span></span>
-              <Button size="sm" variant="ghost" onClick={() => start(() => { void cancelInvitation(i.id); })}>Cancel</Button>
+            <li
+              key={i.id}
+              className="flex items-center justify-between py-2 text-sm"
+            >
+              <span>
+                {i.email}{" "}
+                <span className="text-white/50">
+                  · {i.role ?? "member"} · expires{" "}
+                  {i.expiresAt.toLocaleDateString()}
+                </span>
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() =>
+                  start(() => {
+                    void cancelInvitation(i.id);
+                  })
+                }
+              >
+                Cancel
+              </Button>
             </li>
           ))}
         </ul>
@@ -2300,23 +3096,33 @@ git commit -m "feat(web): team settings — rename, members, roles, link-based i
 ### Task 13: Health endpoint (TDD on the pure part)
 
 **Files:**
+
 - Create: `apps/web/src/lib/health.ts`, `apps/web/src/app/api/health/route.ts`, `apps/web/tests/unit/health.test.ts`
 
 - [ ] **Step 1: Failing test**
 
 `apps/web/tests/unit/health.test.ts`:
+
 ```ts
 import { describe, expect, it } from "vitest";
 import { summarize } from "@/lib/health";
 
 describe("health summarize", () => {
   it("is ok only when db is ok; worker state is informational", () => {
-    expect(summarize({ db: "ok", worker: "running", queueLag: 0 }).status).toBe("ok");
-    expect(summarize({ db: "ok", worker: "disabled", queueLag: 0 }).status).toBe("ok");
-    expect(summarize({ db: "error", worker: "running", queueLag: 0 }).status).toBe("error");
+    expect(summarize({ db: "ok", worker: "running", queueLag: 0 }).status).toBe(
+      "ok",
+    );
+    expect(
+      summarize({ db: "ok", worker: "disabled", queueLag: 0 }).status,
+    ).toBe("ok");
+    expect(
+      summarize({ db: "error", worker: "running", queueLag: 0 }).status,
+    ).toBe("error");
   });
   it("degrades when queue lag exceeds 60s", () => {
-    expect(summarize({ db: "ok", worker: "running", queueLag: 61 }).status).toBe("degraded");
+    expect(
+      summarize({ db: "ok", worker: "running", queueLag: 61 }).status,
+    ).toBe("degraded");
   });
 });
 ```
@@ -2329,16 +3135,25 @@ Expected: FAIL — cannot find `@/lib/health`.
 - [ ] **Step 3: Implement**
 
 `apps/web/src/lib/health.ts`:
+
 ```ts
 import { sql } from "drizzle-orm";
 import { db } from "@/db";
 import { getWorkerState } from "@/jobs/boss";
 
-export interface Checks { db: "ok" | "error"; worker: "running" | "disabled" | "stopped"; queueLag: number }
-export interface Health extends Checks { status: "ok" | "degraded" | "error"; version: string }
+export interface Checks {
+  db: "ok" | "error";
+  worker: "running" | "disabled" | "stopped";
+  queueLag: number;
+}
+export interface Health extends Checks {
+  status: "ok" | "degraded" | "error";
+  version: string;
+}
 
 export function summarize(c: Checks): Health {
-  const status = c.db === "error" ? "error" : c.queueLag > 60 ? "degraded" : "ok";
+  const status =
+    c.db === "error" ? "error" : c.queueLag > 60 ? "degraded" : "ok";
   return { ...c, status, version: process.env.npm_package_version ?? "dev" };
 }
 
@@ -2347,7 +3162,11 @@ export async function collect(): Promise<Health> {
   let queueLag = 0;
   try {
     await db().execute(sql`select 1`);
-    const rows = await db().execute(sql`select coalesce(extract(epoch from (now() - min(created_on))), 0)::int as lag from pgboss.job where state = 'created'`).catch(() => [{ lag: 0 }]);
+    const rows = await db()
+      .execute(
+        sql`select coalesce(extract(epoch from (now() - min(created_on))), 0)::int as lag from pgboss.job where state = 'created'`,
+      )
+      .catch(() => [{ lag: 0 }]);
     queueLag = Number((rows[0] as { lag?: number } | undefined)?.lag ?? 0);
   } catch {
     dbState = "error";
@@ -2357,6 +3176,7 @@ export async function collect(): Promise<Health> {
 ```
 
 `apps/web/src/app/api/health/route.ts`:
+
 ```ts
 import { NextResponse } from "next/server";
 import { collect } from "@/lib/health";
@@ -2388,12 +3208,14 @@ git commit -m "feat(web): /api/health with db + queue lag checks"
 ### Task 14: pg-boss runtime and boot instrumentation
 
 **Files:**
+
 - Create: `apps/web/src/jobs/queues.ts`, `apps/web/src/jobs/handlers/heartbeat.ts`, `apps/web/instrumentation.ts`, `apps/web/src/worker.ts`
 - Modify: `apps/web/src/jobs/boss.ts`, `apps/web/package.json` (add `"worker": "bun run src/worker.ts"`)
 
 - [ ] **Step 1: Queue names and a heartbeat handler**
 
 `apps/web/src/jobs/queues.ts`:
+
 ```ts
 export const Q = {
   heartbeat: "system.heartbeat",
@@ -2403,6 +3225,7 @@ export type QueueName = (typeof Q)[keyof typeof Q];
 ```
 
 `apps/web/src/jobs/handlers/heartbeat.ts`:
+
 ```ts
 export async function heartbeat() {
   // Proves the worker loop is alive; visible in logs and used by e2e.
@@ -2413,6 +3236,7 @@ export async function heartbeat() {
 - [ ] **Step 2: pg-boss singleton**
 
 `apps/web/src/jobs/boss.ts` (replace the stub):
+
 ```ts
 import { PgBoss } from "pg-boss";
 import { Q } from "./queues";
@@ -2422,11 +3246,16 @@ type WorkerState = "running" | "disabled" | "stopped";
 let state: WorkerState = "disabled";
 let boss: PgBoss | undefined;
 
-export function getWorkerState(): WorkerState { return state; }
+export function getWorkerState(): WorkerState {
+  return state;
+}
 
 export async function getBoss(): Promise<PgBoss> {
   if (boss) return boss;
-  boss = new PgBoss({ connectionString: process.env.DATABASE_URL!, schema: "pgboss" });
+  boss = new PgBoss({
+    connectionString: process.env.DATABASE_URL!,
+    schema: "pgboss",
+  });
   boss.on("error", (e) => console.error("[pg-boss]", e));
   await boss.start();
   return boss;
@@ -2438,7 +3267,9 @@ export async function startWorker() {
   const b = await getBoss();
   await b.createQueue(Q.heartbeat);
   await b.schedule(Q.heartbeat, "*/5 * * * *"); // every 5 minutes
-  await b.work(Q.heartbeat, async () => { await heartbeat(); });
+  await b.work(Q.heartbeat, async () => {
+    await heartbeat();
+  });
   state = "running";
   console.info("[worker] started");
 }
@@ -2453,6 +3284,7 @@ export async function stopWorker() {
 - [ ] **Step 3: Boot hook**
 
 `apps/web/instrumentation.ts`:
+
 ```ts
 /**
  * Runs once per Next.js server process (nodejs runtime only).
@@ -2473,6 +3305,7 @@ export async function register() {
 ```
 
 `apps/web/src/worker.ts` (standalone worker process for `WORKER_MODE=separate`):
+
 ```ts
 import { env } from "@/env";
 import { runMigrations } from "@/db/migrate";
@@ -2481,7 +3314,10 @@ import { startWorker, stopWorker } from "@/jobs/boss";
 await runMigrations(env.DATABASE_URL);
 await startWorker();
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
-  process.on(sig, async () => { await stopWorker(); process.exit(0); });
+  process.on(sig, async () => {
+    await stopWorker();
+    process.exit(0);
+  });
 }
 ```
 
@@ -2506,6 +3342,7 @@ git commit -m "feat(web): pg-boss worker with boot-time migrations via instrumen
 ### Task 15: Docker image, compose, installer
 
 **Files:**
+
 - Create: `Dockerfile`, `docker-compose.yml`, `install.sh`
 
 - [ ] **Step 1: Dockerfile (multistage Bun, standalone output)**
@@ -2657,35 +3494,49 @@ git commit -m "feat: Docker image, compose stack, one-line installer"
 ### Task 16: E2E smoke test and CI
 
 **Files:**
+
 - Create: `apps/web/playwright.config.ts`, `apps/web/tests/e2e/smoke.spec.ts`, `.github/workflows/ci.yml`
 
 - [ ] **Step 1: Playwright config**
 
 `apps/web/playwright.config.ts`:
+
 ```ts
 import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: "tests/e2e",
   timeout: 60_000,
-  use: { baseURL: process.env.E2E_BASE_URL ?? "http://localhost:3000", trace: "retain-on-failure" },
-  webServer: process.env.E2E_BASE_URL ? undefined : {
-    command: "bun run dev",
-    url: "http://localhost:3000/api/health",
-    reuseExistingServer: true,
-    timeout: 120_000,
-    env: { EMAIL_PASSWORD_ENABLED: "true", SIGNUP_MODE: "open", WORKER_MODE: "none" },
+  use: {
+    baseURL: process.env.E2E_BASE_URL ?? "http://localhost:3000",
+    trace: "retain-on-failure",
   },
+  webServer: process.env.E2E_BASE_URL
+    ? undefined
+    : {
+        command: "bun run dev",
+        url: "http://localhost:3000/api/health",
+        reuseExistingServer: true,
+        timeout: 120_000,
+        env: {
+          EMAIL_PASSWORD_ENABLED: "true",
+          SIGNUP_MODE: "open",
+          WORKER_MODE: "none",
+        },
+      },
 });
 ```
 
 - [ ] **Step 2: Smoke spec**
 
 `apps/web/tests/e2e/smoke.spec.ts`:
+
 ```ts
 import { expect, test } from "@playwright/test";
 
-test("signup → create team → shell renders → settings rename", async ({ page }) => {
+test("signup → create team → shell renders → settings rename", async ({
+  page,
+}) => {
   const email = `e2e-${Date.now()}@example.com`;
   await page.goto("/signup");
   await page.fill("#name", "E2E");
@@ -2711,6 +3562,7 @@ test("signup → create team → shell renders → settings rename", async ({ pa
 - [ ] **Step 3: CI workflow**
 
 `.github/workflows/ci.yml`:
+
 ```yaml
 name: CI
 on:
@@ -2722,7 +3574,12 @@ jobs:
     services:
       postgres:
         image: postgres:16-alpine
-        env: { POSTGRES_USER: sendsprite, POSTGRES_PASSWORD: sendsprite, POSTGRES_DB: sendsprite }
+        env:
+          {
+            POSTGRES_USER: sendsprite,
+            POSTGRES_PASSWORD: sendsprite,
+            POSTGRES_DB: sendsprite,
+          }
         ports: ["5432:5432"]
         options: --health-cmd "pg_isready -U sendsprite" --health-interval 5s --health-retries 20
     env:
@@ -2767,11 +3624,12 @@ git commit -m "test: e2e smoke (signup → team → settings) and CI workflow"
 ### Task 17: README
 
 **Files:**
+
 - Create: `README.md`
 
 - [ ] **Step 1: Write README** (aws-cost-dashboard "why it works this way" tone)
 
-```markdown
+````markdown
 # Sendsprite
 
 Self-hosted email API and marketing platform on Amazon SES. A Resend / useSend
@@ -2785,6 +3643,7 @@ Bun · Next.js 16 · Postgres · Drizzle · pg-boss · BetterAuth · MIT
 ```bash
 curl -fsSL https://sendsprite.dev/install.sh | sh
 ```
+````
 
 That writes `~/sendsprite/.env` with generated secrets, starts the app and
 Postgres, and prints the signup URL. The first account becomes the instance
@@ -2831,18 +3690,18 @@ bun run db:generate          # new migration from schema changes
 
 ## Environment reference
 
-| Variable | Default | Notes |
-| --- | --- | --- |
-| `APP_URL` | — | Public URL, with protocol |
-| `APP_SECRET` | — | ≥ 32 chars; encrypts stored credentials |
-| `DATABASE_URL` | — | Postgres connection string |
-| `SIGNUP_MODE` | `auto` | `auto` → open until first user, then invite; or `open`/`invite`/`closed` |
-| `EMAIL_PASSWORD_ENABLED` | `false` | Email + password sign-in |
-| `GOOGLE_CLIENT_ID/SECRET`, `GITHUB_CLIENT_ID/SECRET` | — | OAuth providers |
-| `WORKER_MODE` | `inline` | `inline` / `separate` / `none` |
-| `SMTP_ENABLED` | `true` | SMTP relay on 587 (Phase 3) |
-| `LANDING_ENABLED` | `true` | `false` sends `/` to `/app` |
-| `EMAIL_RETENTION_DAYS` | `90` | Body/attachment purge window |
+| Variable                                             | Default  | Notes                                                                    |
+| ---------------------------------------------------- | -------- | ------------------------------------------------------------------------ |
+| `APP_URL`                                            | —        | Public URL, with protocol                                                |
+| `APP_SECRET`                                         | —        | ≥ 32 chars; encrypts stored credentials                                  |
+| `DATABASE_URL`                                       | —        | Postgres connection string                                               |
+| `SIGNUP_MODE`                                        | `auto`   | `auto` → open until first user, then invite; or `open`/`invite`/`closed` |
+| `EMAIL_PASSWORD_ENABLED`                             | `false`  | Email + password sign-in                                                 |
+| `GOOGLE_CLIENT_ID/SECRET`, `GITHUB_CLIENT_ID/SECRET` | —        | OAuth providers                                                          |
+| `WORKER_MODE`                                        | `inline` | `inline` / `separate` / `none`                                           |
+| `SMTP_ENABLED`                                       | `true`   | SMTP relay on 587 (Phase 3)                                              |
+| `LANDING_ENABLED`                                    | `true`   | `false` sends `/` to `/app`                                              |
+| `EMAIL_RETENTION_DAYS`                               | `90`     | Body/attachment purge window                                             |
 
 ## Roadmap
 
@@ -2854,14 +3713,15 @@ Design: `docs/superpowers/specs/2026-08-24-sendsprite-design.md`.
 ## License
 
 MIT
-```
+
+````
 
 - [ ] **Step 2: Commit**
 
 ```bash
 git add README.md
 git commit -m "docs: README with install, rationale, env reference"
-```
+````
 
 ---
 

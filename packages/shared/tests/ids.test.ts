@@ -18,6 +18,10 @@ describe("newId", () => {
     expect(parseId("zzz_01ARZ3NDEKTSV4RRFFQ69G5FAV")).toBeNull();
     expect(parseId("garbage")).toBeNull();
   });
+  it("parseId rejects malformed ulids", () => {
+    expect(parseId("em_notaulid")).toBeNull();
+    expect(parseId("em_" + "0".repeat(26).replace(/0$/, "u"))).toBeNull();
+  });
   it("exposes every prefix we plan to use", () => {
     expect(ID_PREFIXES).toContain("em");
     expect(ID_PREFIXES).toContain("evt");

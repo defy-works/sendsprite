@@ -1,8 +1,21 @@
 import { ulid } from "ulid";
 
 export const ID_PREFIXES = [
-  "usr", "team", "inv", "em", "evt", "dom", "key", "wh", "whd",
-  "tpl", "cb", "ct", "cmp", "sup", "aud",
+  "usr",
+  "team",
+  "inv",
+  "em",
+  "evt",
+  "dom",
+  "key",
+  "wh",
+  "whd",
+  "tpl",
+  "cb",
+  "ct",
+  "cmp",
+  "sup",
+  "aud",
 ] as const;
 export type IdPrefix = (typeof ID_PREFIXES)[number];
 

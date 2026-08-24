@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { can, TEAM_ROLES, type TeamRole } from "../src/roles";
+import {
+  ACTIONS,
+  can,
+  TEAM_ROLES,
+  type Action,
+  type TeamRole,
+} from "../src/roles";
 
 describe("roles", () => {
   it("lists owner, admin, member in that order", () => {
     expect(TEAM_ROLES).toEqual(["owner", "admin", "member"]);
   });
-  it.each<[TeamRole, string, boolean]>([
+  it.each<[TeamRole, Action, boolean]>([
     ["owner", "team.delete", true],
     ["admin", "team.delete", false],
     ["admin", "members.invite", true],
@@ -15,6 +21,15 @@ describe("roles", () => {
     ["admin", "instance.manage", false],
     ["owner", "instance.manage", true],
   ])("%s can %s → %s", (role, action, expected) => {
-    expect(can(role, action as never)).toBe(expected);
+    expect(can(role, action)).toBe(expected);
+  });
+  it("owner can do every action", () => {
+    expect(ACTIONS.every((a) => can("owner", a))).toBe(true);
+  });
+  it("permissions are a strict hierarchy: member ⊆ admin ⊆ owner", () => {
+    for (const a of ACTIONS) {
+      if (can("member", a)) expect(can("admin", a)).toBe(true);
+      if (can("admin", a)) expect(can("owner", a)).toBe(true);
+    }
   });
 });

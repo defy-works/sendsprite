@@ -35,19 +35,19 @@ Verified unclaimed on npm, GitHub, `.dev`/`.com`/`.io` on 2026-08-24.
 
 ## 2. Stack
 
-| Concern | Choice |
-|---|---|
-| Runtime / package manager | Bun |
-| Web | Next.js 15 App Router, React 19, Tailwind v4 (`@theme`), Radix primitives, Framer Motion |
-| Database | Postgres 16, Drizzle ORM, `drizzle-kit` migrations |
-| Jobs / scheduling | pg-boss (Postgres-backed; no Redis) |
-| Auth | BetterAuth (Drizzle adapter): Google, GitHub, email/password — each enabled by env presence |
-| Email transport | AWS SESv2 SDK; SNS → HTTPS for events |
-| DNS | Cloudflare API v4 |
-| SMTP relay | `smtp-server` on port 587 |
-| Validation / types | zod schemas in `packages/shared`, shared by app and SDK; OpenAPI 3.1 generated from them |
-| Tests | Vitest, Testcontainers (Postgres), `aws-sdk-client-mock`, `msw`, Playwright |
-| Packaging | Docker (GHCR), `changesets` for npm |
+| Concern                   | Choice                                                                                      |
+| ------------------------- | ------------------------------------------------------------------------------------------- |
+| Runtime / package manager | Bun                                                                                         |
+| Web                       | Next.js 15 App Router, React 19, Tailwind v4 (`@theme`), Radix primitives, Framer Motion    |
+| Database                  | Postgres 16, Drizzle ORM, `drizzle-kit` migrations                                          |
+| Jobs / scheduling         | pg-boss (Postgres-backed; no Redis)                                                         |
+| Auth                      | BetterAuth (Drizzle adapter): Google, GitHub, email/password — each enabled by env presence |
+| Email transport           | AWS SESv2 SDK; SNS → HTTPS for events                                                       |
+| DNS                       | Cloudflare API v4                                                                           |
+| SMTP relay                | `smtp-server` on port 587                                                                   |
+| Validation / types        | zod schemas in `packages/shared`, shared by app and SDK; OpenAPI 3.1 generated from them    |
+| Tests                     | Vitest, Testcontainers (Postgres), `aws-sdk-client-mock`, `msw`, Playwright                 |
+| Packaging                 | Docker (GHCR), `changesets` for npm                                                         |
 
 Convex was considered and rejected: a separately hosted Convex backend
 defeats the "no infra knowledge" goal.
@@ -105,6 +105,7 @@ Live UI updates: `/api/stream?team=` SSE fed by pg-boss/DB notifications; TanSta
 Every team-scoped table carries `team_id` with an index. Timestamps `created_at`/`updated_at` everywhere. IDs are prefixed ULIDs (`em_`, `dom_`, `key_`, …) exposed in the API.
 
 **Auth / tenancy**
+
 - BetterAuth tables: `user`, `session`, `account`, `verification`.
 - `teams` — name, slug, daily_limit?, monthly_limit?, track_opens, track_clicks.
 - `team_members` — team_id, user_id, role `owner|admin|member`.
@@ -113,6 +114,7 @@ Every team-scoped table carries `team_id` with an index. Timestamps `created_at`
 - `audit_log` — team_id?, actor_user_id?, action, target_type, target_id, diff jsonb, ip, user_agent.
 
 **Sending**
+
 - `domains` — team_id, name (unique instance-wide), region, cloudflare_zone_id?, dns_mode `auto|manual`, status `pending|verified|failed`, dkim_tokens text[], dkim_status, mail_from_domain, mail_from_status, spf_ok, dmarc_ok, expected_records jsonb, last_checked_at, verified_at.
 - `api_keys` — team_id, name, key_prefix, key_hash, permission `full|sending_only`, domain_id?, last_used_at, revoked_at.
 - `emails` — team_id, api_key_id?, domain_id, from, to text[], cc text[], bcc text[], reply_to text[], subject, html?, text?, headers jsonb, attachments jsonb (metadata), template_id?, variables jsonb?, ses_message_id?, status `queued|scheduled|sent|delivered|bounced|complained|failed|cancelled`, scheduled_at?, sent_at?, idempotency_key? (unique per team), campaign_id?, contact_id?, source `api|smtp|campaign|dashboard`, tags jsonb.
@@ -121,14 +123,17 @@ Every team-scoped table carries `team_id` with an index. Timestamps `created_at`
 - `suppressions` — team_id, email, reason `bounce|complaint|manual|unsubscribe`, source_email_id?; unique (team_id, email).
 
 **Webhooks**
+
 - `webhooks` — team_id, url, secret_enc, events text[], enabled, disabled_reason?.
 - `webhook_deliveries` — webhook_id, email_event_id?, event_type, payload jsonb, attempt, status_code?, response_excerpt?, next_retry_at?, delivered_at?.
 
 **Templates**
+
 - `templates` — team_id, slug (unique per team), name, subject, body_html, body_text?, variables_schema jsonb, version, updated_by.
 - `template_versions` — template_id, version, snapshot jsonb, created_by.
 
 **Audience / campaigns**
+
 - `contact_books` — team_id, name, default_from?.
 - `contacts` — book_id, email, first_name?, last_name?, properties jsonb, subscribed, unsubscribe_reason?, unsubscribed_at?; unique (book_id, email).
 - `campaigns` — team_id, book_id, domain_id, name, subject, from, reply_to?, content jsonb (block editor), html (rendered), status `draft|scheduled|sending|sent|cancelled`, scheduled_at?, counts jsonb {sent, delivered, opened, clicked, unsubscribed, bounced, complained}.
@@ -149,9 +154,9 @@ Shown until `instance_settings.setup_completed`; reachable only by the first use
      `…/cloudformation/home?region=<r>#/stacks/quickcreate?templateURL=<raw template>&stackName=sendsprite-connect&param_CallbackUrl=<APP_URL>/api/setup/aws/callback&param_CallbackToken=<one-time token, 15 min>`.
      Template `infra/aws/sendsprite-connect.yaml` creates: IAM user `sendsprite` with least-privilege inline policy (SES identity/config-set/account read+write, `SendEmail`/`SendRawEmail`, `PutAccountDetails`, SNS create/subscribe/publish scoped to `sendsprite-*`), an access key, SNS topic `sendsprite-events`, and a Lambda-backed custom resource that POSTs `{accessKeyId, secretAccessKey, region, topicArn}` to the callback with the token. The wizard polls `/api/setup/aws/status` until the callback lands. Stack deletion is documented as the disconnect path.
    - **Manual**: paste access key / secret / region.
-   Post-connect (any path): create ConfigurationSet `sendsprite` with SNS event destination (all event types), subscribe `<APP_URL>/api/webhooks/ses` (HTTPS; `SubscriptionConfirmation` handled automatically), read `GetAccount` into `instance_settings`.
+     Post-connect (any path): create ConfigurationSet `sendsprite` with SNS event destination (all event types), subscribe `<APP_URL>/api/webhooks/ses` (HTTPS; `SubscriptionConfirmation` handled automatically), read `GetAccount` into `instance_settings`.
 3. **SES production access** — shows sandbox/production. Form (website, use case, volume, contact) → `PutAccountDetails`; hourly job re-reads status. UI text states AWS reviews manually, typically within 24 hours.
-4. **Connect Cloudflare** — deep link to the API token page + card listing required permissions (*Zone → Zone → Read*, *Zone → DNS → Edit*; zone scope: all or selected). Paste → `GET /user/tokens/verify` + `GET /zones`. Optional; skipping = manual DNS.
+4. **Connect Cloudflare** — deep link to the API token page + card listing required permissions (_Zone → Zone → Read_, _Zone → DNS → Edit_; zone scope: all or selected). Paste → `GET /user/tokens/verify` + `GET /zones`. Optional; skipping = manual DNS.
 5. **Done** → dashboard with a setup checklist (add domain, create key, first send).
 
 ### 6.2 Domains
@@ -170,29 +175,40 @@ Delete: `DeleteEmailIdentity`; in auto mode also delete the records Sendsprite c
 
 Auth: `Authorization: Bearer ss_live_<32 chars>`. JSON. Cursor pagination (`?limit&cursor`). Rate-limit headers on every response. Errors: `{ "error": { "code", "message", "details"? } }` with stable codes: `validation_error`, `unauthorized`, `forbidden`, `not_found`, `domain_not_verified`, `suppressed_recipient`, `rate_limited`, `daily_quota_exceeded`, `sandbox_restricted`, `idempotency_conflict`, `internal_error`.
 
-| Resource | Endpoints |
-|---|---|
-| Emails | `POST /emails`, `POST /emails/batch` (≤100), `GET /emails/:id` (includes `events`), `GET /emails`, `PATCH /emails/:id` (`scheduledAt`), `POST /emails/:id/cancel` |
-| Domains | `POST /domains`, `GET /domains`, `GET /domains/:id`, `POST /domains/:id/verify`, `DELETE /domains/:id` |
-| API keys | `POST`, `GET`, `DELETE /:id` — `full` keys only |
-| Templates | `POST`, `GET`, `GET /:slug`, `PATCH /:slug`, `DELETE /:slug`, `POST /:slug/render` |
-| Contact books | CRUD; `POST /contact-books/:id/contacts/import` (CSV) |
-| Contacts | CRUD under a book; `POST /contacts/unsubscribe` by email |
-| Campaigns | CRUD, `POST /:id/schedule`, `POST /:id/send`, `POST /:id/cancel` |
-| Webhooks | CRUD, `POST /:id/test` |
-| Suppressions | `GET`, `POST`, `DELETE /:email` |
+| Resource      | Endpoints                                                                                                                                                         |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Emails        | `POST /emails`, `POST /emails/batch` (≤100), `GET /emails/:id` (includes `events`), `GET /emails`, `PATCH /emails/:id` (`scheduledAt`), `POST /emails/:id/cancel` |
+| Domains       | `POST /domains`, `GET /domains`, `GET /domains/:id`, `POST /domains/:id/verify`, `DELETE /domains/:id`                                                            |
+| API keys      | `POST`, `GET`, `DELETE /:id` — `full` keys only                                                                                                                   |
+| Templates     | `POST`, `GET`, `GET /:slug`, `PATCH /:slug`, `DELETE /:slug`, `POST /:slug/render`                                                                                |
+| Contact books | CRUD; `POST /contact-books/:id/contacts/import` (CSV)                                                                                                             |
+| Contacts      | CRUD under a book; `POST /contacts/unsubscribe` by email                                                                                                          |
+| Campaigns     | CRUD, `POST /:id/schedule`, `POST /:id/send`, `POST /:id/cancel`                                                                                                  |
+| Webhooks      | CRUD, `POST /:id/test`                                                                                                                                            |
+| Suppressions  | `GET`, `POST`, `DELETE /:email`                                                                                                                                   |
 
 `POST /emails` body:
 
 ```json
 {
   "from": "Acme <hello@mail.acme.com>",
-  "to": ["a@b.com"], "cc": [], "bcc": [], "replyTo": [],
+  "to": ["a@b.com"],
+  "cc": [],
+  "bcc": [],
+  "replyTo": [],
   "subject": "…",
-  "html": "…", "text": "…",
-  "template": "welcome", "variables": { "name": "Mingu" },
+  "html": "…",
+  "text": "…",
+  "template": "welcome",
+  "variables": { "name": "Mingu" },
   "headers": { "X-Entity-Ref-ID": "…" },
-  "attachments": [{ "filename": "a.pdf", "content": "<base64>", "contentType": "application/pdf" }],
+  "attachments": [
+    {
+      "filename": "a.pdf",
+      "content": "<base64>",
+      "contentType": "application/pdf"
+    }
+  ],
   "scheduledAt": "2026-09-01T09:00:00Z",
   "tags": { "campaign": "onboarding" },
   "idempotencyKey": "order-123"
