@@ -1,0 +1,119 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Sendsprite - least-privilege IAM user for Amazon SES + SNS events. Credentials are posted once to your Sendsprite instance.
+Parameters:
+  CallbackUrl:
+    Type: String
+    Description: Your Sendsprite instance callback (prefilled).
+  # Deliberately not NoEcho: CloudFormation quick-create links ignore NoEcho
+  # parameters, so the wizard could not prefill it. The token is single-use and
+  # expires in 15 minutes, which is the mitigation.
+  CallbackToken:
+    Type: String
+    Description: One-time token (prefilled). Expires in 15 minutes.
+Resources:
+  SendspriteUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub "sendsprite-${AWS::StackName}"
+      Policies:
+        - PolicyName: sendsprite-ses
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ses:GetAccount
+                  - ses:PutAccountDetails
+                  - ses:PutAccountSendingAttributes
+                  - ses:CreateEmailIdentity
+                  - ses:DeleteEmailIdentity
+                  - ses:GetEmailIdentity
+                  - ses:ListEmailIdentities
+                  - ses:PutEmailIdentityMailFromAttributes
+                  - ses:PutEmailIdentityDkimAttributes
+                  - ses:PutEmailIdentityConfigurationSetAttributes
+                  - ses:CreateConfigurationSet
+                  - ses:GetConfigurationSet
+                  - ses:CreateConfigurationSetEventDestination
+                  - ses:UpdateConfigurationSetEventDestination
+                  - ses:GetConfigurationSetEventDestinations
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - sns:CreateTopic
+                  - sns:Subscribe
+                  - sns:Unsubscribe
+                  - sns:GetTopicAttributes
+                  - sns:SetTopicAttributes
+                  - sns:ListSubscriptionsByTopic
+                Resource: !Sub "arn:aws:sns:*:${AWS::AccountId}:sendsprite-*"
+              - Effect: Allow
+                Action: sts:GetCallerIdentity
+                Resource: "*"
+  SendspriteAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref SendspriteUser
+  CallbackFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+  # Always answers the pre-signed ResponseURL (SUCCESS or FAILED); a missing
+  # response would leave the stack hanging for an hour. Only Create posts to
+  # Sendsprite; Update/Delete just acknowledge so stack deletion never blocks.
+  CallbackFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 30
+      Role: !GetAtt CallbackFunctionRole.Arn
+      Code:
+        ZipFile: |
+          import json, urllib.request
+          def respond(event, context, status, reason=""):
+              body = json.dumps({"Status": status, "Reason": reason or "See CloudWatch logs",
+                  "PhysicalResourceId": event.get("PhysicalResourceId") or context.log_stream_name,
+                  "StackId": event["StackId"], "RequestId": event["RequestId"], "LogicalResourceId": event["LogicalResourceId"]}).encode()
+              req = urllib.request.Request(event["ResponseURL"], data=body, method="PUT", headers={"content-type": ""})
+              urllib.request.urlopen(req, timeout=10)
+          def handler(event, context):
+              try:
+                  if event["RequestType"] == "Create":
+                      p = event["ResourceProperties"]
+                      payload = json.dumps({"token": p["CallbackToken"], "accessKeyId": p["AccessKeyId"],
+                          "secretAccessKey": p["SecretAccessKey"], "region": p["Region"], "accountId": p["AccountId"]}).encode()
+                      req = urllib.request.Request(p["CallbackUrl"], data=payload, method="POST", headers={"content-type": "application/json"})
+                      with urllib.request.urlopen(req, timeout=20) as r:
+                          if r.status >= 300: raise Exception("callback returned %d" % r.status)
+                  respond(event, context, "SUCCESS")
+              except Exception as e:
+                  respond(event, context, "FAILED", str(e))
+  # CloudFormation keeps custom-resource properties (including the secret key)
+  # in stack state, readable by account admins. Sendsprite's encrypted copy is
+  # the one that matters; delete this stack after connecting if you want the
+  # secret out of CloudFormation state (deleting also revokes the user).
+  Callback:
+    Type: Custom::SendspriteCallback
+    Properties:
+      ServiceToken: !GetAtt CallbackFunction.Arn
+      CallbackUrl: !Ref CallbackUrl
+      CallbackToken: !Ref CallbackToken
+      AccessKeyId: !Ref SendspriteAccessKey
+      SecretAccessKey: !GetAtt SendspriteAccessKey.SecretAccessKey
+      Region: !Ref AWS::Region
+      AccountId: !Ref AWS::AccountId
+Outputs:
+  UserName:
+    Value: !Ref SendspriteUser
+  Note:
+    Value: "Delete this stack to revoke Sendsprite's access."

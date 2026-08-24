@@ -1864,7 +1864,7 @@ git commit -m "feat(web): AWS connect service — keys/instance role, SES infra,
 - Test: `apps/web/tests/integration/setup-callback.test.ts`
 - Modify: `.github/workflows/ci.yml` (cfn-lint job)
 
-- [ ] **Step 1: Template**
+- [x] **Step 1: Template**
 
 `infra/aws/sendsprite-connect.yaml`:
 
@@ -1983,11 +1983,11 @@ Outputs:
 
 Note: `NoEcho` parameters are ignored in quick-create URLs (AWS docs). `CallbackToken` therefore must NOT be `NoEcho` — remove `NoEcho: true` from it and add a comment; the token is single-use and expires in 15 minutes, which is the mitigation.
 
-- [ ] **Step 2: Validate the template**
+- [x] **Step 2: Validate the template**
 
 Load the IaC MCP tool with ToolSearch `select:mcp__plugin_deploy-on-aws_awsiac__validate_cloudformation_template` and run it on the file (or `pip install cfn-lint && cfn-lint infra/aws/sendsprite-connect.yaml` if available). Expected: no errors (warnings about wildcard SES resources are acceptable — SES identity ARNs aren't known at stack time).
 
-- [ ] **Step 3: Failing integration test for the callback**
+- [x] **Step 3: Failing integration test for the callback**
 
 `apps/web/tests/integration/setup-callback.test.ts`:
 
@@ -2105,7 +2105,7 @@ describe("POST /api/setup/aws/callback", () => {
 
 Run → FAIL (route missing).
 
-- [ ] **Step 4: Routes**
+- [x] **Step 4: Routes**
 
 `apps/web/src/app/api/setup/aws/callback/route.ts`:
 
@@ -2173,7 +2173,7 @@ export async function GET() {
 }
 ```
 
-- [ ] **Step 5: CI cfn-lint job**
+- [x] **Step 5: CI cfn-lint job**
 
 Add to `.github/workflows/ci.yml`:
 
@@ -2191,7 +2191,7 @@ cfn:
     # - run: aws s3 cp infra/aws/sendsprite-connect.yaml s3://sendsprite-cfn/latest/sendsprite-connect.yaml --acl public-read
 ```
 
-- [ ] **Step 6: Run, commit**
+- [x] **Step 6: Run, commit**
 
 Run: `cd apps/web && bun run test:integration -- setup-callback && bun run typecheck` → PASS.
 
