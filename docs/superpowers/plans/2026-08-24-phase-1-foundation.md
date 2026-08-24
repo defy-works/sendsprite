@@ -1866,7 +1866,7 @@ git commit -m "feat(web): BetterAuth with organization plugin, signup policy, ge
 
 - Create: `apps/web/src/components/ui/{Button,Card,Badge,Input,Label,Select,Textarea,Divider,Skeleton,Spinner,Link,StatusDot,EmptyState}.tsx`
 
-- [ ] **Step 1: Copy the existing primitives**
+- [x] **Step 1: Copy the existing primitives**
 
 ```bash
 mkdir -p apps/web/src/components/ui
@@ -1877,7 +1877,7 @@ cp /d/Documents/Work/Defyworks/site_v2/src/components/ui/{Input,Label,Select,Tex
 
 Open each copied file and remove any import that references the source project's domain (e.g. `@/lib/forecast`); they must only import `react`, `next/link`, `@radix-ui/react-slot`, and `@/lib/cn`.
 
-- [ ] **Step 2: Badge (rewritten without the budget coupling)**
+- [x] **Step 2: Badge (rewritten without the budget coupling)**
 
 `apps/web/src/components/ui/Badge.tsx`:
 
@@ -1915,7 +1915,7 @@ export const Badge = forwardRef<HTMLSpanElement, BadgeProps>(function Badge(
 });
 ```
 
-- [ ] **Step 3: StatusDot and EmptyState**
+- [x] **Step 3: StatusDot and EmptyState**
 
 `apps/web/src/components/ui/StatusDot.tsx`:
 
@@ -1974,12 +1974,12 @@ export function EmptyState({
 }
 ```
 
-- [ ] **Step 4: Typecheck**
+- [x] **Step 4: Typecheck**
 
 Run: `cd apps/web && bun run typecheck`
 Expected: no errors from `src/components/ui/*` (errors elsewhere are acceptable until later tasks).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/components/ui
