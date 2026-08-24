@@ -90,17 +90,15 @@ function createAuth() {
       },
       session: {
         create: {
-          // Defaults activeOrganizationId on later logins. The very first
-          // session after signup has no membership yet; team creation
-          // (Task 11) sets the active org explicitly.
+          // Defaults activeOrganizationId on later logins using the same
+          // rule as `resolveTeam` (oldest membership). The very first session
+          // after signup has no membership yet; team creation sets the
+          // active org explicitly.
           before: async (session) => {
-            const [m] = await db()
-              .select({ orgId: schema.member.organizationId })
-              .from(schema.member)
-              .where(eq(schema.member.userId, session.userId))
-              .limit(1);
+            const { resolveTeam } = await import("@/lib/team");
+            const t = await resolveTeam(session.userId, null);
             return {
-              data: { ...session, activeOrganizationId: m?.orgId ?? null },
+              data: { ...session, activeOrganizationId: t?.team.id ?? null },
             };
           },
         },

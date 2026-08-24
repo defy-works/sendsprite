@@ -81,7 +81,7 @@ infra/aws/sendsprite-connect.yaml          CloudFormation template
 - Modify: `apps/web/src/jobs/boss.ts`, `apps/web/src/lib/auth.ts`, `apps/web/tests/integration/_pg.ts`
 - Test: `apps/web/tests/integration/worker.test.ts` (add one case)
 
-- [ ] **Step 1: Failing test — queue options are applied**
+- [x] **Step 1: Failing test — queue options are applied**
 
 Append to `apps/web/tests/integration/worker.test.ts` inside the existing `describe` (after the worker is running):
 
@@ -112,12 +112,12 @@ it("registerQueue passes queue options to pg-boss", async () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `cd apps/web && bun run test:integration -- worker`
 Expected: FAIL — `retryLimit` is the pg-boss default (2), not 7.
 
-- [ ] **Step 3: Implement queue options**
+- [x] **Step 3: Implement queue options**
 
 In `apps/web/src/jobs/boss.ts`:
 
@@ -167,12 +167,12 @@ export function registerQueue<T extends object>(
 
 Check the exact `createQueue`/`updateQueue`/`getQueue` signatures in `node_modules/pg-boss/dist/index.d.ts` and adjust the option object shape (pg-boss 12 takes `Queue` objects with `name`).
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd apps/web && bun run test:integration -- worker`
 Expected: PASS.
 
-- [ ] **Step 5: Session hook ordering (opener #5)**
+- [x] **Step 5: Session hook ordering (opener #5)**
 
 In `apps/web/src/lib/auth.ts`, replace the body of `session.create.before` so it uses the same rule as `resolveTeam`:
 
@@ -186,11 +186,11 @@ before: async (session) => {
 
 (`resolveTeam` has no `next/*` imports, so this is safe inside the hook.)
 
-- [ ] **Step 6: Harness rm retry (opener #7)**
+- [x] **Step 6: Harness rm retry (opener #7)**
 
 In `apps/web/tests/integration/_pg.ts`, every `rm(dir, { recursive: true, force: true })` becomes `rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })`.
 
-- [ ] **Step 7: Verify and commit**
+- [x] **Step 7: Verify and commit**
 
 Run: `cd apps/web && bun run test:integration && bun run typecheck`
 Expected: all green (auth tests still pass — the second-login test asserts `org_1`, which is the oldest membership).
@@ -1030,25 +1030,19 @@ afterEach(() => {
 });
 
 function happyMocks() {
-  sts
-    .on(GetCallerIdentityCommand)
-    .resolves({
-      Account: "123456789012",
-      Arn: "arn:aws:iam::123456789012:user/sendsprite",
-    });
-  ses
-    .on(GetAccountCommand)
-    .resolves({
-      ProductionAccessEnabled: false,
-      SendQuota: { Max24HourSend: 200, MaxSendRate: 1 },
-    });
+  sts.on(GetCallerIdentityCommand).resolves({
+    Account: "123456789012",
+    Arn: "arn:aws:iam::123456789012:user/sendsprite",
+  });
+  ses.on(GetAccountCommand).resolves({
+    ProductionAccessEnabled: false,
+    SendQuota: { Max24HourSend: 200, MaxSendRate: 1 },
+  });
   ses.on(CreateConfigurationSetCommand).resolves({});
   ses.on(CreateConfigurationSetEventDestinationCommand).resolves({});
-  sns
-    .on(CreateTopicCommand)
-    .resolves({
-      TopicArn: "arn:aws:sns:us-east-1:123456789012:sendsprite-events",
-    });
+  sns.on(CreateTopicCommand).resolves({
+    TopicArn: "arn:aws:sns:us-east-1:123456789012:sendsprite-events",
+  });
   sns
     .on(SubscribeCommand)
     .resolves({ SubscriptionArn: "pending confirmation" });
@@ -1152,13 +1146,11 @@ describe("requestProductionAccess / refreshSesAccount", () => {
   it("submits details and flips status to requested", async () => {
     happyMocks();
     ses.on(PutAccountDetailsCommand).resolves({});
-    ses
-      .on(GetAccountCommand)
-      .resolves({
-        ProductionAccessEnabled: false,
-        Details: { ReviewDetails: { Status: "PENDING" } },
-        SendQuota: { Max24HourSend: 200, MaxSendRate: 1 },
-      });
+    ses.on(GetAccountCommand).resolves({
+      ProductionAccessEnabled: false,
+      Details: { ReviewDetails: { Status: "PENDING" } },
+      SendQuota: { Max24HourSend: 200, MaxSendRate: 1 },
+    });
     const { requestProductionAccess } = await import("@/services/aws-connect");
     const res = await requestProductionAccess(
       {
@@ -1657,19 +1649,15 @@ beforeAll(async () => {
   const { resetEnvCache } = await import("@/env.schema");
   resetEnvCache();
   sts.on(GetCallerIdentityCommand).resolves({ Account: "123456789012" });
-  ses
-    .on(GetAccountCommand)
-    .resolves({
-      ProductionAccessEnabled: false,
-      SendQuota: { Max24HourSend: 200, MaxSendRate: 1 },
-    });
+  ses.on(GetAccountCommand).resolves({
+    ProductionAccessEnabled: false,
+    SendQuota: { Max24HourSend: 200, MaxSendRate: 1 },
+  });
   ses.on(CreateConfigurationSetCommand).resolves({});
   ses.on(CreateConfigurationSetEventDestinationCommand).resolves({});
-  sns
-    .on(CreateTopicCommand)
-    .resolves({
-      TopicArn: "arn:aws:sns:us-east-1:123456789012:sendsprite-events",
-    });
+  sns.on(CreateTopicCommand).resolves({
+    TopicArn: "arn:aws:sns:us-east-1:123456789012:sendsprite-events",
+  });
   sns.on(SubscribeCommand).resolves({ SubscriptionArn: "x" });
 });
 afterAll(async () => {
@@ -2893,11 +2881,9 @@ describe("domains", () => {
     ).toBe(false);
   });
   it("provisionDomain creates the identity, MAIL FROM, writes records to Cloudflare", async () => {
-    ses
-      .on(CreateEmailIdentityCommand)
-      .resolves({
-        DkimAttributes: { Tokens: ["t1", "t2", "t3"], Status: "PENDING" },
-      });
+    ses.on(CreateEmailIdentityCommand).resolves({
+      DkimAttributes: { Tokens: ["t1", "t2", "t3"], Status: "PENDING" },
+    });
     ses.on(PutEmailIdentityMailFromAttributesCommand).resolves({});
     const { provisionDomain } = await import("@/services/domains");
     const { domains } = await import("@/db/schema");
@@ -2922,16 +2908,14 @@ describe("domains", () => {
     );
   });
   it("verifyDomain flips to verified when SES + DNS agree, else re-enqueues", async () => {
-    ses
-      .on(GetEmailIdentityCommand)
-      .resolves({
-        DkimAttributes: { Status: "SUCCESS", Tokens: ["t1", "t2", "t3"] },
-        MailFromAttributes: {
-          MailFromDomainStatus: "SUCCESS",
-          MailFromDomain: "bounce.mail.acme.com",
-        },
-        VerifiedForSendingStatus: true,
-      });
+    ses.on(GetEmailIdentityCommand).resolves({
+      DkimAttributes: { Status: "SUCCESS", Tokens: ["t1", "t2", "t3"] },
+      MailFromAttributes: {
+        MailFromDomainStatus: "SUCCESS",
+        MailFromDomain: "bounce.mail.acme.com",
+      },
+      VerifiedForSendingStatus: true,
+    });
     const resolver = {
       resolveCname: async () => ["t1.dkim.amazonses.com"],
       resolveMx: async () => [
@@ -2959,12 +2943,10 @@ describe("domains", () => {
     expect(enqueue).not.toHaveBeenCalled();
   });
   it("verifyDomain re-enqueues while pending and fails after verifyUntil", async () => {
-    ses
-      .on(GetEmailIdentityCommand)
-      .resolves({
-        DkimAttributes: { Status: "PENDING", Tokens: ["t1", "t2", "t3"] },
-        MailFromAttributes: { MailFromDomainStatus: "PENDING" },
-      });
+    ses.on(GetEmailIdentityCommand).resolves({
+      DkimAttributes: { Status: "PENDING", Tokens: ["t1", "t2", "t3"] },
+      MailFromAttributes: { MailFromDomainStatus: "PENDING" },
+    });
     const { verifyDomain, createDomain } = await import("@/services/domains");
     const { domains } = await import("@/db/schema");
     const created = await createDomain(

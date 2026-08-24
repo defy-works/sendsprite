@@ -1,14 +1,28 @@
-import { PgBoss, type Job } from "pg-boss";
+import { PgBoss, type Job, type Queue } from "pg-boss";
 
 type WorkerState = "running" | "disabled" | "stopped";
 export type JobHandler<T extends object = object> = (
   jobs: Job<T>[],
 ) => Promise<unknown>;
 
+/** Per-queue policy a handler owns (retry, expiry, retention, dead-letter). */
+export type QueueOptions = Partial<
+  Pick<
+    Queue,
+    | "retryLimit"
+    | "retryDelay"
+    | "retryBackoff"
+    | "expireInSeconds"
+    | "retentionSeconds"
+    | "deadLetter"
+  >
+>;
+
 interface Registration {
   name: string;
   handler: JobHandler<never>;
   cron?: string;
+  queue?: QueueOptions;
 }
 
 interface Shared {
@@ -37,8 +51,10 @@ export function getWorkerState(): WorkerState {
   return shared.state;
 }
 
-async function attach(b: PgBoss, { name, handler, cron }: Registration) {
-  await b.createQueue(name);
+async function attach(b: PgBoss, { name, handler, cron, queue }: Registration) {
+  await b.createQueue(name, queue);
+  // createQueue is a no-op for an existing queue; apply changed options.
+  if (queue) await b.updateQueue(name, queue);
   if (cron) await b.schedule(name, cron);
   await b.work(name, handler as JobHandler);
 }
@@ -51,9 +67,14 @@ async function attach(b: PgBoss, { name, handler, cron }: Registration) {
 export function registerQueue<T extends object>(
   name: string,
   handler: JobHandler<T>,
-  opts: { cron?: string } = {},
+  opts: { cron?: string; queue?: QueueOptions } = {},
 ) {
-  const reg: Registration = { name, handler, cron: opts.cron };
+  const reg: Registration = {
+    name,
+    handler,
+    cron: opts.cron,
+    queue: opts.queue,
+  };
   shared.registry.set(name, reg);
   if (shared.state === "running" && shared.boss) {
     void attach(shared.boss, reg).catch((err) =>

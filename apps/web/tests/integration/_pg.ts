@@ -37,7 +37,12 @@ export async function startPg(): Promise<TestPg> {
       await db.$client.end();
       await closeDb();
       await pg.stop();
-      await rm(databaseDir, { recursive: true, force: true });
+      await rm(databaseDir, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 200,
+      });
     },
   };
 }
@@ -94,7 +99,12 @@ async function bootEmbedded(attempt = 1): Promise<{
     return { pg, databaseDir, port };
   } catch (err) {
     await pg.stop().catch(() => undefined);
-    await rm(databaseDir, { recursive: true, force: true });
+    await rm(databaseDir, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 200,
+    });
     if (attempt >= 2) throw err;
     return bootEmbedded(attempt + 1);
   }

@@ -86,6 +86,30 @@ describe("worker", () => {
     });
   });
 
+  it("registerQueue passes queue options to pg-boss", async () => {
+    boss.registerQueue("test.opts", async () => {}, {
+      queue: {
+        retryLimit: 7,
+        retryDelay: 3,
+        retryBackoff: true,
+        expireInSeconds: 120,
+      },
+    });
+    const b = await boss.getBoss();
+    // attach is fire-and-forget after start; wait for the queue to exist
+    let q = await b.getQueue("test.opts");
+    for (let i = 0; !q && i < 50; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      q = await b.getQueue("test.opts");
+    }
+    expect(q).toMatchObject({
+      retryLimit: 7,
+      retryDelay: 3,
+      retryBackoff: true,
+      expireInSeconds: 120,
+    });
+  });
+
   it("health reports db ok and worker running", async () => {
     const h = await health.collect();
     expect(h).toMatchObject({ db: "ok", worker: "running", status: "ok" });
