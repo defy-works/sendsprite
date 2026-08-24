@@ -2448,7 +2448,7 @@ git commit -m "feat(web): SNS endpoint with signature verification and subscript
 - Modify: `apps/web/src/jobs/handlers/index.ts`, `apps/web/src/jobs/queues.ts`
 - Test: `apps/web/tests/integration/worker.test.ts` (registration smoke)
 
-- [ ] **Step 1: Queue name + handler**
+- [x] **Step 1: Queue name + handler**
 
 `queues.ts`: add `sesRefreshAccount: "ses.refresh-account"`, `domainProvision: "domain.provision"`, `domainVerify: "domain.verify"`.
 
@@ -2474,11 +2474,11 @@ registerQueue(
 
 `handlers/index.ts`: `import "./ses-refresh-account";`
 
-- [ ] **Step 2: Test — queue is registered on start**
+- [x] **Step 2: Test — queue is registered on start**
 
 Append to `worker.test.ts`: after `startWorker()`, `expect(await (await getBoss()).getQueue("ses.refresh-account")).toBeTruthy()`.
 
-- [ ] **Step 3: Run, commit**
+- [x] **Step 3: Run, commit**
 
 `cd apps/web && bun run test:integration -- worker` → PASS. `git add apps/web && git commit -m "feat(web): hourly SES account status refresh job"`
 

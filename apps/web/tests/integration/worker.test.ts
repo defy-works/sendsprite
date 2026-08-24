@@ -60,6 +60,13 @@ describe("worker", () => {
     });
   });
 
+  it("registers the hourly SES account refresh queue on start", async () => {
+    const b = await boss.getBoss();
+    expect(await b.getQueue("ses.refresh-account")).toMatchObject({
+      retryLimit: 0,
+    });
+  });
+
   it("runs handlers registered after start", async () => {
     const late = deferred<unknown>();
     boss.registerQueue<{ n: number }>("test.late", async (jobs) => {
