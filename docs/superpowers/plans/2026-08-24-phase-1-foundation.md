@@ -484,7 +484,7 @@ git commit -m "feat(shared): prefixed ULID ids and team role permission table"
 
 - Create: `apps/web/package.json`, `apps/web/tsconfig.json`, `apps/web/next.config.ts`, `apps/web/postcss.config.mjs`, `apps/web/next-env.d.ts` (generated), `apps/web/src/styles/globals.css`, `apps/web/public/fonts/*`, `apps/web/public/favicon.svg`, `apps/web/src/lib/cn.ts`, `apps/web/src/app/layout.tsx`, `apps/web/src/app/page.tsx`
 
-- [ ] **Step 1: apps/web/package.json**
+- [x] **Step 1: apps/web/package.json**
 
 ```json
 {
@@ -534,7 +534,7 @@ git commit -m "feat(shared): prefixed ULID ids and team role permission table"
 }
 ```
 
-- [ ] **Step 2: tsconfig, next.config, postcss**
+- [x] **Step 2: tsconfig, next.config, postcss**
 
 `apps/web/tsconfig.json`:
 
@@ -580,7 +580,7 @@ const config = { plugins: { "@tailwindcss/postcss": {} } };
 export default config;
 ```
 
-- [ ] **Step 3: Copy theme assets from aws-cost-dashboard**
+- [x] **Step 3: Copy theme assets from aws-cost-dashboard**
 
 ```bash
 mkdir -p apps/web/public/fonts apps/web/src/styles apps/web/src/lib
@@ -612,7 +612,7 @@ Everything else in the file stays as copied.
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#0a0a0a"/><path d="M7 17l9-9 9 9-9 9z" fill="none" stroke="#818cf8" stroke-width="2.2" stroke-linejoin="round"/><circle cx="16" cy="17" r="2.2" fill="#6366f1"/></svg>
 ```
 
-- [ ] **Step 4: Root layout and placeholder home**
+- [x] **Step 4: Root layout and placeholder home**
 
 `apps/web/src/app/layout.tsx`:
 
@@ -668,12 +668,12 @@ export default function HomePage() {
 
 (`@/env` is created in Task 4; the app won't compile until then — that's expected.)
 
-- [ ] **Step 5: Install**
+- [x] **Step 5: Install**
 
 Run: `bun install`
 Expected: success; `apps/web/node_modules/next` present.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
@@ -688,7 +688,7 @@ git commit -m "feat(web): Next.js 16 app scaffold with inherited theme"
 
 - Create: `apps/web/src/env.ts`, `apps/web/tests/unit/env.test.ts`, `apps/web/vitest.config.ts`, `.env.example`
 
-- [ ] **Step 1: vitest config with two projects**
+- [x] **Step 1: vitest config with two projects**
 
 `apps/web/vitest.config.ts`:
 
@@ -723,7 +723,7 @@ export default defineConfig({
 });
 ```
 
-- [ ] **Step 2: Failing test**
+- [x] **Step 2: Failing test**
 
 `apps/web/tests/unit/env.test.ts`:
 
@@ -785,12 +785,12 @@ describe("parseEnv", () => {
 });
 ```
 
-- [ ] **Step 3: Run to verify failure**
+- [x] **Step 3: Run to verify failure**
 
 Run: `cd apps/web && bun run test`
 Expected: FAIL — cannot find module `@/env`.
 
-- [ ] **Step 4: Implement**
+- [x] **Step 4: Implement**
 
 `apps/web/src/env.ts`:
 
@@ -868,12 +868,12 @@ export const env: Env = new Proxy({} as Env, {
 });
 ```
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run: `cd apps/web && bun run test`
 Expected: PASS (6 tests).
 
-- [ ] **Step 6: .env.example at repo root**
+- [x] **Step 6: .env.example at repo root**
 
 ```bash
 # ---- Required ----
@@ -900,7 +900,7 @@ EMAIL_RETENTION_DAYS=90
 POSTGRES_PASSWORD=sendsprite
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add apps/web/src/env.ts apps/web/tests apps/web/vitest.config.ts .env.example
