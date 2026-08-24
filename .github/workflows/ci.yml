@@ -46,9 +46,14 @@ jobs:
         if: failure()
         with:
           name: playwright-report
-          path: apps/web/playwright-report
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
           retention-days: 7
 
+  # Deliberately no `needs: test`: the image build is independent of the test
+  # suite, so both jobs run in parallel and a red test job still shows whether
+  # the Docker image builds and boots.
   docker:
     runs-on: ubuntu-latest
     services:
@@ -90,7 +95,7 @@ jobs:
             fi
             sleep 2
           done
-          echo "image did not become healthy"; docker logs ss; exit 1
+          echo "image did not become healthy"; exit 1
       - name: Container logs
         if: failure()
         run: docker logs ss || true

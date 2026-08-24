@@ -1283,6 +1283,7 @@ import { randomBytes, randomInt } from "node:crypto";
 import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import postgres from "postgres";
 import { runMigrations } from "@/db/migrate";
 import { closeDb, createDb, type Db } from "@/db";
 
@@ -1296,22 +1297,13 @@ export interface TestPg {
  * Migrated Postgres for integration tests.
  * Uses TEST_DATABASE_URL when set (CI service container); otherwise boots an
  * embedded Postgres in a temp dir. No Docker required.
+ *
+ * Either way every call gets its own fresh database: vitest runs test files
+ * in parallel and each file assumes an empty, freshly migrated schema.
  */
 export async function startPg(): Promise<TestPg> {
   const external = process.env.TEST_DATABASE_URL;
-  if (external) {
-    await runMigrations(external);
-    process.env.DATABASE_URL = external;
-    const db = createDb(external);
-    return {
-      url: external,
-      db,
-      async stop() {
-        await db.$client.end();
-        await closeDb();
-      },
-    };
-  }
+  if (external) return startExternal(external);
 
   const { pg, databaseDir, port } = await bootEmbedded();
   const url = `postgres://postgres:postgres@localhost:${port}/test`;
@@ -1326,6 +1318,33 @@ export async function startPg(): Promise<TestPg> {
       await closeDb();
       await pg.stop();
       await rm(databaseDir, { recursive: true, force: true });
+    },
+  };
+}
+
+/**
+ * External server (TEST_DATABASE_URL points at an admin database): create a
+ * throwaway `test_<hex>` database next to it, migrate it, and drop it (FORCE,
+ * Postgres 13+) on stop so parallel test files never share state.
+ */
+async function startExternal(adminUrl: string): Promise<TestPg> {
+  const name = `test_${randomBytes(4).toString("hex")}`;
+  const admin = postgres(adminUrl, { max: 1 });
+  await admin.unsafe(`CREATE DATABASE ${name}`);
+  const u = new URL(adminUrl);
+  u.pathname = `/${name}`;
+  const url = u.toString();
+  await runMigrations(url);
+  process.env.DATABASE_URL = url;
+  const db = createDb(url);
+  return {
+    url,
+    db,
+    async stop() {
+      await db.$client.end();
+      await closeDb();
+      await admin.unsafe(`DROP DATABASE ${name} WITH (FORCE)`);
+      await admin.end();
     },
   };
 }
@@ -4499,26 +4518,44 @@ git commit -m "feat: Docker image, compose stack, one-line installer"
 
 - [x] **Step 1: Playwright config**
 
+CI uses one Postgres service for everything; `TEST_DATABASE_URL` makes `_pg.ts` create and drop a `test_<hex>` database per test file so parallel integration files stay isolated from each other and from the e2e app database.
+
 `apps/web/playwright.config.ts`:
 
 ```ts
 import { defineConfig } from "@playwright/test";
 
+// Port 3000 is often taken on dev machines; CI sets E2E_PORT=3000.
+const PORT = process.env.E2E_PORT ?? "3001";
+const baseURL = process.env.E2E_BASE_URL ?? `http://localhost:${PORT}`;
+
 export default defineConfig({
   testDir: "tests/e2e",
   timeout: 60_000,
+  reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : "list",
   use: {
-    baseURL: process.env.E2E_BASE_URL ?? "http://localhost:3000",
+    baseURL,
     trace: "retain-on-failure",
   },
+  // With E2E_BASE_URL set we target an already-running server (e.g. the
+  // Docker image); otherwise `next dev` is started on PORT. DATABASE_URL and
+  // APP_SECRET come from .env.local locally (Next loads it) and from the job
+  // env in CI; APP_URL is overridden so it matches the port in use.
   webServer: process.env.E2E_BASE_URL
     ? undefined
     : {
-        command: "bun run dev",
-        url: "http://localhost:3000/api/health",
-        reuseExistingServer: true,
+        command: `bun run dev -- -p ${PORT}`,
+        url: `${baseURL}/api/health`,
+        reuseExistingServer: !process.env.CI,
         timeout: 120_000,
+        stdout: "pipe",
+        stderr: "pipe",
         env: {
+          ...(process.env.DATABASE_URL && {
+            DATABASE_URL: process.env.DATABASE_URL,
+          }),
+          ...(process.env.APP_SECRET && { APP_SECRET: process.env.APP_SECRET }),
+          APP_URL: `http://localhost:${PORT}`,
           EMAIL_PASSWORD_ENABLED: "true",
           SIGNUP_MODE: "open",
           WORKER_MODE: "none",
@@ -4537,23 +4574,38 @@ import { expect, test } from "@playwright/test";
 test("signup → create team → shell renders → settings rename", async ({
   page,
 }) => {
-  const email = `e2e-${Date.now()}@example.com`;
+  // Unique per run: the dev database persists between runs.
+  const email = `e2e-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.com`;
   await page.goto("/signup");
   await page.fill("#name", "E2E");
   await page.fill("#email", email);
   await page.fill("#password", "correct-horse-battery");
   await page.click("button[type=submit]");
-  await page.waitForURL(/\/(app|teams\/new)/);
-  if (page.url().includes("/teams/new")) {
+
+  // Signup pushes to /app; a user without a team is then server-redirected to
+  // /teams/new. The URL passes through /app transiently, so wait for content
+  // rather than the URL: either the create-team form or the app shell.
+  const createTeam = page.getByRole("button", { name: "Create team" });
+  const checklist = page.getByText("Setup checklist");
+  await expect(createTeam.or(checklist)).toBeVisible({ timeout: 30_000 });
+  await expect(page).toHaveURL(/\/(teams\/new|app)$/);
+  if (await createTeam.isVisible()) {
     await page.fill("#name", "Acme");
-    await page.click("button[type=submit]");
+    await createTeam.click();
     await page.waitForURL("**/app");
   }
-  await expect(page.getByText("Setup checklist")).toBeVisible();
+  await expect(checklist).toBeVisible();
+
   await page.goto("/app/settings");
-  await page.fill("#name", "Acme Renamed");
+  await page.fill("#team-name", "Acme Renamed");
   await page.getByRole("button", { name: "Save" }).click();
-  await expect(page.getByText("Acme Renamed")).toBeVisible();
+  // No error alert from the server action (scoped to the form: Next's dev
+  // overlay keeps an empty role=alert live region on every page), and the
+  // revalidated shell shows the new name.
+  const renameForm = page.locator("form", { has: page.locator("#team-name") });
+  await expect(renameForm.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByRole("banner")).toContainText("Acme Renamed");
+
   const health = await page.request.get("/api/health");
   expect(health.ok()).toBeTruthy();
 });
@@ -4566,8 +4618,10 @@ test("signup → create team → shell renders → settings rename", async ({
 ```yaml
 name: CI
 on:
-  push: { branches: [main] }
+  push:
+    branches: [main]
   pull_request:
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -4575,41 +4629,101 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          {
-            POSTGRES_USER: sendsprite,
-            POSTGRES_PASSWORD: sendsprite,
-            POSTGRES_DB: sendsprite,
-          }
+          POSTGRES_USER: sendsprite
+          POSTGRES_PASSWORD: sendsprite
+          POSTGRES_DB: sendsprite
         ports: ["5432:5432"]
-        options: --health-cmd "pg_isready -U sendsprite" --health-interval 5s --health-retries 20
+        options: >-
+          --health-cmd "pg_isready -U sendsprite"
+          --health-interval 5s
+          --health-retries 20
     env:
       APP_URL: http://localhost:3000
       APP_SECRET: ci-secret-ci-secret-ci-secret-ci-secret
       DATABASE_URL: postgres://sendsprite:sendsprite@localhost:5432/sendsprite
+      # Integration tests use the service container instead of downloading
+      # embedded-postgres binaries.
+      TEST_DATABASE_URL: postgres://sendsprite:sendsprite@localhost:5432/sendsprite
+      E2E_PORT: "3000"
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun run lint
+      - run: bun run format:check
       - run: bun run test
       - run: bun run test:integration
       - run: bunx playwright install --with-deps chromium
         working-directory: apps/web
-      - run: bun run db:migrate && bun run test:e2e
+      - run: bun run db:migrate
         working-directory: apps/web
+      - run: bun run test:e2e
+        working-directory: apps/web
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+          retention-days: 7
+
+  # Deliberately no `needs: test`: the image build is independent of the test
+  # suite, so both jobs run in parallel and a red test job still shows whether
+  # the Docker image builds and boots.
   docker:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: sendsprite
+          POSTGRES_PASSWORD: sendsprite
+          POSTGRES_DB: sendsprite
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sendsprite"
+          --health-interval 5s
+          --health-retries 20
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
-        with: { context: ., push: false, tags: sendsprite:ci }
+        with:
+          context: .
+          push: false
+          load: true
+          tags: sendsprite:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # Boots the standalone image against the service Postgres: proves the
+      # traced node_modules/.bun symlinks, boot migrations and /api/health work.
+      - name: Smoke-test image
+        run: |
+          docker run -d --name ss --network host \
+            -e APP_URL=http://localhost:3000 \
+            -e APP_SECRET=ci-secret-ci-secret-ci-secret-ci-secret \
+            -e DATABASE_URL=postgres://sendsprite:sendsprite@localhost:5432/sendsprite \
+            -e EMAIL_PASSWORD_ENABLED=true \
+            sendsprite:ci
+          for i in $(seq 1 30); do
+            if curl -fsS localhost:3000/api/health; then
+              echo; echo "healthy after ${i} tries"; exit 0
+            fi
+            sleep 2
+          done
+          echo "image did not become healthy"; exit 1
+      - name: Container logs
+        if: failure()
+        run: docker logs ss || true
+      # GHCR push (docker/login-action + push: true, tags ghcr.io/...) goes
+      # here once releases are cut; not part of Phase 1.
 ```
 
 - [x] **Step 4: Run e2e locally**
 
-Run: `cd apps/web && bunx playwright install chromium && bun run test:e2e` (local Postgres running, `.env.local` present)
+Run: `cd apps/web && bunx playwright install chromium && bun run test:e2e` (local Postgres running via `bun run db:dev`, `.env.local` present; server starts on `E2E_PORT`, default 3001)
 Expected: 1 passed.
 
 - [x] **Step 5: Commit**

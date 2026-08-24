@@ -7,6 +7,7 @@ const baseURL = process.env.E2E_BASE_URL ?? `http://localhost:${PORT}`;
 export default defineConfig({
   testDir: "tests/e2e",
   timeout: 60_000,
+  reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : "list",
   use: {
     baseURL,
     trace: "retain-on-failure",
@@ -20,8 +21,10 @@ export default defineConfig({
     : {
         command: `bun run dev -- -p ${PORT}`,
         url: `${baseURL}/api/health`,
-        reuseExistingServer: true,
+        reuseExistingServer: !process.env.CI,
         timeout: 120_000,
+        stdout: "pipe",
+        stderr: "pipe",
         env: {
           ...(process.env.DATABASE_URL && {
             DATABASE_URL: process.env.DATABASE_URL,
