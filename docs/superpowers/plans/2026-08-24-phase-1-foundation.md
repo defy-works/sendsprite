@@ -15,6 +15,12 @@
 - Spec's custom `server.ts` is replaced by `instrumentation.ts` (`register()`), which Next runs once per server process. Same effect (worker in-process), but compatible with `output: "standalone"`.
 - Invitation emails cannot be sent before a domain is verified (Phase 3), so Phase 1 invites are **link-based**: the inviter copies the accept URL from the UI.
 
+**Rules learned in review (apply to every later task):**
+
+- Every route is dynamic: the root layout exports `dynamic = "force-dynamic"`. Never rely on static prerendering; `next build` must succeed with no env set.
+- `@/env` is `server-only`. Client components never import it; pass `env.providers` etc. down as props from server components. Pure schema lives in `@/env.schema` (safe for tests).
+- Run `bun run format` before every commit so `format:check` stays green.
+
 **Reference repos (read-only, copy from):**
 
 - `D:\Documents\Work\aws-cost-dashboard` — `src/styles/globals.css`, `public/fonts/*`, `src/components/ui/*`, `src/lib/cn.ts`, `Dockerfile`, `docker-compose.yml`
