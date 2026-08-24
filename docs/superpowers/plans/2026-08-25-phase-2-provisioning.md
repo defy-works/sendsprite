@@ -2900,7 +2900,7 @@ Append to `worker.test.ts`: after `startWorker()`, `expect(await (await getBoss(
 - Create: `apps/web/src/lib/cloudflare/client.ts`, `apps/web/src/services/cloudflare-connect.ts`
 - Test: `apps/web/tests/unit/cloudflare-client.test.ts`, `apps/web/tests/integration/cloudflare-connect.test.ts`
 
-- [ ] **Step 1: Failing unit test**
+- [x] **Step 1: Failing unit test**
 
 `tests/unit/cloudflare-client.test.ts`:
 
@@ -2987,7 +2987,7 @@ describe("CloudflareClient", () => {
 });
 ```
 
-- [ ] **Step 2: Client**
+- [x] **Step 2: Client**
 
 `apps/web/src/lib/cloudflare/client.ts`:
 
@@ -3098,7 +3098,7 @@ export class CloudflareClient {
 
 Run `cd apps/web && bun run test` → PASS.
 
-- [ ] **Step 3: Connect service + integration test**
+- [x] **Step 3: Connect service + integration test**
 
 `tests/integration/cloudflare-connect.test.ts`:
 
@@ -3233,7 +3233,7 @@ export async function listZones(f: typeof fetch = fetch): Promise<CfZone[]> {
 }
 ```
 
-- [ ] **Step 4: Run, commit**
+- [x] **Step 4: Run, commit**
 
 Run → PASS. `git add apps/web && git commit -m "feat(web): Cloudflare client and connect service"`
 
