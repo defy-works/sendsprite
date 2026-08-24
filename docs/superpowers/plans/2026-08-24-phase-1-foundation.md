@@ -1994,7 +1994,7 @@ git commit -m "feat(web): port UI primitives from Defyworks family, add StatusDo
 
 - Create: `apps/web/src/lib/session.ts`, `apps/web/src/lib/audit.ts`, `apps/web/tests/unit/audit.test.ts`
 
-- [ ] **Step 1: Failing test for diff computation**
+- [x] **Step 1: Failing test for diff computation**
 
 `apps/web/tests/unit/audit.test.ts`:
 
@@ -2022,12 +2022,12 @@ describe("computeDiff", () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `cd apps/web && bun run test`
 Expected: FAIL — cannot find `@/lib/audit`.
 
-- [ ] **Step 3: Implement audit + session helpers**
+- [x] **Step 3: Implement audit + session helpers**
 
 `apps/web/src/lib/audit.ts`:
 
@@ -2128,12 +2128,12 @@ export async function requireTeam(): Promise<TeamContext> {
 }
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `cd apps/web && bun run test`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/lib/audit.ts apps/web/src/lib/session.ts apps/web/tests/unit/audit.test.ts
