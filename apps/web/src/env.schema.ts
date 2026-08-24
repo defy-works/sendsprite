@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { SES_REGIONS } from "@/lib/aws/clients";
+import { SES_REGIONS } from "@/lib/aws/regions";
 import { isS3TemplateUrl } from "@/lib/aws/quick-create";
 
 const bool = z
