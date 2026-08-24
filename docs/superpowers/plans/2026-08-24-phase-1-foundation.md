@@ -921,7 +921,7 @@ git commit -m "feat(web): zod-validated environment with provider auto-detection
 
 - Create: `apps/web/src/lib/crypto.ts`, `apps/web/tests/unit/crypto.test.ts`
 
-- [ ] **Step 1: Failing test**
+- [x] **Step 1: Failing test**
 
 `apps/web/tests/unit/crypto.test.ts`:
 
@@ -959,12 +959,12 @@ describe("createCipher", () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `cd apps/web && bun run test`
 Expected: FAIL — cannot find `@/lib/crypto`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `apps/web/src/lib/crypto.ts`:
 
@@ -1031,12 +1031,12 @@ export function getCipher(): Cipher {
 }
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `cd apps/web && bun run test`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/lib/crypto.ts apps/web/tests/unit/crypto.test.ts
