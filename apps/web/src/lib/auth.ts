@@ -6,17 +6,21 @@ import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { and, count, eq, gt } from "drizzle-orm";
 import { db } from "@/db";
 import * as schema from "@/db/schema";
-import { loadEnv } from "@/env.schema";
+import { loadEnv, type Env } from "@/env.schema";
 import { canSignUp, resolveSignupMode } from "./signup-policy";
 
-const env = loadEnv();
-
-async function currentSignupMode() {
+/**
+ * Race window: two concurrent *first* signups can both observe zero users
+ * and both pass. Accepted for a single-instance self-hosted tool. The hook
+ * runs before (outside) the adapter's insert, so a lock taken here would
+ * not cover the insert anyway.
+ */
+async function currentSignupMode(env: Env) {
   const [settings] = await db().select().from(schema.instanceSettings).limit(1);
   const [users] = await db().select({ n: count() }).from(schema.user);
   return resolveSignupMode(
     env.SIGNUP_MODE,
-    (settings?.signupMode as never) ?? null,
+    settings?.signupMode ?? null,
     Number(users?.n ?? 0),
   );
 }
@@ -36,79 +40,106 @@ async function hasPendingInvitation(email: string) {
   return Boolean(row);
 }
 
-export const auth = betterAuth({
-  baseURL: env.APP_URL,
-  secret: env.APP_SECRET,
-  database: drizzleAdapter(db(), { provider: "pg", schema }),
-  emailAndPassword: {
-    enabled: env.providers.emailPassword,
-    // Verification mail needs a verified sending domain (Phase 3). Until
-    // then accounts are usable immediately.
-    requireEmailVerification: false,
-  },
-  socialProviders: {
-    ...(env.providers.google && {
-      google: {
-        clientId: env.GOOGLE_CLIENT_ID!,
-        clientSecret: env.GOOGLE_CLIENT_SECRET!,
+// Not `@/env`: that module is `server-only` and throws under the CLI/vitest.
+function createAuth() {
+  const env = loadEnv();
+  return betterAuth({
+    baseURL: env.APP_URL,
+    secret: env.APP_SECRET,
+    database: drizzleAdapter(db(), { provider: "pg", schema }),
+    emailAndPassword: {
+      enabled: env.providers.emailPassword,
+      // Verification mail needs a verified sending domain (Phase 3). Until
+      // then accounts are usable immediately.
+      requireEmailVerification: false,
+    },
+    socialProviders: {
+      ...(env.providers.google && {
+        google: {
+          clientId: env.GOOGLE_CLIENT_ID!,
+          clientSecret: env.GOOGLE_CLIENT_SECRET!,
+        },
+      }),
+      ...(env.providers.github && {
+        github: {
+          clientId: env.GITHUB_CLIENT_ID!,
+          clientSecret: env.GITHUB_CLIENT_SECRET!,
+        },
+      }),
+    },
+    databaseHooks: {
+      user: {
+        create: {
+          before: async (user) => {
+            const mode = await currentSignupMode(env);
+            const invited =
+              mode === "invite"
+                ? await hasPendingInvitation(user.email)
+                : false;
+            if (!canSignUp(mode, invited)) {
+              throw new APIError("FORBIDDEN", {
+                message:
+                  mode === "closed"
+                    ? "Sign-ups are closed on this instance."
+                    : "Sign-ups are invite-only. Ask a team admin for an invitation link.",
+              });
+            }
+            return { data: user };
+          },
+        },
       },
-    }),
-    ...(env.providers.github && {
-      github: {
-        clientId: env.GITHUB_CLIENT_ID!,
-        clientSecret: env.GITHUB_CLIENT_SECRET!,
+      session: {
+        create: {
+          // Defaults activeOrganizationId on later logins. The very first
+          // session after signup has no membership yet; team creation
+          // (Task 11) sets the active org explicitly.
+          before: async (session) => {
+            const [m] = await db()
+              .select({ orgId: schema.member.organizationId })
+              .from(schema.member)
+              .where(eq(schema.member.userId, session.userId))
+              .limit(1);
+            return {
+              data: { ...session, activeOrganizationId: m?.orgId ?? null },
+            };
+          },
+        },
       },
-    }),
-  },
-  databaseHooks: {
-    user: {
-      create: {
-        before: async (user) => {
-          const mode = await currentSignupMode();
-          const invited =
-            mode === "invite" ? await hasPendingInvitation(user.email) : false;
-          if (!canSignUp(mode, invited)) {
-            throw new APIError("FORBIDDEN", {
-              message:
-                mode === "closed"
-                  ? "Sign-ups are closed on this instance."
-                  : "Sign-ups are invite-only. Ask a team admin for an invitation link.",
-            });
+    },
+    plugins: [
+      organization({
+        allowUserToCreateOrganization: true,
+        creatorRole: "owner",
+        invitationExpiresIn: 60 * 60 * 24 * 7,
+        // Email delivery arrives in Phase 3; the UI shows the accept link.
+        // Log it outside production so dev/e2e runs can find it.
+        sendInvitationEmail: async ({ id, email }) => {
+          if (env.NODE_ENV !== "production") {
+            console.info(`[invite] ${email} → ${env.APP_URL}/invite/${id}`);
           }
-          return { data: user };
         },
-      },
-    },
-    session: {
-      create: {
-        // Default the active team to the user's first membership so /app
-        // never renders without a team.
-        before: async (session) => {
-          const [m] = await db()
-            .select({ orgId: schema.member.organizationId })
-            .from(schema.member)
-            .where(eq(schema.member.userId, session.userId))
-            .limit(1);
-          return {
-            data: { ...session, activeOrganizationId: m?.orgId ?? null },
-          };
-        },
-      },
-    },
-  },
-  plugins: [
-    organization({
-      allowUserToCreateOrganization: true,
-      creatorRole: "owner",
-      invitationExpiresIn: 60 * 60 * 24 * 7,
-      // Email delivery arrives in Phase 3; for now the accept link is shown
-      // in the UI. Log it so dev/e2e runs can find it.
-      sendInvitationEmail: async ({ id, email }) => {
-        console.info(`[invite] ${email} → ${env.APP_URL}/invite/${id}`);
-      },
-    }),
-    nextCookies(),
-  ],
+      }),
+      nextCookies(),
+    ],
+  });
+}
+
+type AuthInstance = ReturnType<typeof createAuth>;
+let instance: AuthInstance | undefined;
+
+/** Instantiated on first use so importing this module has no side effects. */
+export function getAuth(): AuthInstance {
+  return (instance ??= createAuth());
+}
+
+/** Test-only: drop the cached instance so the next access re-reads env. */
+export function resetAuthForTests() {
+  instance = undefined;
+}
+
+/** Lazy proxy: property access instantiates on first use. */
+export const auth: AuthInstance = new Proxy({} as AuthInstance, {
+  get: (_t, key) => Reflect.get(getAuth(), key),
 });
 
-export type Auth = typeof auth;
+export type Auth = AuthInstance;

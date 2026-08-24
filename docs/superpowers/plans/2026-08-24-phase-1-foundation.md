@@ -1484,18 +1484,21 @@ import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { and, count, eq, gt } from "drizzle-orm";
 import { db } from "@/db";
 import * as schema from "@/db/schema";
-import { loadEnv } from "@/env.schema";
+import { loadEnv, type Env } from "@/env.schema";
 import { canSignUp, resolveSignupMode } from "./signup-policy";
 
-// Not `@/env`: that module is `server-only` and throws under the CLI/vitest.
-const env = loadEnv();
-
-async function currentSignupMode() {
+/**
+ * Race window: two concurrent *first* signups can both observe zero users
+ * and both pass. Accepted for a single-instance self-hosted tool. The hook
+ * runs before (outside) the adapter's insert, so a lock taken here would
+ * not cover the insert anyway.
+ */
+async function currentSignupMode(env: Env) {
   const [settings] = await db().select().from(schema.instanceSettings).limit(1);
   const [users] = await db().select({ n: count() }).from(schema.user);
   return resolveSignupMode(
     env.SIGNUP_MODE,
-    (settings?.signupMode as never) ?? null,
+    settings?.signupMode ?? null,
     Number(users?.n ?? 0),
   );
 }
@@ -1515,87 +1518,114 @@ async function hasPendingInvitation(email: string) {
   return Boolean(row);
 }
 
-export const auth = betterAuth({
-  baseURL: env.APP_URL,
-  secret: env.APP_SECRET,
-  database: drizzleAdapter(db(), { provider: "pg", schema }),
-  emailAndPassword: {
-    enabled: env.providers.emailPassword,
-    // Verification mail needs a verified sending domain (Phase 3). Until
-    // then accounts are usable immediately.
-    requireEmailVerification: false,
-  },
-  socialProviders: {
-    ...(env.providers.google && {
-      google: {
-        clientId: env.GOOGLE_CLIENT_ID!,
-        clientSecret: env.GOOGLE_CLIENT_SECRET!,
+// Not `@/env`: that module is `server-only` and throws under the CLI/vitest.
+function createAuth() {
+  const env = loadEnv();
+  return betterAuth({
+    baseURL: env.APP_URL,
+    secret: env.APP_SECRET,
+    database: drizzleAdapter(db(), { provider: "pg", schema }),
+    emailAndPassword: {
+      enabled: env.providers.emailPassword,
+      // Verification mail needs a verified sending domain (Phase 3). Until
+      // then accounts are usable immediately.
+      requireEmailVerification: false,
+    },
+    socialProviders: {
+      ...(env.providers.google && {
+        google: {
+          clientId: env.GOOGLE_CLIENT_ID!,
+          clientSecret: env.GOOGLE_CLIENT_SECRET!,
+        },
+      }),
+      ...(env.providers.github && {
+        github: {
+          clientId: env.GITHUB_CLIENT_ID!,
+          clientSecret: env.GITHUB_CLIENT_SECRET!,
+        },
+      }),
+    },
+    databaseHooks: {
+      user: {
+        create: {
+          before: async (user) => {
+            const mode = await currentSignupMode(env);
+            const invited =
+              mode === "invite"
+                ? await hasPendingInvitation(user.email)
+                : false;
+            if (!canSignUp(mode, invited)) {
+              throw new APIError("FORBIDDEN", {
+                message:
+                  mode === "closed"
+                    ? "Sign-ups are closed on this instance."
+                    : "Sign-ups are invite-only. Ask a team admin for an invitation link.",
+              });
+            }
+            return { data: user };
+          },
+        },
       },
-    }),
-    ...(env.providers.github && {
-      github: {
-        clientId: env.GITHUB_CLIENT_ID!,
-        clientSecret: env.GITHUB_CLIENT_SECRET!,
+      session: {
+        create: {
+          // Defaults activeOrganizationId on later logins. The very first
+          // session after signup has no membership yet; team creation
+          // (Task 11) sets the active org explicitly.
+          before: async (session) => {
+            const [m] = await db()
+              .select({ orgId: schema.member.organizationId })
+              .from(schema.member)
+              .where(eq(schema.member.userId, session.userId))
+              .limit(1);
+            return {
+              data: { ...session, activeOrganizationId: m?.orgId ?? null },
+            };
+          },
+        },
       },
-    }),
-  },
-  databaseHooks: {
-    user: {
-      create: {
-        before: async (user) => {
-          const mode = await currentSignupMode();
-          const invited =
-            mode === "invite" ? await hasPendingInvitation(user.email) : false;
-          if (!canSignUp(mode, invited)) {
-            throw new APIError("FORBIDDEN", {
-              message:
-                mode === "closed"
-                  ? "Sign-ups are closed on this instance."
-                  : "Sign-ups are invite-only. Ask a team admin for an invitation link.",
-            });
+    },
+    plugins: [
+      organization({
+        allowUserToCreateOrganization: true,
+        creatorRole: "owner",
+        invitationExpiresIn: 60 * 60 * 24 * 7,
+        // Email delivery arrives in Phase 3; the UI shows the accept link.
+        // Log it outside production so dev/e2e runs can find it.
+        sendInvitationEmail: async ({ id, email }) => {
+          if (env.NODE_ENV !== "production") {
+            console.info(`[invite] ${email} → ${env.APP_URL}/invite/${id}`);
           }
-          return { data: user };
         },
-      },
-    },
-    session: {
-      create: {
-        // Default the active team to the user's first membership so /app
-        // never renders without a team.
-        before: async (session) => {
-          const [m] = await db()
-            .select({ orgId: schema.member.organizationId })
-            .from(schema.member)
-            .where(eq(schema.member.userId, session.userId))
-            .limit(1);
-          return {
-            data: { ...session, activeOrganizationId: m?.orgId ?? null },
-          };
-        },
-      },
-    },
-  },
-  plugins: [
-    organization({
-      allowUserToCreateOrganization: true,
-      creatorRole: "owner",
-      invitationExpiresIn: 60 * 60 * 24 * 7,
-      // Email delivery arrives in Phase 3; for now the accept link is shown
-      // in the UI. Log it so dev/e2e runs can find it.
-      sendInvitationEmail: async ({ id, email }) => {
-        console.info(`[invite] ${email} → ${env.APP_URL}/invite/${id}`);
-      },
-    }),
-    nextCookies(),
-  ],
+      }),
+      nextCookies(),
+    ],
+  });
+}
+
+type AuthInstance = ReturnType<typeof createAuth>;
+let instance: AuthInstance | undefined;
+
+/** Instantiated on first use so importing this module has no side effects. */
+export function getAuth(): AuthInstance {
+  return (instance ??= createAuth());
+}
+
+/** Test-only: drop the cached instance so the next access re-reads env. */
+export function resetAuthForTests() {
+  instance = undefined;
+}
+
+/** Lazy proxy: property access instantiates on first use. */
+export const auth: AuthInstance = new Proxy({} as AuthInstance, {
+  get: (_t, key) => Reflect.get(getAuth(), key),
 });
 
-export type Auth = typeof auth;
+export type Auth = AuthInstance;
 ```
 
 - [x] **Step 6: Generate the better-auth Drizzle schema, then a migration**
 
-Run: `cd apps/web && bun run auth:generate` (the script uses `bunx auth@latest`; the older `@better-auth/cli` package is stale for better-auth 1.7 and omits `account.issuer`). The CLI imports `auth.ts`, so `APP_URL`, `APP_SECRET`, `DATABASE_URL`, `EMAIL_PASSWORD_ENABLED` must be set in the shell (no connection is made).
+Run: `cd apps/web && bun run auth:generate` (the script uses `bunx auth@1.7.1`; the older `@better-auth/cli` package is stale for better-auth 1.7 and omits `account.issuer`). The CLI imports `auth.ts`, so `APP_URL`, `APP_SECRET`, `DATABASE_URL`, `EMAIL_PASSWORD_ENABLED` must be set in the shell (no connection is made).
 Expected: `src/db/schema/auth.ts` overwritten with `pgTable` definitions for `user`, `session` (incl. `activeOrganizationId`), `account`, `verification`, `organization`, `member`, `invitation`. Open the file and confirm exports are named `user`, `session`, `account`, `verification`, `organization`, `member`, `invitation`.
 
 Run: `bun run db:generate`
@@ -1629,7 +1659,9 @@ export const { GET, POST } = toNextJsHandler(auth);
 
 ```ts
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { resetEnvCache } from "@/env.schema";
+import * as schema from "@/db/schema";
 import { startPg } from "./_pg";
 
 let pg: Awaited<ReturnType<typeof startPg>>;
@@ -1638,13 +1670,21 @@ beforeAll(async () => {
   process.env.APP_URL = "http://localhost:3000";
   process.env.APP_SECRET = "x".repeat(40);
   process.env.EMAIL_PASSWORD_ENABLED = "true";
-  process.env.SIGNUP_MODE = "auto";
-  resetEnvCache();
+  await setSignupMode("auto");
 });
 afterAll(async () => {
   await pg.stop();
 });
 
+/** Env is read once per auth instance, so a mode change needs both caches cleared. */
+async function setSignupMode(mode: string) {
+  process.env.SIGNUP_MODE = mode;
+  resetEnvCache();
+  const { resetAuthForTests } = await import("@/lib/auth");
+  resetAuthForTests();
+}
+
+// Dynamic so `@/lib/auth` is first evaluated after env + DATABASE_URL are set.
 async function signUp(email: string) {
   const { auth } = await import("@/lib/auth");
   return auth.api.signUpEmail({
@@ -1656,20 +1696,88 @@ async function signUp(email: string) {
   });
 }
 
-describe("signup policy (auto)", () => {
-  it("first user may sign up", async () => {
+async function invite(email: string) {
+  const [first] = await pg.db
+    .select({ id: schema.user.id })
+    .from(schema.user)
+    .where(eq(schema.user.email, "first@example.com"));
+  const now = new Date();
+  const [org] = await pg.db
+    .insert(schema.organization)
+    .values({ id: "org_1", name: "Team", slug: "team", createdAt: now })
+    .onConflictDoNothing()
+    .returning({ id: schema.organization.id });
+  const orgId = org?.id ?? "org_1";
+  await pg.db
+    .insert(schema.member)
+    .values({
+      id: `mem_${first!.id}`,
+      organizationId: orgId,
+      userId: first!.id,
+      role: "owner",
+      createdAt: now,
+    })
+    .onConflictDoNothing();
+  await pg.db.insert(schema.invitation).values({
+    id: `inv_${email}`,
+    organizationId: orgId,
+    email,
+    role: "member",
+    status: "pending",
+    expiresAt: new Date(now.getTime() + 60_000),
+    inviterId: first!.id,
+  });
+}
+
+const forbidden = { status: "FORBIDDEN" };
+
+describe("signup policy", () => {
+  it("auto: first user may sign up", async () => {
     await expect(signUp("first@example.com")).resolves.toMatchObject({
       user: { email: "first@example.com" },
     });
   });
-  it("second user is rejected as invite-only", async () => {
-    await expect(signUp("second@example.com")).rejects.toThrow(/invite-only/i);
+
+  it("auto: second user is rejected as invite-only", async () => {
+    const attempt = signUp("second@example.com");
+    await expect(attempt).rejects.toMatchObject(forbidden);
+    await expect(attempt).rejects.toThrow(/invite-only/i);
+  });
+
+  it("closed env override rejects even with a pending invitation", async () => {
+    await invite("closed@example.com");
+    await setSignupMode("closed");
+    const attempt = signUp("closed@example.com");
+    await expect(attempt).rejects.toMatchObject(forbidden);
+    await expect(attempt).rejects.toThrow(/closed/i);
+  });
+
+  it("invite mode + pending invitation allows signup", async () => {
+    await invite("invited@example.com");
+    await setSignupMode("invite");
+    await expect(signUp("invited@example.com")).resolves.toMatchObject({
+      user: { email: "invited@example.com" },
+    });
+  });
+
+  it("db override 'open' with env auto allows a further signup", async () => {
+    await pg.db
+      .insert(schema.instanceSettings)
+      .values({ id: 1, signupMode: "open" })
+      .onConflictDoUpdate({
+        target: schema.instanceSettings.id,
+        set: { signupMode: "open" },
+      });
+    await setSignupMode("auto");
+    await expect(signUp("open@example.com")).resolves.toMatchObject({
+      user: { email: "open@example.com" },
+    });
   });
 });
 ```
 
 Run: `cd apps/web && bun run test:integration`
-Expected: PASS (both files).
+Expected: PASS (both files). `auth` is a lazy proxy (`getAuth()`), so importing `@/lib/auth` has no side effects and `next build` succeeds with no env set.
 
 - [x] **Step 9: Commit**
 

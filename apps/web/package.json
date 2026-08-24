@@ -14,7 +14,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "bun run src/db/migrate-cli.ts",
     "db:studio": "drizzle-kit studio",
-    "auth:generate": "bunx auth@latest generate --config src/lib/auth.ts --output src/db/schema/auth.ts -y"
+    "auth:generate": "bunx auth@1.7.1 generate --config src/lib/auth.ts --output src/db/schema/auth.ts -y"
   },
   "dependencies": {
     "@better-auth/drizzle-adapter": "^1.7.1",
