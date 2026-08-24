@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNotNull, isNull, sql } from "drizzle-orm";
 import { newId } from "@sendsprite/shared";
 import { db } from "@/db";
 import { setupTokens } from "@/db/schema";
@@ -66,4 +66,29 @@ export async function pendingSetupToken(purpose: Purpose, issuedBy: string) {
     .orderBy(desc(setupTokens.createdAt), desc(setupTokens.id))
     .limit(1);
   return row ?? null;
+}
+
+/** The token is already burned; remember why the callback failed so /status can show it. */
+export async function recordSetupFailure(id: string, reason: string) {
+  await db()
+    .update(setupTokens)
+    .set({ failedAt: new Date(), failedReason: reason })
+    .where(eq(setupTokens.id, id));
+}
+
+/** Newest failed callback for this user, or null. */
+export async function lastSetupFailure(purpose: Purpose, issuedBy: string) {
+  const [row] = await db()
+    .select({ at: setupTokens.failedAt, reason: setupTokens.failedReason })
+    .from(setupTokens)
+    .where(
+      and(
+        eq(setupTokens.purpose, purpose),
+        eq(setupTokens.issuedBy, issuedBy),
+        isNotNull(setupTokens.failedAt),
+      ),
+    )
+    .orderBy(desc(setupTokens.failedAt), desc(setupTokens.id))
+    .limit(1);
+  return row?.at ? { at: row.at, reason: row.reason ?? "" } : null;
 }

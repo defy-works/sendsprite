@@ -1536,7 +1536,12 @@ export const EVENT_TYPES = [
 
 export type Actor = InstanceActor;
 
-type Connected = { accountId: string; status: string };
+type Connected = {
+  accountId: string;
+  status: string;
+  /** Set when the connection was persisted but the SES event subscription failed. */
+  warning?: string;
+};
 
 const errName = (e: unknown) => (e as { name?: string })?.name;
 const isAlreadyExists = (e: unknown) => errName(e) === "AlreadyExistsException";
@@ -1655,11 +1660,23 @@ async function finishConnect(
     },
     actor,
   );
-  const snsSubscriptionArn = await subscribeEndpoint(ctx, topicArn);
-  await updateInstanceSettings({ snsSubscriptionArn }, undefined, {
-    audit: false,
-  });
-  return { ok: true, data: { accountId, status: account.status } };
+  // Past this point the connection is persisted and consistent. A subscribe
+  // failure is reported as a warning rather than an error so a caller (the
+  // CloudFormation callback) does not roll back a working connection.
+  let warning: string | undefined;
+  try {
+    const snsSubscriptionArn = await subscribeEndpoint(ctx, topicArn);
+    await updateInstanceSettings({ snsSubscriptionArn }, undefined, {
+      audit: false,
+    });
+  } catch (e) {
+    console.warn("aws-connect: SNS subscribe failed:", errMsg(e));
+    warning = `Connected, but the SES event subscription could not be created: ${errMsg(e)}. Reconnect or fix SNS permissions; sending still works.`;
+  }
+  return {
+    ok: true,
+    data: { accountId, status: account.status, ...(warning && { warning }) },
+  };
 }
 
 const keysSchema = z.object({
@@ -1862,7 +1879,7 @@ git commit -m "feat(web): AWS connect service — keys/instance role, SES infra,
 
 - Create: `infra/aws/sendsprite-connect.yaml`, `apps/web/src/app/api/setup/aws/callback/route.ts`, `apps/web/src/app/api/setup/aws/status/route.ts`
 - Test: `apps/web/tests/integration/setup-callback.test.ts`
-- Modify: `.github/workflows/ci.yml` (cfn-lint job)
+- Modify: `.github/workflows/ci.yml` (cfn-lint job); `services/aws-connect.ts` (subscribe failure → warning, not error); `services/setup-tokens.ts` + `db/schema/setup-tokens.ts` (`failed_at`/`failed_reason`, migration `0006`; `recordSetupFailure`, `lastSetupFailure`)
 
 - [x] **Step 1: Template**
 
@@ -1870,14 +1887,20 @@ git commit -m "feat(web): AWS connect service — keys/instance role, SES infra,
 
 ```yaml
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Sendsprite - least-privilege IAM user for Amazon SES + SNS events. Credentials are posted once to your Sendsprite instance.
+Description: Sendsprite - least-privilege IAM user for Amazon SES + SNS events. An access key is created inside the stack's Lambda and posted once to your Sendsprite instance; it never enters CloudFormation state.
 Parameters:
+  # Must be https: an HTTP->HTTPS redirect would drop the POST body and the
+  # callback would fail.
   CallbackUrl:
     Type: String
-    Description: Your Sendsprite instance callback (prefilled).
+    Description: Your Sendsprite instance callback (prefilled, https).
+    AllowedPattern: "^https://.+"
+    ConstraintDescription: must be an https URL
+  # Deliberately not NoEcho: CloudFormation quick-create links ignore NoEcho
+  # parameters, so the wizard could not prefill it. The token is single-use and
+  # expires in 15 minutes, which is the mitigation.
   CallbackToken:
     Type: String
-    NoEcho: true
     Description: One-time token (prefilled). Expires in 15 minutes.
 Resources:
   SendspriteUser:
@@ -1889,23 +1912,18 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
+              # SES identity ARNs are not known at stack time.
               - Effect: Allow
                 Action:
                   - ses:GetAccount
                   - ses:PutAccountDetails
-                  - ses:PutAccountSendingAttributes
                   - ses:CreateEmailIdentity
                   - ses:DeleteEmailIdentity
                   - ses:GetEmailIdentity
-                  - ses:ListEmailIdentities
                   - ses:PutEmailIdentityMailFromAttributes
-                  - ses:PutEmailIdentityDkimAttributes
-                  - ses:PutEmailIdentityConfigurationSetAttributes
                   - ses:CreateConfigurationSet
-                  - ses:GetConfigurationSet
                   - ses:CreateConfigurationSetEventDestination
                   - ses:UpdateConfigurationSetEventDestination
-                  - ses:GetConfigurationSetEventDestinations
                   - ses:SendEmail
                   - ses:SendRawEmail
                 Resource: "*"
@@ -1913,18 +1931,18 @@ Resources:
                 Action:
                   - sns:CreateTopic
                   - sns:Subscribe
-                  - sns:Unsubscribe
                   - sns:GetTopicAttributes
-                  - sns:SetTopicAttributes
                   - sns:ListSubscriptionsByTopic
                 Resource: !Sub "arn:aws:sns:*:${AWS::AccountId}:sendsprite-*"
+              # Subscription ARNs carry a UUID suffix; they are not topic-scoped.
+              - Effect: Allow
+                Action:
+                  - sns:Unsubscribe
+                  - sns:GetSubscriptionAttributes
+                Resource: "*"
               - Effect: Allow
                 Action: sts:GetCallerIdentity
                 Resource: "*"
-  SendspriteAccessKey:
-    Type: AWS::IAM::AccessKey
-    Properties:
-      UserName: !Ref SendspriteUser
   CallbackFunctionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -1936,42 +1954,92 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: sendsprite-access-keys
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iam:CreateAccessKey
+                  - iam:DeleteAccessKey
+                  - iam:ListAccessKeys
+                Resource: !GetAtt SendspriteUser.Arn
+  # The Lambda creates the access key itself and POSTs it to Sendsprite, so the
+  # secret never appears in CloudFormation resource properties, stack state or
+  # events. It always answers the pre-signed ResponseURL (SUCCESS or FAILED);
+  # a missing response would leave the stack hanging for an hour.
+  #   Create: create key -> POST to CallbackUrl (retried up to 5x, 3 s apart,
+  #           while a freshly created key has not propagated through IAM and
+  #           Sendsprite's STS check answers InvalidClientTokenId) -> on any
+  #           failure delete the key it just created and report FAILED with
+  #           the callback's response body as the reason.
+  #   Delete: remove every access key of the user so the user can be deleted.
+  #   Update: no-op.
   CallbackFunction:
     Type: AWS::Lambda::Function
     Properties:
       Runtime: python3.12
       Handler: index.handler
-      Timeout: 30
+      Timeout: 60
       Role: !GetAtt CallbackFunctionRole.Arn
       Code:
         ZipFile: |
-          import json, urllib.request
+          import json, time, urllib.request, urllib.error
+          import boto3
+          iam = boto3.client("iam")
+          RETRY = ("InvalidClientTokenId", "not yet propagated")
           def respond(event, context, status, reason=""):
               body = json.dumps({"Status": status, "Reason": reason or "See CloudWatch logs",
                   "PhysicalResourceId": event.get("PhysicalResourceId") or context.log_stream_name,
                   "StackId": event["StackId"], "RequestId": event["RequestId"], "LogicalResourceId": event["LogicalResourceId"]}).encode()
               req = urllib.request.Request(event["ResponseURL"], data=body, method="PUT", headers={"content-type": ""})
               urllib.request.urlopen(req, timeout=10)
+          def post(url, payload):
+              req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST", headers={"content-type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=25) as r:
+                      return r.status, ""
+              except urllib.error.HTTPError as e:
+                  return e.code, e.read()[:500].decode("utf-8", "replace")
+          def create(p):
+              key = iam.create_access_key(UserName=p["UserName"])["AccessKey"]
+              try:
+                  payload = {"token": p["CallbackToken"], "accessKeyId": key["AccessKeyId"], "secretAccessKey": key["SecretAccessKey"],
+                      "region": p["Region"], "accountId": p["AccountId"]}
+                  for attempt in range(5):
+                      status, body = post(p["CallbackUrl"], payload)
+                      if status < 300:
+                          return
+                      if status != 502 or not any(m in body for m in RETRY) or attempt == 4:
+                          raise Exception("callback returned %d: %s" % (status, body))
+                      time.sleep(3)
+              except Exception:
+                  iam.delete_access_key(UserName=p["UserName"], AccessKeyId=key["AccessKeyId"])
+                  raise
+          def delete(p):
+              for k in iam.list_access_keys(UserName=p["UserName"])["AccessKeyMetadata"]:
+                  iam.delete_access_key(UserName=p["UserName"], AccessKeyId=k["AccessKeyId"])
           def handler(event, context):
               try:
+                  p = event["ResourceProperties"]
                   if event["RequestType"] == "Create":
-                      p = event["ResourceProperties"]
-                      payload = json.dumps({"token": p["CallbackToken"], "accessKeyId": p["AccessKeyId"],
-                          "secretAccessKey": p["SecretAccessKey"], "region": p["Region"], "accountId": p["AccountId"]}).encode()
-                      req = urllib.request.Request(p["CallbackUrl"], data=payload, method="POST", headers={"content-type": "application/json"})
-                      with urllib.request.urlopen(req, timeout=20) as r:
-                          if r.status >= 300: raise Exception("callback returned %d" % r.status)
+                      create(p)
+                  elif event["RequestType"] == "Delete":
+                      delete(p)
                   respond(event, context, "SUCCESS")
               except Exception as e:
-                  respond(event, context, "FAILED", str(e))
+                  respond(event, context, "FAILED", str(e)[:1000])
+  # Ordering after SendspriteUser is implied by the UserName Ref (an explicit
+  # DependsOn trips cfn-lint W3005).
   Callback:
     Type: Custom::SendspriteCallback
     Properties:
       ServiceToken: !GetAtt CallbackFunction.Arn
+      ServiceTimeout: 120
       CallbackUrl: !Ref CallbackUrl
       CallbackToken: !Ref CallbackToken
-      AccessKeyId: !Ref SendspriteAccessKey
-      SecretAccessKey: !GetAtt SendspriteAccessKey.SecretAccessKey
+      UserName: !Ref SendspriteUser
       Region: !Ref AWS::Region
       AccountId: !Ref AWS::AccountId
 Outputs:
@@ -1981,7 +2049,12 @@ Outputs:
     Value: "Delete this stack to revoke Sendsprite's access."
 ```
 
-Note: `NoEcho` parameters are ignored in quick-create URLs (AWS docs). `CallbackToken` therefore must NOT be `NoEcho` — remove `NoEcho: true` from it and add a comment; the token is single-use and expires in 15 minutes, which is the mitigation.
+Notes (applied in review):
+
+- `NoEcho` parameters are ignored in quick-create URLs (AWS docs), so `CallbackToken` is not `NoEcho`; single-use + 15-minute expiry is the mitigation.
+- No `AWS::IAM::AccessKey`: the Lambda creates the key itself (scoped `iam:CreateAccessKey/DeleteAccessKey/ListAccessKeys` on the user) so the secret never enters CloudFormation state; on failure it deletes the key; on `Delete` it removes all keys so the user can be deleted. It retries a 502 `InvalidClientTokenId` up to 5× (IAM propagation) and puts the callback's response body into the FAILED reason.
+- `sns:Unsubscribe`/`GetSubscriptionAttributes` need `Resource: "*"` (subscription ARNs are not topic-scoped). Unused SES/SNS actions removed.
+- `CallbackUrl` must be https (redirects drop POST bodies); Lambda `Timeout: 60`, `ServiceTimeout: 120`.
 
 - [x] **Step 2: Validate the template**
 
@@ -2006,11 +2079,18 @@ import {
   SubscribeCommand,
 } from "@aws-sdk/client-sns";
 import { STSClient, GetCallerIdentityCommand } from "@aws-sdk/client-sts";
+import { user } from "@/db/schema";
 import { startPg } from "./_pg";
 
-const ses = mockClient(SESv2Client),
-  sns = mockClient(SNSClient),
-  sts = mockClient(STSClient);
+const ses = mockClient(SESv2Client);
+const sns = mockClient(SNSClient);
+const sts = mockClient(STSClient);
+
+const KEYS = {
+  accessKeyId: "AKIAEXAMPLEEXAMPLE",
+  secretAccessKey: "s3cr3ts3cr3ts3cr3ts3cr3t",
+};
+
 let pg: Awaited<ReturnType<typeof startPg>>;
 beforeAll(async () => {
   pg = await startPg();
@@ -2018,7 +2098,24 @@ beforeAll(async () => {
   process.env.APP_URL = "https://mail.acme.com";
   const { resetEnvCache } = await import("@/env.schema");
   resetEnvCache();
-  sts.on(GetCallerIdentityCommand).resolves({ Account: "123456789012" });
+  await pg.db
+    .insert(user)
+    .values({ id: "u1", name: "One", email: "u1@example.com" });
+});
+afterAll(async () => {
+  await pg.stop();
+});
+afterEach(() => {
+  ses.reset();
+  sns.reset();
+  sts.reset();
+});
+
+function happyMocks() {
+  sts.on(GetCallerIdentityCommand).resolves({
+    Account: "123456789012",
+    Arn: "arn:aws:iam::123456789012:user/sendsprite",
+  });
   ses.on(GetAccountCommand).resolves({
     ProductionAccessEnabled: false,
     SendQuota: { Max24HourSend: 200, MaxSendRate: 1 },
@@ -2028,14 +2125,22 @@ beforeAll(async () => {
   sns.on(CreateTopicCommand).resolves({
     TopicArn: "arn:aws:sns:us-east-1:123456789012:sendsprite-events",
   });
-  sns.on(SubscribeCommand).resolves({ SubscriptionArn: "x" });
-});
-afterAll(async () => {
-  await pg.stop();
-});
-afterEach(() => {
-  ses.resetHistory();
-});
+  sns
+    .on(SubscribeCommand)
+    .resolves({ SubscriptionArn: "pending confirmation" });
+}
+
+async function issue(region: string) {
+  const { issueSetupToken } = await import("@/services/setup-tokens");
+  return (
+    await issueSetupToken({
+      purpose: "aws_callback",
+      issuedBy: "u1",
+      region,
+      ttlMs: 60_000,
+    })
+  ).token;
+}
 
 const post = async (body: unknown) => {
   const { POST } = await import("@/app/api/setup/aws/callback/route");
@@ -2049,56 +2154,130 @@ const post = async (body: unknown) => {
 };
 
 describe("POST /api/setup/aws/callback", () => {
-  it("consumes a valid token and connects", async () => {
-    const { issueSetupToken } = await import("@/services/setup-tokens");
-    const { token } = await issueSetupToken({
-      purpose: "aws_callback",
-      issuedBy: "u1",
-      region: "us-east-1",
-      ttlMs: 60_000,
-    });
+  it("consumes a valid token and connects; replay is refused without touching AWS", async () => {
+    happyMocks();
+    const token = await issue("us-east-1");
     const res = await post({
       token,
-      accessKeyId: "AKIAEXAMPLEKEY12",
-      secretAccessKey: "s3cr3ts3cr3ts3cr3t",
+      ...KEYS,
       region: "us-east-1",
       accountId: "123456789012",
     });
     expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, warning: null });
     const { getInstanceSettings } =
       await import("@/services/instance-settings");
     expect(await getInstanceSettings()).toMatchObject({
       awsMode: "keys",
       awsAccountId: "123456789012",
+      awsRegion: "us-east-1",
     });
+    expect((await post({ token, ...KEYS, region: "us-east-1" })).status).toBe(
+      403,
+    );
+    expect(sts.commandCalls(GetCallerIdentityCommand)).toHaveLength(1);
   });
-  it("rejects a reused or unknown token with 403 and no AWS calls", async () => {
+
+  it("rejects an unknown token with 403 and no AWS calls", async () => {
+    happyMocks();
     const res = await post({
-      token: "nope",
-      accessKeyId: "AKIAEXAMPLEKEY12",
-      secretAccessKey: "s3cr3ts3cr3ts3cr3t",
+      token: "nope".repeat(12),
+      ...KEYS,
       region: "us-east-1",
       accountId: "1",
     });
     expect(res.status).toBe(403);
     expect(ses.commandCalls(GetAccountCommand)).toHaveLength(0);
+    expect(sts.commandCalls(GetCallerIdentityCommand)).toHaveLength(0);
   });
-  it("rejects a region mismatch", async () => {
-    const { issueSetupToken } = await import("@/services/setup-tokens");
-    const { token } = await issueSetupToken({
-      purpose: "aws_callback",
-      issuedBy: "u1",
-      region: "eu-west-1",
-      ttlMs: 60_000,
-    });
-    const res = await post({
-      token,
-      accessKeyId: "AKIAEXAMPLEKEY12",
-      secretAccessKey: "s3cr3ts3cr3ts3cr3t",
-      region: "us-east-1",
-      accountId: "1",
-    });
+
+  it("rejects a region mismatch and records the failure", async () => {
+    happyMocks();
+    const token = await issue("eu-west-1");
+    const res = await post({ token, ...KEYS, region: "us-east-1" });
     expect(res.status).toBe(400);
+    expect(sts.commandCalls(GetCallerIdentityCommand)).toHaveLength(0);
+    const { lastSetupFailure } = await import("@/services/setup-tokens");
+    expect(await lastSetupFailure("aws_callback", "u1")).toMatchObject({
+      at: expect.any(Date),
+      reason: expect.stringContaining("eu-west-1"),
+    });
+  });
+
+  it("rejects a malformed body, short keys and unsupported regions with 400", async () => {
+    const { POST } = await import("@/app/api/setup/aws/callback/route");
+    const raw = await POST(
+      new Request("https://mail.acme.com/api/setup/aws/callback", {
+        method: "POST",
+        body: "not json",
+      }),
+    );
+    expect(raw.status).toBe(400);
+    const token = await issue("us-east-1");
+    expect(
+      (await post({ token, ...KEYS, region: "mars-north-1" })).status,
+    ).toBe(400);
+    expect(
+      (
+        await post({
+          token,
+          ...KEYS,
+          secretAccessKey: "short",
+          region: "us-east-1",
+        })
+      ).status,
+    ).toBe(400);
+    // Validation happens before the token is touched, so it is still usable.
+    happyMocks();
+    expect((await post({ token, ...KEYS, region: "us-east-1" })).status).toBe(
+      200,
+    );
+  });
+
+  it("returns 502 without the secret when AWS rejects the keys; token stays burned; failure is recorded", async () => {
+    sts
+      .on(GetCallerIdentityCommand)
+      .rejects(
+        Object.assign(
+          new Error("The security token included in the request is invalid."),
+          { name: "InvalidClientTokenId" },
+        ),
+      );
+    const token = await issue("us-east-1");
+    const res = await post({ token, ...KEYS, region: "us-east-1" });
+    expect(res.status).toBe(502);
+    const text = await res.text();
+    expect(text).toContain("AWS rejected the connection");
+    expect(text).not.toContain(KEYS.secretAccessKey);
+    expect((await post({ token, ...KEYS, region: "us-east-1" })).status).toBe(
+      403,
+    );
+    const { lastSetupFailure } = await import("@/services/setup-tokens");
+    expect(await lastSetupFailure("aws_callback", "u1")).toMatchObject({
+      reason: expect.stringContaining("security token"),
+    });
+  });
+
+  it("returns 200 with a warning when only the SNS subscription fails", async () => {
+    happyMocks();
+    sns.on(SubscribeCommand).rejects(
+      Object.assign(new Error("not authorized to perform: SNS:Subscribe"), {
+        name: "AuthorizationError",
+      }),
+    );
+    const token = await issue("us-east-1");
+    const res = await post({ token, ...KEYS, region: "us-east-1" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      ok: true,
+      warning: expect.stringContaining("SES event subscription"),
+    });
+    const { getInstanceSettings } =
+      await import("@/services/instance-settings");
+    expect(await getInstanceSettings()).toMatchObject({
+      awsMode: "keys",
+      snsSubscriptionArn: null,
+    });
   });
 });
 ```
@@ -2112,19 +2291,27 @@ Run → FAIL (route missing).
 ```ts
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { consumeSetupToken } from "@/services/setup-tokens";
+import { SES_REGIONS } from "@/lib/aws/regions";
+import { consumeSetupToken, recordSetupFailure } from "@/services/setup-tokens";
 import { connectWithKeys } from "@/services/aws-connect";
 
 export const dynamic = "force-dynamic";
 const body = z.object({
-  token: z.string().min(20),
-  accessKeyId: z.string(),
-  secretAccessKey: z.string(),
-  region: z.string(),
+  token: z.string().min(40),
+  accessKeyId: z.string().min(16).max(128),
+  secretAccessKey: z.string().min(16).max(128),
+  region: z.enum(SES_REGIONS),
   accountId: z.string().optional(),
 });
 
-/** Called once by the CloudFormation custom resource. Auth = one-time token. */
+/**
+ * Called once by the CloudFormation custom resource. Auth = one-time token,
+ * burned on first use even when the connection then fails (the wizard issues
+ * a new one for a retry). A non-2xx makes the Lambda report FAILED, so the
+ * stack rolls back and the IAM user is deleted; the failure reason is kept
+ * on the token for /status. A subscribe-only problem is a 200 with a warning
+ * so a working connection is never rolled back.
+ */
 export async function POST(req: Request) {
   const parsed = body.safeParse(await req.json().catch(() => null));
   if (!parsed.success)
@@ -2132,8 +2319,13 @@ export async function POST(req: Request) {
   const tok = await consumeSetupToken("aws_callback", parsed.data.token);
   if (!tok)
     return NextResponse.json({ error: "invalid_token" }, { status: 403 });
-  if (tok.region !== parsed.data.region)
+  if (tok.region !== parsed.data.region) {
+    await recordSetupFailure(
+      tok.id,
+      `Stack was created in ${parsed.data.region} but ${tok.region} was selected.`,
+    );
     return NextResponse.json({ error: "region_mismatch" }, { status: 400 });
+  }
   const res = await connectWithKeys(
     {
       accessKeyId: parsed.data.accessKeyId,
@@ -2142,8 +2334,11 @@ export async function POST(req: Request) {
     },
     { userId: tok.issuedBy },
   );
-  if (!res.ok) return NextResponse.json({ error: res.error }, { status: 502 });
-  return NextResponse.json({ ok: true });
+  if (!res.ok) {
+    await recordSetupFailure(tok.id, res.error);
+    return NextResponse.json({ error: res.error }, { status: 502 });
+  }
+  return NextResponse.json({ ok: true, warning: res.data.warning ?? null });
 }
 ```
 
@@ -2151,24 +2346,37 @@ export async function POST(req: Request) {
 
 ```ts
 import { NextResponse } from "next/server";
-import { requireSession } from "@/lib/session";
+import { getSession } from "@/lib/session";
+import { resolveTeam } from "@/lib/team";
 import { getInstanceSettings } from "@/services/instance-settings";
-import { pendingSetupToken } from "@/services/setup-tokens";
+import { lastSetupFailure, pendingSetupToken } from "@/services/setup-tokens";
 
 export const dynamic = "force-dynamic";
 
-/** Polled by the wizard while the user is in the AWS console. */
+/**
+ * Polled by the wizard while the user is in the AWS console. Account details
+ * are owner-only; other members just learn whether the instance is connected.
+ */
 export async function GET() {
-  const s = await requireSession();
-  const settings = await getInstanceSettings();
-  const pending = await pendingSetupToken("aws_callback", s.user.id);
-  return NextResponse.json({
+  const s = await getSession();
+  if (!s) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const [settings, pending, team] = await Promise.all([
+    getInstanceSettings(),
+    pendingSetupToken("aws_callback", s.user.id),
+    resolveTeam(s.user.id, s.session.activeOrganizationId ?? null),
+  ]);
+  const base = {
     connected: settings.awsMode !== "none",
+    pendingToken: Boolean(pending),
+    expiresAt: pending?.expiresAt ?? null,
+  };
+  if (team?.role !== "owner") return NextResponse.json(base);
+  return NextResponse.json({
+    ...base,
     awsMode: settings.awsMode,
     accountId: settings.awsAccountId,
     status: settings.sesAccountStatus,
-    pendingToken: Boolean(pending),
-    expiresAt: pending?.expiresAt ?? null,
+    lastFailure: await lastSetupFailure("aws_callback", s.user.id),
   });
 }
 ```

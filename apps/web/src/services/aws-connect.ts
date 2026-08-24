@@ -46,7 +46,12 @@ export const EVENT_TYPES = [
 
 export type Actor = InstanceActor;
 
-type Connected = { accountId: string; status: string };
+type Connected = {
+  accountId: string;
+  status: string;
+  /** Set when the connection was persisted but the SES event subscription failed. */
+  warning?: string;
+};
 
 const errName = (e: unknown) => (e as { name?: string })?.name;
 const isAlreadyExists = (e: unknown) => errName(e) === "AlreadyExistsException";
@@ -165,11 +170,23 @@ async function finishConnect(
     },
     actor,
   );
-  const snsSubscriptionArn = await subscribeEndpoint(ctx, topicArn);
-  await updateInstanceSettings({ snsSubscriptionArn }, undefined, {
-    audit: false,
-  });
-  return { ok: true, data: { accountId, status: account.status } };
+  // Past this point the connection is persisted and consistent. A subscribe
+  // failure is reported as a warning rather than an error so a caller (the
+  // CloudFormation callback) does not roll back a working connection.
+  let warning: string | undefined;
+  try {
+    const snsSubscriptionArn = await subscribeEndpoint(ctx, topicArn);
+    await updateInstanceSettings({ snsSubscriptionArn }, undefined, {
+      audit: false,
+    });
+  } catch (e) {
+    console.warn("aws-connect: SNS subscribe failed:", errMsg(e));
+    warning = `Connected, but the SES event subscription could not be created: ${errMsg(e)}. Reconnect or fix SNS permissions; sending still works.`;
+  }
+  return {
+    ok: true,
+    data: { accountId, status: account.status, ...(warning && { warning }) },
+  };
 }
 
 const keysSchema = z.object({

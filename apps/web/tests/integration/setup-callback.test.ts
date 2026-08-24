@@ -87,7 +87,7 @@ const post = async (body: unknown) => {
 };
 
 describe("POST /api/setup/aws/callback", () => {
-  it("consumes a valid token and connects", async () => {
+  it("consumes a valid token and connects; replay is refused without touching AWS", async () => {
     happyMocks();
     const token = await issue("us-east-1");
     const res = await post({
@@ -97,6 +97,7 @@ describe("POST /api/setup/aws/callback", () => {
       accountId: "123456789012",
     });
     expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, warning: null });
     const { getInstanceSettings } =
       await import("@/services/instance-settings");
     expect(await getInstanceSettings()).toMatchObject({
@@ -104,16 +105,16 @@ describe("POST /api/setup/aws/callback", () => {
       awsAccountId: "123456789012",
       awsRegion: "us-east-1",
     });
-    // Single use: replaying the same callback is refused.
     expect((await post({ token, ...KEYS, region: "us-east-1" })).status).toBe(
       403,
     );
+    expect(sts.commandCalls(GetCallerIdentityCommand)).toHaveLength(1);
   });
 
   it("rejects an unknown token with 403 and no AWS calls", async () => {
     happyMocks();
     const res = await post({
-      token: "nope-nope-nope-nope-nope",
+      token: "nope".repeat(12),
       ...KEYS,
       region: "us-east-1",
       accountId: "1",
@@ -123,26 +124,50 @@ describe("POST /api/setup/aws/callback", () => {
     expect(sts.commandCalls(GetCallerIdentityCommand)).toHaveLength(0);
   });
 
-  it("rejects a region mismatch", async () => {
+  it("rejects a region mismatch and records the failure", async () => {
     happyMocks();
     const token = await issue("eu-west-1");
     const res = await post({ token, ...KEYS, region: "us-east-1" });
     expect(res.status).toBe(400);
     expect(sts.commandCalls(GetCallerIdentityCommand)).toHaveLength(0);
+    const { lastSetupFailure } = await import("@/services/setup-tokens");
+    expect(await lastSetupFailure("aws_callback", "u1")).toMatchObject({
+      at: expect.any(Date),
+      reason: expect.stringContaining("eu-west-1"),
+    });
   });
 
-  it("rejects a malformed body", async () => {
+  it("rejects a malformed body, short keys and unsupported regions with 400", async () => {
     const { POST } = await import("@/app/api/setup/aws/callback/route");
-    const res = await POST(
+    const raw = await POST(
       new Request("https://mail.acme.com/api/setup/aws/callback", {
         method: "POST",
         body: "not json",
       }),
     );
-    expect(res.status).toBe(400);
+    expect(raw.status).toBe(400);
+    const token = await issue("us-east-1");
+    expect(
+      (await post({ token, ...KEYS, region: "mars-north-1" })).status,
+    ).toBe(400);
+    expect(
+      (
+        await post({
+          token,
+          ...KEYS,
+          secretAccessKey: "short",
+          region: "us-east-1",
+        })
+      ).status,
+    ).toBe(400);
+    // Validation happens before the token is touched, so it is still usable.
+    happyMocks();
+    expect((await post({ token, ...KEYS, region: "us-east-1" })).status).toBe(
+      200,
+    );
   });
 
-  it("returns 502 when AWS rejects the keys (stack then rolls back)", async () => {
+  it("returns 502 without the secret when AWS rejects the keys; token stays burned; failure is recorded", async () => {
     sts
       .on(GetCallerIdentityCommand)
       .rejects(
@@ -154,8 +179,37 @@ describe("POST /api/setup/aws/callback", () => {
     const token = await issue("us-east-1");
     const res = await post({ token, ...KEYS, region: "us-east-1" });
     expect(res.status).toBe(502);
+    const text = await res.text();
+    expect(text).toContain("AWS rejected the connection");
+    expect(text).not.toContain(KEYS.secretAccessKey);
+    expect((await post({ token, ...KEYS, region: "us-east-1" })).status).toBe(
+      403,
+    );
+    const { lastSetupFailure } = await import("@/services/setup-tokens");
+    expect(await lastSetupFailure("aws_callback", "u1")).toMatchObject({
+      reason: expect.stringContaining("security token"),
+    });
+  });
+
+  it("returns 200 with a warning when only the SNS subscription fails", async () => {
+    happyMocks();
+    sns.on(SubscribeCommand).rejects(
+      Object.assign(new Error("not authorized to perform: SNS:Subscribe"), {
+        name: "AuthorizationError",
+      }),
+    );
+    const token = await issue("us-east-1");
+    const res = await post({ token, ...KEYS, region: "us-east-1" });
+    expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({
-      error: expect.stringContaining("AWS rejected the connection"),
+      ok: true,
+      warning: expect.stringContaining("SES event subscription"),
+    });
+    const { getInstanceSettings } =
+      await import("@/services/instance-settings");
+    expect(await getInstanceSettings()).toMatchObject({
+      awsMode: "keys",
+      snsSubscriptionArn: null,
     });
   });
 });

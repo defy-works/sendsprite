@@ -207,6 +207,22 @@ describe("connectWithKeys", () => {
     expect(sns.commandCalls(SubscribeCommand)).toHaveLength(1);
     expect((await settings()).snsSubscriptionArn).toBe(SUB_ARN);
   });
+  it("stays connected with a warning when Subscribe fails (no rollback trap)", async () => {
+    happyMocks();
+    sns
+      .on(SubscribeCommand)
+      .rejects(awsErr("AuthorizationError", "not authorized: SNS:Subscribe"));
+    const { connectWithKeys } = await import("@/services/aws-connect");
+    const res = await connectWithKeys(KEYS, { userId: "u1" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("unreachable");
+    expect(res.data.warning).toContain("SES event subscription");
+    expect(await settings()).toMatchObject({
+      awsMode: "keys",
+      snsTopicArn: TOPIC_ARN,
+      snsSubscriptionArn: null,
+    });
+  });
   it("converges when the config set and event destination already exist", async () => {
     happyMocks();
     ses
