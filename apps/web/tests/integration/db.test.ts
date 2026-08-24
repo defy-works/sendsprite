@@ -7,7 +7,7 @@ beforeAll(async () => {
   pg = await startPg();
 });
 afterAll(async () => {
-  await pg.container.stop();
+  await pg.stop();
 });
 
 describe("migrations", () => {

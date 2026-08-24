@@ -6,7 +6,7 @@
 
 **Architecture:** Single Next.js 16 app (`apps/web`) talks to Postgres through Drizzle. BetterAuth (Drizzle adapter + `organization` plugin) provides users, sessions, teams, members, invitations. Background work runs in-process via pg-boss started from Next's `instrumentation.ts` hook (so the standalone Docker image is just `bun server.js`); migrations also run there on boot. All privileged secrets in the DB are encrypted with a key derived from `APP_SECRET`.
 
-**Tech Stack:** Bun 1.x, Next.js 16.3 (App Router, Turbopack), React 19.2, Tailwind v4, Drizzle ORM 0.45 + drizzle-kit 0.31, `postgres` (postgres-js) driver, better-auth 1.7 + `@better-auth/drizzle-adapter`, pg-boss 12, zod 4, Vitest 4, Testcontainers, Playwright, Docker.
+**Tech Stack:** Bun 1.x, Next.js 16.3 (App Router, Turbopack), React 19.2, Tailwind v4, Drizzle ORM 0.45 + drizzle-kit 0.31, `postgres` (postgres-js) driver, better-auth 1.7 + `@better-auth/drizzle-adapter`, pg-boss 12, zod 4, Vitest 4, embedded-postgres (Testcontainers replaced: no Docker on dev machine), Playwright, Docker.
 
 **Deviations from spec (deliberate, small):**
 
@@ -89,7 +89,7 @@ sendsprite/
    │     └─ app/settings/actions.ts  server actions (rename, invite, remove, change role)
    └─ tests/
       ├─ unit/crypto.test.ts · env.test.ts · ids.test.ts · roles.test.ts · audit.test.ts
-      ├─ integration/db.test.ts      migrations apply on a Testcontainers Postgres
+      ├─ integration/db.test.ts      migrations apply on an embedded Postgres
       ├─ integration/instance-settings.test.ts
       ├─ integration/auth.test.ts    signup modes
       └─ e2e/smoke.spec.ts           login → app shell renders
@@ -527,7 +527,7 @@ git commit -m "feat(shared): prefixed ULID ids and team role permission table"
   "devDependencies": {
     "@playwright/test": "^1.55.0",
     "@tailwindcss/postcss": "^4.3.3",
-    "@testcontainers/postgresql": "^12.1.0",
+    "embedded-postgres": "^18.4.0-beta.17",
     "@types/node": "^22.10.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.0",
@@ -1045,7 +1045,7 @@ git commit -m "feat(web): AES-256-GCM secret cipher derived from APP_SECRET"
 
 ---
 
-### Task 6: Database client, schema, migrations (integration test on Testcontainers)
+### Task 6: Database client, schema, migrations (integration test on embedded-postgres)
 
 **Files:**
 
@@ -1210,26 +1210,64 @@ console.log("migrations applied");
 Run: `cd apps/web && bun run db:generate`
 Expected: `apps/web/drizzle/0000_*.sql` + `drizzle/meta/` created, containing `CREATE TABLE "instance_settings"` and `CREATE TABLE "audit_log"`.
 
-- [x] **Step 5: Testcontainers helper + failing integration test**
+- [x] **Step 5: embedded-postgres helper + failing integration test**
 
 `apps/web/tests/integration/_pg.ts`:
 
 ```ts
-import {
-  PostgreSqlContainer,
-  type StartedPostgreSqlContainer,
-} from "@testcontainers/postgresql";
+import EmbeddedPostgres from "embedded-postgres";
+import { randomBytes, randomInt } from "node:crypto";
+import { rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { runMigrations } from "@/db/migrate";
-import { createDb } from "@/db";
+import { createDb, type Db } from "@/db";
 
-export async function startPg() {
-  const container: StartedPostgreSqlContainer = await new PostgreSqlContainer(
-    "postgres:16-alpine",
-  ).start();
-  const url = container.getConnectionUri();
+export interface TestPg {
+  url: string;
+  db: Db;
+  stop(): Promise<void>;
+}
+
+/**
+ * Migrated Postgres for integration tests.
+ * Uses TEST_DATABASE_URL when set (CI service container); otherwise boots an
+ * embedded Postgres in a temp dir. No Docker required.
+ */
+export async function startPg(): Promise<TestPg> {
+  const external = process.env.TEST_DATABASE_URL;
+  if (external) {
+    await runMigrations(external);
+    process.env.DATABASE_URL = external;
+    return { url: external, db: createDb(external), stop: async () => {} };
+  }
+
+  const databaseDir = path.join(
+    os.tmpdir(),
+    `sendsprite-pg-${randomBytes(6).toString("hex")}`,
+  );
+  const port = 54000 + randomInt(1000);
+  const pg = new EmbeddedPostgres({
+    databaseDir,
+    port,
+    user: "postgres",
+    password: "postgres",
+    persistent: false,
+  });
+  await pg.initialise();
+  await pg.start();
+  await pg.createDatabase("test");
+  const url = `postgres://postgres:postgres@localhost:${port}/test`;
   await runMigrations(url);
   process.env.DATABASE_URL = url;
-  return { container, url, db: createDb(url) };
+  return {
+    url,
+    db: createDb(url),
+    async stop() {
+      await pg.stop();
+      await rm(databaseDir, { recursive: true, force: true });
+    },
+  };
 }
 ```
 
@@ -1245,7 +1283,7 @@ beforeAll(async () => {
   pg = await startPg();
 });
 afterAll(async () => {
-  await pg.container.stop();
+  await pg.stop();
 });
 
 describe("migrations", () => {
@@ -1265,10 +1303,10 @@ describe("migrations", () => {
 });
 ```
 
-- [ ] **Step 6: Run integration tests**
+- [x] **Step 6: Run integration tests**
 
 Run: `cd apps/web && bun run test:integration`
-Expected: PASS (Docker must be running; first run pulls `postgres:16-alpine`).
+Expected: PASS (embedded Postgres in a temp dir; set `TEST_DATABASE_URL` to use an external server, e.g. a CI service container).
 
 - [x] **Step 7: Commit**
 
@@ -1524,7 +1562,7 @@ beforeAll(async () => {
   process.env.SIGNUP_MODE = "auto";
 });
 afterAll(async () => {
-  await pg.container.stop();
+  await pg.stop();
 });
 
 async function signUp(email: string) {
@@ -2585,7 +2623,7 @@ beforeAll(async () => {
   process.env.APP_SECRET = "x".repeat(40);
 });
 afterAll(async () => {
-  await pg.container.stop();
+  await pg.stop();
 });
 
 describe("instance settings", () => {
@@ -3689,7 +3727,7 @@ bun dev                      # http://localhost:3000
 ```bash
 bun run typecheck · lint · format
 bun run test                 # unit (vitest)
-bun run test:integration     # Testcontainers Postgres
+bun run test:integration     # embedded Postgres (or TEST_DATABASE_URL)
 bun run test:e2e             # Playwright
 bun run db:generate          # new migration from schema changes
 ```
