@@ -860,7 +860,7 @@ git commit -m "feat(web): AWS client factories, credential resolution, quick-cre
 - Create: `apps/web/src/services/setup-tokens.ts`
 - Test: `apps/web/tests/integration/setup-tokens.test.ts`
 
-- [ ] **Step 1: Failing test**
+- [x] **Step 1: Failing test**
 
 ```ts
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -906,7 +906,7 @@ describe("setup tokens", () => {
 
 Run: `cd apps/web && bun run test:integration -- setup-tokens` → FAIL.
 
-- [ ] **Step 2: Implement**
+- [x] **Step 2: Implement**
 
 `apps/web/src/services/setup-tokens.ts`:
 
@@ -977,7 +977,7 @@ export async function pendingSetupToken(purpose: Purpose, issuedBy: string) {
 }
 ```
 
-- [ ] **Step 3: Verify, commit**
+- [x] **Step 3: Verify, commit**
 
 Run → PASS. `git add apps/web && git commit -m "feat(web): one-time setup tokens"`
 
