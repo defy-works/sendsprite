@@ -3246,7 +3246,7 @@ Run → PASS. `git add apps/web && git commit -m "feat(web): Cloudflare client a
 - Create: `apps/web/src/lib/dns/records.ts`, `apps/web/src/lib/dns/zone-match.ts`, `apps/web/src/lib/dns/check.ts`
 - Test: `apps/web/tests/unit/dns-records.test.ts`, `apps/web/tests/unit/zone-match.test.ts`, `apps/web/tests/unit/dns-check.test.ts`
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 `tests/unit/dns-records.test.ts`:
 
@@ -3386,7 +3386,7 @@ describe("checkRecords", () => {
 
 Run: `cd apps/web && bun run test` → FAIL.
 
-- [ ] **Step 2: Implement**
+- [x] **Step 2: Implement**
 
 `apps/web/src/lib/dns/records.ts`:
 
