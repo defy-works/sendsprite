@@ -430,7 +430,7 @@ git commit -m "feat(web): audit organization hooks, request meta, instance self-
 - Create: `apps/web/src/db/schema/setup-tokens.ts`, `apps/web/src/db/schema/domains.ts`
 - Test: `apps/web/tests/unit/env.test.ts`, `apps/web/tests/integration/db.test.ts`
 
-- [ ] **Step 1: Env additions (failing test first)**
+- [x] **Step 1: Env additions (failing test first)**
 
 Add to `tests/unit/env.test.ts`:
 
@@ -461,7 +461,7 @@ AWS_DEFAULT_REGION: z.string().default("us-east-1"),
 
 Run → PASS. Add both to `.env.example` (commented) and README env table.
 
-- [ ] **Step 2: instance_settings additions**
+- [x] **Step 2: instance_settings additions**
 
 `apps/web/src/db/schema/instance.ts` — add columns:
 
@@ -475,7 +475,7 @@ cloudflareConnectedAt: timestamp("cloudflare_connected_at", { withTimezone: true
 awsConnectedAt: timestamp("aws_connected_at", { withTimezone: true }),
 ```
 
-- [ ] **Step 3: setup_tokens and domains**
+- [x] **Step 3: setup_tokens and domains**
 
 `apps/web/src/db/schema/setup-tokens.ts`:
 
@@ -568,11 +568,11 @@ export const domains = pgTable(
 
 Add `"dom"` and `"stok"` to `ID_PREFIXES` in `packages/shared/src/ids.ts` (`dom` exists; add `stok`). Export both tables from `schema/index.ts`.
 
-- [ ] **Step 4: Migration + test**
+- [x] **Step 4: Migration + test**
 
 Append to `db.test.ts` the expectation that `setup_tokens` and `domains` exist and that `domains_name_uidx` is unique. Run `bun run db:generate` → `0004_*.sql`. Run `bun run test:integration -- db` → PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web packages/shared .env.example README.md

@@ -31,6 +31,17 @@ export const instanceSettings = pgTable(
     sesMaxSendRate: doublePrecision("ses_max_send_rate"),
     sesDailyQuota: integer("ses_daily_quota"),
     cloudflareTokenEnc: text("cloudflare_token_enc"),
+    awsAccountId: text("aws_account_id"),
+    awsConnectedAt: timestamp("aws_connected_at", { withTimezone: true }),
+    snsSubscriptionArn: text("sns_subscription_arn"),
+    sesReviewStatus: text("ses_review_status", {
+      enum: ["PENDING", "GRANTED", "DENIED", "FAILED"],
+    }),
+    sesLastCheckedAt: timestamp("ses_last_checked_at", { withTimezone: true }),
+    cloudflareAccountName: text("cloudflare_account_name"),
+    cloudflareConnectedAt: timestamp("cloudflare_connected_at", {
+      withTimezone: true,
+    }),
     retentionDays: integer("retention_days").notNull().default(90),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

@@ -25,5 +25,7 @@ describe("newId", () => {
   it("exposes every prefix we plan to use", () => {
     expect(ID_PREFIXES).toContain("em");
     expect(ID_PREFIXES).toContain("evt");
+    expect(ID_PREFIXES).toContain("dom");
+    expect(ID_PREFIXES).toContain("stok");
   });
 });

@@ -65,19 +65,21 @@ does the same locally.
 
 ## Environment reference
 
-| Variable                                             | Default  | Notes                                                                    |
-| ---------------------------------------------------- | -------- | ------------------------------------------------------------------------ |
-| `APP_URL`                                            | —        | Public URL, with protocol                                                |
-| `APP_SECRET`                                         | —        | ≥ 32 chars; encrypts stored credentials                                  |
-| `DATABASE_URL`                                       | —        | Postgres connection string                                               |
-| `POSTGRES_PASSWORD`                                  | —        | Compose only; alphanumeric recommended (interpolated unencoded into URL) |
-| `SIGNUP_MODE`                                        | `auto`   | `auto` → open until first user, then invite; or `open`/`invite`/`closed` |
-| `EMAIL_PASSWORD_ENABLED`                             | `false`  | Email + password sign-in                                                 |
-| `GOOGLE_CLIENT_ID/SECRET`, `GITHUB_CLIENT_ID/SECRET` | —        | OAuth providers                                                          |
-| `WORKER_MODE`                                        | `inline` | `inline` / `separate` / `none`                                           |
-| `SMTP_ENABLED`                                       | `true`   | SMTP relay on 587 (Phase 3)                                              |
-| `LANDING_ENABLED`                                    | `true`   | `false` sends `/` to `/app`                                              |
-| `EMAIL_RETENTION_DAYS`                               | `90`     | Body/attachment purge window                                             |
+| Variable                                             | Default       | Notes                                                                    |
+| ---------------------------------------------------- | ------------- | ------------------------------------------------------------------------ |
+| `APP_URL`                                            | —             | Public URL, with protocol                                                |
+| `APP_SECRET`                                         | —             | ≥ 32 chars; encrypts stored credentials                                  |
+| `DATABASE_URL`                                       | —             | Postgres connection string                                               |
+| `POSTGRES_PASSWORD`                                  | —             | Compose only; alphanumeric recommended (interpolated unencoded into URL) |
+| `SIGNUP_MODE`                                        | `auto`        | `auto` → open until first user, then invite; or `open`/`invite`/`closed` |
+| `EMAIL_PASSWORD_ENABLED`                             | `false`       | Email + password sign-in                                                 |
+| `GOOGLE_CLIENT_ID/SECRET`, `GITHUB_CLIENT_ID/SECRET` | —             | OAuth providers                                                          |
+| `WORKER_MODE`                                        | `inline`      | `inline` / `separate` / `none`                                           |
+| `SMTP_ENABLED`                                       | `true`        | SMTP relay on 587 (Phase 3)                                              |
+| `LANDING_ENABLED`                                    | `true`        | `false` sends `/` to `/app`                                              |
+| `EMAIL_RETENTION_DAYS`                               | `90`          | Body/attachment purge window                                             |
+| `AWS_DEFAULT_REGION`                                 | `us-east-1`   | Region preselected in the AWS connect wizard                             |
+| `CFN_TEMPLATE_URL`                                   | Sendsprite S3 | S3 URL of the one-click CloudFormation template (must be S3)             |
 
 ## Roadmap
 

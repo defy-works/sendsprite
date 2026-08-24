@@ -47,6 +47,25 @@ describe("migrations", () => {
     );
     expect(fks.map((r) => r.delete_rule)).toEqual(["CASCADE"]);
   });
+  it("creates setup_tokens and domains with a unique name index", async () => {
+    const rows = await pg.db.execute(
+      sql`select table_name from information_schema.tables where table_schema='public'`,
+    );
+    expect(rows.map((r) => r.table_name)).toEqual(
+      expect.arrayContaining(["setup_tokens", "domains"]),
+    );
+    const idx = await pg.db.execute(
+      sql`select indexdef from pg_indexes where tablename = 'domains' and indexname = 'domains_name_uidx'`,
+    );
+    expect(idx).toHaveLength(1);
+    expect(String(idx[0]?.indexdef)).toMatch(/^CREATE UNIQUE INDEX/);
+    const fks = await pg.db.execute(
+      sql`select rc.delete_rule from information_schema.referential_constraints rc
+          join information_schema.table_constraints tc on tc.constraint_name = rc.constraint_name
+          where tc.table_name = 'domains'`,
+    );
+    expect(fks.map((r) => r.delete_rule)).toEqual(["CASCADE"]);
+  });
   it("are idempotent", async () => {
     const { runMigrations } = await import("@/db/migrate");
     await expect(runMigrations(pg.url)).resolves.toBeUndefined();

@@ -57,4 +57,19 @@ describe("parseEnv", () => {
     expect(() => parseEnv(BASE)).not.toThrow(); // email/password off, no social → allowed but flagged
     expect(parseEnv(BASE).providers.any).toBe(false);
   });
+  it("has provisioning defaults", () => {
+    const env = parseEnv(BASE);
+    expect(env.CFN_TEMPLATE_URL).toBe(
+      "https://sendsprite-cfn.s3.us-east-1.amazonaws.com/latest/sendsprite-connect.yaml",
+    );
+    expect(env.AWS_DEFAULT_REGION).toBe("us-east-1");
+  });
+  it("rejects a non-S3 CFN_TEMPLATE_URL", () => {
+    expect(() =>
+      parseEnv({
+        ...BASE,
+        CFN_TEMPLATE_URL: "https://raw.githubusercontent.com/x/y.yaml",
+      }),
+    ).toThrow(/S3/);
+  });
 });
