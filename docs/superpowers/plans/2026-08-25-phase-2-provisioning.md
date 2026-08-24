@@ -1024,26 +1024,49 @@ Run → PASS. `git add apps/web && git commit -m "feat(web): one-time setup toke
 - [x] **Step 1: Failing test**
 
 ```ts
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { mockClient } from "aws-sdk-client-mock";
+import { eq } from "drizzle-orm";
 import {
   SESv2Client,
   GetAccountCommand,
   CreateConfigurationSetCommand,
   CreateConfigurationSetEventDestinationCommand,
   PutAccountDetailsCommand,
+  UpdateConfigurationSetEventDestinationCommand,
 } from "@aws-sdk/client-sesv2";
 import {
   SNSClient,
   CreateTopicCommand,
   SubscribeCommand,
+  UnsubscribeCommand,
 } from "@aws-sdk/client-sns";
 import { STSClient, GetCallerIdentityCommand } from "@aws-sdk/client-sts";
+import { auditLog } from "@/db/schema";
 import { startPg } from "./_pg";
 
 const ses = mockClient(SESv2Client);
 const sns = mockClient(SNSClient);
 const sts = mockClient(STSClient);
+
+const TOPIC_ARN = "arn:aws:sns:us-east-1:123456789012:sendsprite-events";
+const SUB_ARN = `${TOPIC_ARN}:6b0e71bd-7e97-4d97-80ce-4a0994e55286`;
+const KEYS = {
+  accessKeyId: "AKIAEXAMPLEEXAMPLE",
+  secretAccessKey: "s3cr3ts3cr3ts3cr3ts3cr3t",
+  region: "us-east-1",
+};
+const awsErr = (name: string, message: string) =>
+  Object.assign(new Error(message), { name });
 
 let pg: Awaited<ReturnType<typeof startPg>>;
 beforeAll(async () => {
@@ -1055,6 +1078,32 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await pg.stop();
+});
+/** Every test starts from a disconnected instance and sets its own precondition. */
+beforeEach(async () => {
+  const { updateInstanceSettings } =
+    await import("@/services/instance-settings");
+  await updateInstanceSettings(
+    {
+      awsMode: "none",
+      awsRegion: null,
+      awsAccessKey: null,
+      awsSecret: null,
+      awsAccountId: null,
+      awsConnectedAt: null,
+      snsTopicArn: null,
+      snsSubscriptionArn: null,
+      sesConfigSet: null,
+      sesAccountStatus: null,
+      sesReviewStatus: null,
+      sesDailyQuota: null,
+      sesMaxSendRate: null,
+      sesLastCheckedAt: null,
+    },
+    undefined,
+    { audit: false },
+  );
+  await pg.db.delete(auditLog);
 });
 afterEach(() => {
   ses.reset();
@@ -1073,111 +1122,194 @@ function happyMocks() {
   });
   ses.on(CreateConfigurationSetCommand).resolves({});
   ses.on(CreateConfigurationSetEventDestinationCommand).resolves({});
-  sns.on(CreateTopicCommand).resolves({
-    TopicArn: "arn:aws:sns:us-east-1:123456789012:sendsprite-events",
-  });
-  sns
-    .on(SubscribeCommand)
-    .resolves({ SubscriptionArn: "pending confirmation" });
+  sns.on(CreateTopicCommand).resolves({ TopicArn: TOPIC_ARN });
+  sns.on(SubscribeCommand).resolves({ SubscriptionArn: SUB_ARN });
+}
+
+async function settings() {
+  const { getInstanceSettings } = await import("@/services/instance-settings");
+  return getInstanceSettings();
+}
+async function instanceAudits() {
+  return pg.db
+    .select()
+    .from(auditLog)
+    .where(eq(auditLog.action, "instance.update"));
 }
 
 describe("connectWithKeys", () => {
-  it("verifies, stores encrypted keys, provisions SES infra, records account", async () => {
-    happyMocks();
+  it("returns a Result error (no state change) when credentials are rejected", async () => {
+    sts
+      .on(GetCallerIdentityCommand)
+      .rejects(
+        awsErr(
+          "InvalidClientTokenId",
+          "The security token included in the request is invalid.",
+        ),
+      );
     const { connectWithKeys } = await import("@/services/aws-connect");
     const res = await connectWithKeys(
-      {
-        accessKeyId: "AKIAEXAMPLE",
-        secretAccessKey: "s3cr3t",
-        region: "us-east-1",
-      },
+      { ...KEYS, accessKeyId: "AKIABADBADBADBAD" },
       { userId: "u1" },
     );
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/security token/i);
+    expect(await settings()).toMatchObject({
+      awsMode: "none",
+      awsAccessKeyEnc: null,
+    });
+  });
+  it("rejects malformed input (short keys, unsupported region) without calling AWS", async () => {
+    const { connectWithKeys } = await import("@/services/aws-connect");
+    for (const input of [
+      { accessKeyId: "short", secretAccessKey: "short", region: "us-east-1" },
+      { ...KEYS, region: "mars-north-1" },
+    ]) {
+      expect((await connectWithKeys(input, { userId: "u1" })).ok).toBe(false);
+    }
+    expect(sts.commandCalls(GetCallerIdentityCommand)).toHaveLength(0);
+  });
+  it("verifies, stores encrypted keys, provisions SES infra, records account", async () => {
+    happyMocks();
+    const { connectWithKeys, EVENT_TYPES } =
+      await import("@/services/aws-connect");
+    const res = await connectWithKeys(KEYS, { userId: "u1" });
     expect(res).toEqual({
       ok: true,
       data: { accountId: "123456789012", status: "sandbox" },
     });
-    const { getInstanceSettings, getDecryptedSecrets } =
+    const { getDecryptedSecrets } =
       await import("@/services/instance-settings");
-    const s = await getInstanceSettings();
+    const s = await settings();
     expect(s).toMatchObject({
       awsMode: "keys",
       awsRegion: "us-east-1",
       awsAccountId: "123456789012",
       sesConfigSet: "sendsprite",
-      snsTopicArn: "arn:aws:sns:us-east-1:123456789012:sendsprite-events",
+      snsTopicArn: TOPIC_ARN,
+      snsSubscriptionArn: SUB_ARN,
       sesAccountStatus: "sandbox",
       sesDailyQuota: 200,
       sesMaxSendRate: 1,
     });
+    expect(s.awsConnectedAt).toBeInstanceOf(Date);
     expect(s.awsAccessKeyEnc).toMatch(/^v1\./);
     expect(await getDecryptedSecrets()).toMatchObject({
-      awsAccessKey: "AKIAEXAMPLE",
+      awsAccessKey: KEYS.accessKeyId,
+      awsSecret: KEYS.secretAccessKey,
     });
-    expect(
-      ses.commandCalls(CreateConfigurationSetEventDestinationCommand)[0]!
-        .args[0].input,
-    ).toMatchObject({
+    const dest = ses.commandCalls(
+      CreateConfigurationSetEventDestinationCommand,
+    )[0]!.args[0].input;
+    expect(dest).toMatchObject({
       ConfigurationSetName: "sendsprite",
       EventDestination: {
-        SnsDestination: {
-          TopicArn: "arn:aws:sns:us-east-1:123456789012:sendsprite-events",
-        },
+        Enabled: true,
+        SnsDestination: { TopicArn: TOPIC_ARN },
       },
     });
-    expect(sns.commandCalls(SubscribeCommand)[0]!.args[0].input).toMatchObject({
+    expect(dest.EventDestination?.MatchingEventTypes).toEqual([...EVENT_TYPES]);
+    expect(sns.commandCalls(SubscribeCommand)[0]!.args[0].input).toEqual({
+      TopicArn: TOPIC_ARN,
       Protocol: "https",
       Endpoint: "https://mail.acme.com/api/webhooks/ses",
+      ReturnSubscriptionArn: true,
     });
+    // One audited write for the connection; the subscription ARN is bookkeeping.
+    expect(await instanceAudits()).toHaveLength(1);
   });
-  it("returns a Result error (no state change) when credentials are rejected", async () => {
-    sts
-      .on(GetCallerIdentityCommand)
-      .rejects(
-        Object.assign(
-          new Error("The security token included in the request is invalid."),
-          { name: "InvalidClientTokenId" },
-        ),
-      );
+  it("persists the topic ARN before subscribing (confirmation POST can race Subscribe)", async () => {
+    happyMocks();
+    sns.on(SubscribeCommand).callsFake(async () => {
+      expect(await settings()).toMatchObject({
+        awsMode: "keys",
+        snsTopicArn: TOPIC_ARN,
+        snsSubscriptionArn: null,
+      });
+      return { SubscriptionArn: SUB_ARN };
+    });
     const { connectWithKeys } = await import("@/services/aws-connect");
-    const res = await connectWithKeys(
-      { accessKeyId: "bad", secretAccessKey: "bad", region: "us-east-1" },
-      { userId: "u1" },
-    );
-    expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.error).toMatch(/security token/i);
+    expect((await connectWithKeys(KEYS, { userId: "u1" })).ok).toBe(true);
+    expect(sns.commandCalls(SubscribeCommand)).toHaveLength(1);
+    expect((await settings()).snsSubscriptionArn).toBe(SUB_ARN);
   });
-  it("is idempotent when the configuration set already exists", async () => {
+  it("converges when the config set and event destination already exist", async () => {
     happyMocks();
     ses
       .on(CreateConfigurationSetCommand)
-      .rejects(
-        Object.assign(new Error("exists"), { name: "AlreadyExistsException" }),
-      );
+      .rejects(awsErr("AlreadyExistsException", "exists"));
     ses
       .on(CreateConfigurationSetEventDestinationCommand)
+      .rejects(awsErr("AlreadyExistsException", "exists"));
+    ses.on(UpdateConfigurationSetEventDestinationCommand).resolves({});
+    const { connectWithKeys } = await import("@/services/aws-connect");
+    expect((await connectWithKeys(KEYS, { userId: "u1" })).ok).toBe(true);
+    const update = ses.commandCalls(
+      UpdateConfigurationSetEventDestinationCommand,
+    );
+    expect(update).toHaveLength(1);
+    expect(update[0]!.args[0].input).toEqual(
+      ses.commandCalls(CreateConfigurationSetEventDestinationCommand)[0]!
+        .args[0].input,
+    );
+  });
+  it("leaves the instance disconnected when provisioning fails part-way", async () => {
+    happyMocks();
+    sns
+      .on(CreateTopicCommand)
       .rejects(
-        Object.assign(new Error("exists"), { name: "AlreadyExistsException" }),
+        awsErr(
+          "AccessDeniedException",
+          "User is not authorized to perform: sns:CreateTopic",
+        ),
       );
     const { connectWithKeys } = await import("@/services/aws-connect");
-    expect(
-      (
-        await connectWithKeys(
-          {
-            accessKeyId: "AKIAEXAMPLE",
-            secretAccessKey: "s3cr3t",
-            region: "us-east-1",
-          },
-          { userId: "u1" },
-        )
-      ).ok,
-    ).toBe(true);
+    const res = await connectWithKeys(KEYS, { userId: "u1" });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toMatch(/sns:CreateTopic/);
+      expect(res.error).not.toContain(KEYS.secretAccessKey);
+    }
+    expect(await settings()).toMatchObject({
+      awsMode: "none",
+      awsAccessKeyEnc: null,
+      awsSecretEnc: null,
+      snsTopicArn: null,
+    });
+    expect(await instanceAudits()).toHaveLength(0);
+  });
+  it("skips the SNS subscription when APP_URL is not https (local dev)", async () => {
+    happyMocks();
+    const { resetEnvCache } = await import("@/env.schema");
+    process.env.APP_URL = "http://localhost:3000";
+    resetEnvCache();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { connectWithKeys } = await import("@/services/aws-connect");
+      expect((await connectWithKeys(KEYS, { userId: "u1" })).ok).toBe(true);
+      expect(sns.commandCalls(SubscribeCommand)).toHaveLength(0);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/https/i));
+      expect(await settings()).toMatchObject({
+        snsTopicArn: TOPIC_ARN,
+        snsSubscriptionArn: null,
+      });
+    } finally {
+      warn.mockRestore();
+      process.env.APP_URL = "https://mail.acme.com";
+      resetEnvCache();
+    }
   });
 });
 
 describe("requestProductionAccess / refreshSesAccount", () => {
-  it("submits details and flips status to requested", async () => {
+  async function connected() {
     happyMocks();
+    const { connectWithKeys } = await import("@/services/aws-connect");
+    expect((await connectWithKeys(KEYS, { userId: "u1" })).ok).toBe(true);
+    await pg.db.delete(auditLog);
+  }
+  it("submits details and flips status to requested", async () => {
+    await connected();
     ses.on(PutAccountDetailsCommand).resolves({});
     ses.on(GetAccountCommand).resolves({
       ProductionAccessEnabled: false,
@@ -1194,7 +1326,7 @@ describe("requestProductionAccess / refreshSesAccount", () => {
       },
       { userId: "u1" },
     );
-    expect(res.ok).toBe(true);
+    expect(res).toEqual({ ok: true, data: { status: "requested" } });
     expect(
       ses.commandCalls(PutAccountDetailsCommand)[0]!.args[0].input,
     ).toMatchObject({
@@ -1203,16 +1335,76 @@ describe("requestProductionAccess / refreshSesAccount", () => {
       ProductionAccessEnabled: true,
       AdditionalContactEmailAddresses: ["ops@acme.com"],
     });
-    const { getInstanceSettings } =
-      await import("@/services/instance-settings");
-    expect(await getInstanceSettings()).toMatchObject({
+    expect(await settings()).toMatchObject({
       sesAccountStatus: "requested",
       sesReviewStatus: "PENDING",
     });
+    expect(await instanceAudits()).toHaveLength(1);
+  });
+  it("rejects an invalid request before calling SES", async () => {
+    const { requestProductionAccess } = await import("@/services/aws-connect");
+    const res = await requestProductionAccess(
+      { websiteUrl: "acme", mailType: "OTHER", useCase: "short" },
+      { userId: "u1" },
+    );
+    expect(res.ok).toBe(false);
+    expect(ses.commandCalls(PutAccountDetailsCommand)).toHaveLength(0);
+  });
+  it("says so when the request went through but the status read failed", async () => {
+    await connected();
+    ses.on(PutAccountDetailsCommand).resolves({});
+    ses
+      .on(GetAccountCommand)
+      .rejects(awsErr("TooManyRequestsException", "Rate exceeded"));
+    const { requestProductionAccess } = await import("@/services/aws-connect");
+    const res = await requestProductionAccess(
+      {
+        websiteUrl: "https://acme.com",
+        mailType: "MARKETING",
+        useCase: "Weekly newsletter for opted-in subscribers.",
+      },
+      { userId: "u1" },
+    );
+    expect(res).toEqual({
+      ok: false,
+      error: expect.stringMatching(/^Request submitted, but .*Rate exceeded/),
+    });
+    expect(ses.commandCalls(PutAccountDetailsCommand)).toHaveLength(1);
+  });
+  it("refreshSesAccount audits a change once and stays quiet when nothing changed", async () => {
+    await connected();
+    ses.on(GetAccountCommand).resolves({
+      ProductionAccessEnabled: true,
+      Details: { ReviewDetails: { Status: "GRANTED" } },
+      SendQuota: { Max24HourSend: 50000, MaxSendRate: 14 },
+    });
+    const { refreshSesAccount } = await import("@/services/aws-connect");
+    expect(await refreshSesAccount({ userId: "u1" })).toEqual({
+      ok: true,
+      data: { status: "production" },
+    });
+    const first = await settings();
+    expect(first).toMatchObject({
+      sesAccountStatus: "production",
+      sesReviewStatus: "GRANTED",
+      sesDailyQuota: 50000,
+      sesMaxSendRate: 14,
+    });
+    expect(await instanceAudits()).toHaveLength(1);
+
+    await new Promise((r) => setTimeout(r, 5));
+    expect((await refreshSesAccount()).ok).toBe(true);
+    const second = await settings();
+    expect(second.sesLastCheckedAt!.getTime()).toBeGreaterThan(
+      first.sesLastCheckedAt!.getTime(),
+    );
+    expect(await instanceAudits()).toHaveLength(1);
   });
 });
 
 describe("detectInstanceRole", () => {
+  // aws-sdk-client-mock answers STS before the SDK resolves credentials, so
+  // this exercises the connect path, not IMDS / the default-chain lookup.
   it("connects with instance role when the default chain works", async () => {
     happyMocks();
     const { detectInstanceRole } = await import("@/services/aws-connect");
@@ -1221,31 +1413,75 @@ describe("detectInstanceRole", () => {
       ok: true,
       data: { accountId: "123456789012" },
     });
-    const { getInstanceSettings } =
-      await import("@/services/instance-settings");
-    expect(await getInstanceSettings()).toMatchObject({
+    expect(await settings()).toMatchObject({
       awsMode: "instance_role",
       awsAccessKeyEnc: null,
+      awsSecretEnc: null,
     });
   });
-  it("returns ok:false without throwing when no credentials are available", async () => {
+  it("returns a friendly ok:false when no credentials are available", async () => {
     sts
       .on(GetCallerIdentityCommand)
       .rejects(
-        Object.assign(
-          new Error("Could not load credentials from any providers"),
-          { name: "CredentialsProviderError" },
+        awsErr(
+          "CredentialsProviderError",
+          "Could not load credentials from any providers",
         ),
       );
     const { detectInstanceRole } = await import("@/services/aws-connect");
-    expect((await detectInstanceRole("us-east-1", { userId: "u1" })).ok).toBe(
-      false,
-    );
+    expect(await detectInstanceRole("us-east-1", { userId: "u1" })).toEqual({
+      ok: false,
+      error: expect.stringMatching(/^No AWS credentials found on this host/),
+    });
+    expect((await settings()).awsMode).toBe("none");
+  });
+});
+
+describe("disconnectAws", () => {
+  it("unsubscribes, forgets credentials and SES state, then refuses a second disconnect", async () => {
+    happyMocks();
+    sns.on(UnsubscribeCommand).resolves({});
+    const { connectWithKeys, disconnectAws } =
+      await import("@/services/aws-connect");
+    expect((await connectWithKeys(KEYS, { userId: "u1" })).ok).toBe(true);
+    expect(await disconnectAws({ userId: "u1" })).toEqual({
+      ok: true,
+      data: undefined,
+    });
+    expect(sns.commandCalls(UnsubscribeCommand)[0]!.args[0].input).toEqual({
+      SubscriptionArn: SUB_ARN,
+    });
+    expect(await settings()).toMatchObject({
+      awsMode: "none",
+      awsAccountId: null,
+      awsAccessKeyEnc: null,
+      snsTopicArn: null,
+      snsSubscriptionArn: null,
+      sesConfigSet: null,
+      sesAccountStatus: null,
+    });
+    expect((await disconnectAws({ userId: "u1" })).ok).toBe(false);
+  });
+  it("still disconnects when Unsubscribe fails", async () => {
+    happyMocks();
+    sns
+      .on(UnsubscribeCommand)
+      .rejects(awsErr("AuthorizationError", "not authorized"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { connectWithKeys, disconnectAws } =
+        await import("@/services/aws-connect");
+      expect((await connectWithKeys(KEYS, { userId: "u1" })).ok).toBe(true);
+      expect((await disconnectAws({ userId: "u1" })).ok).toBe(true);
+      expect((await settings()).awsMode).toBe("none");
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 ```
 
-Run: `cd apps/web && bun run test:integration -- aws-connect` → FAIL.
+Run: `cd apps/web && bun run test:integration -- aws-connect` → FAIL (`Cannot find package '@/services/aws-connect'`).
 
 - [x] **Step 2: Implement**
 
@@ -1258,24 +1494,34 @@ import {
   CreateConfigurationSetEventDestinationCommand,
   GetAccountCommand,
   PutAccountDetailsCommand,
+  UpdateConfigurationSetEventDestinationCommand,
+  type EventDestinationDefinition,
 } from "@aws-sdk/client-sesv2";
-import { CreateTopicCommand, SubscribeCommand } from "@aws-sdk/client-sns";
+import {
+  CreateTopicCommand,
+  SubscribeCommand,
+  UnsubscribeCommand,
+} from "@aws-sdk/client-sns";
 import { z } from "zod";
+// Not `@/env`: that module is `server-only` and throws under vitest.
 import { loadEnv } from "@/env.schema";
 import { makeSes, makeSns, makeSts } from "@/lib/aws/clients";
 import type { AwsContext } from "@/lib/aws/credentials";
 import { resolveAwsContext } from "@/lib/aws/credentials";
-import { mapAccount } from "@/lib/aws/ses-account";
-import type { RequestMeta } from "@/lib/audit";
+import { SES_REGIONS } from "@/lib/aws/regions";
+import { mapAccount, type SesAccount } from "@/lib/aws/ses-account";
+import type { Result } from "@/lib/result";
 import {
   getInstanceSettings,
   updateInstanceSettings,
+  type InstanceActor,
+  type InstanceSettings,
 } from "./instance-settings";
-import type { Result } from "./team";
 
 export const CONFIG_SET = "sendsprite";
 export const TOPIC_NAME = "sendsprite-events";
-const EVENT_TYPES = [
+const EVENT_DESTINATION = "sendsprite-sns";
+export const EVENT_TYPES = [
   "SEND",
   "REJECT",
   "BOUNCE",
@@ -1288,27 +1534,29 @@ const EVENT_TYPES = [
   "SUBSCRIPTION",
 ] as const;
 
-export interface Actor {
-  userId: string;
-  meta?: RequestMeta;
-}
+export type Actor = InstanceActor;
 
-const isAlreadyExists = (e: unknown) =>
-  (e as { name?: string })?.name === "AlreadyExistsException";
+type Connected = { accountId: string; status: string };
+
+const errName = (e: unknown) => (e as { name?: string })?.name;
+const isAlreadyExists = (e: unknown) => errName(e) === "AlreadyExistsException";
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 async function verifyIdentity(ctx: AwsContext) {
   const id = await makeSts(ctx).send(new GetCallerIdentityCommand({}));
+  if (!id.Account) throw new Error("STS returned no account id");
   const account = await makeSes(ctx).send(new GetAccountCommand({}));
-  return {
-    accountId: id.Account!,
-    arn: id.Arn ?? null,
-    account: mapAccount(account),
-  };
+  return { accountId: id.Account, account: mapAccount(account) };
 }
 
-/** Creates config set + SNS topic + event destination + HTTPS subscription. Idempotent. */
-export async function ensureSesInfrastructure(ctx: AwsContext) {
+/**
+ * Config set + SNS topic + event destination. Convergent: an existing config
+ * set is fine, CreateTopic is idempotent by name, and an existing event
+ * destination is updated to the current definition.
+ */
+export async function ensureSesInfrastructure(
+  ctx: AwsContext,
+): Promise<{ topicArn: string }> {
   const ses = makeSes(ctx);
   const sns = makeSns(ctx);
   try {
@@ -1318,25 +1566,48 @@ export async function ensureSesInfrastructure(ctx: AwsContext) {
   } catch (e) {
     if (!isAlreadyExists(e)) throw e;
   }
-  const topic = await sns.send(new CreateTopicCommand({ Name: TOPIC_NAME })); // idempotent by name
-  const topicArn = topic.TopicArn!;
+  const topic = await sns.send(new CreateTopicCommand({ Name: TOPIC_NAME }));
+  if (!topic.TopicArn) throw new Error("SNS returned no topic ARN");
+  const topicArn = topic.TopicArn;
+  const destination = {
+    ConfigurationSetName: CONFIG_SET,
+    EventDestinationName: EVENT_DESTINATION,
+    EventDestination: {
+      Enabled: true,
+      MatchingEventTypes: [...EVENT_TYPES],
+      SnsDestination: { TopicArn: topicArn },
+    } satisfies EventDestinationDefinition,
+  };
   try {
     await ses.send(
-      new CreateConfigurationSetEventDestinationCommand({
-        ConfigurationSetName: CONFIG_SET,
-        EventDestinationName: "sendsprite-sns",
-        EventDestination: {
-          Enabled: true,
-          MatchingEventTypes: [...EVENT_TYPES],
-          SnsDestination: { TopicArn: topicArn },
-        },
-      }),
+      new CreateConfigurationSetEventDestinationCommand(destination),
     );
   } catch (e) {
     if (!isAlreadyExists(e)) throw e;
+    await ses.send(
+      new UpdateConfigurationSetEventDestinationCommand(destination),
+    );
   }
+  return { topicArn };
+}
+
+/**
+ * Subscribe the SES webhook to the topic. SNS only accepts https endpoints,
+ * so with a non-https APP_URL (local dev) nothing is subscribed and null is
+ * returned. Confirmation happens when SNS POSTs to the endpoint (Task 9).
+ */
+export async function subscribeEndpoint(
+  ctx: AwsContext,
+  topicArn: string,
+): Promise<string | null> {
   const endpoint = `${loadEnv().APP_URL}/api/webhooks/ses`;
-  const sub = await sns.send(
+  if (!endpoint.startsWith("https://")) {
+    console.warn(
+      `aws-connect: APP_URL is not https; skipping SNS subscription to ${endpoint}. SES events will not be delivered.`,
+    );
+    return null;
+  }
+  const sub = await makeSns(ctx).send(
     new SubscribeCommand({
       TopicArn: topicArn,
       Protocol: "https",
@@ -1344,52 +1615,69 @@ export async function ensureSesInfrastructure(ctx: AwsContext) {
       ReturnSubscriptionArn: true,
     }),
   );
-  return { topicArn, subscriptionArn: sub.SubscriptionArn ?? null };
+  return sub.SubscriptionArn ?? null;
 }
 
+const accountPatch = (a: SesAccount) => ({
+  sesAccountStatus: a.status,
+  sesReviewStatus: a.reviewStatus,
+  sesDailyQuota: a.dailyQuota,
+  sesMaxSendRate: a.maxSendRate,
+});
+
+/**
+ * Verify → provision → persist → subscribe. The topic ARN is stored before
+ * SubscribeCommand runs so the confirmation POST (which can arrive before
+ * Subscribe returns) finds it; the subscription ARN is a bookkeeping write.
+ */
 async function finishConnect(
   ctx: AwsContext,
   mode: "keys" | "instance_role",
-  keys: { accessKeyId?: string; secretAccessKey?: string },
+  keys: { accessKeyId: string; secretAccessKey: string } | null,
   actor: Actor,
-): Promise<Result<{ accountId: string; status: string }>> {
+): Promise<Result<Connected>> {
   const { accountId, account } = await verifyIdentity(ctx);
-  const infra = await ensureSesInfrastructure(ctx);
+  const { topicArn } = await ensureSesInfrastructure(ctx);
+  const now = new Date();
   await updateInstanceSettings(
     {
       awsMode: mode,
       awsRegion: ctx.region,
       awsAccountId: accountId,
-      awsConnectedAt: new Date(),
-      awsAccessKey: mode === "keys" ? keys.accessKeyId! : null,
-      awsSecret: mode === "keys" ? keys.secretAccessKey! : null,
+      awsConnectedAt: now,
+      awsAccessKey: keys?.accessKeyId ?? null,
+      awsSecret: keys?.secretAccessKey ?? null,
       sesConfigSet: CONFIG_SET,
-      snsTopicArn: infra.topicArn,
-      snsSubscriptionArn: infra.subscriptionArn,
-      sesAccountStatus: account.status,
-      sesReviewStatus: account.reviewStatus,
-      sesDailyQuota: account.dailyQuota,
-      sesMaxSendRate: account.maxSendRate,
-      sesLastCheckedAt: new Date(),
+      snsTopicArn: topicArn,
+      snsSubscriptionArn: null,
+      ...accountPatch(account),
+      sesLastCheckedAt: now,
     },
     actor,
   );
+  const snsSubscriptionArn = await subscribeEndpoint(ctx, topicArn);
+  await updateInstanceSettings({ snsSubscriptionArn }, undefined, {
+    audit: false,
+  });
   return { ok: true, data: { accountId, status: account.status } };
 }
 
 const keysSchema = z.object({
   accessKeyId: z.string().min(16).max(128),
   secretAccessKey: z.string().min(16).max(128),
-  region: z.string().min(1),
+  region: z.enum(SES_REGIONS),
 });
 
 export async function connectWithKeys(
   input: unknown,
   actor: Actor,
-): Promise<Result<{ accountId: string; status: string }>> {
+): Promise<Result<Connected>> {
   const parsed = keysSchema.safeParse(input);
   if (!parsed.success)
-    return { ok: false, error: "Access key, secret and region are required." };
+    return {
+      ok: false,
+      error: "Access key, secret and a supported SES region are required.",
+    };
   const { accessKeyId, secretAccessKey, region } = parsed.data;
   try {
     return await finishConnect(
@@ -1403,14 +1691,20 @@ export async function connectWithKeys(
   }
 }
 
-/** Try the SDK default credential chain (EC2/ECS role, env). Never throws. */
+/** Try the SDK default credential chain (EC2/ECS role, env, profile). Never throws. */
 export async function detectInstanceRole(
   region: string,
   actor: Actor,
-): Promise<Result<{ accountId: string; status: string }>> {
+): Promise<Result<Connected>> {
   try {
-    return await finishConnect({ region }, "instance_role", {}, actor);
+    return await finishConnect({ region }, "instance_role", null, actor);
   } catch (e) {
+    if (errName(e) === "CredentialsProviderError")
+      return {
+        ok: false,
+        error:
+          "No AWS credentials found on this host. Run on EC2/ECS with a role attached, or use one-click / manual keys.",
+      };
     return {
       ok: false,
       error: `No usable AWS credentials on this host: ${errMsg(e)}`,
@@ -1418,6 +1712,16 @@ export async function detectInstanceRole(
   }
 }
 
+const accountUnchanged = (s: InstanceSettings, a: SesAccount) =>
+  s.sesAccountStatus === a.status &&
+  s.sesReviewStatus === a.reviewStatus &&
+  s.sesDailyQuota === a.dailyQuota &&
+  s.sesMaxSendRate === a.maxSendRate;
+
+/**
+ * Re-read GetAccount. Only a real change is audited; otherwise (the hourly
+ * job, most of the time) just `sesLastCheckedAt` is bumped, unaudited.
+ */
 export async function refreshSesAccount(
   actor?: Actor,
 ): Promise<Result<{ status: string }>> {
@@ -1426,16 +1730,18 @@ export async function refreshSesAccount(
     const account = mapAccount(
       await makeSes(ctx).send(new GetAccountCommand({})),
     );
-    await updateInstanceSettings(
-      {
-        sesAccountStatus: account.status,
-        sesReviewStatus: account.reviewStatus,
-        sesDailyQuota: account.dailyQuota,
-        sesMaxSendRate: account.maxSendRate,
-        sesLastCheckedAt: new Date(),
-      },
-      actor,
-    );
+    const current = await getInstanceSettings();
+    const now = new Date();
+    if (accountUnchanged(current, account)) {
+      await updateInstanceSettings({ sesLastCheckedAt: now }, undefined, {
+        audit: false,
+      });
+    } else {
+      await updateInstanceSettings(
+        { ...accountPatch(account), sesLastCheckedAt: now },
+        actor,
+      );
+    }
     return { ok: true, data: { status: account.status } };
   } catch (e) {
     return { ok: false, error: errMsg(e) };
@@ -1474,17 +1780,38 @@ export async function requestProductionAccess(
         }),
       }),
     );
-    return await refreshSesAccount(actor);
   } catch (e) {
     return { ok: false, error: `SES rejected the request: ${errMsg(e)}` };
   }
+  const refreshed = await refreshSesAccount(actor);
+  if (!refreshed.ok)
+    return {
+      ok: false,
+      error: `Request submitted, but the status could not be read yet: ${refreshed.error}`,
+    };
+  return refreshed;
 }
 
-/** Forget credentials; SES resources are left in the account (stack deletion cleans them). */
+/**
+ * Forget credentials and SES state. The config set, topic and event
+ * destination were created through the API (not by the CloudFormation
+ * stack), so they stay in the account; the endpoint subscription is removed
+ * best-effort so SNS stops posting to this instance.
+ */
 export async function disconnectAws(actor: Actor): Promise<Result> {
   const s = await getInstanceSettings();
   if (s.awsMode === "none")
     return { ok: false, error: "AWS is not connected." };
+  if (s.snsSubscriptionArn) {
+    try {
+      const ctx = await resolveAwsContext();
+      await makeSns(ctx).send(
+        new UnsubscribeCommand({ SubscriptionArn: s.snsSubscriptionArn }),
+      );
+    } catch (e) {
+      console.warn("aws-connect: unsubscribe failed, continuing:", errMsg(e));
+    }
+  }
   await updateInstanceSettings(
     {
       awsMode: "none",
@@ -1499,6 +1826,7 @@ export async function disconnectAws(actor: Actor): Promise<Result> {
       sesReviewStatus: null,
       sesDailyQuota: null,
       sesMaxSendRate: null,
+      sesLastCheckedAt: null,
     },
     actor,
   );
@@ -1507,6 +1835,15 @@ export async function disconnectAws(actor: Actor): Promise<Result> {
 ```
 
 Move `Result` to `apps/web/src/lib/result.ts` (`export type Result<T = undefined> = …`) and re-export from `services/team.ts` so both services share it without a circular import.
+
+Supporting changes made with this task (from review):
+
+- `services/instance-settings.ts`: export `InstanceActor`; `updateInstanceSettings(patch, actor?, opts?: { audit?: boolean })` — `audit: false` skips the audit row for bookkeeping writes (`sesLastCheckedAt`, `snsSubscriptionArn`).
+- `ensureSesInfrastructure` returns only `{ topicArn }`; `subscribeEndpoint(ctx, topicArn)` is separate so the topic ARN is persisted _before_ `SubscribeCommand` (the confirmation POST can race it). Existing event destination → `UpdateConfigurationSetEventDestinationCommand` with the same payload.
+- `refreshSesAccount` audits only when the mapped account differs from the stored columns.
+- `disconnectAws` best-effort `UnsubscribeCommand` before clearing state.
+- `lib/aws/regions.ts` holds `SES_REGIONS` (no SDK import from `env.schema.ts`); `keysSchema.region` is `z.enum(SES_REGIONS)`.
+- `tests/integration/_pg.ts`: temp-dir cleanup failure (Windows EBUSY) is a warning, not a test failure.
 
 - [x] **Step 3: Run, commit**
 

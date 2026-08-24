@@ -9,7 +9,11 @@ export type AwsCredentials = NonNullable<SESv2ClientConfig["credentials"]>;
 
 export interface AwsContext {
   region: string;
-  /** Undefined → SDK default chain (instance role, env, profile). */
+  /**
+   * Undefined → SDK default chain. `aws_mode = instance_role` really means
+   * "whatever the SDK finds on this host": an EC2/ECS/Lambda role, env vars
+   * (`AWS_ACCESS_KEY_ID`…), or a shared profile.
+   */
   credentials?: AwsCredentials;
 }
 

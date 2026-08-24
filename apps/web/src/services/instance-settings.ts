@@ -7,6 +7,12 @@ import { getCipher } from "@/lib/crypto";
 
 export type InstanceSettings = typeof instanceSettings.$inferSelect;
 
+/** Who is changing instance settings (owner-level, so no team). */
+export interface InstanceActor {
+  userId: string;
+  meta?: RequestMeta;
+}
+
 async function selectSingleton() {
   const [row] = await db()
     .select()
@@ -66,11 +72,13 @@ function auditView(row: InstanceSettings | undefined): Record<string, unknown> {
 /**
  * Update plain columns; secret inputs are encrypted before writing.
  * Upsert, so it works on a fresh instance without a prior read.
- * Writes an instance-level audit row (`teamId: null`) describing the change.
+ * Writes an instance-level audit row (`teamId: null`) describing the change,
+ * unless `opts.audit` is false (bookkeeping writes such as `sesLastCheckedAt`).
  */
 export async function updateInstanceSettings(
   patch: Plain & Secrets,
-  actor?: { userId: string; meta?: RequestMeta },
+  actor?: InstanceActor,
+  opts: { audit?: boolean } = {},
 ): Promise<InstanceSettings> {
   const before = await selectSingleton();
   const { awsAccessKey, awsSecret, cloudflareToken, ...plain } = patch;
@@ -93,6 +101,7 @@ export async function updateInstanceSettings(
     .onConflictDoUpdate({ target: instanceSettings.id, set })
     .returning();
   if (!row) throw new Error("instance_settings upsert returned no row");
+  if (opts.audit === false) return row;
   await recordAudit({
     teamId: null,
     actorUserId: actor?.userId ?? null,

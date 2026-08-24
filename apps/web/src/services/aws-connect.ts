@@ -4,26 +4,34 @@ import {
   CreateConfigurationSetEventDestinationCommand,
   GetAccountCommand,
   PutAccountDetailsCommand,
+  UpdateConfigurationSetEventDestinationCommand,
+  type EventDestinationDefinition,
 } from "@aws-sdk/client-sesv2";
-import { CreateTopicCommand, SubscribeCommand } from "@aws-sdk/client-sns";
+import {
+  CreateTopicCommand,
+  SubscribeCommand,
+  UnsubscribeCommand,
+} from "@aws-sdk/client-sns";
 import { z } from "zod";
 // Not `@/env`: that module is `server-only` and throws under vitest.
 import { loadEnv } from "@/env.schema";
 import { makeSes, makeSns, makeSts } from "@/lib/aws/clients";
 import type { AwsContext } from "@/lib/aws/credentials";
 import { resolveAwsContext } from "@/lib/aws/credentials";
-import { mapAccount } from "@/lib/aws/ses-account";
-import type { RequestMeta } from "@/lib/audit";
+import { SES_REGIONS } from "@/lib/aws/regions";
+import { mapAccount, type SesAccount } from "@/lib/aws/ses-account";
 import type { Result } from "@/lib/result";
 import {
   getInstanceSettings,
   updateInstanceSettings,
+  type InstanceActor,
+  type InstanceSettings,
 } from "./instance-settings";
 
 export const CONFIG_SET = "sendsprite";
 export const TOPIC_NAME = "sendsprite-events";
 const EVENT_DESTINATION = "sendsprite-sns";
-const EVENT_TYPES = [
+export const EVENT_TYPES = [
   "SEND",
   "REJECT",
   "BOUNCE",
@@ -36,15 +44,12 @@ const EVENT_TYPES = [
   "SUBSCRIPTION",
 ] as const;
 
-export interface Actor {
-  userId: string;
-  meta?: RequestMeta;
-}
+export type Actor = InstanceActor;
 
 type Connected = { accountId: string; status: string };
 
-const isAlreadyExists = (e: unknown) =>
-  (e as { name?: string })?.name === "AlreadyExistsException";
+const errName = (e: unknown) => (e as { name?: string })?.name;
+const isAlreadyExists = (e: unknown) => errName(e) === "AlreadyExistsException";
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 async function verifyIdentity(ctx: AwsContext) {
@@ -55,12 +60,13 @@ async function verifyIdentity(ctx: AwsContext) {
 }
 
 /**
- * Creates config set + SNS topic + event destination + HTTPS subscription.
- * Idempotent: "already exists" is success, CreateTopic is idempotent by name.
- * SNS only accepts https endpoints, so on a non-https APP_URL (local dev)
- * the subscription is skipped and `subscriptionArn` is null.
+ * Config set + SNS topic + event destination. Convergent: an existing config
+ * set is fine, CreateTopic is idempotent by name, and an existing event
+ * destination is updated to the current definition.
  */
-export async function ensureSesInfrastructure(ctx: AwsContext) {
+export async function ensureSesInfrastructure(
+  ctx: AwsContext,
+): Promise<{ topicArn: string }> {
   const ses = makeSes(ctx);
   const sns = makeSns(ctx);
   try {
@@ -73,29 +79,45 @@ export async function ensureSesInfrastructure(ctx: AwsContext) {
   const topic = await sns.send(new CreateTopicCommand({ Name: TOPIC_NAME }));
   if (!topic.TopicArn) throw new Error("SNS returned no topic ARN");
   const topicArn = topic.TopicArn;
+  const destination = {
+    ConfigurationSetName: CONFIG_SET,
+    EventDestinationName: EVENT_DESTINATION,
+    EventDestination: {
+      Enabled: true,
+      MatchingEventTypes: [...EVENT_TYPES],
+      SnsDestination: { TopicArn: topicArn },
+    } satisfies EventDestinationDefinition,
+  };
   try {
     await ses.send(
-      new CreateConfigurationSetEventDestinationCommand({
-        ConfigurationSetName: CONFIG_SET,
-        EventDestinationName: EVENT_DESTINATION,
-        EventDestination: {
-          Enabled: true,
-          MatchingEventTypes: [...EVENT_TYPES],
-          SnsDestination: { TopicArn: topicArn },
-        },
-      }),
+      new CreateConfigurationSetEventDestinationCommand(destination),
     );
   } catch (e) {
     if (!isAlreadyExists(e)) throw e;
+    await ses.send(
+      new UpdateConfigurationSetEventDestinationCommand(destination),
+    );
   }
+  return { topicArn };
+}
+
+/**
+ * Subscribe the SES webhook to the topic. SNS only accepts https endpoints,
+ * so with a non-https APP_URL (local dev) nothing is subscribed and null is
+ * returned. Confirmation happens when SNS POSTs to the endpoint (Task 9).
+ */
+export async function subscribeEndpoint(
+  ctx: AwsContext,
+  topicArn: string,
+): Promise<string | null> {
   const endpoint = `${loadEnv().APP_URL}/api/webhooks/ses`;
   if (!endpoint.startsWith("https://")) {
     console.warn(
       `aws-connect: APP_URL is not https; skipping SNS subscription to ${endpoint}. SES events will not be delivered.`,
     );
-    return { topicArn, subscriptionArn: null };
+    return null;
   }
-  const sub = await sns.send(
+  const sub = await makeSns(ctx).send(
     new SubscribeCommand({
       TopicArn: topicArn,
       Protocol: "https",
@@ -103,9 +125,21 @@ export async function ensureSesInfrastructure(ctx: AwsContext) {
       ReturnSubscriptionArn: true,
     }),
   );
-  return { topicArn, subscriptionArn: sub.SubscriptionArn ?? null };
+  return sub.SubscriptionArn ?? null;
 }
 
+const accountPatch = (a: SesAccount) => ({
+  sesAccountStatus: a.status,
+  sesReviewStatus: a.reviewStatus,
+  sesDailyQuota: a.dailyQuota,
+  sesMaxSendRate: a.maxSendRate,
+});
+
+/**
+ * Verify → provision → persist → subscribe. The topic ARN is stored before
+ * SubscribeCommand runs so the confirmation POST (which can arrive before
+ * Subscribe returns) finds it; the subscription ARN is a bookkeeping write.
+ */
 async function finishConnect(
   ctx: AwsContext,
   mode: "keys" | "instance_role",
@@ -113,7 +147,7 @@ async function finishConnect(
   actor: Actor,
 ): Promise<Result<Connected>> {
   const { accountId, account } = await verifyIdentity(ctx);
-  const infra = await ensureSesInfrastructure(ctx);
+  const { topicArn } = await ensureSesInfrastructure(ctx);
   const now = new Date();
   await updateInstanceSettings(
     {
@@ -124,23 +158,24 @@ async function finishConnect(
       awsAccessKey: keys?.accessKeyId ?? null,
       awsSecret: keys?.secretAccessKey ?? null,
       sesConfigSet: CONFIG_SET,
-      snsTopicArn: infra.topicArn,
-      snsSubscriptionArn: infra.subscriptionArn,
-      sesAccountStatus: account.status,
-      sesReviewStatus: account.reviewStatus,
-      sesDailyQuota: account.dailyQuota,
-      sesMaxSendRate: account.maxSendRate,
+      snsTopicArn: topicArn,
+      snsSubscriptionArn: null,
+      ...accountPatch(account),
       sesLastCheckedAt: now,
     },
     actor,
   );
+  const snsSubscriptionArn = await subscribeEndpoint(ctx, topicArn);
+  await updateInstanceSettings({ snsSubscriptionArn }, undefined, {
+    audit: false,
+  });
   return { ok: true, data: { accountId, status: account.status } };
 }
 
 const keysSchema = z.object({
   accessKeyId: z.string().min(16).max(128),
   secretAccessKey: z.string().min(16).max(128),
-  region: z.string().min(1),
+  region: z.enum(SES_REGIONS),
 });
 
 export async function connectWithKeys(
@@ -149,7 +184,10 @@ export async function connectWithKeys(
 ): Promise<Result<Connected>> {
   const parsed = keysSchema.safeParse(input);
   if (!parsed.success)
-    return { ok: false, error: "Access key, secret and region are required." };
+    return {
+      ok: false,
+      error: "Access key, secret and a supported SES region are required.",
+    };
   const { accessKeyId, secretAccessKey, region } = parsed.data;
   try {
     return await finishConnect(
@@ -163,7 +201,7 @@ export async function connectWithKeys(
   }
 }
 
-/** Try the SDK default credential chain (EC2/ECS role, env). Never throws. */
+/** Try the SDK default credential chain (EC2/ECS role, env, profile). Never throws. */
 export async function detectInstanceRole(
   region: string,
   actor: Actor,
@@ -171,6 +209,12 @@ export async function detectInstanceRole(
   try {
     return await finishConnect({ region }, "instance_role", null, actor);
   } catch (e) {
+    if (errName(e) === "CredentialsProviderError")
+      return {
+        ok: false,
+        error:
+          "No AWS credentials found on this host. Run on EC2/ECS with a role attached, or use one-click / manual keys.",
+      };
     return {
       ok: false,
       error: `No usable AWS credentials on this host: ${errMsg(e)}`,
@@ -178,6 +222,16 @@ export async function detectInstanceRole(
   }
 }
 
+const accountUnchanged = (s: InstanceSettings, a: SesAccount) =>
+  s.sesAccountStatus === a.status &&
+  s.sesReviewStatus === a.reviewStatus &&
+  s.sesDailyQuota === a.dailyQuota &&
+  s.sesMaxSendRate === a.maxSendRate;
+
+/**
+ * Re-read GetAccount. Only a real change is audited; otherwise (the hourly
+ * job, most of the time) just `sesLastCheckedAt` is bumped, unaudited.
+ */
 export async function refreshSesAccount(
   actor?: Actor,
 ): Promise<Result<{ status: string }>> {
@@ -186,16 +240,18 @@ export async function refreshSesAccount(
     const account = mapAccount(
       await makeSes(ctx).send(new GetAccountCommand({})),
     );
-    await updateInstanceSettings(
-      {
-        sesAccountStatus: account.status,
-        sesReviewStatus: account.reviewStatus,
-        sesDailyQuota: account.dailyQuota,
-        sesMaxSendRate: account.maxSendRate,
-        sesLastCheckedAt: new Date(),
-      },
-      actor,
-    );
+    const current = await getInstanceSettings();
+    const now = new Date();
+    if (accountUnchanged(current, account)) {
+      await updateInstanceSettings({ sesLastCheckedAt: now }, undefined, {
+        audit: false,
+      });
+    } else {
+      await updateInstanceSettings(
+        { ...accountPatch(account), sesLastCheckedAt: now },
+        actor,
+      );
+    }
     return { ok: true, data: { status: account.status } };
   } catch (e) {
     return { ok: false, error: errMsg(e) };
@@ -234,17 +290,38 @@ export async function requestProductionAccess(
         }),
       }),
     );
-    return await refreshSesAccount(actor);
   } catch (e) {
     return { ok: false, error: `SES rejected the request: ${errMsg(e)}` };
   }
+  const refreshed = await refreshSesAccount(actor);
+  if (!refreshed.ok)
+    return {
+      ok: false,
+      error: `Request submitted, but the status could not be read yet: ${refreshed.error}`,
+    };
+  return refreshed;
 }
 
-/** Forget credentials; SES resources are left in the account (stack deletion cleans them). */
+/**
+ * Forget credentials and SES state. The config set, topic and event
+ * destination were created through the API (not by the CloudFormation
+ * stack), so they stay in the account; the endpoint subscription is removed
+ * best-effort so SNS stops posting to this instance.
+ */
 export async function disconnectAws(actor: Actor): Promise<Result> {
   const s = await getInstanceSettings();
   if (s.awsMode === "none")
     return { ok: false, error: "AWS is not connected." };
+  if (s.snsSubscriptionArn) {
+    try {
+      const ctx = await resolveAwsContext();
+      await makeSns(ctx).send(
+        new UnsubscribeCommand({ SubscriptionArn: s.snsSubscriptionArn }),
+      );
+    } catch (e) {
+      console.warn("aws-connect: unsubscribe failed, continuing:", errMsg(e));
+    }
+  }
   await updateInstanceSettings(
     {
       awsMode: "none",

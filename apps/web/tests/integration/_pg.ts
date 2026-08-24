@@ -37,12 +37,18 @@ export async function startPg(): Promise<TestPg> {
       await db.$client.end();
       await closeDb();
       await pg.stop();
-      await rm(databaseDir, {
-        recursive: true,
-        force: true,
-        maxRetries: 5,
-        retryDelay: 200,
-      });
+      try {
+        await rm(databaseDir, {
+          recursive: true,
+          force: true,
+          maxRetries: 5,
+          retryDelay: 200,
+        });
+      } catch (e) {
+        // Windows can still hold the data dir (EBUSY) right after stop; a
+        // stale temp dir is not worth failing the run.
+        console.warn("[pg] cleanup failed", (e as { code?: string })?.code);
+      }
     },
   };
 }
