@@ -137,9 +137,18 @@ export function resetAuthForTests() {
   instance = undefined;
 }
 
-/** Lazy proxy: property access instantiates on first use. */
+/**
+ * Lazy proxy: property access instantiates on first use. `has` is required
+ * because `toNextJsHandler` checks `"handler" in auth` before calling it.
+ */
 export const auth: AuthInstance = new Proxy({} as AuthInstance, {
   get: (_t, key) => Reflect.get(getAuth(), key),
+  has: (_t, key) => key in getAuth(),
+  ownKeys: () => Reflect.ownKeys(getAuth()),
+  getOwnPropertyDescriptor: (_t, key) => {
+    const d = Reflect.getOwnPropertyDescriptor(getAuth(), key);
+    return d && { ...d, configurable: true };
+  },
 });
 
 export type Auth = AuthInstance;

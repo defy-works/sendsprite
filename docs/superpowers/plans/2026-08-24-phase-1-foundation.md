@@ -1615,9 +1615,18 @@ export function resetAuthForTests() {
   instance = undefined;
 }
 
-/** Lazy proxy: property access instantiates on first use. */
+/**
+ * Lazy proxy: property access instantiates on first use. `has` is required
+ * because `toNextJsHandler` checks `"handler" in auth` before calling it.
+ */
 export const auth: AuthInstance = new Proxy({} as AuthInstance, {
   get: (_t, key) => Reflect.get(getAuth(), key),
+  has: (_t, key) => key in getAuth(),
+  ownKeys: () => Reflect.ownKeys(getAuth()),
+  getOwnPropertyDescriptor: (_t, key) => {
+    const d = Reflect.getOwnPropertyDescriptor(getAuth(), key);
+    return d && { ...d, configurable: true };
+  },
 });
 
 export type Auth = AuthInstance;
@@ -1696,7 +1705,18 @@ async function signUp(email: string) {
   });
 }
 
-async function invite(email: string) {
+function cookieHeaders(res: { headers: Headers }) {
+  const cookies = res.headers
+    .getSetCookie()
+    .map((c) => c.split(";")[0])
+    .join("; ");
+  return new Headers({ cookie: cookies });
+}
+
+async function invite(
+  email: string,
+  expiresAt = new Date(Date.now() + 60_000),
+) {
   const [first] = await pg.db
     .select({ id: schema.user.id })
     .from(schema.user)
@@ -1724,13 +1744,14 @@ async function invite(email: string) {
     email,
     role: "member",
     status: "pending",
-    expiresAt: new Date(now.getTime() + 60_000),
+    expiresAt,
     inviterId: first!.id,
   });
 }
 
 const forbidden = { status: "FORBIDDEN" };
 
+// Order-dependent: each test builds on the users/invitations of the previous ones.
 describe("signup policy", () => {
   it("auto: first user may sign up", async () => {
     await expect(signUp("first@example.com")).resolves.toMatchObject({
@@ -1760,6 +1781,23 @@ describe("signup policy", () => {
     });
   });
 
+  it("invite mode rejects an expired invitation", async () => {
+    await invite("expired@example.com", new Date(Date.now() - 60_000));
+    await expect(signUp("expired@example.com")).rejects.toMatchObject(
+      forbidden,
+    );
+  });
+
+  it("later sign-in defaults activeOrganizationId to the first membership", async () => {
+    const { auth } = await import("@/lib/auth");
+    const res = await auth.api.signInEmail({
+      body: { email: "first@example.com", password: "correct-horse-battery" },
+      returnHeaders: true,
+    });
+    const session = await auth.api.getSession({ headers: cookieHeaders(res) });
+    expect(session?.session.activeOrganizationId).toBe("org_1");
+  });
+
   it("db override 'open' with env auto allows a further signup", async () => {
     await pg.db
       .insert(schema.instanceSettings)
@@ -1771,6 +1809,40 @@ describe("signup policy", () => {
     await setSignupMode("auto");
     await expect(signUp("open@example.com")).resolves.toMatchObject({
       user: { email: "open@example.com" },
+    });
+  });
+});
+
+// Regression: the lazy proxy must satisfy `"handler" in auth` (next-js handler).
+describe("route handler", () => {
+  it("auth.handler answers /api/auth/ok", async () => {
+    const { auth } = await import("@/lib/auth");
+    const res = await auth.handler(
+      new Request("http://localhost:3000/api/auth/ok"),
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("POST route signs up a user (DB override still open)", async () => {
+    const { POST } = await import("@/app/api/auth/[...all]/route");
+    const res = await POST(
+      new Request("http://localhost:3000/api/auth/sign-up/email", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: "http://localhost:3000",
+        },
+        body: JSON.stringify({
+          email: "route@example.com",
+          password: "correct-horse-battery",
+          name: "route",
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("set-cookie")).toMatch(/better-auth/);
+    await expect(res.json()).resolves.toMatchObject({
+      user: { email: "route@example.com" },
     });
   });
 });
