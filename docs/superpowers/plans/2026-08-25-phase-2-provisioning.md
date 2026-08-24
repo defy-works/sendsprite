@@ -3520,7 +3520,7 @@ Run → PASS. Commit: `git add apps/web && git commit -m "feat(web): DNS expecte
 - Modify: `apps/web/src/jobs/handlers/index.ts`
 - Test: `apps/web/tests/integration/domains.test.ts`
 
-- [ ] **Step 1: Failing test**
+- [x] **Step 1: Failing test**
 
 ```ts
 import {
@@ -3775,7 +3775,7 @@ describe("domains", () => {
 
 Run: `cd apps/web && bun run test:integration -- domains` → FAIL.
 
-- [ ] **Step 2: Service**
+- [x] **Step 2: Service**
 
 `apps/web/src/services/domains.ts`:
 
@@ -4083,7 +4083,7 @@ export async function deleteDomain(
 }
 ```
 
-- [ ] **Step 3: Job handlers**
+- [x] **Step 3: Job handlers**
 
 `apps/web/src/jobs/handlers/domain-provision.ts`:
 
@@ -4135,7 +4135,7 @@ registerQueue<{ domainId: string }>(
 
 `handlers/index.ts`: import both. Confirm pg-boss `send(name, data, { startAfter })` accepts seconds (number) in 12.x (`node_modules/pg-boss/dist/index.d.ts`); if it expects a Date/ISO string, convert.
 
-- [ ] **Step 4: Run, commit**
+- [x] **Step 4: Run, commit**
 
 Run: `cd apps/web && bun run test:integration && bun run typecheck` → PASS.
 
