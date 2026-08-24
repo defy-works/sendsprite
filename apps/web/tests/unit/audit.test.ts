@@ -10,12 +10,28 @@ describe("computeDiff", () => {
   it("returns null when nothing changed", () => {
     expect(computeDiff({ a: 1 }, { a: 1 })).toBeNull();
   });
-  it("redacts keys ending in Enc, Secret or Token", () => {
-    expect(computeDiff({ awsSecretEnc: "x" }, { awsSecretEnc: "y" })).toEqual({
-      awsSecretEnc: { from: "[redacted]", to: "[redacted]" },
+  it("redacts keys containing enc, secret, token, password, hash or key", () => {
+    for (const key of [
+      "awsSecretEnc",
+      "token",
+      "keyHash",
+      "passwordHash",
+      "awsAccessKeyId",
+    ]) {
+      expect(computeDiff({ [key]: "1" }, { [key]: "2" })).toEqual({
+        [key]: { from: "[redacted]", to: "[redacted]" },
+      });
+    }
+  });
+  it("does not redact plain keys, but fails closed on substrings like tokenCount", () => {
+    expect(
+      computeDiff({ name: "A", slug: "a" }, { name: "B", slug: "b" }),
+    ).toEqual({
+      name: { from: "A", to: "B" },
+      slug: { from: "a", to: "b" },
     });
-    expect(computeDiff({ token: "1" }, { token: "2" })).toEqual({
-      token: { from: "[redacted]", to: "[redacted]" },
+    expect(computeDiff({ tokenCount: 1 }, { tokenCount: 2 })).toEqual({
+      tokenCount: { from: "[redacted]", to: "[redacted]" },
     });
   });
 });

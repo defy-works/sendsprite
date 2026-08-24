@@ -9,7 +9,10 @@ export interface DividerProps extends HTMLAttributes<HTMLDivElement> {
 export function Divider({ label, className, ...rest }: DividerProps) {
   if (!label) {
     return (
-      <hr className={cn("border-0 border-t border-white/15 my-0", className)} />
+      <hr
+        className={cn("border-0 border-t border-white/15 my-2", className)}
+        {...rest}
+      />
     );
   }
   return (

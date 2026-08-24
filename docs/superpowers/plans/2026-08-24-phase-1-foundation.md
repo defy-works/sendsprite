@@ -1992,7 +1992,7 @@ git commit -m "feat(web): port UI primitives from Defyworks family, add StatusDo
 
 **Files:**
 
-- Create: `apps/web/src/lib/session.ts`, `apps/web/src/lib/audit.ts`, `apps/web/tests/unit/audit.test.ts`
+- Create: `apps/web/src/lib/session.ts`, `apps/web/src/lib/team.ts`, `apps/web/src/lib/audit.ts`, `apps/web/tests/unit/audit.test.ts`, `apps/web/tests/integration/session.test.ts`
 
 - [x] **Step 1: Failing test for diff computation**
 
@@ -2011,12 +2011,28 @@ describe("computeDiff", () => {
   it("returns null when nothing changed", () => {
     expect(computeDiff({ a: 1 }, { a: 1 })).toBeNull();
   });
-  it("redacts keys ending in Enc, Secret or Token", () => {
-    expect(computeDiff({ awsSecretEnc: "x" }, { awsSecretEnc: "y" })).toEqual({
-      awsSecretEnc: { from: "[redacted]", to: "[redacted]" },
+  it("redacts keys containing enc, secret, token, password, hash or key", () => {
+    for (const key of [
+      "awsSecretEnc",
+      "token",
+      "keyHash",
+      "passwordHash",
+      "awsAccessKeyId",
+    ]) {
+      expect(computeDiff({ [key]: "1" }, { [key]: "2" })).toEqual({
+        [key]: { from: "[redacted]", to: "[redacted]" },
+      });
+    }
+  });
+  it("does not redact plain keys, but fails closed on substrings like tokenCount", () => {
+    expect(
+      computeDiff({ name: "A", slug: "a" }, { name: "B", slug: "b" }),
+    ).toEqual({
+      name: { from: "A", to: "B" },
+      slug: { from: "a", to: "b" },
     });
-    expect(computeDiff({ token: "1" }, { token: "2" })).toEqual({
-      token: { from: "[redacted]", to: "[redacted]" },
+    expect(computeDiff({ tokenCount: 1 }, { tokenCount: 2 })).toEqual({
+      tokenCount: { from: "[redacted]", to: "[redacted]" },
     });
   });
 });
@@ -2037,7 +2053,8 @@ import { db } from "@/db";
 import { auditLog } from "@/db/schema";
 
 export type Diff = Record<string, { from?: unknown; to?: unknown }>;
-const REDACT = /(enc|secret|token|password)$/i;
+// Substring match, fail-closed: "tokenCount" is redacted too.
+const REDACT = /(enc|secret|token|password|hash|key)/i;
 
 export function computeDiff(
   before: Record<string, unknown>,
@@ -2064,10 +2081,64 @@ export interface AuditInput {
   userAgent?: string | null;
 }
 
-export async function recordAudit(input: AuditInput) {
-  await db()
-    .insert(auditLog)
-    .values({ id: newId("aud"), ...input });
+/**
+ * Best-effort audit write. Never throws: mutations happen via better-auth
+ * outside our transaction, so an audit failure must not break (or half-apply)
+ * the mutation it describes. Failures are logged instead.
+ */
+export async function recordAudit(input: AuditInput): Promise<void> {
+  try {
+    await db()
+      .insert(auditLog)
+      .values({ id: newId("aud"), ...input });
+  } catch (err) {
+    console.error("[audit] failed", err);
+  }
+}
+```
+
+`apps/web/src/lib/team.ts` (pure, no `next/*`, integration-tested):
+
+```ts
+import { eq } from "drizzle-orm";
+import { TEAM_ROLES, type TeamRole } from "@sendsprite/shared";
+import { db } from "@/db";
+import { member, organization } from "@/db/schema";
+
+export interface TeamContext {
+  userId: string;
+  team: { id: string; name: string; slug: string };
+  role: TeamRole;
+}
+
+/**
+ * Resolves the team a user should act in. Prefers the membership matching
+ * `activeId`; if that id is stale (user removed, org deleted) falls back to
+ * the oldest membership. Returns null when the user has no memberships.
+ * Pure data access - no `next/*` - so it is integration-testable.
+ */
+export async function resolveTeam(
+  userId: string,
+  activeId: string | null,
+): Promise<TeamContext | null> {
+  const rows = await db()
+    .select({
+      id: organization.id,
+      name: organization.name,
+      slug: organization.slug,
+      role: member.role,
+    })
+    .from(member)
+    .innerJoin(organization, eq(member.organizationId, organization.id))
+    .where(eq(member.userId, userId))
+    .orderBy(member.createdAt);
+  const row =
+    (activeId ? rows.find((r) => r.id === activeId) : undefined) ?? rows[0];
+  if (!row) return null;
+  const role: TeamRole = TEAM_ROLES.includes(row.role as TeamRole)
+    ? (row.role as TeamRole)
+    : "member";
+  return { userId, team: { id: row.id, name: row.name, slug: row.slug }, role };
 }
 ```
 
@@ -2076,11 +2147,10 @@ export async function recordAudit(input: AuditInput) {
 ```ts
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { eq, and } from "drizzle-orm";
-import type { TeamRole } from "@sendsprite/shared";
 import { auth } from "./auth";
-import { db } from "@/db";
-import { member, organization } from "@/db/schema";
+import { resolveTeam, type TeamContext } from "./team";
+
+export type { TeamContext } from "./team";
 
 export async function getSession() {
   return auth.api.getSession({ headers: await headers() });
@@ -2093,40 +2163,19 @@ export async function requireSession() {
   return s;
 }
 
-export interface TeamContext {
-  userId: string;
-  team: { id: string; name: string; slug: string };
-  role: TeamRole;
-}
-
 /** Resolves the active team; if the user has none, sends them to create one. */
 export async function requireTeam(): Promise<TeamContext> {
   const s = await requireSession();
-  const activeId = s.session.activeOrganizationId ?? null;
-  const rows = await db()
-    .select({
-      id: organization.id,
-      name: organization.name,
-      slug: organization.slug,
-      role: member.role,
-    })
-    .from(member)
-    .innerJoin(organization, eq(member.organizationId, organization.id))
-    .where(
-      activeId
-        ? and(eq(member.userId, s.user.id), eq(organization.id, activeId))
-        : eq(member.userId, s.user.id),
-    )
-    .limit(1);
-  const row = rows[0];
-  if (!row) redirect("/teams/new");
-  return {
-    userId: s.user.id,
-    team: { id: row.id, name: row.name, slug: row.slug },
-    role: row.role as TeamRole,
-  };
+  const ctx = await resolveTeam(
+    s.user.id,
+    s.session.activeOrganizationId ?? null,
+  );
+  if (!ctx) redirect("/teams/new");
+  return ctx;
 }
 ```
+
+`apps/web/tests/integration/session.test.ts` covers `resolveTeam`: active id honoured, stale id falls back to oldest membership, null id uses oldest, no memberships returns null.
 
 - [x] **Step 4: Run tests**
 
@@ -2136,7 +2185,7 @@ Expected: PASS.
 - [x] **Step 5: Commit**
 
 ```bash
-git add apps/web/src/lib/audit.ts apps/web/src/lib/session.ts apps/web/tests/unit/audit.test.ts
+git add apps/web/src/lib/audit.ts apps/web/src/lib/session.ts apps/web/src/lib/team.ts apps/web/tests/unit/audit.test.ts apps/web/tests/integration/session.test.ts
 git commit -m "feat(web): session/team helpers and redacting audit recorder"
 ```
 

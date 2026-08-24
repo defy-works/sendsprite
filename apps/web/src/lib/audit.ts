@@ -3,7 +3,8 @@ import { db } from "@/db";
 import { auditLog } from "@/db/schema";
 
 export type Diff = Record<string, { from?: unknown; to?: unknown }>;
-const REDACT = /(enc|secret|token|password)$/i;
+// Substring match, fail-closed: "tokenCount" is redacted too.
+const REDACT = /(enc|secret|token|password|hash|key)/i;
 
 export function computeDiff(
   before: Record<string, unknown>,
@@ -30,8 +31,17 @@ export interface AuditInput {
   userAgent?: string | null;
 }
 
-export async function recordAudit(input: AuditInput) {
-  await db()
-    .insert(auditLog)
-    .values({ id: newId("aud"), ...input });
+/**
+ * Best-effort audit write. Never throws: mutations happen via better-auth
+ * outside our transaction, so an audit failure must not break (or half-apply)
+ * the mutation it describes. Failures are logged instead.
+ */
+export async function recordAudit(input: AuditInput): Promise<void> {
+  try {
+    await db()
+      .insert(auditLog)
+      .values({ id: newId("aud"), ...input });
+  } catch (err) {
+    console.error("[audit] failed", err);
+  }
 }
