@@ -16,6 +16,13 @@ const slugify = (s: string) =>
 
 const suffix = () => Math.random().toString(36).slice(2, 6);
 
+// createOrganization throws ORGANIZATION_ALREADY_EXISTS on a slug clash;
+// ORGANIZATION_SLUG_ALREADY_TAKEN comes from check-slug/updateOrganization.
+const SLUG_TAKEN = new Set([
+  "ORGANIZATION_ALREADY_EXISTS",
+  "ORGANIZATION_SLUG_ALREADY_TAKEN",
+]);
+
 export function CreateTeamForm() {
   const router = useRouter();
   const [name, setName] = useState("");
@@ -30,7 +37,7 @@ export function CreateTeamForm() {
       const slug = slugify(name) || `team-${Date.now()}`;
       let res = await authClient.organization.create({ name, slug });
       // Slug collision with another team: retry once with a random suffix.
-      if (res.error?.code === "ORGANIZATION_SLUG_ALREADY_TAKEN") {
+      if (SLUG_TAKEN.has(res.error?.code ?? "")) {
         res = await authClient.organization.create({
           name,
           slug: `${slug}-${suffix()}`,
