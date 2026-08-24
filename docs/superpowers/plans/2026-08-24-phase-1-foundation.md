@@ -1051,7 +1051,7 @@ git commit -m "feat(web): AES-256-GCM secret cipher derived from APP_SECRET"
 
 - Create: `apps/web/drizzle.config.ts`, `apps/web/src/db/index.ts`, `apps/web/src/db/schema/index.ts`, `apps/web/src/db/schema/instance.ts`, `apps/web/src/db/schema/audit.ts`, `apps/web/src/db/migrate.ts`, `apps/web/src/db/migrate-cli.ts`, `apps/web/tests/integration/_pg.ts`, `apps/web/tests/integration/db.test.ts`
 
-- [ ] **Step 1: drizzle config**
+- [x] **Step 1: drizzle config**
 
 `apps/web/drizzle.config.ts`:
 
@@ -1072,7 +1072,7 @@ export default defineConfig({
 });
 ```
 
-- [ ] **Step 2: Schema files**
+- [x] **Step 2: Schema files**
 
 `apps/web/src/db/schema/instance.ts`:
 
@@ -1152,7 +1152,7 @@ export * from "./audit";
 
 Create `apps/web/src/db/schema/auth.ts` containing only `export {};` for now.
 
-- [ ] **Step 3: Client and migrator**
+- [x] **Step 3: Client and migrator**
 
 `apps/web/src/db/index.ts`:
 
@@ -1205,12 +1205,12 @@ await runMigrations(process.env.DATABASE_URL!);
 console.log("migrations applied");
 ```
 
-- [ ] **Step 4: Generate the first migration**
+- [x] **Step 4: Generate the first migration**
 
 Run: `cd apps/web && bun run db:generate`
 Expected: `apps/web/drizzle/0000_*.sql` + `drizzle/meta/` created, containing `CREATE TABLE "instance_settings"` and `CREATE TABLE "audit_log"`.
 
-- [ ] **Step 5: Testcontainers helper + failing integration test**
+- [x] **Step 5: Testcontainers helper + failing integration test**
 
 `apps/web/tests/integration/_pg.ts`:
 
@@ -1270,7 +1270,7 @@ describe("migrations", () => {
 Run: `cd apps/web && bun run test:integration`
 Expected: PASS (Docker must be running; first run pulls `postgres:16-alpine`).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add apps/web/drizzle apps/web/drizzle.config.ts apps/web/src/db apps/web/tests/integration
