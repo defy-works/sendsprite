@@ -1,3 +1,4 @@
+import { PatchEmailInput } from "@sendsprite/shared";
 import {
   fail,
   ok,
@@ -35,9 +36,9 @@ export const GET = withApiKey(
 export const PATCH = withApiKey(
   async (req, auth, ctx) => {
     const { id } = await ctx.params;
-    const body = (await readJson(req)) as { scheduledAt?: unknown } | undefined;
+    const body = PatchEmailInput.safeParse(await readJson(req));
     const headers = await rateHeaders(auth.team.id);
-    if (typeof body?.scheduledAt !== "string")
+    if (!body.success)
       return fail(
         "validation_error",
         "scheduledAt (ISO 8601 date-time) is required.",
@@ -47,7 +48,7 @@ export const PATCH = withApiKey(
     const res = await rescheduleEmail(
       auth.team.id,
       id ?? "",
-      body.scheduledAt,
+      body.data.scheduledAt,
       { enqueue, actorUserId: `api:${auth.key.id}` },
     );
     if (!res.ok) return sendFailure(res, headers);

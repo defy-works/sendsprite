@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { AddSuppressionInput } from "@sendsprite/shared";
 import { keyActor } from "@/lib/api-auth";
 import { fail, ok, readJson, withApiKey } from "@/lib/api-response";
 import {
@@ -24,24 +24,17 @@ export const GET = withApiKey(
   { permission: "full" },
 );
 
-/** Bounce/complaint entries come only from SES events; the API adds manual/unsubscribe. */
-const body = z.object({
-  email: z.unknown(),
-  reason: z.enum(["manual", "unsubscribe"]).default("manual"),
-  note: z.unknown().optional(),
-});
-
 /** 201 with the row (also for an address that was already listed). */
 export const POST = withApiKey(
   async (req, auth) => {
     const json = await readJson(req);
     if (json === undefined)
       return fail("validation_error", "Body must be JSON.");
-    const p = body.safeParse(json);
+    const p = AddSuppressionInput.safeParse(json);
     if (!p.success)
       return fail(
         "validation_error",
-        'reason must be "manual" or "unsubscribe".',
+        p.error.issues[0]?.message ?? "Invalid input.",
       );
     const res = await addSuppression(keyActor(auth), p.data);
     if (!res.ok) return fail("validation_error", res.error);

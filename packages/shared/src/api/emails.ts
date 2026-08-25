@@ -157,17 +157,53 @@ export const EmailObject = z.object({
 });
 export type EmailObject = z.infer<typeof EmailObject>;
 
+/** Every `type` the server writes to `email_events` (mirrors the DB enum). */
+export const EMAIL_EVENT_TYPES = [
+  "queued",
+  "sent",
+  "delivered",
+  "delivery_delayed",
+  "bounced",
+  "complained",
+  "rejected",
+  "opened",
+  "clicked",
+  "failed",
+  "cancelled",
+] as const;
+export type EmailEventType = (typeof EMAIL_EVENT_TYPES)[number];
+
 export const EmailEventObject = z.object({
   id: z.string(),
-  type: z.string(),
+  type: z.enum(EMAIL_EVENT_TYPES),
   occurredAt: z.string(),
   payload: z.record(z.string(), z.unknown()),
 });
 export type EmailEventObject = z.infer<typeof EmailEventObject>;
 
-export const ListQuery = z.object({
+/** `GET /emails/:id`: the email plus its timeline, oldest first. */
+export const EmailDetail = EmailObject.extend({
+  events: z.array(EmailEventObject),
+});
+export type EmailDetail = z.infer<typeof EmailDetail>;
+
+/** `PATCH /emails/:id`: move a `scheduled` email (the server requires a future time). */
+export const PatchEmailInput = z.object({
+  scheduledAt: z.iso.datetime({ offset: true }),
+});
+export type PatchEmailInput = z.infer<typeof PatchEmailInput>;
+
+export const PageQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
   cursor: z.string().optional(),
+});
+export type PageQuery = z.infer<typeof PageQuery>;
+
+/** `{ data, nextCursor }` envelope of every list endpoint. */
+export const page = <T extends z.ZodTypeAny>(item: T) =>
+  z.object({ data: z.array(item), nextCursor: z.string().nullable() });
+
+export const ListQuery = PageQuery.extend({
   status: z.enum(EMAIL_STATUS).optional(),
   to: z.string().optional(),
   domainId: z.string().optional(),

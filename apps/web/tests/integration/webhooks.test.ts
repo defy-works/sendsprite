@@ -108,7 +108,7 @@ describe("webhooks", () => {
     });
     expect(f.calls[0]!.url).toBe("https://hooks.acme.com/x");
     const h = new Headers(f.calls[0]!.init.headers);
-    const { verifyWebhookSignature } = await import("@sendsprite/shared");
+    const { verifyWebhookSignature } = await import("@sendsprite/shared/node");
     expect(
       verifyWebhookSignature(
         String(f.calls[0]!.init.body),
@@ -343,7 +343,7 @@ describe("webhooks", () => {
     expect(replayed!.nextRetryAt!.getTime()).toBeLessThanOrEqual(Date.now());
     const f2 = fetchWith(200);
     await deliver(t.data.deliveryId, { fetch: f2, enqueue });
-    const { verifyWebhookSignature } = await import("@sendsprite/shared");
+    const { verifyWebhookSignature } = await import("@sendsprite/shared/node");
     const sig = new Headers(f2.calls[0]!.init.headers).get(
       "sendsprite-signature",
     )!;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { signWebhook, verifyWebhookSignature } from "../src/api/webhooks";
+import { signWebhook, verifyWebhookSignature } from "../src/node";
 
 describe("webhook signature", () => {
   it("round-trips and rejects tampering / stale timestamps", () => {

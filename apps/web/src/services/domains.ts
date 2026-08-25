@@ -1,12 +1,11 @@
 import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
-import { z } from "zod";
 import {
   CreateEmailIdentityCommand,
   DeleteEmailIdentityCommand,
   GetEmailIdentityCommand,
   PutEmailIdentityMailFromAttributesCommand,
 } from "@aws-sdk/client-sesv2";
-import { can, newId } from "@sendsprite/shared";
+import { can, CreateDomainInput, newId } from "@sendsprite/shared";
 import { db } from "@/db";
 import { domains } from "@/db/schema";
 import { makeSes } from "@/lib/aws/clients";
@@ -55,8 +54,6 @@ const SWEEP_STALE_S = 100;
 const RECHECK_AFTER_S = 24 * 3600;
 const FIRST_VERIFY_AFTER_S = 30;
 const VERIFY_WINDOW_MS = 72 * 3600 * 1000;
-const DOMAIN_RE =
-  /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 const DENIED: Result<never> = {
   ok: false,
   error: "You don't have permission to do that.",
@@ -131,14 +128,8 @@ export async function createDomain(
   deps: Deps,
 ): Promise<Result<Domain>> {
   if (!can(actor.role, "domains.manage")) return DENIED;
-  const parsed = z
-    .object({
-      name: z
-        .string()
-        .transform((s) => s.trim().toLowerCase().replace(/\.$/, "")),
-    })
-    .safeParse(input);
-  if (!parsed.success || !DOMAIN_RE.test(parsed.data.name))
+  const parsed = CreateDomainInput.safeParse(input);
+  if (!parsed.success)
     return { ok: false, error: "Enter a valid domain like mail.example.com." };
   const name = parsed.data.name;
   const settings = await getInstanceSettings();

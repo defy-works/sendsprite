@@ -9,10 +9,10 @@ import {
   signWebhook,
   SIGNATURE_HEADER,
   EVENT_ID_HEADER,
-  WEBHOOK_EVENT_TYPES,
+  WebhookEvents,
   type WebhookEventType,
   type WebhookPayload,
-} from "@sendsprite/shared";
+} from "@sendsprite/shared/node";
 import { db } from "@/db";
 import { webhookDeliveries, webhooks } from "@/db/schema";
 import { getCipher } from "@/lib/crypto";
@@ -52,9 +52,11 @@ const NOT_FOUND: Result<never> = {
   error: "Webhook not found.",
 };
 
-// https is required in production; dev/test may point at a local http
-// listener. Private targets are rejected everywhere (SSRF: the worker would
-// otherwise POST signed payloads at anything reachable from its network).
+// The public contract (`CreateWebhookInput` in @sendsprite/shared) is https
+// only; the server's own `url` check differs on purpose: https is required in
+// production but dev/test may point at a local http listener, and private
+// targets are rejected everywhere (SSRF: the worker would otherwise POST
+// signed payloads at anything reachable from its network).
 const url = z
   .string()
   .max(2048, "URL is too long.")
@@ -63,12 +65,9 @@ const url = z
       isPublicHttpUrl(u, { httpsOnly: process.env.NODE_ENV === "production" }),
     "Webhook URL must be a public https address",
   );
-const events = z
-  .array(z.enum(WEBHOOK_EVENT_TYPES))
-  .min(1, "Pick at least one event.");
-const createInput = z.object({ url, events });
+const createInput = z.object({ url, events: WebhookEvents });
 const updateInput = z
-  .object({ url, events, enabled: z.boolean() })
+  .object({ url, events: WebhookEvents, enabled: z.boolean() })
   .partial()
   .refine((o) => Object.keys(o).length > 0, "Nothing to update.");
 

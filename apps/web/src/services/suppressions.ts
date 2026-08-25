@@ -1,6 +1,5 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
-import { z } from "zod";
-import { can, newId } from "@sendsprite/shared";
+import { AddSuppressionInput, can, newId } from "@sendsprite/shared";
 import { db } from "@/db";
 import { suppressions, type SuppressionReason } from "@/db/schema";
 import { recordAudit } from "@/lib/audit";
@@ -66,33 +65,21 @@ export async function suppressFromEvent(
     .onConflictDoNothing(UNIQUE);
 }
 
-const input = z.object({
-  email: z
-    .string()
-    .trim()
-    .email("Enter a valid email.")
-    .transform(normaliseEmail),
-  // Bounce/complaint entries are written only by `suppressFromEvent`.
-  reason: z.enum(["manual", "unsubscribe"]).default("manual"),
-  // A form's empty input arrives as ""; treat it as unset.
-  note: z
-    .string()
-    .trim()
-    .max(500, "Note is too long.")
-    .transform((s) => s || undefined)
-    .optional(),
-});
-
-/** Idempotent: re-adding an address succeeds and returns the existing row. */
+/**
+ * Idempotent: re-adding an address succeeds and returns the existing row.
+ * Bounce/complaint entries are written only by `suppressFromEvent`
+ * (`AddSuppressionInput` allows manual/unsubscribe).
+ */
 export async function addSuppression(
   actor: TeamActor,
   raw: unknown,
 ): Promise<Result<Suppression>> {
   if (!can(actor.role, "contacts.manage")) return DENIED;
-  const p = input.safeParse(raw);
+  const p = AddSuppressionInput.safeParse(raw);
   if (!p.success)
     return { ok: false, error: p.error.issues[0]?.message ?? "Invalid input." };
-  const { email, reason, note } = p.data;
+  const { reason, note } = p.data;
+  const email = normaliseEmail(p.data.email);
   const [inserted] = await db()
     .insert(suppressions)
     .values({

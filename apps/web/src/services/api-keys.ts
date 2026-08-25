@@ -1,7 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, isNull } from "drizzle-orm";
-import { z } from "zod";
-import { can, newId } from "@sendsprite/shared";
+import { can, CreateApiKeyInput, newId } from "@sendsprite/shared";
 import { db } from "@/db";
 import { apiKeys, domains } from "@/db/schema";
 import { recordAudit } from "@/lib/audit";
@@ -21,17 +20,6 @@ const DENIED: Result<never> = {
   error: "You don't have permission to do that.",
 };
 
-const input = z.object({
-  name: z.string().trim().min(1, "Name is required.").max(64),
-  permission: z.enum(["full", "sending_only"]).default("full"),
-  // A form's empty <select> option arrives as ""; treat it as unset.
-  domainId: z
-    .string()
-    .trim()
-    .transform((s) => s || undefined)
-    .optional(),
-});
-
 /** Newest first; includes revoked rows so the UI can show them greyed out. */
 export function listApiKeys(teamId: string): Promise<ApiKey[]> {
   return db()
@@ -47,7 +35,7 @@ export async function createApiKey(
   raw: unknown,
 ): Promise<Result<{ id: string; secret: string }>> {
   if (!can(actor.role, "apiKeys.create")) return DENIED;
-  const p = input.safeParse(raw);
+  const p = CreateApiKeyInput.safeParse(raw);
   if (!p.success)
     return { ok: false, error: p.error.issues[0]?.message ?? "Invalid input." };
   if (p.data.domainId) {
