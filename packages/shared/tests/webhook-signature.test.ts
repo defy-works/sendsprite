@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { signWebhook, verifyWebhookSignature } from "../src/node";
 
@@ -59,11 +60,16 @@ describe("webhook signature", () => {
   it("refuses an empty secret instead of verifying against the empty key", () => {
     // `createHmac("sha256", "")` is legal, so `process.env.SECRET ?? ""` would
     // otherwise accept anything an attacker signed with the empty key.
-    const forged = signWebhook(BODY, "", T);
+    // Built by hand: `signWebhook` now refuses an empty secret (see below),
+    // so this is what an attacker with no secret would have to send.
+    const forged = `t=${T},v1=${createHmac("sha256", "").update(`${T}.${BODY}`).digest("hex")}`;
     expect(verifyWebhookSignature(BODY, forged, "", at(T))).toBe(false);
     expect(verifyWebhookSignature(BODY, forged, SECRET, at(T))).toBe(false);
     const real = signWebhook(BODY, SECRET, T);
     expect(verifyWebhookSignature(BODY, real, "", at(T))).toBe(false);
+    // And the signer refuses too, so an empty secret can never leave here as a
+    // well-formed header that every receiver silently rejects.
+    expect(() => signWebhook(BODY, "", T)).toThrow(/must not be empty/);
   });
 
   it("refuses a non-string header (a repeated header arrives as an array)", () => {
