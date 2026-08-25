@@ -207,7 +207,10 @@ export async function handleProviderEvent(
         .update(billingEvents)
         .set({
           appliedAt: applied.applied ? now : null,
-          skippedReason: applied.applied ? null : (applied.reason ?? null),
+          // A reason can accompany an *applied* event too: a delivery whose
+          // status half applied while its plan half was withheld is neither
+          // cleanly applied nor skipped, and the column is where that shows.
+          skippedReason: applied.reason ?? null,
         })
         .where(eq(billingEvents.id, event.deliveryId));
       return applied;
@@ -318,9 +321,12 @@ type BillingUpsert = Required<
  * A product without our metadata resolves to the free plan rather than
  * throwing: an operator adding a bespoke product in the provider dashboard
  * must not be able to 500 the webhook endpoint. A product that *claims* one of
- * our plans but carries unusable fields is the opposite case — a
- * configuration fault, not a different product — and is refused outright
- * rather than downgrading a paying customer on the strength of a bad string.
+ * our plans but carries unusable fields is the opposite case — a configuration
+ * fault, not a different product — so its plan fields are withheld and the
+ * stored ones kept, rather than downgrading a paying customer on the strength
+ * of a bad string. Only the plan fields: the status half of the same payload
+ * is applied, or a revoked subscription on a typo'd product would keep its
+ * paid caps until someone noticed the dashboard.
  */
 export async function applySubscription(
   tx: DbClient,
@@ -339,32 +345,53 @@ export async function applySubscription(
   if (before && sub.modifiedAt.getTime() < before.providerModifiedAt.getTime())
     return { applied: false, reason: "stale" };
 
-  if (!sub.plan && sub.claimsPlan) {
+  // Plan resolution is what can fail here; the *status* cannot. Whether a
+  // subscription is canceled, revoked, unpaid or past due is a fact the
+  // payload carries on its own, and it does not become unknowable because
+  // someone cleared a field on the product. So a product that claims one of
+  // our plans with unusable metadata withholds only its plan fields — the
+  // status, period and cancellation flag are applied as normal.
+  const brokenPlan = !sub.plan && sub.claimsPlan;
+  if (brokenPlan)
     // Loud on purpose: this is an operator error in the provider dashboard and
-    // it silently freezes entitlement changes — including a cancellation —
-    // for every customer on that product until it is fixed.
+    // it freezes the plan half of every entitlement change on that product
+    // until it is fixed.
     console.error(
       `[billing] product ${sub.productId} claims one of our plans but its metadata is unusable; ` +
-        `team ${teamId} (subscription ${sub.subscriptionId}) left on its stored entitlement. ` +
-        `Fix the product's metadata in the provider dashboard.`,
+        `team ${teamId} (subscription ${sub.subscriptionId}) keeps its stored plan while the ` +
+        `status is applied. Fix the product's metadata in the provider dashboard.`,
     );
+  if (brokenPlan && !before)
+    // Nothing stored to keep and `included_emails` has no default, so there is
+    // no honest row to write. The delivery is recorded and nothing changes;
+    // there is no entitlement here to protect either way.
     return { applied: false, reason: "malformed_plan_metadata" };
-  }
-  const plan = sub.plan ?? FREE_PLAN_METADATA;
-  if (!sub.plan)
+  if (!sub.plan && !sub.claimsPlan)
     console.warn(
       `[billing] product ${sub.productId} carries no plan metadata; team ${teamId} treated as free`,
     );
+  const meta = sub.plan ?? FREE_PLAN_METADATA;
+  const planFields =
+    brokenPlan && before
+      ? {
+          plan: before.plan,
+          includedEmails: before.includedEmails,
+          overagePer1kCents: before.overagePer1kCents,
+        }
+      : {
+          plan: meta.plan,
+          includedEmails: meta.includedEmails,
+          overagePer1kCents: meta.overagePer1kCents,
+        };
 
   const set: BillingUpsert = {
     provider: providerId,
     providerCustomerId: sub.customerId,
     subscriptionId: sub.subscriptionId,
     productId: sub.productId,
-    plan: plan.plan,
+    ...planFields,
     status: sub.status,
-    includedEmails: plan.includedEmails,
-    overagePer1kCents: plan.overagePer1kCents,
+    // Price-derived, not metadata-derived: it survives a broken product.
     overageEnabled: sub.hasMeteredPrice,
     cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
     periodStart: sub.currentPeriodStart,
@@ -386,6 +413,9 @@ export async function applySubscription(
 
   return {
     applied: true,
+    // Applied, but only half of it: the reason is still recorded on the
+    // delivery so a partial apply is visible without reading the logs.
+    ...(brokenPlan && { reason: "malformed_plan_metadata_status_only" }),
     audit: {
       teamId,
       actorUserId: null,

@@ -222,19 +222,22 @@ describe("handleProviderEvent", () => {
     ).toMatchObject({ plan: "free", monthlyCap: 3000, managed: true });
   });
 
-  it("keeps a paid entitlement when the product's plan metadata is malformed", async () => {
+  it("keeps the plan fields but applies the status when metadata is malformed", async () => {
     const { handleProviderEvent } = await import("@/services/billing");
     const { billingRow } = await import("@/services/billing/plans");
+    const { db } = await import("@/db");
+    const { billingEvents } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
     const { team } = await seedTeamWithKey();
     const base = {
       subscriptionId: "sub_h",
       externalCustomerId: team.id,
       currentPeriodStart: AUG,
       currentPeriodEnd: SEP,
-      status: "active",
     };
     const good = provider.signSubscriptionEvent("subscription.created", {
       ...base,
+      status: "active",
       productId: "prod_pro",
       modifiedAt: new Date("2026-08-01T00:00:00Z"),
     });
@@ -243,24 +246,108 @@ describe("handleProviderEvent", () => {
     // a dashboard fat-finger, not a product we do not sell.
     const broken = provider.signSubscriptionEvent("subscription.updated", {
       ...base,
+      status: "past_due",
       productId: "prod_broken",
       modifiedAt: new Date("2026-08-06T00:00:00Z"),
+      deliveryId: "half_1",
     });
     expect(
-      await handleProviderEvent(provider, broken.body, broken.headers),
+      await handleProviderEvent(
+        provider,
+        broken.body,
+        broken.headers,
+        new Date("2026-08-06T00:00:00Z"),
+      ),
+    ).toMatchObject({
+      status: 200,
+      applied: true,
+      reason: "malformed_plan_metadata_status_only",
+    });
+    const row = (await billingRow(team.id))!;
+    // The plan half is withheld...
+    expect(row).toMatchObject({ plan: "pro", includedEmails: 50000 });
+    // ...and the status half applied.
+    expect(row).toMatchObject({
+      status: "past_due",
+      productId: "prod_broken",
+    });
+    expect(row.providerModifiedAt).toEqual(new Date("2026-08-06T00:00:00Z"));
+    expect(row.pastDueAt).toEqual(new Date("2026-08-06T00:00:00Z"));
+    // Half-applied is neither applied nor skipped: the delivery says so.
+    const [event] = await db()
+      .select()
+      .from(billingEvents)
+      .where(eq(billingEvents.id, "half_1"));
+    expect(event!.appliedAt).not.toBeNull();
+    expect(event!.skippedReason).toBe("malformed_plan_metadata_status_only");
+  });
+
+  it("ends the entitlement when a revoked subscription's product is broken", async () => {
+    const { handleProviderEvent } = await import("@/services/billing");
+    const { billingRow, entitlementFrom } =
+      await import("@/services/billing/plans");
+    const { team } = await seedTeamWithKey();
+    const base = {
+      subscriptionId: "sub_revoke_broken",
+      externalCustomerId: team.id,
+      currentPeriodStart: AUG,
+      currentPeriodEnd: SEP,
+    };
+    const good = provider.signSubscriptionEvent("subscription.created", {
+      ...base,
+      status: "active",
+      productId: "prod_pro",
+      modifiedAt: new Date("2026-08-01T00:00:00Z"),
+    });
+    await handleProviderEvent(provider, good.body, good.headers);
+    // The customer churns while the product's metadata is broken. Dropping
+    // this delivery would leave them on paid caps indefinitely.
+    const revoked = provider.signSubscriptionEvent("subscription.revoked", {
+      ...base,
+      status: "canceled",
+      productId: "prod_broken",
+      modifiedAt: new Date("2026-08-07T00:00:00Z"),
+    });
+    expect(
+      await handleProviderEvent(provider, revoked.body, revoked.headers),
+    ).toMatchObject({ applied: true });
+    const row = (await billingRow(team.id))!;
+    expect(row.status).toBe("canceled");
+    // The stored allowance is still Pro's — nothing was downgraded on the
+    // strength of a bad string — but it no longer entitles anything.
+    expect(row.includedEmails).toBe(50000);
+    expect(
+      entitlementFrom(row, new Date("2026-08-15T00:00:00Z")),
+    ).toMatchObject({
+      plan: "free",
+      includedEmails: 3000,
+      monthlyCap: 3000,
+      managed: true,
+    });
+  });
+
+  it("writes nothing for a first subscription on a broken product", async () => {
+    const { handleProviderEvent } = await import("@/services/billing");
+    const { billingRow } = await import("@/services/billing/plans");
+    const { team } = await seedTeamWithKey();
+    // No stored row to keep the plan fields from, and `included_emails` has no
+    // default: there is no honest row to write.
+    const e = provider.signSubscriptionEvent("subscription.created", {
+      subscriptionId: "sub_first_broken",
+      externalCustomerId: team.id,
+      productId: "prod_broken",
+      status: "active",
+      currentPeriodStart: AUG,
+      currentPeriodEnd: SEP,
+    });
+    expect(
+      await handleProviderEvent(provider, e.body, e.headers),
     ).toMatchObject({
       status: 200,
       applied: false,
       reason: "malformed_plan_metadata",
     });
-    const row = (await billingRow(team.id))!;
-    expect(row).toMatchObject({
-      plan: "pro",
-      includedEmails: 50000,
-      productId: "prod_pro",
-    });
-    // The snapshot is untouched, so the next good payload is not "stale".
-    expect(row.providerModifiedAt).toEqual(new Date("2026-08-01T00:00:00Z"));
+    expect(await billingRow(team.id)).toBeUndefined();
   });
 
   it("treats a product that is not ours as free", async () => {

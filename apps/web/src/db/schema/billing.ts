@@ -167,7 +167,11 @@ export const billingEvents = pgTable(
     objectId: text("object_id"),
     /** Set once the event has been applied; null means received but skipped. */
     appliedAt: timestamp("applied_at", { withTimezone: true }),
-    /** Why it was skipped (stale, unknown team, unmodelled type). */
+    /**
+     * Why it was skipped (stale, unknown team, unmodelled type) — or, with
+     * `appliedAt` set, why it applied only in part (a product whose plan
+     * metadata is unusable applies its status and withholds its plan fields).
+     */
     skippedReason: text("skipped_reason"),
     /**
      * A `{ type }` stub, kept as a debugging aid only. Deliberately **not** a
