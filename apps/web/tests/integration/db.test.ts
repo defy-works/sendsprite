@@ -66,6 +66,37 @@ describe("migrations", () => {
     );
     expect(fks.map((r) => r.delete_rule)).toEqual(["CASCADE"]);
   });
+  it("creates the sending tables with the expected constraints", async () => {
+    const rows = await pg.db.execute(
+      sql`select table_name from information_schema.tables where table_schema='public'`,
+    );
+    const names = rows.map((r) => r.table_name);
+    for (const t of [
+      "api_keys",
+      "emails",
+      "email_attachments",
+      "email_events",
+      "suppressions",
+      "webhooks",
+      "webhook_deliveries",
+      "send_rate_state",
+      "worker_heartbeats",
+    ])
+      expect(names).toContain(t);
+    const idx = await pg.db.execute(
+      sql`select indexname from pg_indexes where tablename in ('emails','email_events','suppressions','api_keys')`,
+    );
+    const idxNames = idx.map((r) => r.indexname);
+    expect(idxNames).toEqual(
+      expect.arrayContaining([
+        "emails_team_idempotency_uidx",
+        "emails_ses_message_uidx",
+        "email_events_dedupe_uidx",
+        "suppressions_team_email_uidx",
+        "api_keys_hash_uidx",
+      ]),
+    );
+  });
   it("are idempotent", async () => {
     const { runMigrations } = await import("@/db/migrate");
     await expect(runMigrations(pg.url)).resolves.toBeUndefined();

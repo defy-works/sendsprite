@@ -27,5 +27,7 @@ describe("newId", () => {
     expect(ID_PREFIXES).toContain("evt");
     expect(ID_PREFIXES).toContain("dom");
     expect(ID_PREFIXES).toContain("stok");
+    for (const p of ["key", "em", "evt", "wh", "whd", "sup", "att"])
+      expect(ID_PREFIXES).toContain(p);
   });
 });

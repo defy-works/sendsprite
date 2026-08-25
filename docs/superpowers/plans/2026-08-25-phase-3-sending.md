@@ -81,7 +81,7 @@ infra: Dockerfile EXPOSE 587, docker-compose port 587, README
 - Modify: `apps/web/src/db/schema/index.ts`, `packages/shared/src/ids.ts` (ensure `key`, `em`, `evt`, `wh`, `whd`, `sup`, `att`)
 - Test: `apps/web/tests/integration/db.test.ts`
 
-- [ ] **Step 1: Failing test**
+- [x] **Step 1: Failing test**
 
 Append to `db.test.ts`:
 
@@ -121,7 +121,7 @@ it("creates the sending tables with the expected constraints", async () => {
 
 Run: `cd apps/web && bun run test:integration -- db` → FAIL.
 
-- [ ] **Step 2: Schema files**
+- [x] **Step 2: Schema files**
 
 `api-keys.ts`:
 
@@ -484,7 +484,7 @@ export const workerHeartbeats = pgTable("worker_heartbeats", {
 
 Export all from `schema/index.ts`. Add `"att"` to `ID_PREFIXES` if missing (others exist).
 
-- [ ] **Step 3: Migrate, test, commit**
+- [x] **Step 3: Migrate, test, commit**
 
 Run: `cd apps/web && bun run db:generate` → `0007_*.sql`; `bun run test:integration -- db` → PASS.
 
@@ -2383,18 +2383,16 @@ export async function createEmail(
         })
         .returning();
       if (input.attachments.length)
-        await tx
-          .insert(emailAttachments)
-          .values(
-            input.attachments.map((a, i) => ({
-              id: attachmentsMeta[i]!.id,
-              emailId: id,
-              filename: a.filename,
-              contentType: attachmentsMeta[i]!.contentType,
-              size: attachmentsMeta[i]!.size,
-              bytes: Buffer.from(a.content, "base64"),
-            })),
-          );
+        await tx.insert(emailAttachments).values(
+          input.attachments.map((a, i) => ({
+            id: attachmentsMeta[i]!.id,
+            emailId: id,
+            filename: a.filename,
+            contentType: attachmentsMeta[i]!.contentType,
+            size: attachmentsMeta[i]!.size,
+            bytes: Buffer.from(a.content, "base64"),
+          })),
+        );
       return [r!];
     })
     .catch((e) => {
