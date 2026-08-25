@@ -105,11 +105,11 @@ export function tooLarge(req: Request, headers?: HeadersInit) {
 }
 
 /**
- * `x-ratelimit-*` for the emails endpoints. With a team daily cap: limit,
- * remaining, and `reset` = next UTC midnight (epoch seconds), the cap's
- * window. Without one the SES 24-hour quota is shown instead; it is a
- * trailing window with no fixed reset, so `x-ratelimit-reset` is omitted.
- * No cap at all: `unlimited`, no reset.
+ * `x-ratelimit-*` for the emails endpoints: the binding cap is reported. The
+ * team daily cap first (reset = next UTC midnight), then the monthly cap
+ * (reset = the end of the billing window), then the SES 24-hour quota, which
+ * is a trailing window with no fixed reset, so `x-ratelimit-reset` is
+ * omitted. No cap at all: `unlimited`, no reset.
  */
 export async function rateHeaders(
   teamId: string,
@@ -128,6 +128,14 @@ export async function rateHeaders(
       "x-ratelimit-reset": String(Math.floor(reset / 1000)),
     };
   }
+  if (u.monthlyLimit != null)
+    return {
+      "x-ratelimit-limit": String(u.monthlyLimit),
+      "x-ratelimit-remaining": String(
+        Math.max(0, u.monthlyLimit - u.monthlyUsed),
+      ),
+      "x-ratelimit-reset": String(Math.floor(u.monthlyUntil.getTime() / 1000)),
+    };
   if (u.instanceQuota != null)
     return {
       "x-ratelimit-limit": String(u.instanceQuota),

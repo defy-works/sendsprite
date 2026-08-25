@@ -146,10 +146,11 @@ bucket is empty the send job is deferred and retried, so the API call still
 answers 201 and the email waits in `queued` a little longer.
 
 Every response from the emails endpoints carries `x-ratelimit-limit` and
-`x-ratelimit-remaining`. With a team daily cap they also carry
-`x-ratelimit-reset` (next UTC midnight, epoch seconds); against the SES
-24-hour quota there is no fixed reset, so the header is omitted, and with no
-cap at all both values read `unlimited`.
+`x-ratelimit-remaining`, reporting whichever cap binds first. With a team
+daily cap they also carry `x-ratelimit-reset` (next UTC midnight, epoch
+seconds); with only a monthly cap the reset is the end of that month's
+window; against the SES 24-hour quota there is no fixed reset, so the header
+is omitted, and with no cap at all both values read `unlimited`.
 
 ## SMTP relay
 
