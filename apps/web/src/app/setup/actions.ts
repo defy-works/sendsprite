@@ -10,7 +10,10 @@ import { SES_REGIONS } from "@/lib/aws/regions";
 import type { Result } from "@/lib/result";
 import * as aws from "@/services/aws-connect";
 import * as cf from "@/services/cloudflare-connect";
-import { issueSetupToken } from "@/services/setup-tokens";
+import {
+  issueSetupToken,
+  revokePendingSetupTokens,
+} from "@/services/setup-tokens";
 import { updateInstanceSettings } from "@/services/instance-settings";
 
 export type { Result } from "@/lib/result";
@@ -27,10 +30,13 @@ function revalidate() {
   revalidatePath("/app/settings/instance");
 }
 
-const region = (v: unknown) =>
-  (SES_REGIONS as readonly string[]).includes(String(v))
-    ? String(v)
-    : loadEnv().AWS_DEFAULT_REGION;
+const UNSUPPORTED_REGION = {
+  ok: false as const,
+  error: "Unsupported SES region.",
+};
+/** The client only offers SES_REGIONS; anything else is a tampered form. */
+const region = (v: unknown): string | null =>
+  (SES_REGIONS as readonly string[]).includes(String(v)) ? String(v) : null;
 
 /**
  * Issues a one-time callback token and returns the CloudFormation quick-create
@@ -49,6 +55,8 @@ export async function startQuickCreate(
         "One-click connect needs a public https APP_URL; use manual keys locally.",
     };
   const r = region(fd.get("region"));
+  if (!r) return UNSUPPORTED_REGION;
+  await revokePendingSetupTokens("aws_callback", a.userId);
   const { token } = await issueSetupToken({
     purpose: "aws_callback",
     issuedBy: a.userId,
@@ -71,18 +79,22 @@ export async function startQuickCreate(
 
 export async function detectRole(fd: FormData) {
   const a = await actor();
-  const res = await aws.detectInstanceRole(region(fd.get("region")), a);
+  const r = region(fd.get("region"));
+  if (!r) return UNSUPPORTED_REGION;
+  const res = await aws.detectInstanceRole(r, a);
   revalidate();
   return res;
 }
 
 export async function connectKeys(fd: FormData) {
   const a = await actor();
+  const r = region(fd.get("region"));
+  if (!r) return UNSUPPORTED_REGION;
   const res = await aws.connectWithKeys(
     {
       accessKeyId: fd.get("accessKeyId"),
       secretAccessKey: fd.get("secretAccessKey"),
-      region: region(fd.get("region")),
+      region: r,
     },
     a,
   );

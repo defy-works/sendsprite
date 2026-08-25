@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/Button";
 import { StatusDot } from "@/components/ui/StatusDot";
 import type { WizardProps } from "../types";
 import { finishSetup } from "../actions";
-import { Alert, Heading } from "./shared";
+import { Alert, Heading, Notice } from "./shared";
 
 export function DoneStep({ settings }: WizardProps) {
   const router = useRouter();
@@ -50,10 +50,10 @@ export function DoneStep({ settings }: WizardProps) {
         />
       </div>
       {!aws && (
-        <p className="text-sm text-white/65">
-          You can open the dashboard now and connect AWS later from Settings →
-          Instance, but nothing will send until then.
-        </p>
+        <Notice>
+          AWS isn&apos;t connected yet — connect it from Settings → Instance
+          before adding domains.
+        </Notice>
       )}
       <div>
         <Button

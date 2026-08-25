@@ -10,7 +10,7 @@ export default async function WaitingPage() {
   const settings = await getInstanceSettings();
   if (settings.setupCompleted) redirect("/app");
   if (ctx.role === "owner") redirect("/setup");
-  const owners = await listOwnerEmails();
+  const owners = await listOwnerEmails(ctx.userId);
   return (
     <main className="grid-hairlines flex min-h-dvh items-center justify-center p-6">
       <div className="glass-strong w-full max-w-sm p-8">
@@ -19,7 +19,7 @@ export default async function WaitingPage() {
           An owner is finishing setup.
         </h1>
         <p className="mt-2 text-sm text-white/65">
-          Sendsprite needs an AWS connection before anyone can use it. Refresh
+          You&apos;ll be able to use Sendsprite once they&apos;re done. Refresh
           in a minute, or nudge an owner:
         </p>
         {owners.length > 0 && (

@@ -50,5 +50,11 @@ export async function POST(req: Request) {
       { status: 502 },
     );
   }
+  // Only the Lambda sees this response; keep a server-side trace of it.
+  if (res.data.warning)
+    console.warn(
+      "setup/aws/callback: connected with warning:",
+      res.data.warning,
+    );
   return NextResponse.json({ ok: true, warning: res.data.warning ?? null });
 }

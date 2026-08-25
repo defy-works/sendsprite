@@ -47,6 +47,7 @@ export default async function SetupPage({
         <Link href="/" className="num-stamp">
           Sendsprite
         </Link>
+        <h1 className="sr-only">Setup</h1>
         <div className="mt-6">
           <SetupWizard
             settings={settings}

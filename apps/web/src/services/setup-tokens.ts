@@ -30,6 +30,29 @@ export async function issueSetupToken(i: {
 }
 
 /**
+ * Burns every unconsumed token this user holds, so at most one quick-create
+ * link is live per owner (a stale tab cannot connect an older stack later).
+ * Returns the number revoked.
+ */
+export async function revokePendingSetupTokens(
+  purpose: Purpose,
+  issuedBy: string,
+): Promise<number> {
+  const rows = await db()
+    .update(setupTokens)
+    .set({ consumedAt: new Date() })
+    .where(
+      and(
+        eq(setupTokens.purpose, purpose),
+        eq(setupTokens.issuedBy, issuedBy),
+        isNull(setupTokens.consumedAt),
+      ),
+    )
+    .returning({ id: setupTokens.id });
+  return rows.length;
+}
+
+/**
  * Atomically marks the token consumed (single `UPDATE … RETURNING`, so two
  * concurrent callbacks cannot both succeed); null when unknown, expired or
  * already used.

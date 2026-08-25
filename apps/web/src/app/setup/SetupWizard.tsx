@@ -19,26 +19,28 @@ export function SetupWizard(props: WizardProps) {
   const current = STEPS.indexOf(step);
   return (
     <div className="flex flex-col gap-6">
-      <ol className="flex flex-wrap gap-x-5 gap-y-2">
-        {STEPS.map((s, i) => (
-          <li key={s}>
-            <Link
-              href={`/setup?step=${s}`}
-              aria-current={s === step ? "step" : undefined}
-              className={cn(
-                "num-stamp transition-colors",
-                i === current
-                  ? "text-indigo-300"
-                  : i < current
-                    ? "text-white/60 hover:text-white/80"
-                    : "text-white/35 hover:text-white/60",
-              )}
-            >
-              {i + 1} · {LABELS[s]}
-            </Link>
-          </li>
-        ))}
-      </ol>
+      <nav aria-label="Setup steps">
+        <ol className="flex flex-wrap gap-x-5 gap-y-2">
+          {STEPS.map((s, i) => (
+            <li key={s}>
+              <Link
+                href={`/setup?step=${s}`}
+                aria-current={s === step ? "step" : undefined}
+                className={cn(
+                  "num-stamp transition-colors",
+                  i === current
+                    ? "text-indigo-300"
+                    : i < current
+                      ? "text-white/60 hover:text-white/80"
+                      : "text-white/35 hover:text-white/60",
+                )}
+              >
+                {i + 1} · {LABELS[s]}
+              </Link>
+            </li>
+          ))}
+        </ol>
+      </nav>
       {step === "aws" && <AwsStep {...props} />}
       {step === "production" && <ProductionStep {...props} />}
       {step === "cloudflare" && <CloudflareStep {...props} />}

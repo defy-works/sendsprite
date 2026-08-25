@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 
+/** Step title. The page owns its `<h1>`; steps are sections of it. */
 export function Heading({ children }: { children: ReactNode }) {
-  return <h1 className="text-lg font-medium">{children}</h1>;
+  return <h2 className="text-lg font-medium">{children}</h2>;
 }
 
 export function Panel({

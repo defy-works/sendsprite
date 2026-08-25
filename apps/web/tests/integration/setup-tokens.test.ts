@@ -80,6 +80,30 @@ describe("setup tokens", () => {
       id,
     });
   });
+  it("revokes every pending token for a user and leaves other users alone", async () => {
+    const {
+      issueSetupToken,
+      consumeSetupToken,
+      pendingSetupToken,
+      revokePendingSetupTokens,
+    } = await import("@/services/setup-tokens");
+    const mk = (issuedBy: string) =>
+      issueSetupToken({
+        purpose: "aws_callback",
+        issuedBy,
+        region: "us-east-1",
+        ttlMs: 60_000,
+      });
+    const a1 = await mk("u3");
+    const a2 = await mk("u3");
+    const other = await mk("u2");
+    expect(await revokePendingSetupTokens("aws_callback", "u3")).toBe(2);
+    expect(await pendingSetupToken("aws_callback", "u3")).toBeNull();
+    expect(await consumeSetupToken("aws_callback", a1.token)).toBeNull();
+    expect(await consumeSetupToken("aws_callback", a2.token)).toBeNull();
+    expect(await consumeSetupToken("aws_callback", other.token)).not.toBeNull();
+    expect(await revokePendingSetupTokens("aws_callback", "u3")).toBe(0);
+  });
   it("drops tokens when the issuing user is deleted", async () => {
     const { issueSetupToken, consumeSetupToken } =
       await import("@/services/setup-tokens");

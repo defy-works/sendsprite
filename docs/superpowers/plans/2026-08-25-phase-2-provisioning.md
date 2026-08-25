@@ -4848,6 +4848,15 @@ git commit -m "feat(web): setup wizard — AWS (role/one-click/manual), SES prod
 - `startQuickCreate` refuses (`ok:false`) when `APP_URL` is not https (template `CallbackUrl` allows only `^https://`); the panel also disables the button via the `oneClickAvailable` prop. The popup is opened synchronously on click and given its URL after the action resolves; when blocked, the link is rendered.
 - `AwsStep` fetches `/api/setup/aws/status` once on mount (resumes polling on a pending token, surfaces `lastFailure.reason`) and every 3 s while pending; connect `warning`s render as amber notices. Shared `Heading/Panel/Alert/Notice` are in `steps/shared.tsx`.
 
+**Review follow-ups (wizard polish commit, after Task 15):**
+
+- Skipping AWS during setup is by design: the waiting page copy no longer claims an AWS connection is required, and `DoneStep` shows an amber notice ("AWS isn't connected yet — connect it from Settings → Instance before adding domains.") when `awsMode === "none"`; `finishSetup` is unchanged.
+- `QuickCreate` lives in `steps/QuickCreate.tsx`, calls `router.refresh()` itself, sets `w.opener = null`, and stops polling on HTTP 401 ("Session expired — reload the page."), after 20 consecutive failed fetches, when `pendingToken` is false, or once `expiresAt` has passed ("The one-click link expired; open a new one.").
+- `startQuickCreate` calls `revokePendingSetupTokens("aws_callback", userId)` before issuing, so one link is live per owner. `region()` in `actions.ts` returns `ok:false` "Unsupported SES region." instead of substituting the default.
+- `listOwnerEmails(userId)` returns owners of the caller's teams, falling back to every owner only when that set is empty (`tests/integration/session.test.ts`).
+- a11y: step `Heading` is an `<h2>` (the setup page owns an sr-only `<h1>`, so the instance settings tab no longer has three `<h1>`s); the step list is wrapped in `<nav aria-label="Setup steps">`.
+- The callback's connect `warning` is only ever returned to the Lambda; the route `console.warn`s it. Persisting it for the wizard was judged YAGNI.
+
 ---
 
 ### Task 15: Instance settings tab + domains UI

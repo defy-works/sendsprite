@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { TEAM_ROLES, type TeamRole } from "@sendsprite/shared";
 import { db } from "@/db";
 import { member, organization, user } from "@/db/schema";
@@ -49,13 +49,28 @@ export async function resolveTeam(
   return { userId, team: { id: row.id, name: row.name, slug: row.slug }, role };
 }
 
-/** Distinct emails of every team owner — shown to members waiting on setup. */
-export async function listOwnerEmails(): Promise<string[]> {
-  const rows = await db()
-    .selectDistinct({ email: user.email })
+/**
+ * Owner emails to show a member waiting on setup: owners of the caller's
+ * own teams first; only when none exist (e.g. the caller's team has no owner
+ * left) every owner on the instance.
+ */
+export async function listOwnerEmails(userId: string): Promise<string[]> {
+  const mine = db()
+    .select({ id: member.organizationId })
     .from(member)
-    .innerJoin(user, eq(member.userId, user.id))
-    .where(eq(member.role, "owner"))
-    .orderBy(user.email);
-  return rows.map((r) => r.email);
+    .where(eq(member.userId, userId));
+  const query = (scoped: boolean) =>
+    db()
+      .selectDistinct({ email: user.email })
+      .from(member)
+      .innerJoin(user, eq(member.userId, user.id))
+      .where(
+        scoped
+          ? and(eq(member.role, "owner"), inArray(member.organizationId, mine))
+          : eq(member.role, "owner"),
+      )
+      .orderBy(user.email);
+  const rows = await query(true);
+  const all = rows.length > 0 ? rows : await query(false);
+  return all.map((r) => r.email);
 }

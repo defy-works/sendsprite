@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { member, organization, user } from "@/db/schema";
-import { resolveTeam } from "@/lib/team";
+import { listOwnerEmails, resolveTeam } from "@/lib/team";
 import { startPg } from "./_pg";
 
 let pg: Awaited<ReturnType<typeof startPg>>;
@@ -9,6 +9,8 @@ beforeAll(async () => {
   await pg.db.insert(user).values([
     { id: "u1", name: "One", email: "one@example.com" },
     { id: "u2", name: "Two", email: "two@example.com" },
+    { id: "u3", name: "Three", email: "three@example.com" },
+    { id: "u4", name: "Four", email: "four@example.com" },
   ]);
   const t0 = new Date("2026-01-01T00:00:00Z");
   const t1 = new Date("2026-01-02T00:00:00Z");
@@ -28,6 +30,21 @@ beforeAll(async () => {
       id: "m2",
       organizationId: "org2",
       userId: "u1",
+      role: "member",
+      createdAt: t1,
+    },
+    // u3 owns org2; u4 is a plain member of org2 only.
+    {
+      id: "m3",
+      organizationId: "org2",
+      userId: "u3",
+      role: "owner",
+      createdAt: t1,
+    },
+    {
+      id: "m4",
+      organizationId: "org2",
+      userId: "u4",
       role: "member",
       createdAt: t1,
     },
@@ -53,5 +70,23 @@ describe("resolveTeam", () => {
   });
   it("returns null for a user with no memberships", async () => {
     expect(await resolveTeam("u2", null)).toBeNull();
+  });
+});
+
+describe("listOwnerEmails", () => {
+  it("returns only the owners of the caller's teams", async () => {
+    expect(await listOwnerEmails("u4")).toEqual(["three@example.com"]);
+  });
+  it("covers every team the caller belongs to", async () => {
+    expect(await listOwnerEmails("u1")).toEqual([
+      "one@example.com",
+      "three@example.com",
+    ]);
+  });
+  it("falls back to all owners for a user with no memberships", async () => {
+    expect(await listOwnerEmails("u2")).toEqual([
+      "one@example.com",
+      "three@example.com",
+    ]);
   });
 });

@@ -1,33 +1,24 @@
 "use client";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useActionState, useEffect, useState, useTransition } from "react";
+import { useActionState, useState, useTransition } from "react";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Divider } from "@/components/ui/Divider";
 import { Input } from "@/components/ui/Input";
 import { Label } from "@/components/ui/Label";
 import { Select } from "@/components/ui/Select";
-import { Spinner } from "@/components/ui/Spinner";
 import type { WizardProps } from "../types";
 import {
   connectKeys,
   detectRole,
   disconnectAws,
-  startQuickCreate,
   type Result,
 } from "../actions";
+import { QuickCreate } from "./QuickCreate";
 import { Alert, Heading, Notice, Panel } from "./shared";
 
 type Connected = { accountId: string; status: string; warning?: string };
-type StatusBody = {
-  connected: boolean;
-  pendingToken: boolean;
-  lastFailure?: { at: string; reason: string } | null;
-};
-
-const POLL_MS = 3000;
-
 export function AwsStep({
   settings,
   regions,
@@ -155,11 +146,7 @@ function ConnectPanels({
           Opens the AWS console with a prepared CloudFormation stack that
           creates a least-privilege IAM user and hands its keys back here.
         </p>
-        <QuickCreate
-          region={region}
-          available={oneClickAvailable}
-          onConnected={() => router.refresh()}
-        />
+        <QuickCreate region={region} available={oneClickAvailable} />
       </Panel>
 
       <Panel title="Use this server's role">
@@ -221,133 +208,4 @@ function ConnectPanels({
       )}
     </div>
   );
-}
-
-/**
- * One-click flow. The popup is opened synchronously on click (before the
- * server action resolves) so popup blockers let it through; the URL is
- * assigned once the token is issued. If the popup was still blocked, the
- * link is rendered instead. Status is polled until the callback lands.
- */
-function QuickCreate({
-  region,
-  available,
-  onConnected,
-}: {
-  region: string;
-  available: boolean;
-  onConnected: () => void;
-}) {
-  const [pending, start] = useTransition();
-  const [error, setError] = useState<string | null>(null);
-  const [fallbackUrl, setFallbackUrl] = useState<string | null>(null);
-  const [polling, setPolling] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
-
-  // Resume polling if the owner comes back with a callback still outstanding.
-  useEffect(() => {
-    let cancelled = false;
-    fetchStatus()
-      .then((s) => {
-        if (cancelled || !s) return;
-        if (s.pendingToken) setPolling(true);
-        else if (s.lastFailure) setFailure(s.lastFailure.reason);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!polling) return;
-    let stopped = false;
-    const tick = async () => {
-      const s = await fetchStatus();
-      if (stopped || !s) return;
-      if (s.connected) {
-        setPolling(false);
-        onConnected();
-      } else if (!s.pendingToken) {
-        setPolling(false);
-        setFailure(
-          s.lastFailure?.reason ??
-            "The callback did not arrive in time. Try again.",
-        );
-      }
-    };
-    const id = setInterval(() => void tick(), POLL_MS);
-    return () => {
-      stopped = true;
-      clearInterval(id);
-    };
-  }, [polling, onConnected]);
-
-  const open = () => {
-    setError(null);
-    setFailure(null);
-    setFallbackUrl(null);
-    const w = window.open("", "_blank");
-    const fd = new FormData();
-    fd.set("region", region);
-    start(async () => {
-      const res = await startQuickCreate(fd);
-      if (!res.ok) {
-        w?.close();
-        setError(res.error);
-        return;
-      }
-      if (w) w.location.href = res.data.url;
-      else setFallbackUrl(res.data.url);
-      setPolling(true);
-    });
-  };
-
-  return (
-    <div className="flex flex-col gap-3">
-      {!available && (
-        <Notice>
-          One-click connect needs a public https APP_URL; use manual keys
-          locally.
-        </Notice>
-      )}
-      <div className="flex items-center gap-3">
-        <Button onClick={open} disabled={!available || pending || polling}>
-          {pending ? "Preparing…" : "Open AWS console"}
-        </Button>
-        {polling && (
-          <span className="flex items-center gap-2 text-sm text-white/65">
-            <Spinner size={14} /> Waiting for CloudFormation…
-          </span>
-        )}
-      </div>
-      {polling && (
-        <p className="text-sm text-white/65">
-          Click <strong>Create stack</strong> in the tab we opened and
-          acknowledge the IAM capability checkbox. This page updates on its own.
-        </p>
-      )}
-      {fallbackUrl && (
-        <p className="text-sm text-white/65">
-          Your browser blocked the popup.{" "}
-          <a
-            className="text-indigo-300 underline"
-            href={fallbackUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Open the AWS console
-          </a>
-          .
-        </p>
-      )}
-      {error && <Alert>{error}</Alert>}
-      {failure && <Alert>{failure}</Alert>}
-    </div>
-  );
-}
-
-async function fetchStatus(): Promise<StatusBody | null> {
-  const r = await fetch("/api/setup/aws/status", { cache: "no-store" });
-  return r.ok ? ((await r.json()) as StatusBody) : null;
 }
