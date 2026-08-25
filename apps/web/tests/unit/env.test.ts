@@ -96,3 +96,50 @@ describe("parseEnv", () => {
     ).toBe("eu-central-2");
   });
 });
+
+describe("billing env", () => {
+  it("is off by default and needs no Polar credentials", () => {
+    const e = parseEnv({ ...BASE });
+    expect(e.BILLING_ENABLED).toBe(false);
+    expect(e.BILLING_PROVIDER).toBe("polar");
+    expect(e.BILLING_EVENT_NAME).toBe("email.sent");
+  });
+
+  it("refuses BILLING_ENABLED without a token and a webhook secret", () => {
+    expect(() => parseEnv({ ...BASE, BILLING_ENABLED: "1" })).toThrow(
+      /POLAR_ACCESS_TOKEN/,
+    );
+    expect(() =>
+      parseEnv({ ...BASE, BILLING_ENABLED: "1", POLAR_ACCESS_TOKEN: "t" }),
+    ).toThrow(/POLAR_WEBHOOK_SECRET/);
+  });
+
+  it("accepts a fully configured sandbox", () => {
+    const e = parseEnv({
+      ...BASE,
+      BILLING_ENABLED: "true",
+      POLAR_ACCESS_TOKEN: "polar_oat_x",
+      POLAR_WEBHOOK_SECRET: "whsec_x",
+      POLAR_SERVER: "sandbox",
+      POLAR_METER_ID: "fb2f372a-f6a8-4697-93d6-adab7f76e4ad",
+    });
+    expect(e.BILLING_ENABLED).toBe(true);
+    expect(e.POLAR_SERVER).toBe("sandbox");
+    expect(e.POLAR_METER_ID).toBe("fb2f372a-f6a8-4697-93d6-adab7f76e4ad");
+  });
+
+  it("the fake provider needs no credentials but is refused in production", () => {
+    expect(
+      parseEnv({ ...BASE, BILLING_ENABLED: "1", BILLING_PROVIDER: "fake" })
+        .BILLING_PROVIDER,
+    ).toBe("fake");
+    expect(() =>
+      parseEnv({
+        ...BASE,
+        NODE_ENV: "production",
+        BILLING_ENABLED: "1",
+        BILLING_PROVIDER: "fake",
+      }),
+    ).toThrow(/BILLING_PROVIDER/);
+  });
+});

@@ -39,6 +39,26 @@ export const schema = z
       .min(1024)
       .default(10 * 1024 * 1024),
     LANDING_ENABLED: bool.default(true),
+    /**
+     * Hosted-service billing. Off by default: a self-hosted instance never
+     * sees a Billing page, a checkout, or a provider webhook endpoint, and
+     * `send-limits.ts` behaves exactly as it does without this phase.
+     */
+    BILLING_ENABLED: bool.default(false),
+    /** `fake` is an in-memory provider for tests and e2e; never in production. */
+    BILLING_PROVIDER: z.enum(["polar", "fake"]).default("polar"),
+    /** Usage event name ingested to the provider; must match the meter's filter. */
+    BILLING_EVENT_NAME: z.string().min(1).default("email.sent"),
+    POLAR_ACCESS_TOKEN: z.string().min(1).optional(),
+    POLAR_WEBHOOK_SECRET: z.string().min(1).optional(),
+    POLAR_SERVER: z.enum(["sandbox", "production"]).default("production"),
+    /**
+     * Optional, display only: with it set the billing page can also show the
+     * provider's own meter balance next to ours. Billing does not need it —
+     * usage events are ingested by name, and the meter is configured by hand
+     * in the Polar dashboard.
+     */
+    POLAR_METER_ID: z.string().min(1).optional(),
     SIGNUP_MODE: z.enum(["auto", "open", "invite", "closed"]).default("auto"),
     EMAIL_PASSWORD_ENABLED: bool.default(false),
     GOOGLE_CLIENT_ID: z.string().optional(),
@@ -74,6 +94,30 @@ export const schema = z
   .refine((e) => Boolean(e.SMTP_TLS_CERT) === Boolean(e.SMTP_TLS_KEY), {
     message: "SMTP_TLS_CERT and SMTP_TLS_KEY must be set together",
     path: ["SMTP_TLS_CERT"],
+  })
+  .refine(
+    (e) =>
+      !e.BILLING_ENABLED ||
+      e.BILLING_PROVIDER === "fake" ||
+      Boolean(e.POLAR_ACCESS_TOKEN),
+    {
+      message: "BILLING_ENABLED requires POLAR_ACCESS_TOKEN",
+      path: ["POLAR_ACCESS_TOKEN"],
+    },
+  )
+  .refine(
+    (e) =>
+      !e.BILLING_ENABLED ||
+      e.BILLING_PROVIDER === "fake" ||
+      Boolean(e.POLAR_WEBHOOK_SECRET),
+    {
+      message: "BILLING_ENABLED requires POLAR_WEBHOOK_SECRET",
+      path: ["POLAR_WEBHOOK_SECRET"],
+    },
+  )
+  .refine((e) => e.NODE_ENV !== "production" || e.BILLING_PROVIDER !== "fake", {
+    message: "BILLING_PROVIDER=fake is refused in production",
+    path: ["BILLING_PROVIDER"],
   });
 
 export type Env = z.infer<typeof schema> & {
