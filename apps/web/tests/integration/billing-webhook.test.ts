@@ -222,6 +222,67 @@ describe("handleProviderEvent", () => {
     ).toMatchObject({ plan: "free", monthlyCap: 3000, managed: true });
   });
 
+  it("takes the past-due stamp from the provider, not from arrival time", async () => {
+    // Measuring the grace window from when *we* saw the webhook makes the
+    // deadline a function of our own uptime: a delivery outage would hand
+    // every affected customer extra days of paid caps.
+    const { handleProviderEvent } = await import("@/services/billing");
+    const { billingRow } = await import("@/services/billing/plans");
+    const { team } = await seedTeamWithKey();
+    const failedAt = new Date("2026-08-04T09:15:00Z");
+    const e = provider.signSubscriptionEvent("subscription.updated", {
+      subscriptionId: "sub_pd",
+      externalCustomerId: team.id,
+      productId: "prod_pro",
+      status: "past_due",
+      currentPeriodStart: AUG,
+      currentPeriodEnd: SEP,
+      pastDueAt: failedAt,
+    });
+    // Delivered three days late, after an outage.
+    await handleProviderEvent(
+      provider,
+      e.body,
+      e.headers,
+      new Date("2026-08-07T00:00:00Z"),
+    );
+    expect((await billingRow(team.id))!.pastDueAt).toEqual(failedAt);
+  });
+
+  it("keeps its own stamp when the provider reports none", async () => {
+    const { handleProviderEvent } = await import("@/services/billing");
+    const { billingRow } = await import("@/services/billing/plans");
+    const { team } = await seedTeamWithKey();
+    const base = {
+      subscriptionId: "sub_pd2",
+      externalCustomerId: team.id,
+      productId: "prod_pro",
+      status: "past_due",
+      currentPeriodStart: AUG,
+      currentPeriodEnd: SEP,
+    };
+    const first = provider.signSubscriptionEvent("subscription.updated", {
+      ...base,
+      modifiedAt: new Date("2026-08-04T00:00:00Z"),
+    });
+    const seenAt = new Date("2026-08-04T12:00:00Z");
+    await handleProviderEvent(provider, first.body, first.headers, seenAt);
+    expect((await billingRow(team.id))!.pastDueAt).toEqual(seenAt);
+    // A later delivery about the same past-due subscription must not restart
+    // the clock.
+    const again = provider.signSubscriptionEvent("subscription.updated", {
+      ...base,
+      modifiedAt: new Date("2026-08-06T00:00:00Z"),
+    });
+    await handleProviderEvent(
+      provider,
+      again.body,
+      again.headers,
+      new Date("2026-08-06T12:00:00Z"),
+    );
+    expect((await billingRow(team.id))!.pastDueAt).toEqual(seenAt);
+  });
+
   it("keeps the plan fields but applies the status when metadata is malformed", async () => {
     const { handleProviderEvent } = await import("@/services/billing");
     const { billingRow } = await import("@/services/billing/plans");
@@ -536,6 +597,7 @@ describe("handleProviderEvent", () => {
           modifiedAt: new Date("nope"),
           hasMeteredPrice: true,
           overageCapCents: null,
+          pastDueAt: null,
           plan: null,
           claimsPlan: false,
         },
@@ -585,6 +647,7 @@ describe("handleProviderEvent", () => {
         modifiedAt: AUG,
         hasMeteredPrice: true,
         overageCapCents: null,
+        pastDueAt: null,
         plan: { plan: "pro", includedEmails: 2 ** 31, overagePer1kCents: 40 },
         claimsPlan: true,
       },
@@ -678,6 +741,7 @@ describe("ordering under concurrency", () => {
     modifiedAt,
     hasMeteredPrice: true,
     overageCapCents: null,
+    pastDueAt: null,
     plan: {
       plan: "pro" as const,
       includedEmails: 50000,

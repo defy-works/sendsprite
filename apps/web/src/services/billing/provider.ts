@@ -39,6 +39,17 @@ export interface ProviderSubscription {
    * renderer has no unreachable case to write.
    */
   overageCapCents: number | null;
+  /**
+   * When the provider put this subscription into `past_due`, or `null` when it
+   * is not past due (or the provider does not say).
+   *
+   * The grace window is measured from *the provider's* observation, not ours:
+   * stamping it on arrival makes the deadline a function of our webhook
+   * uptime, so a delivery outage silently hands every affected customer extra
+   * days of paid caps, and a redelivery after a restart could restart the
+   * clock. The provider knows when the charge actually failed.
+   */
+  pastDueAt: Date | null;
   plan: PlanMetadata | null;
   /**
    * The product declares one of our plans, however unusable the rest of its
@@ -199,6 +210,12 @@ export function subscriptionDefect(sub: ProviderSubscription): string | null {
   ] as const)
     if (!(value instanceof Date) || Number.isNaN(value.getTime()))
       return `invalid ${field}`;
+  // Nullable, but an `Invalid Date` here still reaches a timestamp column.
+  if (
+    sub.pastDueAt !== null &&
+    (!(sub.pastDueAt instanceof Date) || Number.isNaN(sub.pastDueAt.getTime()))
+  )
+    return "invalid pastDueAt";
   return null;
 }
 

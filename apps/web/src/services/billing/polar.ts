@@ -63,6 +63,8 @@ export interface PolarSubscription {
   cancelAtPeriodEnd: boolean;
   createdAt: Date | string;
   modifiedAt?: Date | string | null;
+  /** When Polar put the subscription into `past_due`. */
+  pastDueAt?: Date | string | null;
   customer?: { id: string; externalId?: string | null };
   product?: PolarProduct;
   /** Prices enabled on the subscription; falls back to the product's. */
@@ -141,6 +143,9 @@ export function normalisePolarSubscription(
     modifiedAt: asDate(s.modifiedAt ?? s.createdAt),
     hasMeteredPrice: Boolean(metered),
     overageCapCents: metered?.capAmount ?? null,
+    // Polar's own observation of when the charge failed; the grace window is
+    // measured from it rather than from when we happened to receive this.
+    pastDueAt: s.pastDueAt ? asDate(s.pastDueAt) : null,
     plan,
     claimsPlan: claimsPlanMetadata(metadata),
   };

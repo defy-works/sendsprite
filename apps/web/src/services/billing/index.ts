@@ -19,6 +19,7 @@ import { billingConfig, type BillingConfig } from "./config";
 import { createFakeProvider } from "./fake";
 import {
   BillingUnavailableError,
+  subscriptionDefect,
   type BillingProvider,
   type PlanProduct,
   type ProviderEvent,
@@ -308,26 +309,6 @@ async function applyOrderPaid(
     : { applied: false, reason: "stale" };
 }
 
-/**
- * Whether a normalised subscription is unusable as a database write.
- *
- * The seam promises a `ProviderSubscription`; it does not promise the provider
- * filled it in. An implementation that trusts a payload's shape can hand back
- * an `Invalid Date` or a missing id, and those reach `timestamp` and `text`
- * columns as a thrown `RangeError` mid-transaction (or, worse, a row whose
- * period is meaningless) rather than a refusal we can record. Checked here,
- * once, at the only place provider data becomes our data — a per-provider
- * guard would have to be written again for every implementation and would be
- * forgotten by one of them.
- */
-const malformed = (sub: ProviderSubscription): boolean =>
-  !sub.subscriptionId ||
-  typeof sub.status !== "string" ||
-  sub.status === "" ||
-  !Number.isFinite(sub.currentPeriodStart?.getTime()) ||
-  !Number.isFinite(sub.currentPeriodEnd?.getTime()) ||
-  !Number.isFinite(sub.modifiedAt?.getTime());
-
 const auditView = (
   row: Record<string, unknown> | undefined,
 ): Record<string, unknown> => {
@@ -388,7 +369,18 @@ export async function applySubscription(
 ): Promise<ApplyOutcome> {
   const teamId = sub.externalCustomerId;
   if (!teamId) return { applied: false, reason: "no_external_customer" };
-  if (malformed(sub)) return { applied: false, reason: "malformed_payload" };
+  // The seam promises a `ProviderSubscription`; it does not promise the
+  // provider filled it in, and an `Invalid Date` reaches a timestamp column as
+  // a thrown `RangeError` mid-transaction rather than a refusal anyone can
+  // read. `subscriptionDefect` is the seam's own check, so every
+  // implementation is held to it in the one place provider data becomes ours.
+  const defect = subscriptionDefect(sub);
+  if (defect) {
+    console.warn(
+      `[billing] unusable subscription payload for team ${teamId}: ${defect}`,
+    );
+    return { applied: false, reason: "malformed_payload" };
+  }
   if (!(await teamExists(tx, teamId)))
     return { applied: false, reason: "unknown_team" };
 
@@ -448,10 +440,17 @@ export async function applySubscription(
     periodStart: sub.currentPeriodStart,
     periodEnd: sub.currentPeriodEnd,
     providerModifiedAt: sub.modifiedAt,
-    // Stamped on the transition into past_due, cleared by a newer order.paid.
-    // `lastOrderPaidAt` is deliberately absent: it is the order stream's
-    // watermark and a subscription payload knows nothing about it.
-    pastDueAt: sub.status === "past_due" ? (before?.pastDueAt ?? now) : null,
+    // The provider's own observation of when the charge failed wins: measuring
+    // the grace window from our arrival time makes the deadline a function of
+    // webhook uptime, so an outage hands every affected customer extra days.
+    // A stamp already stored comes next (the clock must not restart on a
+    // redelivery), and `now` is the last resort for a provider that does not
+    // report one. `lastOrderPaidAt` is deliberately absent from this write: it
+    // is the order stream's watermark and a subscription knows nothing of it.
+    pastDueAt:
+      sub.status === "past_due"
+        ? (sub.pastDueAt ?? before?.pastDueAt ?? now)
+        : null,
     // `$onUpdate` does not fire on an upsert.
     updatedAt: now,
   };

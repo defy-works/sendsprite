@@ -127,6 +127,8 @@ export interface FakeSubscriptionInput {
   modifiedAt?: Date;
   /** Force the metered flag independently of the catalog (overage-off tests). */
   hasMeteredPrice?: boolean;
+  /** When the provider put the subscription past due. Omit for none. */
+  pastDueAt?: Date;
   /**
    * Force the per-cycle overage ceiling. Omit for the product's own cap; pass
    * `null` for an explicitly uncapped metered price. A subscription with no
@@ -305,10 +307,14 @@ export function createFakeProvider(): FakeProvider {
       // does. A test that invents a `subscription.*` type has to fail here too,
       // or it proves nothing about production: see the refusal below.
       if (SUBSCRIPTION_TYPES.has(type)) {
-        const d = data as unknown as FakeSubscriptionInput & {
+        const d = data as unknown as Omit<
+          FakeSubscriptionInput,
+          "pastDueAt"
+        > & {
           currentPeriodStart: string;
           currentPeriodEnd: string;
           modifiedAt: string;
+          pastDueAt?: string;
         };
         const metadata = PRODUCT_METADATA[d.productId];
         const hasMeteredPrice =
@@ -330,6 +336,10 @@ export function createFakeProvider(): FakeProvider {
           currentPeriodEnd: new Date(d.currentPeriodEnd),
           cancelAtPeriodEnd: d.cancelAtPeriodEnd ?? false,
           modifiedAt: new Date(d.modifiedAt),
+          // Straight from the payload, the way the real provider reports its
+          // own observation — a fake that stamped `now` here would hide the
+          // difference the grace clock depends on.
+          pastDueAt: d.pastDueAt ? new Date(d.pastDueAt) : null,
           hasMeteredPrice,
           overageCapCents: !hasMeteredPrice
             ? null
@@ -440,6 +450,7 @@ export function createFakeProvider(): FakeProvider {
               sub.currentPeriodEnd ?? new Date(start.getTime() + MONTH_MS)
             ).toISOString(),
             modifiedAt: (sub.modifiedAt ?? start).toISOString(),
+            ...(sub.pastDueAt && { pastDueAt: sub.pastDueAt.toISOString() }),
           },
         },
         sub.deliveryId ?? randomUUID(),
