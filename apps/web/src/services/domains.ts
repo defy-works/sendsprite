@@ -238,8 +238,12 @@ export async function retryProvisioning(
  * Job: SES identity + MAIL FROM + (auto mode) Cloudflare records, then
  * schedule the first verification. Idempotent: an existing identity is
  * read back for its tokens and Cloudflare upserts by (type, name[, content]).
- * Auto mode with Cloudflare disconnected degrades to manual (records are
- * still computed for the user to add by hand). Throws after recording
+ * The tokens and expected records are persisted before the Cloudflare loop
+ * and each record's `cloudflareId` right after its upsert, so a failure
+ * mid-loop leaves the ids already created on the row (delete removes them;
+ * the retry patches instead of duplicating). Auto mode with Cloudflare
+ * disconnected degrades to manual (records are still computed for the user
+ * to add by hand). Throws after recording
  * `lastError` so pg-boss retries; on the handler's `finalAttempt` the
  * domain is also marked `failed` (no more retries are coming).
  */
@@ -273,31 +277,41 @@ export async function provisionDomain(
         BehaviorOnMxFailure: "USE_DEFAULT_VALUE",
       }),
     );
-    let recs = expectedRecords({
+    const recs = expectedRecords({
       domain: d.name,
       region: d.region,
       dkimTokens: tokens,
       mailFromDomain: d.mailFromDomain,
     });
+    const persistRecords = () =>
+      db()
+        .update(domains)
+        .set({ expectedRecords: [...recs] })
+        .where(eq(domains.id, d.id));
+    await db()
+      .update(domains)
+      .set({
+        dkimTokens: tokens,
+        dkimStatus: identity.DkimAttributes?.Status ?? null,
+        expectedRecords: [...recs],
+      })
+      .where(eq(domains.id, d.id));
     let dnsMode = d.dnsMode;
     let lastError: string | null = null;
     if (d.dnsMode === "auto" && d.cloudflareZoneId) {
       const zoneId = d.cloudflareZoneId;
       const cf = await cloudflareClient(deps.fetch);
       if (cf) {
-        recs = await Promise.all(
-          recs.map(async (r) => ({
-            ...r,
-            cloudflareId: (
-              await cf.upsertRecord(zoneId, {
-                type: r.type,
-                name: r.name,
-                content: r.value,
-                priority: r.priority,
-              })
-            ).id,
-          })),
-        );
+        for (const r of recs) {
+          const { id } = await cf.upsertRecord(zoneId, {
+            type: r.type,
+            name: r.name,
+            content: r.value,
+            priority: r.priority,
+          });
+          r.cloudflareId = id;
+          await persistRecords();
+        }
       } else {
         dnsMode = "manual";
         lastError = CF_DISCONNECTED;
@@ -305,13 +319,7 @@ export async function provisionDomain(
     }
     await db()
       .update(domains)
-      .set({
-        dkimTokens: tokens,
-        dkimStatus: identity.DkimAttributes?.Status ?? null,
-        expectedRecords: recs,
-        dnsMode,
-        lastError,
-      })
+      .set({ dnsMode, lastError })
       .where(eq(domains.id, d.id));
     await enqueueVerify(deps.enqueue, d.id, FIRST_VERIFY_AFTER_S);
   } catch (e) {
@@ -341,14 +349,17 @@ async function setError(id: string, lastError: string) {
  * the status (the sweep keeps trying once per tick until reconnect or
  * Re-verify); the SES identity gone is `failed` (the user deletes and
  * re-adds). Any other SES error records `lastError` and rethrows so
- * pg-boss retries.
+ * pg-boss retries. A verified domain is a no-op unless `force` (Re-verify):
+ * then it stays verified while SES still agrees and is demoted to pending
+ * only when SES reports DKIM or MAIL FROM as no longer SUCCESS.
  */
 export async function verifyDomain(
   domainId: string,
   deps: Pick<Deps, "resolver"> = {},
+  { force = false }: { force?: boolean } = {},
 ): Promise<void> {
   const d = await loadById(domainId);
-  if (!d || d.status === "verified") return;
+  if (!d || (d.status === "verified" && !force)) return;
   let ses;
   try {
     ses = makeSes(await resolveAwsContext());
@@ -396,7 +407,7 @@ export async function verifyDomain(
       dmarcOk,
       lastCheckedAt: new Date(),
       status: verified ? "verified" : expired ? "failed" : "pending",
-      verifiedAt: verified ? new Date() : null,
+      verifiedAt: verified ? (d.verifiedAt ?? new Date()) : null,
       lastError: expired
         ? "Verification timed out after 72 hours. Check the records and click Re-verify."
         : null,
@@ -431,9 +442,11 @@ export async function selectSweepCandidates(): Promise<string[]> {
 }
 
 /**
- * Manual "Re-verify": resets the window and runs one check inline so the
- * click answers right away; while the domain stays pending the sweep keeps
- * checking it.
+ * Manual "Re-verify": resets the window and runs one forced check inline so
+ * the click answers right away; while the domain stays pending the sweep
+ * keeps checking it. A verified domain is not demoted up front: it keeps
+ * its status (and `verifiedAt`) unless the check finds SES disagreeing; a
+ * failed one goes back to pending so the check can decide.
  */
 export async function reverifyDomain(
   actor: TeamActor,
@@ -446,10 +459,11 @@ export async function reverifyDomain(
   // Before provisioning there is no identity to check; the job will verify.
   if (d.dkimTokens.length === 0)
     return { ok: false, error: "Provisioning hasn't finished yet." };
+  const status = d.status === "failed" ? "pending" : d.status;
   await db()
     .update(domains)
     .set({
-      status: "pending",
+      status,
       verifyUntil: new Date(Date.now() + VERIFY_WINDOW_MS),
       lastError: null,
     })
@@ -460,11 +474,11 @@ export async function reverifyDomain(
     action: "domains.reverify",
     targetType: "domain",
     targetId: id,
-    diff: { status: { from: d.status, to: "pending" } },
+    diff: { status: { from: d.status, to: status } },
     ...actor.meta,
   });
   try {
-    await verifyDomain(id, deps);
+    await verifyDomain(id, deps, { force: true });
   } catch (e) {
     return { ok: false, error: `Check failed: ${errMsg(e)}` };
   }
@@ -479,7 +493,11 @@ export interface DeleteOutcome {
 /**
  * Remove the SES identity and the Cloudflare records we created, then the
  * row. The row survives an SES failure so the user can retry; Cloudflare
- * failures are reported as `leftoverDnsRecords` rather than blocking.
+ * failures are reported as `leftoverDnsRecords` rather than blocking. With
+ * AWS disconnected there is nothing to clean up on either side (the SES
+ * identity belongs to an account we can no longer reach, and the Cloudflare
+ * records are left for the same reason); the row is just deleted and every
+ * record we created counts as left over.
  */
 export async function deleteDomain(
   actor: TeamActor,
@@ -489,18 +507,23 @@ export async function deleteDomain(
   if (!can(actor.role, "domains.manage")) return DENIED;
   const d = await getDomain(actor.teamId, id);
   if (!d) return { ok: false, error: "Domain not found." };
-  try {
-    const ses = makeSes(await resolveAwsContext());
-    await ses
-      .send(new DeleteEmailIdentityCommand({ EmailIdentity: d.name }))
-      .catch((e: unknown) => {
-        if (errName(e) !== "NotFoundException") throw e;
-      });
-  } catch (e) {
-    return { ok: false, error: `Could not remove: ${errMsg(e)}` };
+  const connected = (await getInstanceSettings()).awsMode !== "none";
+  if (connected) {
+    try {
+      const ses = makeSes(await resolveAwsContext());
+      await ses
+        .send(new DeleteEmailIdentityCommand({ EmailIdentity: d.name }))
+        .catch((e: unknown) => {
+          if (errName(e) !== "NotFoundException") throw e;
+        });
+    } catch (e) {
+      return { ok: false, error: `Could not remove: ${errMsg(e)}` };
+    }
   }
   let leftoverDnsRecords = 0;
-  if (d.dnsMode === "auto" && d.cloudflareZoneId) {
+  if (!connected) {
+    leftoverDnsRecords = d.expectedRecords.filter((r) => r.cloudflareId).length;
+  } else if (d.dnsMode === "auto" && d.cloudflareZoneId) {
     const zoneId = d.cloudflareZoneId;
     const cf = await cloudflareClient(deps.fetch);
     for (const r of d.expectedRecords) {

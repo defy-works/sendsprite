@@ -44,6 +44,8 @@ Blocking findings from the Phase 2 integration review, fixed in three commits. T
 
 **One-click policy, webhook fallback, timeouts (commit 2).** The one-click IAM policy lacked `sns:ConfirmSubscription`, so the SDK confirm the webhook prefers failed under one-click and the route returned 500 without ever trying SubscribeURL. `infra/aws/sendsprite-connect.yaml` now grants `sns:ConfirmSubscription` and `sns:SetTopicAttributes` in the `sendsprite-*`-scoped statement (cfn-lint clean; the inline Python still `ast.parse`s), and `POST /api/webhooks/ses` wraps the `ConfirmSubscriptionCommand` path in try/catch: any SDK error is logged and the host-guarded `fetch(SubscribeURL, { redirect: "error", signal })` path runs instead (`ses-webhook.test.ts`: `AuthorizationError` → fetch used, 200). Timeout alignment: the Lambda's POST timeout is 45 s (function `Timeout: 60`), and `verifyIdentity`'s propagation retry budget is capped at 5 attempts × 3 s (≤ 15 s) so the whole connect fits; `aws-connect.test.ts` expects 5 STS calls. `infra/aws/README.md` and the README list the new permissions.
 
+**Domain exits and connect safety (commit 3).** I6: `deleteDomain` with `awsMode === "none"` skips SES and Cloudflare, deletes the row, audits, and reports every record that has a `cloudflareId` as `leftoverDnsRecords` (nothing can be cleaned up in an account we no longer reach). I7: `reverifyDomain` no longer demotes a verified domain up front; it resets the window, sends a `failed` row back to `pending`, and runs `verifyDomain(id, deps, { force: true })`, which re-checks a verified domain and keeps `verifiedAt` while SES still reports SUCCESS, demoting to `pending` (verifiedAt null) only when it does not. I5: `connectWithKeys`/`detectInstanceRole` return `{ ok:false, code:"ALREADY_CONNECTED" }` when `awsMode !== "none"` (no AWS call, no state change); `POST /api/setup/aws/callback` maps that to 409 after consuming the token and recording the failure reason. I9: `provisionDomain` persists tokens + `expectedRecords` before the Cloudflare loop, upserts sequentially and re-persists after each id lands, so a mid-loop failure leaves the created ids on the row (delete removes them; the retry's upsert-by-name reuses them). I13: `playwright.config.ts` sets `reuseExistingServer: false` so a stray dev server with another env can never be picked up.
+
 ---
 
 ## File structure (Phase 2 additions)
@@ -1259,6 +1261,89 @@ describe("connectWithKeys", () => {
     expect(sns.commandCalls(SubscribeCommand)).toHaveLength(1);
     expect((await settings()).snsSubscriptionArn).toBe(SUB_ARN);
   });
+  it("waits out IAM propagation: STS rejects twice, then connects", async () => {
+    happyMocks();
+    sts
+      .on(GetCallerIdentityCommand)
+      .rejectsOnce(awsErr("InvalidClientTokenId", "invalid token"))
+      .rejectsOnce(awsErr("InvalidSignatureException", "bad signature"))
+      .resolves({ Account: "123456789012" });
+    const { connectWithKeys, setSleepForTests } =
+      await import("@/services/aws-connect");
+    const slept: number[] = [];
+    setSleepForTests(async (ms) => {
+      slept.push(ms);
+    });
+    try {
+      expect((await connectWithKeys(KEYS, { userId: "u1" })).ok).toBe(true);
+    } finally {
+      setSleepForTests((ms) => new Promise((r) => setTimeout(r, ms)));
+    }
+    expect(sts.commandCalls(GetCallerIdentityCommand)).toHaveLength(3);
+    expect(slept).toEqual([3000, 3000]);
+    expect((await settings()).awsMode).toBe("keys");
+  });
+  it("gives up after 5 propagation failures (≤ 15 s budget) with no state and the error code", async () => {
+    happyMocks();
+    sts
+      .on(GetCallerIdentityCommand)
+      .rejects(awsErr("InvalidClientTokenId", "invalid token"));
+    const { connectWithKeys, setSleepForTests } =
+      await import("@/services/aws-connect");
+    setSleepForTests(async () => {});
+    try {
+      const res = await connectWithKeys(KEYS, { userId: "u1" });
+      expect(res).toMatchObject({ ok: false, code: "InvalidClientTokenId" });
+    } finally {
+      setSleepForTests((ms) => new Promise((r) => setTimeout(r, ms)));
+    }
+    expect(sts.commandCalls(GetCallerIdentityCommand)).toHaveLength(5);
+    expect((await settings()).awsMode).toBe("none");
+    expect(await instanceAudits()).toHaveLength(0);
+  });
+  it("refuses to connect over a live connection (disconnect first)", async () => {
+    happyMocks();
+    const { connectWithKeys, detectInstanceRole } =
+      await import("@/services/aws-connect");
+    expect((await connectWithKeys(KEYS, { userId: "u1" })).ok).toBe(true);
+    sts.resetHistory();
+    const refused = {
+      ok: false,
+      code: "ALREADY_CONNECTED",
+      error: expect.stringMatching(/already connected/i),
+    };
+    expect(
+      await connectWithKeys(
+        { ...KEYS, accessKeyId: "AKIAOTHEROTHEROTHER" },
+        { userId: "u1" },
+      ),
+    ).toEqual(refused);
+    expect(await detectInstanceRole("eu-west-1", { userId: "u1" })).toEqual(
+      refused,
+    );
+    expect(sts.commandCalls(GetCallerIdentityCommand)).toHaveLength(0);
+    expect(await settings()).toMatchObject({
+      awsMode: "keys",
+      awsRegion: "us-east-1",
+    });
+    expect(await instanceAudits()).toHaveLength(1);
+  });
+  it("stays connected with a warning when Subscribe fails (no rollback trap)", async () => {
+    happyMocks();
+    sns
+      .on(SubscribeCommand)
+      .rejects(awsErr("AuthorizationError", "not authorized: SNS:Subscribe"));
+    const { connectWithKeys } = await import("@/services/aws-connect");
+    const res = await connectWithKeys(KEYS, { userId: "u1" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("unreachable");
+    expect(res.data.warning).toContain("SES event subscription");
+    expect(await settings()).toMatchObject({
+      awsMode: "keys",
+      snsTopicArn: TOPIC_ARN,
+      snsSubscriptionArn: null,
+    });
+  });
   it("converges when the config set and event destination already exist", async () => {
     happyMocks();
     ses
@@ -1743,6 +1828,13 @@ async function finishConnect(
   };
 }
 
+/** Connecting over a live connection would silently replace it. */
+const ALREADY_CONNECTED: Result<never> = {
+  ok: false,
+  code: "ALREADY_CONNECTED",
+  error: "AWS is already connected. Disconnect first to replace it.",
+};
+
 const keysSchema = z.object({
   accessKeyId: z.string().min(16).max(128),
   secretAccessKey: z.string().min(16).max(128),
@@ -1760,6 +1852,8 @@ export async function connectWithKeys(
       error: "Access key, secret and a supported SES region are required.",
     };
   const { accessKeyId, secretAccessKey, region } = parsed.data;
+  if ((await getInstanceSettings()).awsMode !== "none")
+    return ALREADY_CONNECTED;
   try {
     return await finishConnect(
       { region, credentials: { accessKeyId, secretAccessKey } },
@@ -1781,6 +1875,8 @@ export async function detectInstanceRole(
   region: string,
   actor: Actor,
 ): Promise<Result<Connected>> {
+  if ((await getInstanceSettings()).awsMode !== "none")
+    return ALREADY_CONNECTED;
   try {
     return await finishConnect({ region }, "instance_role", null, actor);
   } catch (e) {
@@ -2381,7 +2477,9 @@ const body = z.object({
  * a new one for a retry). A non-2xx makes the Lambda report FAILED, so the
  * stack rolls back and the IAM user is deleted; the failure reason is kept
  * on the token for /status. A subscribe-only problem is a 200 with a warning
- * so a working connection is never rolled back.
+ * so a working connection is never rolled back. A stack created while AWS
+ * is already connected is refused with 409 (the live connection is never
+ * replaced silently); the token is consumed all the same.
  */
 export async function POST(req: Request) {
   const parsed = body.safeParse(await req.json().catch(() => null));
@@ -2409,9 +2507,15 @@ export async function POST(req: Request) {
     await recordSetupFailure(tok.id, res.error);
     return NextResponse.json(
       { error: res.error, code: res.code ?? null },
-      { status: 502 },
+      { status: res.code === "ALREADY_CONNECTED" ? 409 : 502 },
     );
   }
+  // Only the Lambda sees this response; keep a server-side trace of it.
+  if (res.data.warning)
+    console.warn(
+      "setup/aws/callback: connected with warning:",
+      res.data.warning,
+    );
   return NextResponse.json({ ok: true, warning: res.data.warning ?? null });
 }
 ```
@@ -3603,7 +3707,7 @@ import {
   GetEmailIdentityCommand,
   DeleteEmailIdentityCommand,
 } from "@aws-sdk/client-sesv2";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { FetchLike } from "@/lib/cloudflare/client";
 import type { Resolver } from "@/lib/dns/check";
 import { auditLog, domains } from "@/db/schema";
@@ -3934,6 +4038,48 @@ describe("domains", () => {
       { startAfter: 30, singletonKey: d.id },
     );
   });
+  it("a Cloudflare failure mid-loop leaves the ids already created on the row", async () => {
+    happyProvision();
+    ses.on(DeleteEmailIdentityCommand).resolves({});
+    const { createDomain, provisionDomain, deleteDomain } =
+      await import("@/services/domains");
+    const res = await createDomain(actor, { name: "partial.acme.com" }, noop);
+    if (!res.ok) throw new Error(res.error);
+    let posts = 0;
+    const cfThirdFails: FetchLike = async (url, init) => {
+      if (init?.method === "POST" && ++posts === 3)
+        return new Response(
+          JSON.stringify({
+            success: false,
+            errors: [{ code: 10000, message: "Cloudflare hiccup" }],
+          }),
+          { status: 500 },
+        );
+      return cfFetch(url, init);
+    };
+    await expect(
+      provisionDomain(res.data.id, {
+        enqueue: noop.enqueue,
+        fetch: cfThirdFails,
+      }),
+    ).rejects.toThrow(/hiccup/);
+    const after = await byName("partial.acme.com");
+    expect(after.dkimTokens).toEqual(["t1", "t2", "t3"]);
+    expect(after.lastError).toMatch(/hiccup/);
+    expect(after.expectedRecords).toHaveLength(6);
+    expect(
+      after.expectedRecords.filter((r) => r.cloudflareId).map((r) => r.kind),
+    ).toEqual(["DKIM", "DKIM"]);
+    // The retry (upsert by type+name) fills in the rest and clears the error.
+    await provisionDomain(res.data.id, {
+      enqueue: noop.enqueue,
+      fetch: cfFetch,
+    });
+    const retried = await byName("partial.acme.com");
+    expect(retried.expectedRecords.every((r) => r.cloudflareId)).toBe(true);
+    expect(retried.lastError).toBeNull();
+    expect((await deleteDomain(actor, res.data.id, noop)).ok).toBe(true);
+  });
   it("re-provisioning patches the records Cloudflare already has and keeps their ids", async () => {
     happyProvision();
     const { provisionDomain } = await import("@/services/domains");
@@ -4053,6 +4199,48 @@ describe("domains", () => {
     await verifyDomain(d.id, { resolver });
     expect(ses.commandCalls(GetEmailIdentityCommand)).toHaveLength(0);
   });
+  it("reverifyDomain keeps a verified domain verified, demotes only when SES disagrees", async () => {
+    const { reverifyDomain } = await import("@/services/domains");
+    const before = await byName("mail.acme.com");
+    expect(before.status).toBe("verified");
+    const success = {
+      DkimAttributes: {
+        Status: "SUCCESS" as const,
+        Tokens: ["t1", "t2", "t3"],
+      },
+      MailFromAttributes: {
+        MailFromDomainStatus: "SUCCESS" as const,
+        MailFromDomain: "bounce.mail.acme.com",
+        BehaviorOnMxFailure: "USE_DEFAULT_VALUE" as const,
+      },
+    };
+    ses.on(GetEmailIdentityCommand).resolves(success);
+    expect(
+      (await reverifyDomain(actor, before.id, { resolver: emptyDns })).ok,
+    ).toBe(true);
+    const still = await byName("mail.acme.com");
+    expect(still.status).toBe("verified");
+    expect(still.verifiedAt!.getTime()).toBe(before.verifiedAt!.getTime());
+    expect(still.lastCheckedAt!.getTime()).toBeGreaterThan(
+      before.lastCheckedAt!.getTime(),
+    );
+    // SES no longer agrees: demoted to pending, verifiedAt cleared.
+    ses.reset();
+    ses.on(GetEmailIdentityCommand).resolves(pendingIdentity);
+    expect(
+      (await reverifyDomain(actor, before.id, { resolver: emptyDns })).ok,
+    ).toBe(true);
+    const demoted = await byName("mail.acme.com");
+    expect(demoted.status).toBe("pending");
+    expect(demoted.verifiedAt).toBeNull();
+    // Later tests expect the fixture verified again.
+    ses.reset();
+    ses.on(GetEmailIdentityCommand).resolves(success);
+    expect(
+      (await reverifyDomain(actor, before.id, { resolver: emptyDns })).ok,
+    ).toBe(true);
+    expect((await byName("mail.acme.com")).status).toBe("verified");
+  });
   it("verifyDomain leaves a pending domain to the sweep and fails it after verifyUntil", async () => {
     ses.on(GetEmailIdentityCommand).resolves(pendingIdentity);
     const { verifyDomain, createDomain, selectSweepCandidates } =
@@ -4119,7 +4307,12 @@ describe("domains", () => {
       await pg.db
         .select()
         .from(auditLog)
-        .where(eq(auditLog.action, "domains.reverify")),
+        .where(
+          and(
+            eq(auditLog.action, "domains.reverify"),
+            eq(auditLog.targetId, d.id),
+          ),
+        ),
     ).toHaveLength(1);
     // A failing check is reported, not thrown.
     ses.reset();
@@ -4257,6 +4450,39 @@ describe("domains", () => {
     expect((await pg.db.select().from(domains)).map((d) => d.name)).toEqual([
       "slow.acme.com",
     ]);
+  });
+  it("deleteDomain with AWS disconnected removes the row and reports every record as left over", async () => {
+    happyProvision();
+    const { createDomain, provisionDomain, deleteDomain } =
+      await import("@/services/domains");
+    const res = await createDomain(actor, { name: "off.acme.com" }, noop);
+    if (!res.ok) throw new Error(res.error);
+    await provisionDomain(res.data.id, {
+      enqueue: noop.enqueue,
+      fetch: cfFetch,
+    });
+    const { updateInstanceSettings } =
+      await import("@/services/instance-settings");
+    await updateInstanceSettings({ awsMode: "none" }, undefined, {
+      audit: false,
+    });
+    ses.reset();
+    cfCalls.length = 0;
+    expect(await deleteDomain(actor, res.data.id, { fetch: cfFetch })).toEqual({
+      ok: true,
+      data: { leftoverDnsRecords: 6 },
+    });
+    expect(ses.calls()).toHaveLength(0);
+    expect(cfCalls).toHaveLength(0);
+    expect(
+      await pg.db.select().from(domains).where(eq(domains.id, res.data.id)),
+    ).toHaveLength(0);
+    expect(
+      await pg.db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.action, "domains.delete")),
+    ).not.toHaveLength(0);
   });
   it("deleteDomain tolerates a missing identity and keeps the row when SES fails", async () => {
     const { deleteDomain } = await import("@/services/domains");
@@ -4526,8 +4752,12 @@ export async function retryProvisioning(
  * Job: SES identity + MAIL FROM + (auto mode) Cloudflare records, then
  * schedule the first verification. Idempotent: an existing identity is
  * read back for its tokens and Cloudflare upserts by (type, name[, content]).
- * Auto mode with Cloudflare disconnected degrades to manual (records are
- * still computed for the user to add by hand). Throws after recording
+ * The tokens and expected records are persisted before the Cloudflare loop
+ * and each record's `cloudflareId` right after its upsert, so a failure
+ * mid-loop leaves the ids already created on the row (delete removes them;
+ * the retry patches instead of duplicating). Auto mode with Cloudflare
+ * disconnected degrades to manual (records are still computed for the user
+ * to add by hand). Throws after recording
  * `lastError` so pg-boss retries; on the handler's `finalAttempt` the
  * domain is also marked `failed` (no more retries are coming).
  */
@@ -4561,31 +4791,41 @@ export async function provisionDomain(
         BehaviorOnMxFailure: "USE_DEFAULT_VALUE",
       }),
     );
-    let recs = expectedRecords({
+    const recs = expectedRecords({
       domain: d.name,
       region: d.region,
       dkimTokens: tokens,
       mailFromDomain: d.mailFromDomain,
     });
+    const persistRecords = () =>
+      db()
+        .update(domains)
+        .set({ expectedRecords: [...recs] })
+        .where(eq(domains.id, d.id));
+    await db()
+      .update(domains)
+      .set({
+        dkimTokens: tokens,
+        dkimStatus: identity.DkimAttributes?.Status ?? null,
+        expectedRecords: [...recs],
+      })
+      .where(eq(domains.id, d.id));
     let dnsMode = d.dnsMode;
     let lastError: string | null = null;
     if (d.dnsMode === "auto" && d.cloudflareZoneId) {
       const zoneId = d.cloudflareZoneId;
       const cf = await cloudflareClient(deps.fetch);
       if (cf) {
-        recs = await Promise.all(
-          recs.map(async (r) => ({
-            ...r,
-            cloudflareId: (
-              await cf.upsertRecord(zoneId, {
-                type: r.type,
-                name: r.name,
-                content: r.value,
-                priority: r.priority,
-              })
-            ).id,
-          })),
-        );
+        for (const r of recs) {
+          const { id } = await cf.upsertRecord(zoneId, {
+            type: r.type,
+            name: r.name,
+            content: r.value,
+            priority: r.priority,
+          });
+          r.cloudflareId = id;
+          await persistRecords();
+        }
       } else {
         dnsMode = "manual";
         lastError = CF_DISCONNECTED;
@@ -4593,13 +4833,7 @@ export async function provisionDomain(
     }
     await db()
       .update(domains)
-      .set({
-        dkimTokens: tokens,
-        dkimStatus: identity.DkimAttributes?.Status ?? null,
-        expectedRecords: recs,
-        dnsMode,
-        lastError,
-      })
+      .set({ dnsMode, lastError })
       .where(eq(domains.id, d.id));
     await enqueueVerify(deps.enqueue, d.id, FIRST_VERIFY_AFTER_S);
   } catch (e) {
@@ -4629,14 +4863,17 @@ async function setError(id: string, lastError: string) {
  * the status (the sweep keeps trying once per tick until reconnect or
  * Re-verify); the SES identity gone is `failed` (the user deletes and
  * re-adds). Any other SES error records `lastError` and rethrows so
- * pg-boss retries.
+ * pg-boss retries. A verified domain is a no-op unless `force` (Re-verify):
+ * then it stays verified while SES still agrees and is demoted to pending
+ * only when SES reports DKIM or MAIL FROM as no longer SUCCESS.
  */
 export async function verifyDomain(
   domainId: string,
   deps: Pick<Deps, "resolver"> = {},
+  { force = false }: { force?: boolean } = {},
 ): Promise<void> {
   const d = await loadById(domainId);
-  if (!d || d.status === "verified") return;
+  if (!d || (d.status === "verified" && !force)) return;
   let ses;
   try {
     ses = makeSes(await resolveAwsContext());
@@ -4684,7 +4921,7 @@ export async function verifyDomain(
       dmarcOk,
       lastCheckedAt: new Date(),
       status: verified ? "verified" : expired ? "failed" : "pending",
-      verifiedAt: verified ? new Date() : null,
+      verifiedAt: verified ? (d.verifiedAt ?? new Date()) : null,
       lastError: expired
         ? "Verification timed out after 72 hours. Check the records and click Re-verify."
         : null,
@@ -4719,9 +4956,11 @@ export async function selectSweepCandidates(): Promise<string[]> {
 }
 
 /**
- * Manual "Re-verify": resets the window and runs one check inline so the
- * click answers right away; while the domain stays pending the sweep keeps
- * checking it.
+ * Manual "Re-verify": resets the window and runs one forced check inline so
+ * the click answers right away; while the domain stays pending the sweep
+ * keeps checking it. A verified domain is not demoted up front: it keeps
+ * its status (and `verifiedAt`) unless the check finds SES disagreeing; a
+ * failed one goes back to pending so the check can decide.
  */
 export async function reverifyDomain(
   actor: TeamActor,
@@ -4734,10 +4973,11 @@ export async function reverifyDomain(
   // Before provisioning there is no identity to check; the job will verify.
   if (d.dkimTokens.length === 0)
     return { ok: false, error: "Provisioning hasn't finished yet." };
+  const status = d.status === "failed" ? "pending" : d.status;
   await db()
     .update(domains)
     .set({
-      status: "pending",
+      status,
       verifyUntil: new Date(Date.now() + VERIFY_WINDOW_MS),
       lastError: null,
     })
@@ -4748,11 +4988,11 @@ export async function reverifyDomain(
     action: "domains.reverify",
     targetType: "domain",
     targetId: id,
-    diff: { status: { from: d.status, to: "pending" } },
+    diff: { status: { from: d.status, to: status } },
     ...actor.meta,
   });
   try {
-    await verifyDomain(id, deps);
+    await verifyDomain(id, deps, { force: true });
   } catch (e) {
     return { ok: false, error: `Check failed: ${errMsg(e)}` };
   }
@@ -4767,7 +5007,11 @@ export interface DeleteOutcome {
 /**
  * Remove the SES identity and the Cloudflare records we created, then the
  * row. The row survives an SES failure so the user can retry; Cloudflare
- * failures are reported as `leftoverDnsRecords` rather than blocking.
+ * failures are reported as `leftoverDnsRecords` rather than blocking. With
+ * AWS disconnected there is nothing to clean up on either side (the SES
+ * identity belongs to an account we can no longer reach, and the Cloudflare
+ * records are left for the same reason); the row is just deleted and every
+ * record we created counts as left over.
  */
 export async function deleteDomain(
   actor: TeamActor,
@@ -4777,18 +5021,23 @@ export async function deleteDomain(
   if (!can(actor.role, "domains.manage")) return DENIED;
   const d = await getDomain(actor.teamId, id);
   if (!d) return { ok: false, error: "Domain not found." };
-  try {
-    const ses = makeSes(await resolveAwsContext());
-    await ses
-      .send(new DeleteEmailIdentityCommand({ EmailIdentity: d.name }))
-      .catch((e: unknown) => {
-        if (errName(e) !== "NotFoundException") throw e;
-      });
-  } catch (e) {
-    return { ok: false, error: `Could not remove: ${errMsg(e)}` };
+  const connected = (await getInstanceSettings()).awsMode !== "none";
+  if (connected) {
+    try {
+      const ses = makeSes(await resolveAwsContext());
+      await ses
+        .send(new DeleteEmailIdentityCommand({ EmailIdentity: d.name }))
+        .catch((e: unknown) => {
+          if (errName(e) !== "NotFoundException") throw e;
+        });
+    } catch (e) {
+      return { ok: false, error: `Could not remove: ${errMsg(e)}` };
+    }
   }
   let leftoverDnsRecords = 0;
-  if (d.dnsMode === "auto" && d.cloudflareZoneId) {
+  if (!connected) {
+    leftoverDnsRecords = d.expectedRecords.filter((r) => r.cloudflareId).length;
+  } else if (d.dnsMode === "auto" && d.cloudflareZoneId) {
     const zoneId = d.cloudflareZoneId;
     const cf = await cloudflareClient(deps.fetch);
     for (const r of d.expectedRecords) {

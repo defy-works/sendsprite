@@ -247,6 +247,33 @@ describe("connectWithKeys", () => {
     expect((await settings()).awsMode).toBe("none");
     expect(await instanceAudits()).toHaveLength(0);
   });
+  it("refuses to connect over a live connection (disconnect first)", async () => {
+    happyMocks();
+    const { connectWithKeys, detectInstanceRole } =
+      await import("@/services/aws-connect");
+    expect((await connectWithKeys(KEYS, { userId: "u1" })).ok).toBe(true);
+    sts.resetHistory();
+    const refused = {
+      ok: false,
+      code: "ALREADY_CONNECTED",
+      error: expect.stringMatching(/already connected/i),
+    };
+    expect(
+      await connectWithKeys(
+        { ...KEYS, accessKeyId: "AKIAOTHEROTHEROTHER" },
+        { userId: "u1" },
+      ),
+    ).toEqual(refused);
+    expect(await detectInstanceRole("eu-west-1", { userId: "u1" })).toEqual(
+      refused,
+    );
+    expect(sts.commandCalls(GetCallerIdentityCommand)).toHaveLength(0);
+    expect(await settings()).toMatchObject({
+      awsMode: "keys",
+      awsRegion: "us-east-1",
+    });
+    expect(await instanceAudits()).toHaveLength(1);
+  });
   it("stays connected with a warning when Subscribe fails (no rollback trap)", async () => {
     happyMocks();
     sns

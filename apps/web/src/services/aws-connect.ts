@@ -227,6 +227,13 @@ async function finishConnect(
   };
 }
 
+/** Connecting over a live connection would silently replace it. */
+const ALREADY_CONNECTED: Result<never> = {
+  ok: false,
+  code: "ALREADY_CONNECTED",
+  error: "AWS is already connected. Disconnect first to replace it.",
+};
+
 const keysSchema = z.object({
   accessKeyId: z.string().min(16).max(128),
   secretAccessKey: z.string().min(16).max(128),
@@ -244,6 +251,8 @@ export async function connectWithKeys(
       error: "Access key, secret and a supported SES region are required.",
     };
   const { accessKeyId, secretAccessKey, region } = parsed.data;
+  if ((await getInstanceSettings()).awsMode !== "none")
+    return ALREADY_CONNECTED;
   try {
     return await finishConnect(
       { region, credentials: { accessKeyId, secretAccessKey } },
@@ -265,6 +274,8 @@ export async function detectInstanceRole(
   region: string,
   actor: Actor,
 ): Promise<Result<Connected>> {
+  if ((await getInstanceSettings()).awsMode !== "none")
+    return ALREADY_CONNECTED;
   try {
     return await finishConnect({ region }, "instance_role", null, actor);
   } catch (e) {

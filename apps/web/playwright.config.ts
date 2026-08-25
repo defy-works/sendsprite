@@ -28,7 +28,9 @@ export default defineConfig({
     : {
         command: `bun run dev -- -p ${PORT}`,
         url: `${baseURL}/api/health`,
-        reuseExistingServer: !process.env.CI,
+        // Never attach to a stray dev server: it may run with a different
+        // env (no AWS mock, another database) and make the run meaningless.
+        reuseExistingServer: false,
         timeout: 120_000,
         stdout: "pipe",
         stderr: "pipe",

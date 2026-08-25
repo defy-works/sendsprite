@@ -16,7 +16,7 @@ import {
   GetEmailIdentityCommand,
   DeleteEmailIdentityCommand,
 } from "@aws-sdk/client-sesv2";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { FetchLike } from "@/lib/cloudflare/client";
 import type { Resolver } from "@/lib/dns/check";
 import { auditLog, domains } from "@/db/schema";
@@ -347,6 +347,48 @@ describe("domains", () => {
       { startAfter: 30, singletonKey: d.id },
     );
   });
+  it("a Cloudflare failure mid-loop leaves the ids already created on the row", async () => {
+    happyProvision();
+    ses.on(DeleteEmailIdentityCommand).resolves({});
+    const { createDomain, provisionDomain, deleteDomain } =
+      await import("@/services/domains");
+    const res = await createDomain(actor, { name: "partial.acme.com" }, noop);
+    if (!res.ok) throw new Error(res.error);
+    let posts = 0;
+    const cfThirdFails: FetchLike = async (url, init) => {
+      if (init?.method === "POST" && ++posts === 3)
+        return new Response(
+          JSON.stringify({
+            success: false,
+            errors: [{ code: 10000, message: "Cloudflare hiccup" }],
+          }),
+          { status: 500 },
+        );
+      return cfFetch(url, init);
+    };
+    await expect(
+      provisionDomain(res.data.id, {
+        enqueue: noop.enqueue,
+        fetch: cfThirdFails,
+      }),
+    ).rejects.toThrow(/hiccup/);
+    const after = await byName("partial.acme.com");
+    expect(after.dkimTokens).toEqual(["t1", "t2", "t3"]);
+    expect(after.lastError).toMatch(/hiccup/);
+    expect(after.expectedRecords).toHaveLength(6);
+    expect(
+      after.expectedRecords.filter((r) => r.cloudflareId).map((r) => r.kind),
+    ).toEqual(["DKIM", "DKIM"]);
+    // The retry (upsert by type+name) fills in the rest and clears the error.
+    await provisionDomain(res.data.id, {
+      enqueue: noop.enqueue,
+      fetch: cfFetch,
+    });
+    const retried = await byName("partial.acme.com");
+    expect(retried.expectedRecords.every((r) => r.cloudflareId)).toBe(true);
+    expect(retried.lastError).toBeNull();
+    expect((await deleteDomain(actor, res.data.id, noop)).ok).toBe(true);
+  });
   it("re-provisioning patches the records Cloudflare already has and keeps their ids", async () => {
     happyProvision();
     const { provisionDomain } = await import("@/services/domains");
@@ -466,6 +508,48 @@ describe("domains", () => {
     await verifyDomain(d.id, { resolver });
     expect(ses.commandCalls(GetEmailIdentityCommand)).toHaveLength(0);
   });
+  it("reverifyDomain keeps a verified domain verified, demotes only when SES disagrees", async () => {
+    const { reverifyDomain } = await import("@/services/domains");
+    const before = await byName("mail.acme.com");
+    expect(before.status).toBe("verified");
+    const success = {
+      DkimAttributes: {
+        Status: "SUCCESS" as const,
+        Tokens: ["t1", "t2", "t3"],
+      },
+      MailFromAttributes: {
+        MailFromDomainStatus: "SUCCESS" as const,
+        MailFromDomain: "bounce.mail.acme.com",
+        BehaviorOnMxFailure: "USE_DEFAULT_VALUE" as const,
+      },
+    };
+    ses.on(GetEmailIdentityCommand).resolves(success);
+    expect(
+      (await reverifyDomain(actor, before.id, { resolver: emptyDns })).ok,
+    ).toBe(true);
+    const still = await byName("mail.acme.com");
+    expect(still.status).toBe("verified");
+    expect(still.verifiedAt!.getTime()).toBe(before.verifiedAt!.getTime());
+    expect(still.lastCheckedAt!.getTime()).toBeGreaterThan(
+      before.lastCheckedAt!.getTime(),
+    );
+    // SES no longer agrees: demoted to pending, verifiedAt cleared.
+    ses.reset();
+    ses.on(GetEmailIdentityCommand).resolves(pendingIdentity);
+    expect(
+      (await reverifyDomain(actor, before.id, { resolver: emptyDns })).ok,
+    ).toBe(true);
+    const demoted = await byName("mail.acme.com");
+    expect(demoted.status).toBe("pending");
+    expect(demoted.verifiedAt).toBeNull();
+    // Later tests expect the fixture verified again.
+    ses.reset();
+    ses.on(GetEmailIdentityCommand).resolves(success);
+    expect(
+      (await reverifyDomain(actor, before.id, { resolver: emptyDns })).ok,
+    ).toBe(true);
+    expect((await byName("mail.acme.com")).status).toBe("verified");
+  });
   it("verifyDomain leaves a pending domain to the sweep and fails it after verifyUntil", async () => {
     ses.on(GetEmailIdentityCommand).resolves(pendingIdentity);
     const { verifyDomain, createDomain, selectSweepCandidates } =
@@ -532,7 +616,12 @@ describe("domains", () => {
       await pg.db
         .select()
         .from(auditLog)
-        .where(eq(auditLog.action, "domains.reverify")),
+        .where(
+          and(
+            eq(auditLog.action, "domains.reverify"),
+            eq(auditLog.targetId, d.id),
+          ),
+        ),
     ).toHaveLength(1);
     // A failing check is reported, not thrown.
     ses.reset();
@@ -670,6 +759,39 @@ describe("domains", () => {
     expect((await pg.db.select().from(domains)).map((d) => d.name)).toEqual([
       "slow.acme.com",
     ]);
+  });
+  it("deleteDomain with AWS disconnected removes the row and reports every record as left over", async () => {
+    happyProvision();
+    const { createDomain, provisionDomain, deleteDomain } =
+      await import("@/services/domains");
+    const res = await createDomain(actor, { name: "off.acme.com" }, noop);
+    if (!res.ok) throw new Error(res.error);
+    await provisionDomain(res.data.id, {
+      enqueue: noop.enqueue,
+      fetch: cfFetch,
+    });
+    const { updateInstanceSettings } =
+      await import("@/services/instance-settings");
+    await updateInstanceSettings({ awsMode: "none" }, undefined, {
+      audit: false,
+    });
+    ses.reset();
+    cfCalls.length = 0;
+    expect(await deleteDomain(actor, res.data.id, { fetch: cfFetch })).toEqual({
+      ok: true,
+      data: { leftoverDnsRecords: 6 },
+    });
+    expect(ses.calls()).toHaveLength(0);
+    expect(cfCalls).toHaveLength(0);
+    expect(
+      await pg.db.select().from(domains).where(eq(domains.id, res.data.id)),
+    ).toHaveLength(0);
+    expect(
+      await pg.db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.action, "domains.delete")),
+    ).not.toHaveLength(0);
   });
   it("deleteDomain tolerates a missing identity and keeps the row when SES fails", async () => {
     const { deleteDomain } = await import("@/services/domains");

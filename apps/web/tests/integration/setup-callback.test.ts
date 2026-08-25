@@ -1,4 +1,12 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from "vitest";
 import { mockClient } from "aws-sdk-client-mock";
 import {
   SESv2Client,
@@ -42,6 +50,14 @@ afterEach(() => {
   ses.reset();
   sns.reset();
   sts.reset();
+});
+/** Connecting over a live connection is refused, so start each test disconnected. */
+beforeEach(async () => {
+  const { updateInstanceSettings } =
+    await import("@/services/instance-settings");
+  await updateInstanceSettings({ awsMode: "none" }, undefined, {
+    audit: false,
+  });
 });
 
 function happyMocks() {
@@ -109,6 +125,28 @@ describe("POST /api/setup/aws/callback", () => {
       403,
     );
     expect(sts.commandCalls(GetCallerIdentityCommand)).toHaveLength(1);
+  });
+
+  it("returns 409 and records the failure when AWS is already connected", async () => {
+    happyMocks();
+    const first = await issue("us-east-1");
+    expect(
+      (await post({ token: first, ...KEYS, region: "us-east-1" })).status,
+    ).toBe(200);
+    sts.resetHistory();
+    const token = await issue("us-east-1");
+    const res = await post({ token, ...KEYS, region: "us-east-1" });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: "ALREADY_CONNECTED" });
+    expect(sts.commandCalls(GetCallerIdentityCommand)).toHaveLength(0);
+    // Token consumed: a replay is refused like any other.
+    expect((await post({ token, ...KEYS, region: "us-east-1" })).status).toBe(
+      403,
+    );
+    const { lastSetupFailure } = await import("@/services/setup-tokens");
+    expect(await lastSetupFailure("aws_callback", "u1")).toMatchObject({
+      reason: expect.stringMatching(/already connected/i),
+    });
   });
 
   it("rejects an unknown token with 403 and no AWS calls", async () => {

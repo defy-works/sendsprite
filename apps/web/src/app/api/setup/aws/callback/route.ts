@@ -19,7 +19,9 @@ const body = z.object({
  * a new one for a retry). A non-2xx makes the Lambda report FAILED, so the
  * stack rolls back and the IAM user is deleted; the failure reason is kept
  * on the token for /status. A subscribe-only problem is a 200 with a warning
- * so a working connection is never rolled back.
+ * so a working connection is never rolled back. A stack created while AWS
+ * is already connected is refused with 409 (the live connection is never
+ * replaced silently); the token is consumed all the same.
  */
 export async function POST(req: Request) {
   const parsed = body.safeParse(await req.json().catch(() => null));
@@ -47,7 +49,7 @@ export async function POST(req: Request) {
     await recordSetupFailure(tok.id, res.error);
     return NextResponse.json(
       { error: res.error, code: res.code ?? null },
-      { status: 502 },
+      { status: res.code === "ALREADY_CONNECTED" ? 409 : 502 },
     );
   }
   // Only the Lambda sees this response; keep a server-side trace of it.
