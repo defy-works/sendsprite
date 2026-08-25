@@ -1,4 +1,4 @@
-import { and, desc, sql, type SQL } from "drizzle-orm";
+import { and, desc, sql, type ColumnBaseConfig, type SQL } from "drizzle-orm";
 import type { PgColumn, PgTable } from "drizzle-orm/pg-core";
 import type { PageQuery } from "@sendsprite/shared";
 import { db } from "@/db";
@@ -11,7 +11,11 @@ export interface Page<T> {
   nextCursor: string | null;
 }
 
-type KeysetTable = PgTable & { id: PgColumn; createdAt: PgColumn };
+/** `id` text, `created_at` a date-mode timestamptz(3) (ms, like the cursor). */
+type KeysetTable = PgTable & {
+  id: PgColumn<ColumnBaseConfig<"string", string>>;
+  createdAt: PgColumn<ColumnBaseConfig<"date", string>>;
+};
 
 /**
  * One page of `table` ordered `(created_at desc, id desc)`, keyset-paged on
@@ -27,7 +31,7 @@ export async function keysetPage<T extends KeysetTable>(
   if (q.cursor && !cur) return { ok: false, error: "Invalid cursor." };
   const rows = (await db()
     .select()
-    .from(table as PgTable)
+    .from(table as KeysetTable)
     .where(
       and(
         where,

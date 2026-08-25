@@ -114,7 +114,7 @@ export const listWebhooks = (teamId: string): Promise<Webhook[]> =>
     .orderBy(desc(webhooks.createdAt));
 
 /**
- * REST page, newest first. Keyset paging on `(created_at, id)`; `cursor` is the last returned id.
+ * REST page, newest first. Keyset paging on `(created_at, id)` (cursor from `@/lib/cursor`).
  */
 export const listWebhooksPage = (
   teamId: string,

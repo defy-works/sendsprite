@@ -50,7 +50,9 @@ export const domains = pgTable(
     verifiedAt: timestamp("verified_at", { withTimezone: true }),
     verifyUntil: timestamp("verify_until", { withTimezone: true }),
     createdBy: text("created_by"),
-    createdAt: timestamp("created_at", { withTimezone: true })
+    // Millisecond precision: the keyset cursor round-trips `createdAt`
+    // through a JS Date (ms); see schema/emails.ts.
+    createdAt: timestamp("created_at", { withTimezone: true, precision: 3 })
       .notNull()
       .defaultNow(),
     // `$onUpdate` fires only via drizzle `.update()`; upserts must set it.

@@ -43,8 +43,12 @@ export const GET = withApiKey(
         q.error.issues,
       );
     const page = await listEmails(auth.team.id, q.data);
+    if (!page.ok) return serviceFailure(page);
     return ok(
-      { data: page.data.map(publicEmail), nextCursor: page.nextCursor },
+      {
+        data: page.data.data.map(publicEmail),
+        nextCursor: page.data.nextCursor,
+      },
       { headers: await rateHeaders(auth.team.id) },
     );
   },

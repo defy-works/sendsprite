@@ -67,7 +67,9 @@ afterAll(async () => {
 
 const latest = async () => {
   const { listEmails } = await import("@/services/emails");
-  return (await listEmails("org_1", { limit: 1 })).data[0]!;
+  const page = await listEmails("org_1", { limit: 1 });
+  if (!page.ok) throw new Error(page.error);
+  return page.data.data[0]!;
 };
 
 describe("SMTP relay", () => {

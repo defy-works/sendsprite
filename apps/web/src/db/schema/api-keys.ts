@@ -28,7 +28,9 @@ export const apiKeys = pgTable(
     createdBy: text("created_by"),
     lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
-    createdAt: timestamp("created_at", { withTimezone: true })
+    // Millisecond precision: the keyset cursor round-trips `createdAt`
+    // through a JS Date (ms); see schema/emails.ts.
+    createdAt: timestamp("created_at", { withTimezone: true, precision: 3 })
       .notNull()
       .defaultNow(),
   },

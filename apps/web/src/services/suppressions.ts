@@ -33,7 +33,7 @@ export function listSuppressions(teamId: string): Promise<Suppression[]> {
 }
 
 /**
- * REST page, newest first. Keyset paging on `(created_at, id)`; `cursor` is the last returned id.
+ * REST page, newest first. Keyset paging on `(created_at, id)` (cursor from `@/lib/cursor`).
  */
 export const listSuppressionsPage = (
   teamId: string,

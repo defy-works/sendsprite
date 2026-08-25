@@ -15,7 +15,9 @@ export const suppressions = pgTable(
     reason: text("reason", { enum: SUPPRESSION_REASONS }).notNull(),
     sourceEmailId: text("source_email_id"),
     note: text("note"),
-    createdAt: timestamp("created_at", { withTimezone: true })
+    // Millisecond precision: the keyset cursor round-trips `createdAt`
+    // through a JS Date (ms); see schema/emails.ts.
+    createdAt: timestamp("created_at", { withTimezone: true, precision: 3 })
       .notNull()
       .defaultNow(),
   },

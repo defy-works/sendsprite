@@ -98,7 +98,7 @@ export async function listDomains(teamId: string): Promise<Domain[]> {
 
 /**
  * REST page, newest first (the dashboard's `listDomains` is oldest first).
- * Keyset paging on `(created_at, id)`; `cursor` is the last returned id.
+ * Keyset paging on `(created_at, id)` (cursor from `@/lib/cursor`).
  */
 export const listDomainsPage = (
   teamId: string,

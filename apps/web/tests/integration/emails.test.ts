@@ -376,9 +376,19 @@ describe("createBatch", () => {
   });
 });
 
+/** `listEmails` unwrapped: the tests below only care about the page. */
+async function pageOf() {
+  const { listEmails } = await import("@/services/emails");
+  return async (...args: Parameters<typeof listEmails>) => {
+    const r = await listEmails(...args);
+    if (!r.ok) throw new Error(r.error);
+    return r.data;
+  };
+}
+
 describe("listEmails", () => {
   it("does not skip rows sharing a millisecond across pages", async () => {
-    const { listEmails } = await import("@/services/emails");
+    const listEmails = await pageOf();
     const { emails } = await import("@/db/schema");
     await pg.db.execute(
       `insert into "organization"(id,name,slug,created_at) values ('org_3','Gamma','gamma',now())`,
@@ -406,7 +416,9 @@ describe("listEmails", () => {
 
   it("paginates with a keyset cursor and filters by status, to, domain and tag", async () => {
     const enqueue = vi.fn(async () => "job");
-    const { createEmail, listEmails } = await import("@/services/emails");
+    const { createEmail, listEmails: rawList } =
+      await import("@/services/emails");
+    const listEmails = await pageOf();
     const team = { ...ctx, teamId: "org_2" };
     await pg.db.execute(
       `insert into "organization"(id,name,slug,created_at) values ('org_2','Beta','beta',now())`,
@@ -448,9 +460,10 @@ describe("listEmails", () => {
     });
     expect(page2.data.map((e) => e.id)).toEqual([ids[0]]);
     expect(page2.nextCursor).toBeNull();
-    expect(
-      (await listEmails("org_2", { limit: 10, cursor: "garbage" })).data,
-    ).toHaveLength(3);
+    expect(await rawList("org_2", { limit: 10, cursor: "garbage" })).toEqual({
+      ok: false,
+      error: "Invalid cursor.",
+    });
 
     const byStatus = await listEmails("org_2", {
       limit: 10,

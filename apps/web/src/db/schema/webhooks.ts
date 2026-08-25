@@ -22,7 +22,9 @@ export const webhooks = pgTable(
     enabled: boolean("enabled").notNull().default(true),
     disabledReason: text("disabled_reason"),
     failingSince: timestamp("failing_since", { withTimezone: true }),
-    createdAt: timestamp("created_at", { withTimezone: true })
+    // Millisecond precision: the keyset cursor round-trips `createdAt`
+    // through a JS Date (ms); see schema/emails.ts.
+    createdAt: timestamp("created_at", { withTimezone: true, precision: 3 })
       .notNull()
       .defaultNow(),
     // `$onUpdate` fires only via drizzle `.update()`; upserts must set it.

@@ -8,6 +8,7 @@ import {
   type ErrorCode,
 } from "@sendsprite/shared";
 import { db } from "@/db";
+import type { Result } from "@/lib/result";
 import {
   domains,
   emailAttachments,
@@ -392,7 +393,9 @@ export interface EmailPage {
 export async function listEmails(
   teamId: string,
   q: ListEmailsQuery,
-): Promise<EmailPage> {
+): Promise<Result<EmailPage>> {
+  const cur = q.cursor ? decodeCursor(q.cursor) : null;
+  if (q.cursor && !cur) return { ok: false, error: "Invalid cursor." };
   const where: SQL[] = [eq(emails.teamId, teamId)];
   if (q.status) where.push(eq(emails.status, q.status));
   if (q.domainId) where.push(eq(emails.domainId, q.domainId));
@@ -403,8 +406,6 @@ export async function listEmails(
     const v = i < 0 ? "" : q.tag.slice(i + 1);
     where.push(sql`${emails.tags} ->> ${k} = ${v}`);
   }
-  // Malformed cursors are ignored (first page) rather than rejected.
-  const cur = q.cursor ? decodeCursor(q.cursor) : null;
   if (cur)
     where.push(
       sql`(${emails.createdAt}, ${emails.id}) < (${cur.createdAt.toISOString()}::timestamptz, ${cur.id})`,
@@ -418,8 +419,11 @@ export async function listEmails(
   const data = rows.slice(0, q.limit);
   const last = data[data.length - 1];
   return {
-    data,
-    nextCursor: rows.length > q.limit && last ? encodeCursor(last) : null,
+    ok: true,
+    data: {
+      data,
+      nextCursor: rows.length > q.limit && last ? encodeCursor(last) : null,
+    },
   };
 }
 

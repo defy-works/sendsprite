@@ -32,7 +32,7 @@ export default async function EmailsPage({
     domainId: one(sp.domainId),
     tag: one(sp.tag),
   };
-  const [page, domains] = await Promise.all([
+  const [res, domains] = await Promise.all([
     listEmails(ctx.team.id, {
       ...filters,
       limit: PAGE,
@@ -40,6 +40,11 @@ export default async function EmailsPage({
     }),
     listDomains(ctx.team.id),
   ]);
+  // A malformed cursor in the URL (edited by hand) shows page one.
+  const first = res.ok
+    ? res
+    : await listEmails(ctx.team.id, { ...filters, limit: PAGE });
+  const page = first.ok ? first.data : { data: [], nextCursor: null };
   const byId = new Map(domains.map((d) => [d.id, d.name]));
   const rows = page.data.map((e) =>
     toListRow(e, (id) => (id ? (byId.get(id) ?? null) : null)),

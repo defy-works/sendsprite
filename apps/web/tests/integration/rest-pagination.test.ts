@@ -124,40 +124,68 @@ describe("cursor pagination", () => {
     }
   });
 
-  it("keeps walking after the cursor row is deleted; garbage cursor is 400", async () => {
-    const { GET: listKeys, POST: createKey } =
-      await import("@/app/api/v1/api-keys/route");
-    const { DELETE: revokeKey } =
-      await import("@/app/api/v1/api-keys/[id]/route");
+  it("keeps walking after the cursor row is hard-deleted; garbage cursor is 400", async () => {
+    const { GET: list, POST: add } =
+      await import("@/app/api/v1/suppressions/route");
+    const { DELETE: remove } =
+      await import("@/app/api/v1/suppressions/[email]/route");
     const { secret } = await seedTeamWithKey();
-    for (let i = 0; i < 4; i++)
-      await post(createKey, secret, { name: `k${i}` });
-    const p1 = (await (await get(listKeys, secret, "?limit=2")).json()) as {
-      data: { id: string }[];
+    for (let i = 0; i < 5; i++)
+      expect((await post(add, secret, { email: `s${i}@x.io` })).status).toBe(
+        201,
+      );
+    type Row = { id: string; email: string };
+    const all = (await (await get(list, secret, "?limit=100")).json()) as {
+      data: Row[];
+    };
+    const p1 = (await (await get(list, secret, "?limit=2")).json()) as {
+      data: Row[];
       nextCursor: string;
     };
-    const lastOnPage = p1.data[1]!.id;
-    const del = await revokeKey(
+    expect(p1.data).toEqual(all.data.slice(0, 2));
+    const anchor = p1.data[1]!;
+    const del = await remove(
       new Request("http://x", {
         method: "DELETE",
         headers: { authorization: `Bearer ${secret}` },
       }),
-      { params: Promise.resolve({ id: lastOnPage }) },
+      { params: Promise.resolve({ email: encodeURIComponent(anchor.email) }) },
     );
     expect(del.status).toBe(204);
-    // The cursor row is gone; the next page still starts right after it.
+    // The anchor row is gone; page 2 is exactly the next two rows after it.
     const p2 = (await (
-      await get(listKeys, secret, `?limit=2&cursor=${p1.nextCursor}`)
-    ).json()) as { data: { id: string }[] };
-    const p1Ids = p1.data.map((k) => k.id);
-    expect(p2.data).toHaveLength(2);
-    for (const k of p2.data) expect(p1Ids).not.toContain(k.id);
+      await get(list, secret, `?limit=2&cursor=${p1.nextCursor}`)
+    ).json()) as { data: Row[]; nextCursor: string | null };
+    expect(p2.data).toEqual(all.data.slice(2, 4));
+    expect(typeof p2.nextCursor).toBe("string");
 
-    const bad = await get(listKeys, secret, "?limit=2&cursor=garbage");
+    const bad = await get(list, secret, "?limit=2&cursor=garbage");
     expect(bad.status).toBe(400);
     expect(await bad.json()).toMatchObject({
       error: { code: "validation_error", message: "Invalid cursor." },
     });
+  });
+
+  it("rows sharing a created_at millisecond each appear exactly once", async () => {
+    const { GET: list } = await import("@/app/api/v1/suppressions/route");
+    const { db } = await import("@/db");
+    const { suppressions } = await import("@/db/schema");
+    const { team, secret } = await seedTeamWithKey();
+    const createdAt = new Date("2026-01-02T03:04:05.678Z");
+    const ids = ["sup_tie_a", "sup_tie_b", "sup_tie_c", "sup_tie_d"];
+    await db()
+      .insert(suppressions)
+      .values(
+        ids.map((id) => ({
+          id,
+          teamId: team.id,
+          email: `${id}@x.io`,
+          reason: "manual" as const,
+          createdAt,
+        })),
+      );
+    const seen = await walk(list, secret, 1);
+    expect(seen).toEqual([...ids].sort().reverse());
   });
 
   it("rejects a bad limit", async () => {

@@ -24,7 +24,8 @@ export default async function OverviewPage() {
     owner ? instanceStats() : null,
   ]);
   const byId = new Map(domains.map((d) => [d.id, d.name]));
-  const rows = recent.data.map((e) =>
+  const recentRows = recent.ok ? recent.data.data : [];
+  const rows = recentRows.map((e) =>
     toListRow(e, (id) => (id ? (byId.get(id) ?? null) : null)),
   );
   const health = {
@@ -53,7 +54,7 @@ export default async function OverviewPage() {
     },
     {
       label: "Send your first email",
-      done: recent.data.length > 0,
+      done: recentRows.length > 0,
       href: "/app/emails",
     },
   ];

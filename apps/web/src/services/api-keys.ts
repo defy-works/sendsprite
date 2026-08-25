@@ -38,7 +38,7 @@ export function listApiKeys(teamId: string): Promise<ApiKey[]> {
 
 /**
  * REST page of live keys (revoked ones are omitted), newest first.
- * Keyset paging on `(created_at, id)`; `cursor` is the last returned id.
+ * Keyset paging on `(created_at, id)` (cursor from `@/lib/cursor`).
  */
 export const listApiKeysPage = (
   teamId: string,

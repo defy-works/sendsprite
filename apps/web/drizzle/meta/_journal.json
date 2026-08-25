@@ -78,6 +78,13 @@
       "when": 1787631689919,
       "tag": "0010_emails_sent_at_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1787639347731,
+      "tag": "0011_keyset_created_at_ms",
+      "breakpoints": true
     }
   ]
 }
