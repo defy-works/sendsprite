@@ -78,6 +78,7 @@ export function BillingPanel({
   state,
   catalog,
   canManage,
+  subscribed,
   pastDue,
   daysLeft,
   showReported,
@@ -86,6 +87,13 @@ export function BillingPanel({
   state: BillingStateObject;
   catalog: CatalogEntry[];
   canManage: boolean;
+  /**
+   * The team holds a subscription a second checkout would duplicate, so
+   * `startCheckout` refuses every plan. The catalogue routes to the portal
+   * instead of offering a button that can only produce that refusal — see
+   * `hasEntitlingSubscription`, which is where the condition is defined.
+   */
+  subscribed: boolean;
   pastDue: PastDueNotice | null;
   daysLeft: number;
   /** The watermark row covers the same period as `used`; see the page. */
@@ -266,8 +274,8 @@ export function BillingPanel({
             ) : state.managed ? (
               <>
                 <p className="text-sm text-white/65">
-                  Payment method, invoices and cancellation live in the billing
-                  portal.
+                  {subscribed ? "Plan changes, payment" : "Payment"} method,
+                  invoices and cancellation live in the billing portal.
                 </p>
                 <Button
                   variant="secondary"
@@ -307,40 +315,67 @@ export function BillingPanel({
               above are unaffected; try again in a moment.
             </p>
           ) : (
-            <ul className="grid gap-4 sm:grid-cols-3">
-              {catalog.map((p) => {
-                const isCurrent = p.plan === state.plan;
-                return (
-                  <li
-                    key={p.plan}
-                    className={cn(
-                      "flex flex-col gap-2 rounded-md border p-4",
-                      isCurrent
-                        ? "border-indigo-500/60 bg-indigo-500/8"
-                        : "border-white/10",
-                    )}
-                  >
-                    <p className="num-stamp">{p.name}</p>
-                    <p className="text-2xl font-semibold tabular-nums">
-                      {money(p.priceCents)}
-                      {p.priceCents > 0 && (
-                        <span className="text-sm font-normal text-white/50">
-                          {" "}
-                          / mo
-                        </span>
+            <div className="flex flex-col gap-4">
+              {subscribed && canManage && (
+                <p className="text-sm text-white/50">
+                  This team already has a subscription, so plan changes are made
+                  in the billing portal — it switches the subscription you have
+                  rather than opening a second one.
+                </p>
+              )}
+              <ul className="grid gap-4 sm:grid-cols-3">
+                {catalog.map((p) => {
+                  const isCurrent = p.plan === state.plan;
+                  return (
+                    <li
+                      key={p.plan}
+                      className={cn(
+                        "flex flex-col gap-2 rounded-md border p-4",
+                        isCurrent
+                          ? "border-indigo-500/60 bg-indigo-500/8"
+                          : "border-white/10",
                       )}
-                    </p>
-                    <p className="text-sm text-white/65">
-                      {n(p.includedEmails)} emails
-                      {p.overagePer1kCents > 0
-                        ? `, then ${money(p.overagePer1kCents)} per 1,000`
-                        : ", capped"}
-                    </p>
-                    <div className="mt-auto pt-2">
-                      {isCurrent ? (
-                        <p className="text-sm text-indigo-300">Current plan</p>
-                      ) : (
-                        canManage && (
+                    >
+                      <p className="num-stamp">{p.name}</p>
+                      <p className="text-2xl font-semibold tabular-nums">
+                        {money(p.priceCents)}
+                        {p.priceCents > 0 && (
+                          <span className="text-sm font-normal text-white/50">
+                            {" "}
+                            / mo
+                          </span>
+                        )}
+                      </p>
+                      <p className="text-sm text-white/65">
+                        {n(p.includedEmails)} emails
+                        {p.overagePer1kCents > 0
+                          ? `, then ${money(p.overagePer1kCents)} per 1,000`
+                          : ", capped"}
+                      </p>
+                      <div className="mt-auto pt-2">
+                        {isCurrent ? (
+                          <p className="text-sm text-indigo-300">
+                            Current plan
+                          </p>
+                        ) : !canManage ? null : subscribed ? (
+                          // Checkout would be refused for this team, so the tile
+                          // offers the move that works instead of the one that
+                          // does not. Secondary, because it is the same portal
+                          // the card above already links to — not a second,
+                          // competing primary action per tile.
+                          <Button
+                            variant="secondary"
+                            className="w-full"
+                            disabled={pending}
+                            onClick={() =>
+                              go(`portal:${p.plan}`, () => portal())
+                            }
+                          >
+                            {busy === `portal:${p.plan}`
+                              ? "Opening…"
+                              : "Change in portal"}
+                          </Button>
+                        ) : (
                           <Button
                             className="w-full"
                             disabled={pending}
@@ -352,13 +387,13 @@ export function BillingPanel({
                                 ? "Downgrade"
                                 : "Choose"}
                           </Button>
-                        )
-                      )}
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
           )}
         </CardBody>
       </Card>

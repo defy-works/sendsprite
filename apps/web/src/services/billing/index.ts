@@ -2,7 +2,6 @@ import { and, eq, isNull, lt, lte, or } from "drizzle-orm";
 import {
   can,
   FREE_PLAN_METADATA,
-  isEntitledStatus,
   type BillingStateObject,
   type TeamRole,
 } from "@sendsprite/shared";
@@ -28,6 +27,7 @@ import {
 import {
   billingRow,
   entitlementFrom,
+  hasEntitlingSubscription,
   meteringPeriodStart,
   orderIsNewer,
   type DbClient,
@@ -601,8 +601,9 @@ export async function startCheckout(
   // whichever webhook lands last decides what the customer is paying for.
   // Plan changes belong in the portal, which changes the existing
   // subscription in place and prorates it.
-  const existing = await billingRow(actor.teamId);
-  if (existing?.subscriptionId && isEntitledStatus(existing.status))
+  // The billing page reads the same predicate to decide which tiles get a
+  // button; this refusal is what actually stops a second subscription.
+  if (hasEntitlingSubscription(await billingRow(actor.teamId)))
     return {
       ok: false,
       code: "conflict",

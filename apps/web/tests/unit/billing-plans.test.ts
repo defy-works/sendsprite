@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
+import type { TeamBilling } from "@/db/schema";
 import {
   FREE_ENTITLEMENT,
   PAST_DUE_GRACE_MS,
   calendarMonth,
   entitlementFrom,
+  hasEntitlingSubscription,
   meteringPeriodStart,
   orderIsNewer,
   type BillingSnapshot,
@@ -257,5 +259,34 @@ describe("orderIsNewer", () => {
 
   it("refuses an unusable timestamp", () => {
     expect(orderIsNewer(new Date("nope"), null)).toBe(false);
+  });
+});
+
+describe("hasEntitlingSubscription", () => {
+  // The predicate `startCheckout` refuses on and the billing page hides its
+  // plan buttons on. The two must never disagree — an offered button that can
+  // only error, or a hidden one for a team that could have bought.
+  const sub = (
+    over: Partial<Pick<TeamBilling, "subscriptionId" | "status">> = {},
+  ) => ({ subscriptionId: "sub_1", status: "active", ...over });
+
+  it("is false with no row at all", () => {
+    expect(hasEntitlingSubscription(undefined)).toBe(false);
+  });
+
+  it("is true for every status that keeps the paid entitlement", () => {
+    for (const status of ["active", "trialing", "past_due"])
+      expect(hasEntitlingSubscription(sub({ status }))).toBe(true);
+  });
+
+  it("is false for a row whose subscription no longer entitles", () => {
+    // Still `managed` — the portal opens — but there is nothing for a new
+    // checkout to collide with, so this team may buy again.
+    for (const status of ["canceled", "unpaid", "incomplete", null])
+      expect(hasEntitlingSubscription(sub({ status }))).toBe(false);
+  });
+
+  it("is false for a row that never carried a subscription id", () => {
+    expect(hasEntitlingSubscription(sub({ subscriptionId: null }))).toBe(false);
   });
 });

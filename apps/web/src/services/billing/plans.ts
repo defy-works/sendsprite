@@ -220,6 +220,27 @@ export const meteringPeriodStart = (
 ): Date => row?.periodStart ?? calendarMonth(now).start;
 
 /**
+ * Whether the team already holds a subscription a second checkout would
+ * duplicate — the exact condition `startCheckout` refuses on.
+ *
+ * It is a named, exported predicate rather than an inline `&&` because two
+ * places have to agree on it: the service, which refuses, and the billing
+ * page, which decides whether to offer a plan button at all. A UI computing
+ * its own version of "already subscribed" drifts from the server's the first
+ * time either is edited, and every way it can drift is bad — an offered
+ * button that always errors, or a hidden one for a team that could have
+ * bought. **This is not the enforcement**; the refusal in `startCheckout`
+ * is, and it stays there whatever the UI renders.
+ *
+ * `subscriptionId` and not merely "a row exists": a row whose subscription
+ * was canceled or never completed is `managed` (its portal still opens) but
+ * has nothing for a new checkout to collide with, so that team may buy again.
+ */
+export const hasEntitlingSubscription = (
+  row: Pick<TeamBilling, "subscriptionId" | "status"> | undefined,
+): boolean => Boolean(row?.subscriptionId) && isEntitledStatus(row?.status);
+
+/**
  * Whether a paid order is newer than the last one applied — the guard on
  * *clearing* the past-due grace clock.
  *

@@ -5,6 +5,7 @@ import { planCatalog, teamBillingState } from "@/services/billing";
 import { billingConfig } from "@/services/billing/config";
 import {
   billingRow,
+  hasEntitlingSubscription,
   meteringPeriodStart,
   PAST_DUE_GRACE_MS,
 } from "@/services/billing/plans";
@@ -73,6 +74,11 @@ export default async function BillingPage() {
           overagePer1kCents: p.overagePer1kCents,
         }))}
         canManage={can(ctx.role, "billing.manage")}
+        // Read from the row with the service's own predicate, not inferred
+        // from `state.managed`: a team whose subscription was canceled is
+        // still managed (the portal opens) but may buy again, and hiding the
+        // plan buttons from it would strand it on Free with no way back.
+        subscribed={hasEntitlingSubscription(row)}
         // Rendered from what the state says, not from what a status implies: a
         // `past_due` row with no stamp (written before the clock existed) still
         // gets its banner, without a deadline it cannot know.

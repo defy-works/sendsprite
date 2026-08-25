@@ -5523,13 +5523,20 @@ action naming) and 21 (body caps on non-email routes) are **partly closed** — 
 
 **UI and operations**
 
-16. **The catalogue's buttons refuse for a subscribed team.** `startCheckout`
-    answers `conflict` ("use the billing portal to change plan") whenever the team
-    already has a subscription in an entitling status, but `BillingPanel` still
-    renders **Choose** / **Downgrade** on every non-current tier. A paying
-    customer's only working path is **Manage billing**, so those buttons teach the
-    wrong thing and can only produce an error. Hide them once `managed` is true,
-    relabel them, or deep-link them into the portal.
+16. ~~**The catalogue's buttons refuse for a subscribed team.**~~ **RESOLVED.**
+    `startCheckout`'s refusal condition is now the exported predicate
+    `hasEntitlingSubscription(row)` (`services/billing/plans.ts`), read by both
+    the service — which still refuses, unchanged, so the UI is not the only thing
+    preventing a double subscription — and `billing/page.tsx`, which passes it to
+    `BillingPanel` as `subscribed`. For a subscribed team every non-current tile
+    renders a secondary **Change in portal** (the same `portal()` action as
+    **Manage billing**) instead of **Choose** / **Downgrade**, the Plans card
+    explains why in one line, and the plan card's portal sentence gains "plan
+    changes". A team with no subscription — including one whose subscription was
+    canceled, which is `managed` but may buy again — keeps **Choose** exactly as
+    before. Covered by `hasEntitlingSubscription` unit tests and by
+    `billing.spec.ts`, which stages a subscribed team with a signed
+    `subscription.created` delivery and asserts the swap.
 17. **`billing_events` grows without bound.** The nightly `retention.purge` does
     not touch it. A row is a few hundred bytes and the volume is tiny, but it
     should join the retention sweep eventually.

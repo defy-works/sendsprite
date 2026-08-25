@@ -1,3 +1,4 @@
+import { createHmac, randomUUID } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
 
 // Runs after setup.spec.ts (project `app`), so the instance is set up. The
@@ -53,9 +54,13 @@ test("settings links to billing; the page shows the Free plan, this period's usa
     page.getByRole("button", { name: "Choose" }).first(),
   ).toBeEnabled();
 
-  // A team that has never subscribed has nothing to manage.
+  // A team that has never subscribed has nothing to manage, and nothing to
+  // change in a portal it has no customer record in.
   await expect(
     page.getByRole("button", { name: /manage billing/i }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Change in portal" }),
   ).toHaveCount(0);
 });
 
@@ -84,6 +89,108 @@ test("checkout sends the browser to the provider", async ({ page }) => {
 
   await expect.poll(() => seen.length, { timeout: 15_000 }).toBeGreaterThan(0);
   expect(seen[0]).toContain("/checkout/prod_pro");
+});
+
+/**
+ * The fake provider's module-constant signing secret (`services/billing/fake.ts`
+ * — its docstring is explicit that one instance signs what another verifies).
+ * Restated here rather than imported: Playwright transpiles this spec but not
+ * the workspace packages the fake pulls in, and a drift fails loudly as a 403
+ * on the delivery below rather than silently passing.
+ */
+const FAKE_SECRET = "fake-billing-secret";
+
+/** A `subscription.created` delivery, signed the Standard Webhooks way. */
+function signedSubscription(data: Record<string, unknown>) {
+  const body = JSON.stringify({ type: "subscription.created", data });
+  const id = randomUUID();
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  return {
+    body,
+    headers: {
+      "content-type": "application/json",
+      "webhook-id": id,
+      "webhook-timestamp": timestamp,
+      "webhook-signature": createHmac("sha256", FAKE_SECRET)
+        .update(`${id}.${timestamp}.${body}`)
+        .digest("hex"),
+    },
+  };
+}
+
+test("a subscribed team is sent to the portal, not to a checkout that would refuse", async ({
+  page,
+  request,
+}) => {
+  await signUpOwner(page, "billing-subscribed");
+  await page.goto("/app/settings/billing");
+
+  // The team id is the provider's external customer id, and the fake puts it
+  // in the checkout URL — so one intercepted Choose click is also how this
+  // spec learns which team to subscribe.
+  const seen: string[] = [];
+  await page.route("**fake.billing.test/**", async (route) => {
+    seen.push(route.request().url());
+    await route.fulfill({
+      status: 200,
+      contentType: "text/html",
+      body: "<html><body>fake provider</body></html>",
+    });
+  });
+  await page
+    .getByRole("listitem")
+    .filter({ hasText: "Sendsprite Pro" })
+    .getByRole("button", { name: "Choose" })
+    .click();
+  await expect.poll(() => seen.length, { timeout: 15_000 }).toBeGreaterThan(0);
+  const [checkoutUrl] = seen;
+  if (!checkoutUrl) throw new Error("no checkout navigation was intercepted");
+  const teamId = new URL(checkoutUrl).searchParams.get("customer");
+  expect(teamId).toBeTruthy();
+
+  // Subscribe it the only way production ever does: a verified webhook.
+  const start = Date.now();
+  const event = signedSubscription({
+    subscriptionId: `sub_${randomUUID()}`,
+    externalCustomerId: teamId,
+    productId: "prod_pro",
+    status: "active",
+    currentPeriodStart: new Date(start).toISOString(),
+    currentPeriodEnd: new Date(start + 30 * 24 * 3600 * 1000).toISOString(),
+    modifiedAt: new Date(start).toISOString(),
+  });
+  const res = await request.post("/api/billing/webhook", {
+    headers: event.headers,
+    data: event.body,
+  });
+  expect(res.status()).toBe(200);
+  expect((await res.json()) as { applied: boolean }).toMatchObject({
+    applied: true,
+  });
+
+  await page.goto("/app/settings/billing");
+  const pro = page.getByRole("listitem").filter({ hasText: "Sendsprite Pro" });
+  await expect(pro.getByText("Current plan")).toBeVisible();
+
+  // The whole point: no tile offers an action `startCheckout` would refuse.
+  await expect(page.getByRole("button", { name: "Choose" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Downgrade" })).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Change in portal" }),
+  ).toHaveCount(2);
+  await expect(
+    page.getByRole("button", { name: /manage billing/i }),
+  ).toBeVisible();
+
+  // And the replacement works: it opens the customer portal.
+  seen.length = 0;
+  await page
+    .getByRole("listitem")
+    .filter({ hasText: "Sendsprite Scale" })
+    .getByRole("button", { name: "Change in portal" })
+    .click();
+  await expect.poll(() => seen.length, { timeout: 15_000 }).toBeGreaterThan(0);
+  expect(seen[0]).toContain(`/portal/${teamId}`);
 });
 
 test("the provider webhook endpoint is mounted and refuses an unsigned delivery", async ({
