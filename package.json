@@ -17,6 +17,7 @@
     "test": "bun run --filter '*' test",
     "test:integration": "bun run --filter @sendsprite/web test:integration",
     "test:e2e": "bun run --filter @sendsprite/web test:e2e",
+    "verify:pin": "bun run apps/web/scripts/verify-pin.ts",
     "db:generate": "bun run --filter @sendsprite/web db:generate",
     "db:migrate": "bun run --filter @sendsprite/web db:migrate",
     "db:studio": "bun run --filter @sendsprite/web db:studio",

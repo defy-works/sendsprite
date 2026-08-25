@@ -48,6 +48,12 @@ jobs:
         run: npm pack --dry-run
         working-directory: packages/mcp
       - run: bun run test:integration
+      # The vitest suite runs under Node (vitest's bin has a node shebang), so
+      # it cannot catch a Bun-runtime regression in the webhook SSRF pin --
+      # which is how a silently unpinned delivery path shipped once already.
+      # This step runs that check under Bun, on purpose.
+      - name: Verify the delivery pin under Bun
+        run: bun run verify:pin
       - run: bunx playwright install --with-deps chromium
         working-directory: apps/web
       - run: bun run db:migrate

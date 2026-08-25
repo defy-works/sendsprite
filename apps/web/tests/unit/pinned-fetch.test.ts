@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { MAX_RESPONSE_BYTES, pinnedFetch } from "@/services/webhooks";
+import { MAX_RESPONSE_BYTES, pinnedFetch } from "@/lib/pinned-fetch";
 
 /**
  * `pinnedFetch` is what stops a vetted DNS answer from being re-resolved (and
