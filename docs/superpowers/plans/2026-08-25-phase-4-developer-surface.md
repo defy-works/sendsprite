@@ -862,7 +862,7 @@ Expected: FAIL — `nextCursor` undefined, limit ignored.
 
 - [ ] **Step 6: Implement keyset paging in the four services and routes**
 
-Follow the exact pattern of `listEmails` in `apps/web/src/services/emails.ts` (cursor = the last row's id; rows ordered by `(created_at desc, id desc)`; fetch `limit + 1`, return `{ data, nextCursor }`). Add to each service a `listXPage(teamId, q: PageQuery)` next to the existing `listX(teamId)` (the dashboard keeps using the unpaged one):
+Follow the exact pattern of `listEmails` in `apps/web/src/services/emails.ts` (cursor = opaque `encodeCursor(createdAt, id)` from `src/lib/cursor.ts`, so a deleted anchor row still paginates and a garbage cursor is a 400; rows ordered by `(created_at desc, id desc)`; fetch `limit + 1`, return `{ data, nextCursor }`; the shared keyset body lives in `src/db/keyset.ts`). Add to each service a `listXPage(teamId, q: PageQuery)` next to the existing `listX(teamId)` (the dashboard keeps using the unpaged one):
 
 ```ts
 export async function listApiKeysPage(
