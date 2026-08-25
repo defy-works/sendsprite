@@ -4,7 +4,7 @@ Self-hosted email API and marketing platform on Amazon SES. A Resend / useSend
 alternative that sets up SES and Cloudflare DNS for you, ships an npm SDK with
 first-class React support, and runs from a single `docker compose up`.
 
-Bun · Next.js 16 · Postgres · Drizzle · pg-boss · BetterAuth · MIT
+Bun · Next.js 16 · Postgres · Drizzle · pg-boss · BetterAuth · AGPL-3.0 server, MIT SDK
 
 ## Install (self-host)
 
@@ -362,26 +362,27 @@ default branch the release workflow runs `changesets/action`:
 
 ## Environment reference
 
-| Variable                                             | Default       | Notes                                                                       |
-| ---------------------------------------------------- | ------------- | --------------------------------------------------------------------------- |
-| `APP_URL`                                            | —             | Public URL, with protocol                                                   |
-| `APP_SECRET`                                         | —             | ≥ 32 chars; encrypts stored credentials                                     |
-| `DATABASE_URL`                                       | —             | Postgres connection string                                                  |
-| `POSTGRES_PASSWORD`                                  | —             | Compose only; alphanumeric recommended (interpolated unencoded into URL)    |
-| `SIGNUP_MODE`                                        | `auto`        | `auto` → open until first user, then invite; or `open`/`invite`/`closed`    |
-| `EMAIL_PASSWORD_ENABLED`                             | `false`       | Email + password sign-in                                                    |
-| `GOOGLE_CLIENT_ID/SECRET`, `GITHUB_CLIENT_ID/SECRET` | —             | OAuth providers                                                             |
-| `WORKER_MODE`                                        | `inline`      | `inline` / `separate` / `none`                                              |
-| `SMTP_ENABLED`                                       | `true`        | SMTP relay (username anything, password = API key); AUTH requires STARTTLS  |
-| `SMTP_ALLOW_INSECURE_AUTH`                           | `false`       | Dev only: accept AUTH on a plain connection (the API key travels in clear)  |
-| `SMTP_PORT`                                          | `587`         | Relay port. Under compose: the host port, mapped onto 2587 in the container |
-| `SMTP_TLS_CERT`, `SMTP_TLS_KEY`                      | —             | PEM paths for STARTTLS; unset → self-signed cert (clients must skip verify) |
-| `SMTP_MAX_SIZE`                                      | `10485760`    | Max message size in bytes (552 above it)                                    |
-| `LANDING_ENABLED`                                    | `true`        | `false` sends `/` to `/app`                                                 |
-| `AWS_DEFAULT_REGION`                                 | `us-east-1`   | Region preselected in the AWS connect wizard                                |
-| `CFN_TEMPLATE_URL`                                   | Sendsprite S3 | S3 URL of the one-click CloudFormation template (must be S3)                |
-| `AWS_E2E_MOCK`                                       | —             | `1` swaps AWS clients for an in-memory fake; ignored in production (tests)  |
-| `AWS_E2E_VERIFY`                                     | —             | With the fake: `1` reports DKIM/MAIL FROM as SUCCESS (dev/test only)        |
+| Variable                                             | Default       | Notes                                                                        |
+| ---------------------------------------------------- | ------------- | ---------------------------------------------------------------------------- |
+| `APP_URL`                                            | —             | Public URL, with protocol                                                    |
+| `APP_SECRET`                                         | —             | ≥ 32 chars; encrypts stored credentials                                      |
+| `DATABASE_URL`                                       | —             | Postgres connection string                                                   |
+| `POSTGRES_PASSWORD`                                  | —             | Compose only; alphanumeric recommended (interpolated unencoded into URL)     |
+| `SIGNUP_MODE`                                        | `auto`        | `auto` → open until first user, then invite; or `open`/`invite`/`closed`     |
+| `EMAIL_PASSWORD_ENABLED`                             | `false`       | Email + password sign-in                                                     |
+| `GOOGLE_CLIENT_ID/SECRET`, `GITHUB_CLIENT_ID/SECRET` | —             | OAuth providers                                                              |
+| `WORKER_MODE`                                        | `inline`      | `inline` / `separate` / `none`                                               |
+| `SMTP_ENABLED`                                       | `true`        | SMTP relay (username anything, password = API key); AUTH requires STARTTLS   |
+| `SMTP_ALLOW_INSECURE_AUTH`                           | `false`       | Dev only: accept AUTH on a plain connection (the API key travels in clear)   |
+| `SMTP_PORT`                                          | `587`         | Relay port. Under compose: the host port, mapped onto 2587 in the container  |
+| `SMTP_TLS_CERT`, `SMTP_TLS_KEY`                      | —             | PEM paths for STARTTLS; unset → self-signed cert (clients must skip verify)  |
+| `SMTP_MAX_SIZE`                                      | `10485760`    | Max message size in bytes (552 above it)                                     |
+| `LANDING_ENABLED`                                    | `true`        | `false` sends `/` to `/app`                                                  |
+| `AWS_DEFAULT_REGION`                                 | `us-east-1`   | Region preselected in the AWS connect wizard                                 |
+| `CFN_TEMPLATE_URL`                                   | Sendsprite S3 | S3 URL of the one-click CloudFormation template (must be S3)                 |
+| `SOURCE_URL`                                         | this repo     | Source offered to users (AGPL §13); set it to yours if you modify the server |
+| `AWS_E2E_MOCK`                                       | —             | `1` swaps AWS clients for an in-memory fake; ignored in production (tests)   |
+| `AWS_E2E_VERIFY`                                     | —             | With the fake: `1` reports DKIM/MAIL FROM as SUCCESS (dev/test only)         |
 
 SMTP login throttling is per remote IP (5 failed logins → 10 minute lockout)
 and per process. Behind a proxy or load balancer that does not speak PROXY
@@ -406,6 +407,42 @@ pipeline — done. Phase 5 (next): templates, preview, contacts, campaigns,
 audit UI.
 Design: `docs/superpowers/specs/2026-08-24-sendsprite-design.md`.
 
-## License
+## Licensing
 
-MIT
+Sendsprite is split, on purpose:
+
+| Part                                             | Licence         |
+| ------------------------------------------------ | --------------- |
+| The server — `apps/web`, `infra/`, the repo root | `AGPL-3.0-only` |
+| `sendsprite` (`packages/sdk`)                    | `MIT`           |
+| `@sendsprite/mcp` (`packages/mcp`)               | `MIT`           |
+| `packages/shared`                                | `MIT`           |
+
+**The SDK is MIT so you can put it in a closed-source app.** That is the whole
+point of the split: the code you `npm install` and compile into your own product
+comes with no obligations at all — no copyleft, no source disclosure, nothing to
+publish. `packages/shared` is MIT for the same reason, one step removed: tsup
+inlines it into the published SDK and MCP bundles, so its code physically ships
+inside those MIT packages and has to match them.
+
+**Self-hosting is free, and using it internally obliges you to nothing.**
+Running Sendsprite — unmodified or patched to death — for your own company, your
+own products, your own customers' email, is exactly what the AGPL is fine with.
+Nobody has to publish anything, and no clause is waiting to catch you.
+
+**Section 13 applies only if you modify the server _and_ offer it to others over
+a network.** In that case those users must be offered your modified source. That
+is what `SOURCE_URL` is for: point it at your repository, mirror or tarball, and
+the dashboard footer and `/api/health` offer it for you. Leave it at the default
+and it points at this repository, which is the correct answer for an unmodified
+instance.
+
+The name is not covered by any of this — see [TRADEMARK.md](TRADEMARK.md). Forks
+are welcome; call yours something else.
+
+**Commercial licences.** If your organisation cannot deploy AGPL software — some
+cannot, as policy, whatever the facts — the same server is available under
+commercial terms. Email <hello@defy.works>.
+
+Contributions are covered by a [CLA](CLA.md); see
+[CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and the reasoning.

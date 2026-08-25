@@ -16,7 +16,7 @@ export function Footer() {
               Sendsprite
             </p>
             <p className="font-mono text-[11px] tracking-[0.08em] text-white/40">
-              MIT licensed. Self-host it, fork it, ship it.
+              AGPL server, MIT SDK. Self-host it, fork it, ship it.
             </p>
           </div>
           <nav aria-label="Footer">
@@ -32,13 +32,13 @@ export function Footer() {
                 </Link>
               </li>
               <li>
-                <a href={`${GITHUB_URL}/blob/main/LICENSE`} className={LINK}>
-                  MIT
+                <a href={`${GITHUB_URL}#licensing`} className={LINK}>
+                  Licensing
                 </a>
               </li>
               <li>
                 <a href="https://defy.works" className={LINK}>
-                  Built by Defy Works
+                  Built by defy.works
                 </a>
               </li>
             </ul>

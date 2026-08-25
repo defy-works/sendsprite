@@ -115,6 +115,7 @@ stops the container with a message naming the variable.
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | unset                | Enables GitHub sign-in when both are set.                                                                                                                         |
 | `AWS_DEFAULT_REGION`                        | `us-east-1`          | Region pre-selected in the connect flow (must be an SES region).                                                                                                  |
 | `CFN_TEMPLATE_URL`                          | the published S3 URL | CloudFormation template behind the one-click connect. Must be an S3 URL.                                                                                          |
+| `SOURCE_URL`                                | this repository      | Where this instance offers its source (AGPL §13). Shown in the dashboard footer and `/api/health`. Point it at your own source if you modify the server.          |
 
 Enable at least one sign-in method or nobody can reach the dashboard; the
 installer turns on `EMAIL_PASSWORD_ENABLED`.
@@ -217,3 +218,33 @@ Migrations run automatically on the new container's first boot.
 Back up the Postgres volume (`pgdata`) and the `.env` file. `pg_dump` against
 the `db` service is enough for the data; without `APP_SECRET` from `.env` the
 encrypted AWS and Cloudflare credentials in that dump cannot be read.
+
+## Licensing
+
+The server you are hosting is **AGPL-3.0-only**; the `sendsprite` and
+`@sendsprite/mcp` npm packages are **MIT**, so the code you compile into your
+own application carries no obligations.
+
+Running Sendsprite for yourself, your company or your customers obliges you to
+nothing. Not if you patch it, not if you never publish a line — internal use is
+unencumbered, and there is no clause waiting for you.
+
+One case does have a condition: if you **modify** the server **and** let other
+people use it over a network, those users must be offered your modified source.
+That is what `SOURCE_URL` is for. Set it to wherever your source lives — a Git
+repository, a mirror, a tarball — and the dashboard footer and `/api/health`
+make the offer for you, next to the running version so it is clear which code
+the link is the source of:
+
+```bash
+# .env
+SOURCE_URL=https://git.example.com/us/sendsprite
+```
+
+Left at its default it points at the upstream repository, which is the correct
+answer for an unmodified instance and wrong for every other kind.
+
+The name and the logo are trademarks and are not covered by either licence: fork
+freely, but run a public service under your own name (`TRADEMARK.md`). If your
+organisation cannot deploy AGPL software, the server is also available under
+commercial terms — [hello@defy.works](mailto:hello@defy.works).

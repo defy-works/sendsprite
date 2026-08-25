@@ -1,0 +1,15 @@
+Sendsprite — self-hosted email API on Amazon SES
+Copyright (C) 2026 defy.works
+
+The server (apps/web, infra/) is licensed under the GNU Affero General Public
+License, version 3 — see LICENSE.
+
+The client packages are MIT licensed, so they can be embedded in closed-source
+applications without imposing any obligation:
+
+  packages/sdk    ->  the `sendsprite` npm package (SDK, /react, /next, CLI)
+  packages/mcp    ->  the `@sendsprite/mcp` npm package
+  packages/shared ->  bundled *into* the packages above, so it must match them
+
+Each of those directories carries its own MIT LICENSE file, which governs the
+files in it. See the "Licensing" section of README.md for the reasoning.
