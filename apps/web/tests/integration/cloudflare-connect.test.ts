@@ -67,6 +67,18 @@ describe("connectCloudflare", () => {
     await disconnectCloudflare({ userId: "u1" });
     expect((await getInstanceSettings()).cloudflareTokenEnc).toBeNull();
     expect(await listZones(okFetch)).toEqual([]);
+    const { auditLog } = await import("@/db/schema");
+    const rows = await pg.db.select().from(auditLog);
+    expect(rows.map((r) => r.action)).toEqual([
+      "cloudflare.connect",
+      "cloudflare.disconnect",
+    ]);
+    expect(rows[0]).toMatchObject({
+      teamId: null,
+      actorUserId: "u1",
+      targetType: "instance",
+      diff: { cloudflareTokenEnc: { from: "[redacted]", to: "[redacted]" } },
+    });
   });
 
   it("returns an error for an invalid token and stores nothing", async () => {

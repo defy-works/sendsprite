@@ -6,3 +6,4 @@ import "./domain-provision";
 import "./domain-verify";
 import "./email-send";
 import "./webhook-deliver";
+import "./retention-purge";

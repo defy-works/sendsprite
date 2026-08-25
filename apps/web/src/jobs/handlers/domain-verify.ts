@@ -3,10 +3,15 @@ import { enqueue } from "../enqueue";
 import { Q } from "../queues";
 import { selectSweepCandidates, verifyDomain } from "@/services/domains";
 
-registerQueue<{ domainId: string }>(
+registerQueue<{ domainId: string; force?: boolean }>(
   Q.domainVerify,
   async (jobs) => {
-    for (const job of jobs) await verifyDomain(job.data.domainId);
+    for (const job of jobs)
+      await verifyDomain(
+        job.data.domainId,
+        { enqueue },
+        { force: job.data.force ?? false },
+      );
   },
   {
     // `exclusive`: pg-boss 12 keeps one job per (queue, singletonKey) across
@@ -33,16 +38,18 @@ registerQueue<{ domainId: string }>(
  * last check is older than ~100 s (so a 2-minute cron re-checks every
  * tick, and a job still queued/active is deduped by the exclusive key).
  * Expired rows stay in the set: `verifyDomain` marks them `failed` on the
- * next run, which removes them. Exported so tests can drive it directly.
- * Returns the number of domains enqueued.
+ * next run, which removes them. Verified domains unchecked for 24 h are
+ * sent with `force: true` so the check runs (and demotes on SES
+ * disagreement). Exported so tests can drive it directly. Returns the
+ * number of domains enqueued.
  */
 export async function sweepDomainVerification(): Promise<number> {
-  const ids = await selectSweepCandidates();
+  const candidates = await selectSweepCandidates();
   let sent = 0;
-  for (const domainId of ids) {
+  for (const { id: domainId, force } of candidates) {
     const job = await enqueue(
       Q.domainVerify,
-      { domainId },
+      { domainId, ...(force && { force }) },
       { singletonKey: domainId },
     );
     if (job) sent++;

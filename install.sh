@@ -32,7 +32,6 @@ SIGNUP_MODE=auto
 LANDING_ENABLED=true
 SMTP_ENABLED=true
 WORKER_MODE=inline
-EMAIL_RETENTION_DAYS=90
 EOF
   chmod 600 .env
   echo "Wrote $DIR/.env (keep APP_SECRET safe — it encrypts your AWS/Cloudflare credentials)."

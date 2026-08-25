@@ -207,6 +207,7 @@ async function finishConnect(
       sesLastCheckedAt: now,
     },
     actor,
+    { action: "aws.connect" },
   );
   // Past this point the connection is persisted and consistent. A subscribe
   // failure is reported as a warning rather than an error so a caller (the
@@ -299,11 +300,15 @@ const accountUnchanged = (s: InstanceSettings, a: SesAccount) =>
   s.sesMaxSendRate === a.maxSendRate;
 
 /**
- * Re-read GetAccount. Only a real change is audited; otherwise (the hourly
- * job, most of the time) just `sesLastCheckedAt` is bumped, unaudited.
+ * Re-read GetAccount. Only a real change is audited (`ses.account.refresh`);
+ * otherwise (the hourly job, most of the time) just `sesLastCheckedAt` is
+ * bumped, unaudited. With `action` set (the production-access request) a
+ * row is written even when nothing changed, so the request itself is on
+ * record.
  */
 export async function refreshSesAccount(
   actor?: Actor,
+  { action }: { action?: string } = {},
 ): Promise<Result<{ status: string }>> {
   try {
     const ctx = await resolveAwsContext();
@@ -312,7 +317,7 @@ export async function refreshSesAccount(
     );
     const current = await getInstanceSettings();
     const now = new Date();
-    if (accountUnchanged(current, account)) {
+    if (!action && accountUnchanged(current, account)) {
       await updateInstanceSettings({ sesLastCheckedAt: now }, undefined, {
         audit: false,
       });
@@ -320,6 +325,7 @@ export async function refreshSesAccount(
       await updateInstanceSettings(
         { ...accountPatch(account), sesLastCheckedAt: now },
         actor,
+        { action: action ?? "ses.account.refresh" },
       );
     }
     return { ok: true, data: { status: account.status } };
@@ -363,7 +369,9 @@ export async function requestProductionAccess(
   } catch (e) {
     return { ok: false, error: `SES rejected the request: ${errMsg(e)}` };
   }
-  const refreshed = await refreshSesAccount(actor);
+  const refreshed = await refreshSesAccount(actor, {
+    action: "ses.production.request",
+  });
   if (!refreshed.ok)
     return {
       ok: false,
@@ -409,6 +417,7 @@ export async function disconnectAws(actor: Actor): Promise<Result> {
       sesLastCheckedAt: null,
     },
     actor,
+    { action: "aws.disconnect" },
   );
   return { ok: true, data: undefined };
 }

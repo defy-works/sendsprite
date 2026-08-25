@@ -44,6 +44,7 @@ export async function connectCloudflare(
         cloudflareAccountName: zones.length === 1 ? zones[0]!.name : null,
       },
       actor,
+      { action: "cloudflare.connect" },
     );
     return {
       ok: true,
@@ -70,6 +71,7 @@ export async function disconnectCloudflare(
       cloudflareAccountName: null,
     },
     actor,
+    { action: "cloudflare.disconnect" },
   );
   return { ok: true, data: undefined };
 }

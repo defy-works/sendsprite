@@ -275,7 +275,7 @@ describe("domains", () => {
     const id = res.data.id;
     // Never provisioned, so the sweep must not pick it up.
     const { selectSweepCandidates } = await import("@/services/domains");
-    expect(await selectSweepCandidates()).not.toContain(id);
+    expect((await selectSweepCandidates()).map((c) => c.id)).not.toContain(id);
     const enqueue = vi.fn(async () => "job");
     expect(
       (await retryProvisioning({ ...actor, role: "member" }, id, { enqueue }))
@@ -491,7 +491,7 @@ describe("domains", () => {
     };
     const { verifyDomain } = await import("@/services/domains");
     const d = await byName("mail.acme.com");
-    await verifyDomain(d.id, { resolver });
+    await verifyDomain(d.id, { resolver, enqueue: noop.enqueue });
     const after = await byName("mail.acme.com");
     expect(after).toMatchObject({
       status: "verified",
@@ -505,7 +505,7 @@ describe("domains", () => {
     expect(after.lastCheckedAt).toBeInstanceOf(Date);
     // Already verified: a stray re-run is a no-op.
     ses.reset();
-    await verifyDomain(d.id, { resolver });
+    await verifyDomain(d.id, { resolver, enqueue: noop.enqueue });
     expect(ses.commandCalls(GetEmailIdentityCommand)).toHaveLength(0);
   });
   it("reverifyDomain keeps a verified domain verified, demotes only when SES disagrees", async () => {
@@ -525,7 +525,12 @@ describe("domains", () => {
     };
     ses.on(GetEmailIdentityCommand).resolves(success);
     expect(
-      (await reverifyDomain(actor, before.id, { resolver: emptyDns })).ok,
+      (
+        await reverifyDomain(actor, before.id, {
+          resolver: emptyDns,
+          enqueue: noop.enqueue,
+        })
+      ).ok,
     ).toBe(true);
     const still = await byName("mail.acme.com");
     expect(still.status).toBe("verified");
@@ -537,7 +542,12 @@ describe("domains", () => {
     ses.reset();
     ses.on(GetEmailIdentityCommand).resolves(pendingIdentity);
     expect(
-      (await reverifyDomain(actor, before.id, { resolver: emptyDns })).ok,
+      (
+        await reverifyDomain(actor, before.id, {
+          resolver: emptyDns,
+          enqueue: noop.enqueue,
+        })
+      ).ok,
     ).toBe(true);
     const demoted = await byName("mail.acme.com");
     expect(demoted.status).toBe("pending");
@@ -546,9 +556,84 @@ describe("domains", () => {
     ses.reset();
     ses.on(GetEmailIdentityCommand).resolves(success);
     expect(
-      (await reverifyDomain(actor, before.id, { resolver: emptyDns })).ok,
+      (
+        await reverifyDomain(actor, before.id, {
+          resolver: emptyDns,
+          enqueue: noop.enqueue,
+        })
+      ).ok,
     ).toBe(true);
     expect((await byName("mail.acme.com")).status).toBe("verified");
+  });
+  it("sweep re-checks a verified domain after 24 h with force; demotion and re-verification fan out webhooks", async () => {
+    const { selectSweepCandidates, verifyDomain } =
+      await import("@/services/domains");
+    const { createWebhook } = await import("@/services/webhooks");
+    const { webhookDeliveries } = await import("@/db/schema");
+    const hook = await createWebhook(actor, {
+      url: "https://hooks.acme.com/domains",
+      events: ["domain.verified", "domain.failed"],
+    });
+    if (!hook.ok) throw new Error(hook.error);
+    const d = await byName("mail.acme.com");
+    expect(d.status).toBe("verified");
+    // Checked minutes ago: not due. A day old: due, and flagged `force`.
+    expect(await selectSweepCandidates()).toEqual([]);
+    await pg.db
+      .update(domains)
+      .set({ lastCheckedAt: new Date(Date.now() - 25 * 3600_000) })
+      .where(eq(domains.id, d.id));
+    expect(await selectSweepCandidates()).toEqual([{ id: d.id, force: true }]);
+    // Without force the verified row is untouched (a stray plain job).
+    await verifyDomain(d.id, noop);
+    expect(ses.commandCalls(GetEmailIdentityCommand)).toHaveLength(0);
+    // Forced: SES no longer agrees → demoted, `domain.failed` fanned out.
+    const enqueue = vi.fn(async () => "job");
+    ses.on(GetEmailIdentityCommand).resolves(pendingIdentity);
+    await verifyDomain(d.id, { resolver: emptyDns, enqueue }, { force: true });
+    expect((await byName("mail.acme.com")).status).toBe("pending");
+    expect(await selectSweepCandidates()).toEqual([]);
+    const deliveries = () =>
+      pg.db
+        .select()
+        .from(webhookDeliveries)
+        .where(eq(webhookDeliveries.webhookId, hook.data.id))
+        .orderBy(webhookDeliveries.createdAt);
+    let rows = await deliveries();
+    expect(rows.map((r) => r.eventType)).toEqual(["domain.failed"]);
+    expect(rows[0]!.payload).toMatchObject({
+      type: "domain.failed",
+      data: { domain: { id: d.id, name: "mail.acme.com", status: "pending" } },
+    });
+    expect(enqueue).toHaveBeenCalledWith(
+      "webhook.deliver",
+      { deliveryId: rows[0]!.id },
+      expect.objectContaining({ singletonKey: rows[0]!.id }),
+    );
+    // Back to SUCCESS: verified again, `domain.verified` fanned out.
+    ses.reset();
+    ses.on(GetEmailIdentityCommand).resolves({
+      DkimAttributes: { Status: "SUCCESS", Tokens: ["t1", "t2", "t3"] },
+      MailFromAttributes: {
+        MailFromDomainStatus: "SUCCESS",
+        MailFromDomain: "bounce.mail.acme.com",
+        BehaviorOnMxFailure: "USE_DEFAULT_VALUE",
+      },
+    });
+    await verifyDomain(d.id, { resolver: emptyDns, enqueue });
+    expect((await byName("mail.acme.com")).status).toBe("verified");
+    rows = await deliveries();
+    expect(rows.map((r) => r.eventType)).toEqual([
+      "domain.failed",
+      "domain.verified",
+    ]);
+    expect(rows[1]!.payload).toMatchObject({
+      data: { domain: { id: d.id, status: "verified" } },
+    });
+    // A check that leaves the status alone fans out nothing.
+    await verifyDomain(d.id, { resolver: emptyDns, enqueue }, { force: true });
+    expect(await deliveries()).toHaveLength(2);
+    await pg.db.delete(webhookDeliveries);
   });
   it("verifyDomain leaves a pending domain to the sweep and fails it after verifyUntil", async () => {
     ses.on(GetEmailIdentityCommand).resolves(pendingIdentity);
@@ -563,10 +648,12 @@ describe("domains", () => {
       .update(domains)
       .set({ dkimTokens: ["t1", "t2", "t3"] })
       .where(eq(domains.id, id));
-    // Never checked: due. (mail.acme.com is verified, so it stays out.)
-    expect(await selectSweepCandidates()).toEqual([id]);
-    await verifyDomain(id, { resolver: emptyDns });
-    await verifyDomain(id, { resolver: emptyDns });
+    // Never checked: due. (mail.acme.com is verified and freshly checked,
+    // so it stays out.)
+    const due = [{ id, force: false }];
+    expect(await selectSweepCandidates()).toEqual(due);
+    await verifyDomain(id, { resolver: emptyDns, enqueue: noop.enqueue });
+    await verifyDomain(id, { resolver: emptyDns, enqueue: noop.enqueue });
     expect((await byName("slow.acme.com")).status).toBe("pending");
     // Just checked: not due until the check is ~100 s old.
     expect(await selectSweepCandidates()).toEqual([]);
@@ -574,14 +661,14 @@ describe("domains", () => {
       .update(domains)
       .set({ lastCheckedAt: new Date(Date.now() - 101_000) })
       .where(eq(domains.id, id));
-    expect(await selectSweepCandidates()).toEqual([id]);
+    expect(await selectSweepCandidates()).toEqual(due);
     // Past the window it is still due, and the check fails it for good.
     await pg.db
       .update(domains)
       .set({ verifyUntil: new Date(Date.now() - 1000) })
       .where(eq(domains.id, id));
-    expect(await selectSweepCandidates()).toEqual([id]);
-    await verifyDomain(id, { resolver: emptyDns });
+    expect(await selectSweepCandidates()).toEqual(due);
+    await verifyDomain(id, { resolver: emptyDns, enqueue: noop.enqueue });
     const after = await byName("slow.acme.com");
     expect(after.status).toBe("failed");
     expect(after.lastError).toMatch(/timed out/);
@@ -596,7 +683,7 @@ describe("domains", () => {
       .set({ dkimTokens: ["t1", "t2", "t3"] })
       .where(eq(domains.name, "slow.acme.com"));
     const d = await byName("slow.acme.com");
-    const deps = { resolver: emptyDns };
+    const deps = { resolver: emptyDns, enqueue: noop.enqueue };
     expect(
       (await reverifyDomain({ ...actor, role: "member" }, d.id, deps)).ok,
     ).toBe(false);
@@ -644,7 +731,7 @@ describe("domains", () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     ses.reset();
-    expect(await reverifyDomain(actor, res.data.id)).toEqual({
+    expect(await reverifyDomain(actor, res.data.id, noop)).toEqual({
       ok: false,
       code: "conflict",
       error: "Provisioning hasn't finished yet.",
@@ -661,7 +748,7 @@ describe("domains", () => {
     });
     const { verifyDomain } = await import("@/services/domains");
     const d = await byName("slow.acme.com");
-    await verifyDomain(d.id, { resolver: emptyDns });
+    await verifyDomain(d.id, { resolver: emptyDns, enqueue: noop.enqueue });
     const after = await byName("slow.acme.com");
     expect(after.status).toBe("pending");
     expect(after.lastError).toMatch(/AWS is not connected/);
@@ -676,9 +763,9 @@ describe("domains", () => {
       .rejects(awsErr("TooManyRequestsException", "Rate exceeded"));
     const { verifyDomain } = await import("@/services/domains");
     const d = await byName("slow.acme.com");
-    await expect(verifyDomain(d.id, { resolver: emptyDns })).rejects.toThrow(
-      /Rate exceeded/,
-    );
+    await expect(
+      verifyDomain(d.id, { resolver: emptyDns, enqueue: noop.enqueue }),
+    ).rejects.toThrow(/Rate exceeded/);
     const after = await byName("slow.acme.com");
     expect(after.status).toBe("pending");
     expect(after.lastError).toMatch(/Rate exceeded/);
@@ -689,7 +776,7 @@ describe("domains", () => {
       .rejects(awsErr("NotFoundException", "identity not found"));
     const { verifyDomain } = await import("@/services/domains");
     const d = await byName("slow.acme.com");
-    await verifyDomain(d.id, { resolver: emptyDns });
+    await verifyDomain(d.id, { resolver: emptyDns, enqueue: noop.enqueue });
     const after = await byName("slow.acme.com");
     expect(after.status).toBe("failed");
     expect(after.lastError).toMatch(/identity was removed/);

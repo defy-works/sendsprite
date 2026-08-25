@@ -7,16 +7,50 @@ export interface Checks {
   worker: "running" | "disabled" | "stopped";
   /** Seconds the oldest runnable job has been waiting; -1 if unmeasurable. */
   queueLag: number;
+  /**
+   * Seconds since the freshest `worker_heartbeats` row (any process), or
+   * null when no worker has ever checked in. Lets a web container with
+   * WORKER_MODE=separate see the worker that runs elsewhere.
+   */
+  workerLastSeenSeconds: number | null;
 }
 export interface Health extends Checks {
   status: "ok" | "degraded" | "error";
   version: string;
 }
 
-export function summarize(c: Checks): Health {
+/** A heartbeat younger than this counts as a running worker. */
+export const HEARTBEAT_RUNNING_S = 10 * 60;
+/** Older than this (with no in-process worker) and health is degraded. */
+export const HEARTBEAT_STALE_S = 15 * 60;
+
+/**
+ * `worker` is "running" when this process polls or another process has
+ * checked in within HEARTBEAT_RUNNING_S. Health degrades on queue lag, or
+ * when a worker is expected (`WORKER_MODE !== "none"`) but neither this
+ * process nor any heartbeat within HEARTBEAT_STALE_S shows one.
+ */
+export function summarize(
+  c: Checks,
+  workerMode = process.env.WORKER_MODE ?? "inline",
+): Health {
+  const inProcess = c.worker === "running";
+  const seen = c.workerLastSeenSeconds;
+  const worker =
+    !inProcess && seen !== null && seen < HEARTBEAT_RUNNING_S
+      ? "running"
+      : c.worker;
+  const workerMissing =
+    !inProcess &&
+    workerMode !== "none" &&
+    (seen === null || seen >= HEARTBEAT_STALE_S);
   const status =
-    c.db === "error" ? "error" : c.queueLag > 60 ? "degraded" : "ok";
-  return { ...c, status, version: process.env.APP_VERSION ?? "dev" };
+    c.db === "error"
+      ? "error"
+      : c.queueLag > 60 || workerMissing
+        ? "degraded"
+        : "ok";
+  return { ...c, worker, status, version: process.env.APP_VERSION ?? "dev" };
 }
 
 // Postgres SQLSTATEs: undefined_table / invalid_schema_name. pg-boss creates
@@ -45,14 +79,31 @@ async function queueLag(): Promise<number> {
   }
 }
 
+/** Age in seconds of the freshest heartbeat row; null when there is none. */
+async function workerLastSeen(): Promise<number | null> {
+  const rows = await db().execute(
+    sql`select extract(epoch from (now() - max(last_seen_at)))::int as age
+        from worker_heartbeats`,
+  );
+  const age = (rows[0] as { age?: number | null } | undefined)?.age;
+  return age === null || age === undefined ? null : Number(age);
+}
+
 export async function collect(): Promise<Health> {
   let dbState: Checks["db"] = "ok";
   let lag = 0;
+  let seen: number | null = null;
   try {
     await db().execute(sql`select 1`);
     lag = await queueLag();
+    seen = await workerLastSeen();
   } catch {
     dbState = "error";
   }
-  return summarize({ db: dbState, worker: getWorkerState(), queueLag: lag });
+  return summarize({
+    db: dbState,
+    worker: getWorkerState(),
+    queueLag: lag,
+    workerLastSeenSeconds: seen,
+  });
 }

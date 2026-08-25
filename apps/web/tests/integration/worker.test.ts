@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
+import { workerHeartbeats } from "@/db/schema";
 import { startPg, type TestPg } from "./_pg";
 
 function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
@@ -34,13 +36,14 @@ describe("worker", () => {
     await pg.stop();
   });
 
-  it("health reports disabled worker and zero lag without pgboss schema", async () => {
+  it("health reports disabled worker and zero lag without pgboss schema; degraded until a worker checks in", async () => {
     const h = await health.collect();
     expect(h).toMatchObject({
       db: "ok",
       worker: "disabled",
       queueLag: 0,
-      status: "ok",
+      workerLastSeenSeconds: null,
+      status: "degraded",
     });
   });
 
@@ -123,8 +126,41 @@ describe("worker", () => {
     expect(h.queueLag).toBeGreaterThanOrEqual(0);
   });
 
-  it("stopWorker flips state to stopped", async () => {
+  it("heartbeat persists this process's row, prunes day-old ones, and health reads its age", async () => {
+    const { heartbeat, PROCESS_ID } = await import("@/jobs/handlers/heartbeat");
+    await pg.db.insert(workerHeartbeats).values({
+      processId: "gone:1",
+      lastSeenAt: new Date(Date.now() - 2 * 86_400_000),
+    });
+    await heartbeat();
+    await heartbeat(); // upsert, not a second row
+    const rows = await pg.db.select().from(workerHeartbeats);
+    expect(rows.map((r) => r.processId)).toEqual([PROCESS_ID]);
+    const h = await health.collect();
+    expect(h.workerLastSeenSeconds).toBeGreaterThanOrEqual(0);
+    expect(h.workerLastSeenSeconds).toBeLessThan(60);
+  });
+
+  it("stopWorker flips state to stopped; health still sees a fresh heartbeat, then degrades when it goes stale", async () => {
     await boss.stopWorker();
     expect(boss.getWorkerState()).toBe("stopped");
+    // A worker elsewhere (WORKER_MODE=separate) checked in recently.
+    expect(await health.collect()).toMatchObject({
+      worker: "running",
+      status: "ok",
+    });
+    await pg.db
+      .update(workerHeartbeats)
+      .set({ lastSeenAt: new Date(Date.now() - 20 * 60_000) })
+      .where(
+        eq(
+          workerHeartbeats.processId,
+          (await import("@/jobs/handlers/heartbeat")).PROCESS_ID,
+        ),
+      );
+    const stale = await health.collect();
+    expect(stale.worker).toBe("stopped");
+    expect(stale.workerLastSeenSeconds).toBeGreaterThanOrEqual(19 * 60);
+    expect(stale.status).toBe("degraded");
   });
 });

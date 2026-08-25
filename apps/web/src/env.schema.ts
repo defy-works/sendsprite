@@ -39,7 +39,6 @@ export const schema = z
       .default(10 * 1024 * 1024),
     LANDING_ENABLED: bool.default(true),
     SIGNUP_MODE: z.enum(["auto", "open", "invite", "closed"]).default("auto"),
-    EMAIL_RETENTION_DAYS: z.coerce.number().int().min(1).default(90),
     EMAIL_PASSWORD_ENABLED: bool.default(false),
     GOOGLE_CLIENT_ID: z.string().optional(),
     GOOGLE_CLIENT_SECRET: z.string().optional(),

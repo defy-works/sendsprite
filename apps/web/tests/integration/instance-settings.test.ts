@@ -101,4 +101,25 @@ describe("instance settings", () => {
     const plain = await latest();
     expect(plain.diff).toEqual({ retentionDays: { from: 30, to: 45 } });
   });
+  it("names the audit row after opts.action when given", async () => {
+    const { updateInstanceSettings } =
+      await import("@/services/instance-settings");
+    const { auditLog } = await import("@/db/schema");
+    await updateInstanceSettings(
+      { retentionDays: 60 },
+      { userId: "u1" },
+      {
+        action: "test.action",
+      },
+    );
+    const rows = await pg.db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.action, "test.action"));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      targetType: "instance",
+      diff: { retentionDays: { from: 45, to: 60 } },
+    });
+  });
 });

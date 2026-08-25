@@ -19,6 +19,7 @@ import { recordAudit } from "@/lib/audit";
 import type { Result } from "@/lib/result";
 import { getInstanceSettings } from "./instance-settings";
 import { cloudflareClient, listZones } from "./cloudflare-connect";
+import { fanOutEvent } from "./webhooks";
 import type { TeamActor } from "./team";
 
 export type Domain = typeof domains.$inferSelect;
@@ -50,6 +51,8 @@ interface Deps {
  * re-runs a check the previous tick just finished.
  */
 const SWEEP_STALE_S = 100;
+/** A verified domain is re-checked (forced) once its last check is this old. */
+const RECHECK_AFTER_S = 24 * 3600;
 const FIRST_VERIFY_AFTER_S = 30;
 const VERIFY_WINDOW_MS = 72 * 3600 * 1000;
 const DOMAIN_RE =
@@ -365,7 +368,7 @@ async function setError(id: string, lastError: string) {
  */
 export async function verifyDomain(
   domainId: string,
-  deps: Pick<Deps, "resolver"> = {},
+  deps: Pick<Deps, "resolver" | "enqueue">,
   { force = false }: { force?: boolean } = {},
 ): Promise<void> {
   const d = await loadById(domainId);
@@ -384,14 +387,16 @@ export async function verifyDomain(
     );
   } catch (e) {
     if (errName(e) === "NotFoundException") {
-      await db()
+      const [row] = await db()
         .update(domains)
         .set({
           status: "failed",
           lastCheckedAt: new Date(),
           lastError: "SES identity was removed; delete and re-add the domain.",
         })
-        .where(eq(domains.id, d.id));
+        .where(eq(domains.id, d.id))
+        .returning();
+      if (row) await fanOutStatusChange(d.status, row, deps.enqueue);
       return;
     }
     await setError(d.id, errMsg(e));
@@ -407,7 +412,7 @@ export async function verifyDomain(
   const verified = dkimOk && mailFromOk;
   const expired =
     !verified && !!d.verifyUntil && d.verifyUntil.getTime() < Date.now();
-  await db()
+  const [row] = await db()
     .update(domains)
     .set({
       expectedRecords: recs,
@@ -422,33 +427,72 @@ export async function verifyDomain(
         ? "Verification timed out after 72 hours. Check the records and click Re-verify."
         : null,
     })
-    .where(eq(domains.id, d.id));
+    .where(eq(domains.id, d.id))
+    .returning();
+  if (row) await fanOutStatusChange(d.status, row, deps.enqueue);
 }
 
 /**
- * Domains the verification sweep should enqueue: pending, provisioned
- * (tokens stored), and not checked within the last SWEEP_STALE_S. Rows past
- * `verifyUntil` are included on purpose: the next check marks them `failed`.
+ * Webhooks on status transitions: `domain.verified` when a domain becomes
+ * verified; `domain.failed` when a verified domain is demoted (the daily
+ * re-check found SES disagreeing) or a check fails it for good.
  */
-export async function selectSweepCandidates(): Promise<string[]> {
+async function fanOutStatusChange(
+  before: Domain["status"],
+  after: Domain,
+  enqueue: Enqueue,
+) {
+  if (after.status === before) return;
+  const type =
+    after.status === "verified"
+      ? "domain.verified"
+      : before === "verified" || after.status === "failed"
+        ? "domain.failed"
+        : null;
+  if (!type) return;
+  await fanOutEvent(
+    after.teamId,
+    type,
+    newId("evt"),
+    { domain: publicDomain(after) },
+    { enqueue },
+  );
+}
+
+export interface SweepCandidate {
+  id: string;
+  /** Verified domain due for its daily re-check (`verifyDomain` needs `force`). */
+  force: boolean;
+}
+
+const notCheckedFor = (seconds: number) =>
+  or(
+    isNull(domains.lastCheckedAt),
+    lt(domains.lastCheckedAt, sql`now() - make_interval(secs => ${seconds})`),
+  );
+
+/**
+ * Domains the verification sweep should enqueue: pending, provisioned
+ * (tokens stored), and not checked within the last SWEEP_STALE_S (rows past
+ * `verifyUntil` are included on purpose: the next check marks them
+ * `failed`); plus verified domains unchecked for RECHECK_AFTER_S, flagged
+ * `force` so the check runs and can demote them.
+ */
+export async function selectSweepCandidates(): Promise<SweepCandidate[]> {
   const rows = await db()
-    .select({ id: domains.id })
+    .select({ id: domains.id, status: domains.status })
     .from(domains)
     .where(
       and(
-        eq(domains.status, "pending"),
         sql`${domains.dkimTokens} != '[]'::jsonb`,
         or(
-          isNull(domains.lastCheckedAt),
-          lt(
-            domains.lastCheckedAt,
-            sql`now() - make_interval(secs => ${SWEEP_STALE_S})`,
-          ),
+          and(eq(domains.status, "pending"), notCheckedFor(SWEEP_STALE_S)),
+          and(eq(domains.status, "verified"), notCheckedFor(RECHECK_AFTER_S)),
         ),
       ),
     )
     .orderBy(domains.createdAt);
-  return rows.map((r) => r.id);
+  return rows.map((r) => ({ id: r.id, force: r.status === "verified" }));
 }
 
 /**
@@ -461,7 +505,7 @@ export async function selectSweepCandidates(): Promise<string[]> {
 export async function reverifyDomain(
   actor: TeamActor,
   id: string,
-  deps: Pick<Deps, "resolver"> = {},
+  deps: Pick<Deps, "resolver" | "enqueue">,
 ): Promise<Result> {
   if (!can(actor.role, "domains.manage")) return DENIED;
   const d = await getDomain(actor.teamId, id);

@@ -9,7 +9,7 @@ import {
   vi,
 } from "vitest";
 import { mockClient } from "aws-sdk-client-mock";
-import { eq } from "drizzle-orm";
+import { eq, isNull } from "drizzle-orm";
 import {
   SESv2Client,
   GetAccountCommand,
@@ -104,11 +104,12 @@ async function settings() {
   const { getInstanceSettings } = await import("@/services/instance-settings");
   return getInstanceSettings();
 }
-async function instanceAudits() {
+/** Instance-level audit rows, optionally just those with `action`. */
+async function instanceAudits(action?: string) {
   return pg.db
     .select()
     .from(auditLog)
-    .where(eq(auditLog.action, "instance.update"));
+    .where(action ? eq(auditLog.action, action) : isNull(auditLog.teamId));
 }
 
 describe("connectWithKeys", () => {
@@ -191,6 +192,7 @@ describe("connectWithKeys", () => {
     });
     // One audited write for the connection; the subscription ARN is bookkeeping.
     expect(await instanceAudits()).toHaveLength(1);
+    expect(await instanceAudits("aws.connect")).toHaveLength(1);
   });
   it("persists the topic ARN before subscribing (confirmation POST can race Subscribe)", async () => {
     happyMocks();
@@ -397,6 +399,24 @@ describe("requestProductionAccess / refreshSesAccount", () => {
       sesReviewStatus: "PENDING",
     });
     expect(await instanceAudits()).toHaveLength(1);
+    expect(await instanceAudits("ses.production.request")).toHaveLength(1);
+  });
+  it("audits a production request even when SES reports the account unchanged", async () => {
+    await connected();
+    ses.on(PutAccountDetailsCommand).resolves({});
+    // Same values happyMocks() connected with: nothing changes.
+    const { requestProductionAccess } = await import("@/services/aws-connect");
+    const res = await requestProductionAccess(
+      {
+        websiteUrl: "https://acme.com",
+        mailType: "TRANSACTIONAL",
+        useCase: "Order receipts and password resets.",
+      },
+      { userId: "u1" },
+    );
+    expect(res).toEqual({ ok: true, data: { status: "sandbox" } });
+    expect(await instanceAudits()).toHaveLength(1);
+    expect(await instanceAudits("ses.production.request")).toHaveLength(1);
   });
   it("rejects an invalid request before calling SES", async () => {
     const { requestProductionAccess } = await import("@/services/aws-connect");
@@ -448,6 +468,7 @@ describe("requestProductionAccess / refreshSesAccount", () => {
       sesMaxSendRate: 14,
     });
     expect(await instanceAudits()).toHaveLength(1);
+    expect(await instanceAudits("ses.account.refresh")).toHaveLength(1);
 
     await new Promise((r) => setTimeout(r, 5));
     expect((await refreshSesAccount()).ok).toBe(true);
@@ -518,6 +539,10 @@ describe("disconnectAws", () => {
       sesAccountStatus: null,
     });
     expect((await disconnectAws({ userId: "u1" })).ok).toBe(false);
+    expect((await instanceAudits()).map((a) => a.action)).toEqual([
+      "aws.connect",
+      "aws.disconnect",
+    ]);
   });
   it("still disconnects when Unsubscribe fails", async () => {
     happyMocks();

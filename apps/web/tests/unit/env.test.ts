@@ -14,7 +14,6 @@ describe("parseEnv", () => {
     expect(env.SMTP_ENABLED).toBe(true);
     expect(env.LANDING_ENABLED).toBe(true);
     expect(env.SIGNUP_MODE).toBe("auto");
-    expect(env.EMAIL_RETENTION_DAYS).toBe(90);
     expect(env.EMAIL_PASSWORD_ENABLED).toBe(false);
   });
   it("derives auth provider flags from presence of both id and secret", () => {

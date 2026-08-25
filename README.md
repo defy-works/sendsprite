@@ -145,7 +145,6 @@ does the same locally.
 | `SMTP_TLS_CERT`, `SMTP_TLS_KEY`                      | —             | PEM paths for STARTTLS; unset → self-signed cert (clients must skip verify) |
 | `SMTP_MAX_SIZE`                                      | `10485760`    | Max message size in bytes (552 above it)                                    |
 | `LANDING_ENABLED`                                    | `true`        | `false` sends `/` to `/app`                                                 |
-| `EMAIL_RETENTION_DAYS`                               | `90`          | Body/attachment purge window                                                |
 | `AWS_DEFAULT_REGION`                                 | `us-east-1`   | Region preselected in the AWS connect wizard                                |
 | `CFN_TEMPLATE_URL`                                   | Sendsprite S3 | S3 URL of the one-click CloudFormation template (must be S3)                |
 | `AWS_E2E_MOCK`                                       | —             | `1` swaps AWS clients for an in-memory fake; ignored in production (tests)  |
@@ -154,6 +153,11 @@ SMTP login throttling is per remote IP (5 failed logins → 10 minute lockout)
 and per process. Behind a proxy or load balancer that does not speak PROXY
 protocol, every client arrives from the proxy's address and shares one
 counter, so expose 587 directly or terminate it on the app container.
+
+Email body/attachment retention has no env var: the window (default 90 days)
+is set in Settings → Instance (`retention_days`) and applied by the nightly
+`retention.purge` job (03:15), which also drops webhook deliveries older than
+the window.
 
 Settings → Instance can override two of these: `SIGNUP_MODE=auto` defers to the
 signup mode saved there (an explicit env value wins), and `LANDING_ENABLED` is

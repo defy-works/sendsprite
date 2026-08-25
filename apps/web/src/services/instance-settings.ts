@@ -74,11 +74,14 @@ function auditView(row: InstanceSettings | undefined): Record<string, unknown> {
  * Upsert, so it works on a fresh instance without a prior read.
  * Writes an instance-level audit row (`teamId: null`) describing the change,
  * unless `opts.audit` is false (bookkeeping writes such as `sesLastCheckedAt`).
+ * `opts.action` names the row (default `instance.update`, the settings
+ * form); connect/disconnect flows pass their own so the log reads as
+ * events rather than diffs.
  */
 export async function updateInstanceSettings(
   patch: Plain & Secrets,
   actor?: InstanceActor,
-  opts: { audit?: boolean } = {},
+  opts: { audit?: boolean; action?: string } = {},
 ): Promise<InstanceSettings> {
   const before = await selectSingleton();
   const { awsAccessKey, awsSecret, cloudflareToken, ...plain } = patch;
@@ -105,7 +108,7 @@ export async function updateInstanceSettings(
   await recordAudit({
     teamId: null,
     actorUserId: actor?.userId ?? null,
-    action: "instance.update",
+    action: opts.action ?? "instance.update",
     targetType: "instance",
     targetId: "1",
     diff: computeDiff(auditView(before), auditView(row)),
