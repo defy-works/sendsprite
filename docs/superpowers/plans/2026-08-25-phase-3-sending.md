@@ -2935,7 +2935,7 @@ export const publicEmail = (e: typeof emails.$inferSelect) => ({
 - Create: `apps/web/src/services/webhooks.ts`, `apps/web/src/jobs/handlers/webhook-deliver.ts`, `apps/web/src/app/api/v1/webhooks/{route.ts,[id]/route.ts,[id]/test/route.ts}`, `apps/web/src/app/app/webhooks/{page.tsx,actions.ts,WebhooksPanel.tsx,[id]/page.tsx}`
 - Test: `apps/web/tests/integration/webhooks.test.ts`
 
-- [ ] **Step 1: Failing test**
+- [x] **Step 1: Failing test**
 
 ```ts
 describe("webhooks", () => {
@@ -2992,7 +2992,7 @@ describe("webhooks", () => {
 
 Run → FAIL.
 
-- [ ] **Step 2: Service + handler**
+- [x] **Step 2: Service + handler**
 
 `services/webhooks.ts`:
 
@@ -3239,7 +3239,7 @@ export async function replayDelivery(
 
 Write the sketched functions fully. Handler `webhook-deliver.ts`: `registerQueue<{deliveryId}>(Q.webhookDeliver, jobs → deliver(id, { enqueue }), { queue: { retryLimit: 0, expireInSeconds: 60 } })` (retries are our own schedule). Add `"webhooks.manage"` already in the shared `ACTIONS`. REST: `GET/POST /api/v1/webhooks`, `PATCH/DELETE /api/v1/webhooks/[id]`, `POST /api/v1/webhooks/[id]/test`. UI: list (url, events chips, enabled/disabled Badge with reason, failing-since), create (url, event checkboxes) → secret shown once; detail page: deliveries table (event, attempt, status, code, time) with Replay; Rotate secret; Enable/Disable; Delete.
 
-- [ ] **Step 3: Run, commit** → `feat(web): webhooks — signed deliveries with retry schedule, REST, dashboard`.
+- [x] **Step 3: Run, commit** → `feat(web): webhooks — signed deliveries with retry schedule, REST, dashboard`.
 
 ---
 
