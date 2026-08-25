@@ -30,11 +30,14 @@ describe("shared REST contracts", () => {
   });
 
   it("CreateApiKeyInput defaults permission and drops empty domainId", () => {
-    expect(CreateApiKeyInput.parse({ name: " k ", domainId: "" })).toEqual({
+    expect(CreateApiKeyInput.parse({ name: " k " })).toEqual({
       name: "k",
       permission: "full",
-      domainId: undefined,
     });
+    // No transforms (OpenAPI): an empty domainId is the caller's problem.
+    expect(
+      CreateApiKeyInput.safeParse({ name: "k", domainId: "" }).success,
+    ).toBe(false);
   });
 
   it("CreateWebhookInput requires https and at least one known event", () => {
@@ -65,6 +68,9 @@ describe("shared REST contracts", () => {
       email: "a@b.io",
       reason: "manual",
     });
+    expect(
+      AddSuppressionInput.safeParse({ email: "a@b.io", note: "" }).success,
+    ).toBe(false);
     expect(
       AddSuppressionInput.safeParse({ email: "a@b.io", reason: "bounce" })
         .success,
@@ -100,6 +106,77 @@ describe("shared REST contracts", () => {
         type: "nope",
         occurredAt: "x",
         payload: {},
+      }).success,
+    ).toBe(false);
+  });
+
+  it("output objects reject a missing or non-ISO createdAt", () => {
+    const at = "2026-01-01T00:00:00.000Z";
+    const rec = {
+      kind: "DKIM",
+      type: "CNAME",
+      name: "n",
+      value: "v",
+      priority: null,
+      ok: false,
+    };
+    const domain = {
+      id: "d",
+      name: "a.io",
+      status: "pending",
+      dnsMode: "manual",
+      region: "r",
+      records: [rec],
+      lastError: null,
+      verifiedAt: null,
+    };
+    expect(DomainObject.safeParse(domain).success).toBe(false);
+    expect(
+      DomainObject.safeParse({ ...domain, createdAt: "yesterday" }).success,
+    ).toBe(false);
+    const key = {
+      id: "k",
+      name: "n",
+      permission: "full",
+      keyPrefix: "p",
+      domainId: null,
+      lastUsedAt: null,
+    };
+    expect(ApiKeyObject.safeParse(key).success).toBe(false);
+    expect(
+      ApiKeyObject.safeParse({ ...key, createdAt: at, lastUsedAt: "x" })
+        .success,
+    ).toBe(false);
+    const hook = {
+      id: "w",
+      url: "https://x.io",
+      events: ["email.sent"],
+      enabled: true,
+      disabledReason: null,
+      failingSince: null,
+      updatedAt: at,
+    };
+    expect(WebhookObject.safeParse(hook).success).toBe(false);
+    expect(
+      WebhookObject.safeParse({ ...hook, createdAt: at, events: ["nope"] })
+        .success,
+    ).toBe(false);
+    const sup = {
+      id: "s",
+      email: "a@b.io",
+      reason: "manual",
+      note: null,
+      sourceEmailId: null,
+    };
+    expect(SuppressionObject.safeParse(sup).success).toBe(false);
+    expect(
+      SuppressionObject.safeParse({ ...sup, createdAt: at, reason: "x" })
+        .success,
+    ).toBe(false);
+    expect(
+      SendStatsObject.safeParse({
+        sent: { today: 1, d7: 2, d30: 3 },
+        rates: { delivered: 1, bounced: 0, complained: 0 },
       }).success,
     ).toBe(false);
   });

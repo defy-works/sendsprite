@@ -23,7 +23,9 @@ export async function createApiKey(fd: FormData) {
   const res = await keys.createApiKey(await actor(), {
     name: fd.get("name"),
     permission: fd.get("permission"),
-    domainId: fd.get("domainId"),
+    // The empty <select> option arrives as ""; the shared schema has no
+    // transforms (OpenAPI), so unset is decided here.
+    domainId: fd.get("domainId") || undefined,
   });
   if (res.ok) revalidatePath("/app/api-keys");
   return res;

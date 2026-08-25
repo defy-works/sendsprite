@@ -78,8 +78,7 @@ export async function addSuppression(
   const p = AddSuppressionInput.safeParse(raw);
   if (!p.success)
     return { ok: false, error: p.error.issues[0]?.message ?? "Invalid input." };
-  const { reason, note } = p.data;
-  const email = normaliseEmail(p.data.email);
+  const { email, reason, note } = p.data;
   const [inserted] = await db()
     .insert(suppressions)
     .values({

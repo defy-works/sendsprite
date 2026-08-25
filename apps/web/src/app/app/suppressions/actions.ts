@@ -24,7 +24,9 @@ export async function addSuppression(fd: FormData): Promise<Result> {
   const res = await suppressions.addSuppression(await actor(), {
     email: fd.get("email"),
     reason: fd.get("reason"),
-    note: fd.get("note"),
+    // An empty input arrives as ""; the shared schema has no transforms
+    // (OpenAPI), so unset is decided here.
+    note: fd.get("note") || undefined,
   });
   if (!res.ok) return res;
   revalidatePath("/app/suppressions");

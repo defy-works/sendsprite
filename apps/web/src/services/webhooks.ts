@@ -6,13 +6,13 @@ import { z } from "zod";
 import {
   can,
   newId,
-  signWebhook,
   SIGNATURE_HEADER,
   EVENT_ID_HEADER,
   WebhookEvents,
   type WebhookEventType,
   type WebhookPayload,
-} from "@sendsprite/shared/node";
+} from "@sendsprite/shared";
+import { signWebhook } from "@sendsprite/shared/node";
 import { db } from "@/db";
 import { webhookDeliveries, webhooks } from "@/db/schema";
 import { getCipher } from "@/lib/crypto";
@@ -59,6 +59,7 @@ const NOT_FOUND: Result<never> = {
 // signed payloads at anything reachable from its network).
 const url = z
   .string()
+  .trim()
   .max(2048, "URL is too long.")
   .refine(
     (u) =>

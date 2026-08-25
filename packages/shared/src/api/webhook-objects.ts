@@ -4,19 +4,19 @@ import { WEBHOOK_EVENT_TYPES } from "./webhooks";
 /**
  * Public contract: https only. The server additionally rejects private
  * targets (SSRF) and, outside production, accepts plain http for local
- * listeners — see `apps/web/src/services/webhooks.ts`.
+ * listeners — see `apps/web/src/services/webhooks.ts`. Both inputs must
+ * stay `z.toJSONSchema`-representable (no `.transform`).
  */
 const url = z
-  .string()
+  .url()
   .trim()
   .max(2048, "URL is too long.")
-  .url()
   .refine((u) => u.startsWith("https://"), "Webhook URLs must use https.");
 /** Non-empty subset of `WEBHOOK_EVENT_TYPES`, deduped. */
 export const WebhookEvents = z
   .array(z.enum(WEBHOOK_EVENT_TYPES))
   .min(1, "Pick at least one event.")
-  .transform((e) => [...new Set(e)]);
+  .overwrite((e) => [...new Set(e)]);
 
 export const CreateWebhookInput = z.object({ url, events: WebhookEvents });
 export type CreateWebhookInput = z.infer<typeof CreateWebhookInput>;
@@ -33,9 +33,9 @@ export const WebhookObject = z.object({
   events: z.array(z.enum(WEBHOOK_EVENT_TYPES)),
   enabled: z.boolean(),
   disabledReason: z.string().nullable(),
-  failingSince: z.coerce.string().nullable(),
-  createdAt: z.coerce.string(),
-  updatedAt: z.coerce.string(),
+  failingSince: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
 });
 export type WebhookObject = z.infer<typeof WebhookObject>;
 

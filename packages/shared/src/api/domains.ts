@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 /** RFC 1123 hostname, at least two labels (lowercase; input is lowercased first). */
-export const HOSTNAME_RE =
+const HOSTNAME_RE =
   /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 
 /** `auto` = records are managed in a connected Cloudflare zone. */
@@ -20,15 +20,16 @@ export type DnsRecordKind = (typeof DNS_RECORD_KINDS)[number];
 /**
  * `POST /domains`. The DNS mode is not an input: the server picks `auto`
  * when a connected Cloudflare zone covers the name, `manual` otherwise.
+ * Must stay `z.toJSONSchema`-representable (no `.transform`; `.overwrite`
+ * keeps the string type).
  */
 export const CreateDomainInput = z.object({
   name: z
     .string()
-    .transform((s) => s.trim().toLowerCase().replace(/\.$/, ""))
-    .refine(
-      (s) => HOSTNAME_RE.test(s),
-      "Enter a valid domain like mail.example.com.",
-    ),
+    .trim()
+    .toLowerCase()
+    .overwrite((s) => s.replace(/\.$/, ""))
+    .regex(HOSTNAME_RE, "Enter a valid domain like mail.example.com."),
 });
 export type CreateDomainInput = z.infer<typeof CreateDomainInput>;
 
@@ -50,7 +51,7 @@ export const DomainObject = z.object({
   region: z.string(),
   records: z.array(DnsRecordObject),
   lastError: z.string().nullable(),
-  createdAt: z.coerce.string(),
-  verifiedAt: z.coerce.string().nullable(),
+  createdAt: z.iso.datetime(),
+  verifiedAt: z.iso.datetime().nullable(),
 });
 export type DomainObject = z.infer<typeof DomainObject>;

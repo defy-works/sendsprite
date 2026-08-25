@@ -149,9 +149,9 @@ export const EmailObject = z.object({
   replyTo: z.array(z.string()),
   subject: z.string(),
   status: z.enum(EMAIL_STATUS),
-  scheduledAt: z.string().nullable(),
-  sentAt: z.string().nullable(),
-  createdAt: z.string(),
+  scheduledAt: z.iso.datetime().nullable(),
+  sentAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
   tags: z.record(z.string(), z.string()),
   lastError: z.string().nullable(),
 });
@@ -176,7 +176,7 @@ export type EmailEventType = (typeof EMAIL_EVENT_TYPES)[number];
 export const EmailEventObject = z.object({
   id: z.string(),
   type: z.enum(EMAIL_EVENT_TYPES),
-  occurredAt: z.string(),
+  occurredAt: z.iso.datetime(),
   payload: z.record(z.string(), z.unknown()),
 });
 export type EmailEventObject = z.infer<typeof EmailEventObject>;
@@ -200,7 +200,7 @@ export const PageQuery = z.object({
 export type PageQuery = z.infer<typeof PageQuery>;
 
 /** `{ data, nextCursor }` envelope of every list endpoint. */
-export const page = <T extends z.ZodTypeAny>(item: T) =>
+export const pageOf = <T extends z.ZodTypeAny>(item: T) =>
   z.object({ data: z.array(item), nextCursor: z.string().nullable() });
 
 export const ListQuery = PageQuery.extend({

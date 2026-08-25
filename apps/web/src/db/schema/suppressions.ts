@@ -1,14 +1,8 @@
 import { pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import { SUPPRESSION_REASONS } from "@sendsprite/shared";
 import { organization } from "./auth";
 
-export const SUPPRESSION_REASONS = [
-  "bounce",
-  "complaint",
-  "manual",
-  "unsubscribe",
-] as const;
-export type SuppressionReason = (typeof SUPPRESSION_REASONS)[number];
-
+export type { SuppressionReason } from "@sendsprite/shared";
 /** Per-team suppression list (spec §5); `email` is stored normalised. */
 export const suppressions = pgTable(
   "suppressions",

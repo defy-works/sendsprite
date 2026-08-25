@@ -6,23 +6,10 @@ import {
   timestamp,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { EMAIL_EVENT_TYPES } from "@sendsprite/shared";
 import { emails } from "./emails";
 
-export const EMAIL_EVENT_TYPES = [
-  "queued",
-  "sent",
-  "delivered",
-  "delivery_delayed",
-  "bounced",
-  "complained",
-  "rejected",
-  "opened",
-  "clicked",
-  "failed",
-  "cancelled",
-] as const;
-export type EmailEventType = (typeof EMAIL_EVENT_TYPES)[number];
-
+export type { EmailEventType } from "@sendsprite/shared";
 /** Per-email timeline. `dedupeKey` makes SNS redelivery idempotent. */
 export const emailEvents = pgTable(
   "email_events",
