@@ -2166,8 +2166,26 @@ the shared object as `Required<Pick<typeof teamBilling.$inferInsert, "plan" | "i
 "overagePer1kCents" | "status" | "periodStart" | "periodEnd" | "providerModifiedAt">> &
 Partial<typeof teamBilling.$inferInsert>` so an omission is caught at the seam.
 
-**D. Verify the subscription-status list against the SDK.** `SUBSCRIPTION_STATUSES` in
-Task 1 was written from memory and looks like Stripe's set — `paused` is not a Polar status.
+**I. `getBillingProvider()` must await `provider.ready?.()`.** The Polar provider lazy-loads
+its SDK so `BILLING_ENABLED=false` never pays for the import. A cold `verifyWebhook` therefore
+returns `{ ok: false, reason: "provider SDK not loaded" }` and warms the cache for the
+redelivery. If Task 6 does not await `ready?.()` when constructing the provider, **every first
+webhook after a cold start is refused** — recoverable, since the provider retries, but it turns
+each deploy into a burst of failed deliveries.
+
+**J. `verifyWebhook`'s ignored-vs-refused split (Task 5's policy, adopted).** A signature,
+missing-header or replay-window failure is `{ ok: false }`. A throw _after_ the signature
+passed means the delivery is authentic but unmodelled, so it is `ignored` — refusing would make
+the provider retry it forever. The exception is `subscription.*`: a payload that fails to parse
+is refused, because silently dropping one loses an entitlement change, and a refused delivery
+is at least visible in the provider's dashboard.
+
+**D. Subscription-status list — RESOLVED, no change needed.** The suspicion was wrong:
+`SubscriptionStatus` in `@polar-sh/sdk@0.49.0` is exactly the eight names already in
+`SUBSCRIPTION_STATUSES`, in the same order. `paused` _is_ a real Polar status (the payload
+carries `pause_at_period_end`, `paused_at`, `resumes_at`); the set resembles Stripe's because
+Polar's model does. A test in `apps/web` pins the constant to the SDK enum, keeping
+`packages/shared` free of a provider dependency. Original note follows for context:
 During Task 5, diff it against `SubscriptionStatus` in `@polar-sh/sdk` and correct both the
 constant and this plan. The constant is documentation only: the DB column is plain `text` and
 `BillingStateObject.status` is `z.string()`, so an unmodelled status is stored verbatim and is
