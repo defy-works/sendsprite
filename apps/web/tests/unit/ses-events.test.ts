@@ -137,6 +137,42 @@ describe("parseSesEvent", () => {
       })!.type,
     ).toBe("failed");
   });
+  it("does not suppress on a not-spam complaint (retraction)", () => {
+    expect(
+      parseSesEvent({
+        eventType: "Complaint",
+        mail,
+        complaint: {
+          complainedRecipients: [{ emailAddress: "r@x.io" }],
+          timestamp: mail.timestamp,
+          feedbackId: "c2",
+          complaintFeedbackType: "not-spam",
+        },
+      }),
+    ).toMatchObject({
+      type: "complained",
+      recipients: ["r@x.io"],
+      suppress: [],
+    });
+  });
+  it("keeps only string recipients", () => {
+    expect(
+      parseSesEvent({
+        eventType: "Bounce",
+        mail,
+        bounce: {
+          bounceType: "Permanent",
+          bounceSubType: "General",
+          bouncedRecipients: [{ emailAddress: "R@x.io" }, {}, null, 42],
+          timestamp: mail.timestamp,
+          feedbackId: "fb4",
+        },
+      }),
+    ).toMatchObject({
+      recipients: ["r@x.io"],
+      suppress: [{ email: "r@x.io", reason: "bounce" }],
+    });
+  });
   it("accepts the legacy notificationType field", () => {
     expect(
       parseSesEvent({

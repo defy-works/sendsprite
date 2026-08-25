@@ -17,9 +17,16 @@ export type ApiAuthOk = {
 export type ApiAuth =
   ApiAuthOk | { ok: false; code: ErrorCode; message: string };
 
-const BEARER_RE = /^Bearer\s+(ss_live_[A-Za-z0-9_-]{20,})$/;
+const SECRET_RE = /^ss_live_[A-Za-z0-9_-]{20,}$/;
+const BEARER_RE = /^Bearer\s+(\S+)$/;
 /** `last_used_at` is written at most this often per key so auth stays one read. */
 const LAST_USED_MIN_MS = 60_000;
+
+const unauthorized = (message: string): ApiAuth => ({
+  ok: false,
+  code: "unauthorized",
+  message,
+});
 
 /**
  * `Authorization: Bearer ss_live_…` → team + key. Never throws on a missing
@@ -29,12 +36,17 @@ export async function authenticateApiKey(
   authorization: string | null | undefined,
 ): Promise<ApiAuth> {
   const m = BEARER_RE.exec(authorization ?? "");
-  if (!m)
-    return {
-      ok: false,
-      code: "unauthorized",
-      message: "Missing or malformed API key.",
-    };
+  if (!m) return unauthorized("Missing or malformed API key.");
+  return authenticateSecret(m[1]!);
+}
+
+/**
+ * Bare secret → team + key. Shared by the REST bearer path and the SMTP
+ * relay (password = API key). Never throws on a malformed secret.
+ */
+export async function authenticateSecret(secret: string): Promise<ApiAuth> {
+  if (!SECRET_RE.test(secret))
+    return unauthorized("Missing or malformed API key.");
   const [row] = await db()
     .select({
       key: apiKeys,
@@ -42,10 +54,9 @@ export async function authenticateApiKey(
     })
     .from(apiKeys)
     .innerJoin(organization, eq(apiKeys.teamId, organization.id))
-    .where(and(eq(apiKeys.keyHash, hashKey(m[1]!)), isNull(apiKeys.revokedAt)))
+    .where(and(eq(apiKeys.keyHash, hashKey(secret)), isNull(apiKeys.revokedAt)))
     .limit(1);
-  if (!row)
-    return { ok: false, code: "unauthorized", message: "Invalid API key." };
+  if (!row) return unauthorized("Invalid API key.");
   const stale =
     !row.key.lastUsedAt ||
     Date.now() - row.key.lastUsedAt.getTime() > LAST_USED_MIN_MS;

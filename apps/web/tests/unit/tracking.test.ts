@@ -21,6 +21,17 @@ describe("tracking", () => {
     expect(out).toContain('href="mailto:a@b"');
     expect(out).toContain('href="#top"');
   });
+  it("only rewrites the real href attribute of anchors", () => {
+    const html =
+      '<a data-href="https://keep.io" href="https://x.io">x</a>' +
+      "<a HREF='https://y.io'>y</a>" +
+      '<link href="https://css.io/a.css" rel="stylesheet">';
+    const out = wrapLinks(html, "em_1", base, secret);
+    expect(out).toContain('data-href="https://keep.io"');
+    expect(out).toContain(`href="${base}/t/c/em_1?u=https%3A%2F%2Fx.io&s=`);
+    expect(out).toContain(`HREF='${base}/t/c/em_1?u=https%3A%2F%2Fy.io&s=`);
+    expect(out).toContain('<link href="https://css.io/a.css"');
+  });
   it("does not double-wrap links that already point at the tracker", () => {
     const once = wrapLinks(
       '<a href="https://x.io">x</a>',

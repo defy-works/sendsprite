@@ -26,4 +26,4 @@ export function parseAddress(raw: string): ParsedAddress | null {
 }
 
 export const formatAddress = (a: Pick<ParsedAddress, "name" | "email">) =>
-  a.name ? `"${a.name.replace(/"/g, '\\"')}" <${a.email}>` : a.email;
+  a.name ? `"${a.name.replace(/[\\"]/g, "\\$&")}" <${a.email}>` : a.email;

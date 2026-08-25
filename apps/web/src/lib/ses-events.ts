@@ -40,7 +40,9 @@ const first = (v: unknown): string | null =>
 const lower = (s: unknown) => String(s).trim().toLowerCase();
 const addresses = (xs: unknown): string[] | undefined =>
   Array.isArray(xs)
-    ? xs.map((x: Loose) => (typeof x === "string" ? x : x?.emailAddress))
+    ? xs
+        .map((x: Loose) => (typeof x === "string" ? x : x?.emailAddress))
+        .filter((x): x is string => typeof x === "string")
     : undefined;
 
 function detailOf(r: Loose): Record<string, unknown> {
@@ -111,9 +113,7 @@ export function parseSesEvent(raw: unknown): NormalisedSesEvent | null {
     addresses(dd?.delayedRecipients) ??
     addresses(mail.destination) ??
     []
-  )
-    .filter((x) => x != null)
-    .map(lower);
+  ).map(lower);
   const ts =
     b?.timestamp ??
     c?.timestamp ??
@@ -125,7 +125,8 @@ export function parseSesEvent(raw: unknown): NormalisedSesEvent | null {
   const suppress =
     type === "bounced" && b?.bounceType === "Permanent"
       ? recipients.map((email) => ({ email, reason: "bounce" as const }))
-      : type === "complained"
+      : // "not-spam" is a retraction (the recipient marked it as not spam).
+        type === "complained" && c?.complaintFeedbackType !== "not-spam"
         ? recipients.map((email) => ({ email, reason: "complaint" as const }))
         : [];
   const parsed = ts ? new Date(ts) : new Date();

@@ -20,6 +20,9 @@
 - **SMTP relay** listens on 587 with STARTTLS using `SMTP_TLS_CERT/KEY` when set, else a self-signed cert generated at boot (dev/self-host default; documented). Auth: username anything, password = API key. Messages are parsed with `mailparser` and go through the same `createEmail` path with `source: "smtp"`.
 - **Webhook failure email to owners** (spec §8) needs a verified sending domain of the _instance_; Phase 3 logs + shows a dashboard banner and marks the webhook disabled; the email notification is a Phase 5 item.
 - **Owner emails on suppression thresholds** likewise → banner only in Phase 3.
+- **Domain deletion vs mail log** (review of Tasks 1–3): `emails.domain_id` is nullable with `ON DELETE SET NULL` — the mail log must never block deleting a domain (migration `0008`). `send_rate_state` carries an `id = 1` check so the bucket stays a singleton.
+- **Header injection** (review of Tasks 1–3): `SendEmailInput` rejects CR/LF in `from`, recipients, `subject`, header values, attachment filenames and content types; header names are `[A-Za-z0-9-]{1,80}`; reserved headers also include `Return-Path`, `Sender`, `DKIM-Signature`, `Received`, `Content-Transfer-Encoding`, `Authentication-Results` (`List-Unsubscribe` stays allowed); tag keys `[A-Za-z0-9_-]{1,64}`, at most 20 tags; attachment `content` must be base64 (whitespace stripped), filenames may not contain `/` or `\`.
+- **Complaints** (review of Tasks 1–3): `complaintFeedbackType: "not-spam"` is a retraction and does not suppress.
 - REST `/api/v1/domains`, `/api-keys`, `/webhooks`, `/suppressions` ship here (thin wrappers over existing services). Templates/contacts/campaigns REST are Phase 5.
 
 ---
@@ -202,9 +205,9 @@ export const emails = pgTable(
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
     apiKeyId: text("api_key_id"),
-    domainId: text("domain_id")
-      .notNull()
-      .references(() => domains.id, { onDelete: "restrict" }),
+    domainId: text("domain_id").references(() => domains.id, {
+      onDelete: "set null",
+    }), // nullable: the mail log must not block domain deletion (migration 0008)
     from: text("from").notNull(), // "Name <a@b>" as given
     fromEmail: text("from_email").notNull(), // normalised address
     to: jsonb("to").$type<string[]>().notNull(),
@@ -225,8 +228,8 @@ export const emails = pgTable(
       >()
       .notNull()
       .default([]),
-    trackOpens: integer("track_opens").notNull().default(1), // 0/1 (bool as int for jsonb-free filtering)
-    trackClicks: integer("track_clicks").notNull().default(1),
+    trackOpens: boolean("track_opens").notNull().default(true),
+    trackClicks: boolean("track_clicks").notNull().default(true),
     status: text("status", { enum: EMAIL_STATUSES })
       .notNull()
       .default("queued"),
@@ -258,7 +261,7 @@ export const emails = pgTable(
 );
 ```
 
-(Use `boolean` for `trackOpens/trackClicks` instead of integer — simpler; adjust the comment. Keep whichever you pick consistent in Task 7.)
+(`trackOpens/trackClicks` are `boolean`; Task 7 must stay consistent. `EMAIL_STATUSES` re-exports `EMAIL_STATUS` from `@sendsprite/shared` rather than duplicating the tuple.)
 
 `email-attachments.ts`:
 
@@ -461,13 +464,17 @@ import {
   timestamp,
 } from "drizzle-orm/pg-core";
 /** Singleton token bucket for the SES account-wide MaxSendRate. */
-export const sendRateState = pgTable("send_rate_state", {
-  id: integer("id").primaryKey().default(1),
-  tokens: doublePrecision("tokens").notNull().default(0),
-  refilledAt: timestamp("refilled_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const sendRateState = pgTable(
+  "send_rate_state",
+  {
+    id: integer("id").primaryKey().default(1),
+    tokens: doublePrecision("tokens").notNull().default(0),
+    refilledAt: timestamp("refilled_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  () => [check("send_rate_state_singleton", sql`id = 1`)],
+);
 ```
 
 `worker-heartbeats.ts`:
@@ -639,7 +646,8 @@ const email = z
   .trim()
   .email()
   .transform((s) => s.toLowerCase());
-const addr = z.string().trim().min(3).max(320); // "Name <a@b>" or "a@b"; parsed server-side
+// "Name <a@b>" or "a@b" (shape-checked, no CR/LF); display names parsed server-side.
+const addr = z.string().trim().min(3).max(320).regex(NO_CRLF).regex(ADDR_RE);
 const list = z
   .union([addr, z.array(addr)])
   .default([])
@@ -655,10 +663,16 @@ const RESERVED = new Set([
   "mime-version",
   "date",
   "message-id",
-]);
+  "return-path",
+  "sender",
+  "dkim-signature",
+  "received",
+  "content-transfer-encoding",
+  "authentication-results",
+]); // `list-unsubscribe` is allowed
 export const AttachmentInput = z.object({
-  filename: z.string().min(1).max(255),
-  content: z.string().min(1),
+  filename: z.string().min(1).max(255), // no CR/LF, no `/` or `\`
+  content: z.string().min(1), // base64 (whitespace stripped, validated)
   contentType: z.string().max(255).optional(),
 });
 export const SendEmailInput = z
@@ -693,7 +707,7 @@ export const SendEmailInput = z
         { message: "attachments exceed 10 MB" },
       ),
     scheduledAt: z.string().datetime({ offset: true }).optional(),
-    tags: z.record(z.string().max(64), z.string().max(256)).default({}),
+    tags: z.record(z.string().max(64), z.string().max(256)).default({}), // keys [A-Za-z0-9_-], at most 20
     idempotencyKey: z.string().min(1).max(256).optional(),
     trackOpens: z.boolean().optional(),
     trackClicks: z.boolean().optional(),
@@ -1074,7 +1088,7 @@ export function parseAddress(raw: string): ParsedAddress | null {
   return ADDR.test(email) ? { name: null, email, raw: s } : null;
 }
 export const formatAddress = (a: ParsedAddress) =>
-  a.name ? `"${a.name.replace(/"/g, '\\"')}" <${a.email}>` : a.email;
+  a.name ? `"${a.name.replace(/[\\"]/g, "\\$&")}" <${a.email}>` : a.email;
 ```
 
 `lib/tracking.ts`:
@@ -1106,7 +1120,7 @@ export function wrapLinks(
   secret: string,
 ): string {
   return html.replace(
-    /(<a\b[^>]*?\bhref=)(["'])(https?:\/\/[^"']+)\2/gi,
+    /(<a\b[^>]*?[\s"']href=)(["'])(https?:\/\/[^"']+)\2/gi, // not data-href
     (_m, pre, q, url) => {
       if (url.startsWith(`${base}/t/`)) return `${pre}${q}${url}${q}`;
       const u = url.replace(/&amp;/g, "&");
@@ -1185,7 +1199,7 @@ export function parseSesEvent(raw: unknown): NormalisedSesEvent | null {
   const suppress =
     type === "bounced" && b?.bounceType === "Permanent"
       ? recipients.map((email) => ({ email, reason: "bounce" as const }))
-      : type === "complained"
+      : type === "complained" && c?.complaintFeedbackType !== "not-spam"
         ? recipients.map((email) => ({ email, reason: "complaint" as const }))
         : [];
   const detail = b

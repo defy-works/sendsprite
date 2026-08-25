@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { randomBytes } from "node:crypto";
 import { sql } from "drizzle-orm";
+import { domains, emails, organization } from "@/db/schema";
 import { startPg } from "./_pg";
 
 let pg: Awaited<ReturnType<typeof startPg>>;
@@ -96,6 +97,45 @@ describe("migrations", () => {
         "api_keys_hash_uidx",
       ]),
     );
+  });
+  it("lets the mail log outlive its domain and tolerates NULL unique keys", async () => {
+    await pg.db
+      .insert(organization)
+      .values({ id: "org_db", name: "Db", slug: "db", createdAt: new Date() });
+    await pg.db.insert(domains).values({
+      id: "dom_db",
+      teamId: "org_db",
+      name: "db.example.com",
+      region: "eu-west-1",
+      dnsMode: "manual",
+      mailFromDomain: "mail.db.example.com",
+    });
+    const row = (id: string) => ({
+      id,
+      teamId: "org_db",
+      domainId: "dom_db",
+      from: "a@db.example.com",
+      fromEmail: "a@db.example.com",
+      to: ["r@x.io"],
+      subject: "s",
+      text: "t",
+    });
+    // Two rows with NULL idempotency_key / ses_message_id must not collide.
+    await pg.db.insert(emails).values([row("em_db1"), row("em_db2")]);
+    await pg.db.delete(domains).where(sql`id = 'dom_db'`);
+    const after = await pg.db.execute(
+      sql`select domain_id from emails where team_id = 'org_db'`,
+    );
+    expect(after.map((r) => r.domain_id)).toEqual([null, null]);
+    // Singleton check on send_rate_state (drizzle wraps the PG error, so
+    // assert the constraint exists and that a second row is rejected).
+    const chk = await pg.db.execute(
+      sql`select conname from pg_constraint where conname = 'send_rate_state_singleton'`,
+    );
+    expect(chk).toHaveLength(1);
+    await expect(
+      pg.db.execute(sql`insert into send_rate_state (id) values (2)`),
+    ).rejects.toThrow();
   });
   it("are idempotent", async () => {
     const { runMigrations } = await import("@/db/migrate");

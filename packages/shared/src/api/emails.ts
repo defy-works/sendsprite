@@ -9,17 +9,19 @@ import { z } from "zod";
 // are handled server-side (`@/lib/email-address`).
 const ADDR_SPEC = '[^\\s@<>"]+@[^\\s@<>"]+\\.[^\\s@<>"]+';
 const ADDR_RE = new RegExp(`^(?:[^<>]*<${ADDR_SPEC}>|${ADDR_SPEC})$`);
-const addr = z
-  .string()
-  .trim()
-  .min(3)
-  .max(320)
-  .regex(ADDR_RE, { message: "invalid email address" });
+const NO_CRLF = /^[^\r\n]*$/;
+const noCrlf = (s: z.ZodString) =>
+  s.regex(NO_CRLF, { message: "must not contain line breaks" });
+const addr = noCrlf(z.string().trim().min(3).max(320)).regex(ADDR_RE, {
+  message: "invalid email address",
+});
 const list = z
   .union([addr, z.array(addr)])
   .default([])
   .transform((v) => (Array.isArray(v) ? v : [v]));
 
+// Headers Sendsprite/SES set themselves; user-supplied values are rejected.
+// `list-unsubscribe` is deliberately allowed.
 const RESERVED = new Set([
   "to",
   "cc",
@@ -31,12 +33,30 @@ const RESERVED = new Set([
   "mime-version",
   "date",
   "message-id",
+  "return-path",
+  "sender",
+  "dkim-signature",
+  "received",
+  "content-transfer-encoding",
+  "authentication-results",
 ]);
+const HEADER_NAME = /^[A-Za-z0-9-]{1,80}$/;
+const TAG_KEY = /^[A-Za-z0-9_-]+$/;
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
+export const MAX_TAGS = 20;
 
 export const AttachmentInput = z.object({
-  filename: z.string().min(1).max(255),
-  content: z.string().min(1), // base64
-  contentType: z.string().max(255).optional(),
+  filename: noCrlf(z.string().min(1).max(255)).refine((f) => !/[\\/]/.test(f), {
+    message: "filename must not contain path separators",
+  }),
+  content: z
+    .string()
+    .min(1)
+    .transform((s) => s.replace(/\s+/g, ""))
+    .refine((s) => s.length > 0 && BASE64.test(s), {
+      message: "content must be base64",
+    }),
+  contentType: noCrlf(z.string().max(255)).optional(),
 });
 export type AttachmentInput = z.infer<typeof AttachmentInput>;
 
@@ -52,13 +72,16 @@ export const SendEmailInput = z
     cc: list,
     bcc: list,
     replyTo: list,
-    subject: z.string().min(1).max(998),
+    subject: noCrlf(z.string().min(1).max(998)),
     html: z.string().max(5_000_000).optional(),
     text: z.string().max(5_000_000).optional(),
     template: z.string().min(1).max(64).optional(),
     variables: z.record(z.string(), z.unknown()).optional(),
     headers: z
-      .record(z.string(), z.string().max(1000))
+      .record(
+        z.string().regex(HEADER_NAME, { message: "invalid header name" }),
+        noCrlf(z.string().max(1000)),
+      )
       .default({})
       .refine(
         (h) => !Object.keys(h).some((k) => RESERVED.has(k.toLowerCase())),
@@ -75,7 +98,19 @@ export const SendEmailInput = z
         { message: "attachments exceed 10 MB" },
       ),
     scheduledAt: z.iso.datetime({ offset: true }).optional(),
-    tags: z.record(z.string().max(64), z.string().max(256)).default({}),
+    tags: z
+      .record(
+        z
+          .string()
+          .min(1)
+          .max(64)
+          .regex(TAG_KEY, { message: "invalid tag key" }),
+        noCrlf(z.string().max(256)),
+      )
+      .default({})
+      .refine((t) => Object.keys(t).length <= MAX_TAGS, {
+        message: `at most ${MAX_TAGS} tags`,
+      }),
     idempotencyKey: z.string().min(1).max(256).optional(),
     trackOpens: z.boolean().optional(),
     trackClicks: z.boolean().optional(),

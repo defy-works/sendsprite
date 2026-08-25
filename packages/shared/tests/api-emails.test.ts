@@ -48,9 +48,79 @@ describe("SendEmailInput", () => {
         .scheduledAt,
     ).toBe("2030-01-01T00:00:00Z");
   });
-  it("rejects reserved headers", () => {
+  it("rejects reserved headers, keeps List-Unsubscribe", () => {
+    for (const k of [
+      "To",
+      "Return-Path",
+      "Sender",
+      "DKIM-Signature",
+      "Received",
+      "Content-Transfer-Encoding",
+      "Authentication-Results",
+    ])
+      expect(() =>
+        SendEmailInput.parse({ ...base, headers: { [k]: "x" } }),
+      ).toThrow(/reserved/i);
+    expect(
+      SendEmailInput.parse({
+        ...base,
+        headers: { "List-Unsubscribe": "<mailto:u@b.com>" },
+      }).headers,
+    ).toEqual({ "List-Unsubscribe": "<mailto:u@b.com>" });
+  });
+  it("rejects header injection (CR/LF) and bad header names", () => {
+    const bad = (patch: Record<string, unknown>) =>
+      expect(() => SendEmailInput.parse({ ...base, ...patch })).toThrow();
+    bad({ subject: "Hi\r\nBcc: x@y.com" });
+    bad({ from: "A\nB <a@b.com>" });
+    bad({ to: ["A\rB <a@b.com>"] }); // interior CR (edges are trimmed)
+    bad({ headers: { "X-Foo": "a\nb" } });
+    bad({ headers: { "X Foo": "a" } });
+    bad({ headers: { "X-Foo:": "a" } });
+    bad({ attachments: [{ filename: "a\nb.txt", content: "aGk=" }] });
+    bad({ attachments: [{ filename: "../a.txt", content: "aGk=" }] });
+    bad({ attachments: [{ filename: "c:\\a.txt", content: "aGk=" }] });
+    bad({
+      attachments: [
+        { filename: "a.txt", content: "aGk=", contentType: "x\ny" },
+      ],
+    });
+    expect(
+      SendEmailInput.parse({ ...base, headers: { "X-Custom-1": "ok" } })
+        .headers,
+    ).toEqual({ "X-Custom-1": "ok" });
+  });
+  it("validates attachment content as base64 (whitespace tolerated)", () => {
     expect(() =>
-      SendEmailInput.parse({ ...base, headers: { To: "x" } }),
-    ).toThrow(/reserved/i);
+      SendEmailInput.parse({
+        ...base,
+        attachments: [{ filename: "a.txt", content: "not base64!" }],
+      }),
+    ).toThrow(/base64/);
+    expect(
+      SendEmailInput.parse({
+        ...base,
+        attachments: [{ filename: "a.txt", content: "aGVs\nbG8=" }],
+      }).attachments[0]!.content,
+    ).toBe("aGVsbG8=");
+  });
+  it("validates tag keys and count", () => {
+    expect(() =>
+      SendEmailInput.parse({ ...base, tags: { "bad key": "v" } }),
+    ).toThrow(/tag key/);
+    expect(() =>
+      SendEmailInput.parse({ ...base, tags: { "": "v" } }),
+    ).toThrow();
+    expect(() =>
+      SendEmailInput.parse({
+        ...base,
+        tags: Object.fromEntries(
+          Array.from({ length: 21 }, (_, i) => [`k${i}`, "v"]),
+        ),
+      }),
+    ).toThrow(/20 tags/);
+    expect(
+      SendEmailInput.parse({ ...base, tags: { "camp-1_a": "v" } }).tags,
+    ).toEqual({ "camp-1_a": "v" });
   });
 });

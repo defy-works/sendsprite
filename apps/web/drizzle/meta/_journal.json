@@ -57,6 +57,13 @@
       "when": 1787622399938,
       "tag": "0007_perfect_slipstream",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1787623230752,
+      "tag": "0008_flimsy_drax",
+      "breakpoints": true
     }
   ]
 }

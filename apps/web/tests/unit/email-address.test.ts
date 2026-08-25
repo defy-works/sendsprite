@@ -39,5 +39,8 @@ describe("parseAddress", () => {
       '"Q \\"x\\"" <a@b.com>',
     );
     expect(formatAddress({ name: null, email: "a@b.com" })).toBe("a@b.com");
+    expect(formatAddress({ name: "a\\b", email: "a@b.com" })).toBe(
+      '"a\\\\b" <a@b.com>',
+    );
   });
 });

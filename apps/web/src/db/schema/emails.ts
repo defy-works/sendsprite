@@ -8,21 +8,13 @@ import {
   timestamp,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { EMAIL_STATUS } from "@sendsprite/shared";
 import { organization } from "./auth";
 import { domains } from "./domains";
 
-export const EMAIL_STATUSES = [
-  "queued",
-  "scheduled",
-  "sending",
-  "sent",
-  "delivered",
-  "bounced",
-  "complained",
-  "failed",
-  "cancelled",
-] as const;
-export type EmailStatus = (typeof EMAIL_STATUSES)[number];
+/** Single source of truth is the shared API contract; alias kept for schema-side imports. */
+export const EMAIL_STATUSES = EMAIL_STATUS;
+export type { EmailStatus } from "@sendsprite/shared";
 
 export const EMAIL_SOURCES = ["api", "smtp", "campaign", "dashboard"] as const;
 export type EmailSource = (typeof EMAIL_SOURCES)[number];
@@ -43,9 +35,10 @@ export const emails = pgTable(
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
     apiKeyId: text("api_key_id"),
-    domainId: text("domain_id")
-      .notNull()
-      .references(() => domains.id, { onDelete: "restrict" }),
+    // Nullable: the mail log must never block deleting a domain.
+    domainId: text("domain_id").references(() => domains.id, {
+      onDelete: "set null",
+    }),
     from: text("from").notNull(), // "Name <a@b>" as given
     fromEmail: text("from_email").notNull(), // normalised address
     to: jsonb("to").$type<string[]>().notNull(),

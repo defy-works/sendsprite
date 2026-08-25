@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createHash, randomBytes } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { startPg } from "./_pg";
 
@@ -34,8 +35,13 @@ describe("api keys", () => {
       .from(apiKeys)
       .where(eq(apiKeys.id, res.data.id));
     expect(row!.keyHash).not.toContain(res.data.secret);
+    expect(row!.keyHash).toBe(
+      createHash("sha256").update(res.data.secret).digest("hex"),
+    );
+    expect(row!.keyHash).toHaveLength(64);
     expect(row!.keyPrefix).toBe(res.data.secret.slice(0, 16));
-    const { authenticateApiKey } = await import("@/lib/api-auth");
+    const { authenticateApiKey, authenticateSecret } =
+      await import("@/lib/api-auth");
     const auth = await authenticateApiKey(`Bearer ${res.data.secret}`);
     expect(auth).toMatchObject({
       ok: true,
@@ -43,10 +49,24 @@ describe("api keys", () => {
       key: { id: res.data.id, permission: "full" },
     });
     expect((await listApiKeys("org_1"))[0]!.lastUsedAt).toBeTruthy();
+    // The SMTP relay authenticates the bare secret (password = API key).
+    expect(await authenticateSecret(res.data.secret)).toMatchObject({
+      ok: true,
+      key: { id: res.data.id },
+    });
     expect(await authenticateApiKey("Bearer ss_live_nope")).toMatchObject({
       ok: false,
       code: "unauthorized",
     });
+    // Well-formed but unknown secret (same shape as a real one).
+    const unknown = `ss_live_${randomBytes(32).toString("base64url")}`;
+    expect(unknown).toMatch(/^ss_live_[A-Za-z0-9_-]{43}$/);
+    expect(await authenticateApiKey(`Bearer ${unknown}`)).toMatchObject({
+      ok: false,
+      code: "unauthorized",
+      message: "Invalid API key.",
+    });
+    expect(await authenticateSecret(unknown)).toMatchObject({ ok: false });
     expect(await authenticateApiKey("")).toMatchObject({
       ok: false,
       code: "unauthorized",

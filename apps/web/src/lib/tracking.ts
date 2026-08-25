@@ -27,7 +27,8 @@ export const pixelTag = (emailId: string, base: string) =>
 
 /**
  * Rewrites `href="http(s)://…"` inside anchor tags to signed click URLs.
- * Leaves mailto:, tel:, #anchors and links already pointing at the tracker.
+ * Leaves mailto:, tel:, #anchors, non-anchor tags (`<link href>`), `data-href`
+ * attributes, and links already pointing at the tracker.
  */
 export function wrapLinks(
   html: string,
@@ -36,7 +37,8 @@ export function wrapLinks(
   secret: string,
 ): string {
   return html.replace(
-    /(<a\b[^>]*?\bhref=)(["'])(https?:\/\/[^"']+)\2/gi,
+    // `[\s"']href=` so `data-href=` (and any other `*-href`) is left alone.
+    /(<a\b[^>]*?[\s"']href=)(["'])(https?:\/\/[^"']+)\2/gi,
     (_m: string, pre: string, q: string, url: string) => {
       if (url.startsWith(`${base}/t/`)) return `${pre}${q}${url}${q}`;
       const u = url.replace(/&amp;/g, "&");
