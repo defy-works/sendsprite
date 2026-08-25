@@ -85,8 +85,8 @@ test("every docs section is reachable from the sidebar", async ({ page }) => {
     await page.goto(href);
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
     await expect(
-      // Not `exact`: the CLI and MCP entries carry a "soon" badge, which is
-      // part of their accessible name.
+      // Not `exact`: a `soon` badge (none today; Phase 5 adds Templates)
+      // becomes part of the entry's accessible name.
       page
         .getByRole("navigation", { name: "Docs", exact: true })
         .getByRole("link", { name }),

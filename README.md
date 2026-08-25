@@ -19,6 +19,71 @@ owner; after that, sign-ups are invite-only unless you change `SIGNUP_MODE`.
 Manual alternative: copy `.env.example` to `.env`, set `APP_URL`, `APP_SECRET`
 (≥ 32 random chars) and `POSTGRES_PASSWORD`, then `docker compose up -d`.
 
+## Send your first email
+
+Verify a domain (Domains → Add domain, then add the DNS records it lists) and
+create an API key (Team → API keys — the `ss_live_…` secret is shown once).
+Then:
+
+```bash
+curl -X POST "$APP_URL/api/v1/emails"   -H "Authorization: Bearer ss_live_..."   -H "Content-Type: application/json"   -d '{"from":"Acme <hello@mail.acme.com>","to":"ada@example.com","subject":"Hello","html":"<p>It works.</p>"}'
+# → 201 {"id":"em_..."}
+```
+
+```ts
+import { Sendsprite } from "sendsprite";
+
+const sendsprite = new Sendsprite({
+  apiKey: process.env.SENDSPRITE_API_KEY, // ss_live_…
+  baseUrl: "https://mail.acme.com", // your instance
+});
+
+const { id } = await sendsprite.emails.send({
+  from: "Acme <hello@mail.acme.com>",
+  to: "ada@example.com",
+  subject: "Hello",
+  html: "<p>It works.</p>",
+});
+```
+
+Full request/response reference: [Sending](#sending) below, or `/docs` on your
+own instance.
+
+## Packages
+
+Two packages are published from this repo. Neither has had its first release
+yet, so the install lines below will not resolve until it happens; build them
+from the repository in the meantime (`bun run --filter sendsprite build`,
+`bun run --filter @sendsprite/mcp build`).
+
+| Package                           | Install                       | What it is                                                                                                                                 |
+| --------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| [`sendsprite`](packages/sdk)      | `npm install sendsprite`      | Typed API client (`emails`, `domains`, `apiKeys`, `webhooks`, `suppressions`, `stats`, `me`, SSE `stream`), plus three extra entry points. |
+| [`@sendsprite/mcp`](packages/mcp) | `npm install @sendsprite/mcp` | Model Context Protocol server — `send_email`, `get_email_status`, `list_emails`, `search_emails`, `list_domains`, `get_send_stats`.        |
+
+- `sendsprite/react` re-exports the React Email primitives and `renderEmail`,
+  and `emails.send({ react: <Email /> })` renders an element for you.
+  `@react-email/components` and `@react-email/render` are optional peers.
+- `sendsprite/next` has `verifyWebhook` and `createWebhookHandler` for a
+  Next.js route handler.
+- `npx sendsprite` is the same package's binary: `login`, `whoami`,
+  `domains list`, `emails send`, `emails tail`.
+- `npx sendsprite-mcp` speaks MCP over stdio, or `--http [port]` for the
+  streamable HTTP transport (loopback-bound; it holds an API key and
+  authenticates nobody).
+
+Both bundles inline `@sendsprite/shared`, so neither drags a private workspace
+package or `zod` into your dependency tree.
+
+## Docs
+
+Every instance serves its own documentation at `/docs` — getting started,
+self-hosting, domains, sending, API keys, webhooks, SDK, CLI, MCP server —
+with an interactive API reference at `/docs/api` rendered from
+`/api/v1/openapi.json` (OpenAPI 3.1, generated from the same zod contracts the
+server validates with). The pages live in
+[`apps/web/src/app/docs`](apps/web/src/app/docs).
+
 ## Why it works the way it does
 
 **One container, one database.** Everything — web, REST API, background jobs,
@@ -171,9 +236,9 @@ t=<unix>,v1=<hex hmac-sha256(secret, "<t>.<body>")>` and
 `Sendsprite-Event-Id`. Failures retry after 1 m, 5 m, 30 m, 2 h and 8 h
 (driven by a once-a-minute sweep); a webhook failing continuously for 24 h is
 disabled (the reason shows on Team → Webhooks; re-enable it there).
-`POST /api/v1/webhooks/:id/test` sends a synthetic event. Verify signatures
-with the pure helper from `@sendsprite/shared` (the `sendsprite` SDK wraps it
-in Phase 4):
+`POST /api/v1/webhooks/:id/test` sends a synthetic event. In a Next.js app use
+`createWebhookHandler`/`verifyWebhook` from `sendsprite/next`; anywhere else,
+the pure helper from `@sendsprite/shared`:
 
 ```ts
 import { verifyWebhookSignature } from "@sendsprite/shared";
@@ -251,7 +316,7 @@ bun run typecheck            # next typegen + tsc, every workspace
 bun run lint · format · format:check
 bun run test                 # unit (vitest)
 bun run test:integration     # vitest against an embedded Postgres (or TEST_DATABASE_URL)
-bun run test:e2e             # Playwright
+bun run test:e2e             # Playwright (builds sendsprite + @sendsprite/mcp first: the e2e drives the real bundles)
 bun run db:generate          # new migration from schema changes
 ```
 
@@ -329,8 +394,9 @@ only the default until a landing value is saved.
 
 Phase 1: foundation — done. Phase 2: AWS one-click connect, Cloudflare,
 domains — done. Phase 3: sending API, events, webhooks, tracking, SMTP relay —
-done. Phase 4 (next): SDK, CLI, MCP, OpenAPI, docs, landing. Phase 5:
-templates, preview, contacts, campaigns, audit UI.
+done. Phase 4: SDK, CLI, MCP, OpenAPI, `/docs`, landing page, release
+pipeline — done. Phase 5 (next): templates, preview, contacts, campaigns,
+audit UI.
 Design: `docs/superpowers/specs/2026-08-24-sendsprite-design.md`.
 
 ## License

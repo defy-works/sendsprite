@@ -6,10 +6,12 @@ export const metadata = {
 
 # MCP server
 
-> **Coming in the next release.** `@sendsprite/mcp` is not published yet.
-> This page describes the server as designed; nothing here works against an
-> instance today. Use the [SDK](/docs/sdk) or the
-> [REST API](/docs/api) in the meantime.
+> **Not yet published to npm.** The server is built and working — it ships
+> in the repository as `packages/mcp` — but the package has not been
+> released, so `npx @sendsprite/mcp` will not resolve yet. Until it does,
+> build it from the repository (`bun run --filter @sendsprite/mcp build`) and
+> run `node packages/mcp/dist/bin.js` wherever this page says
+> `npx @sendsprite/mcp`. Everything below is the shipped behaviour.
 
 `@sendsprite/mcp` exposes your instance to an MCP client — Claude Desktop,
 Claude Code, or anything else that speaks the Model Context Protocol — so an
@@ -37,8 +39,10 @@ domains and webhooks.
 }
 ```
 
-Both environment variables are required. The server logs to stderr only, so
-it never corrupts the stdio protocol stream.
+Both environment variables are required; the process exits 1 naming whichever
+is missing. The server logs to stderr only — it holds the real stdout handle
+privately and points `process.stdout.write` at stderr — so a dependency that
+prints a banner cannot corrupt the stdio protocol stream.
 
 ## HTTP mode
 
@@ -49,7 +53,11 @@ npx @sendsprite/mcp --http 8787
 ```
 
 Serves the streamable HTTP transport at `POST /mcp`, stateless — a new
-transport per request, so it scales behind a load balancer.
+server and transport per request, so it scales behind a load balancer and
+leaks no abandoned sessions. `--http`, `--http 8787` and `--http=8787` are all
+accepted (default port 3333); anything else — an unknown flag, `--http=abc` —
+prints the usage to stderr and exits 2. `--help`/`-h` prints it and exits 0.
+Any path other than `/mcp` is a JSON-RPC 404 and any method other than POST a 405.
 
 The process holds an API key and does not authenticate its callers, so it
 binds `127.0.0.1` and refuses `Host` headers that do not name the loopback
@@ -64,7 +72,7 @@ when you do. Request bodies are capped at 20 MB.
 | `send_email`       | Send a transactional email; `from` must be on a verified domain. Returns the email id.               |
 | `get_email_status` | Status, recipients, subject and the most recent timeline events for one email id.                    |
 | `list_emails`      | Recent emails, newest first, with `limit`, `cursor` and `status`.                                    |
-| `search_emails`    | The same list filtered by recipient, status, tag or domain.                                          |
+| `search_emails`    | The same list filtered by `to`, `status`, `tag` or `domainId`, with `limit` and `cursor`.            |
 | `list_domains`     | Sending domains and their verification status.                                                       |
 | `get_send_stats`   | Sends today / 7 days / 30 days, delivery, bounce and complaint rates, and any account-health alerts. |
 
@@ -73,5 +81,10 @@ argument comes back as a tool error rather than a failed send. API failures
 are returned as tool errors carrying the API error `code`, `message` and
 HTTP status — the agent sees `domain_not_verified` rather than a stack
 trace.
+
+`get_email_status` returns the ten most recent events for an email; the list
+tools return the same `{ data, nextCursor }` envelope as the REST API.
+Structured output schemas are open, so a field added to the REST API reaches
+the client rather than failing its validation.
 
 Template rendering and contacts tools are planned for a later release.
