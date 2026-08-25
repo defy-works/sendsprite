@@ -1,6 +1,6 @@
 import { defineConfig } from "tsup";
 
-// The `next` and `cli` entries are added by later tasks.
+// The `cli` entry is added by a later task.
 const external = [
   "react",
   "react/jsx-runtime",
@@ -25,6 +25,20 @@ export default defineConfig([
     dts: true,
     sourcemap: true,
     target: "node20",
+    external,
+  },
+  {
+    // `sendsprite/next` must ship without `@sendsprite/shared` or `zod`
+    // (`tests/dist.test.ts` pins that); `node:crypto` stays a runtime
+    // built-in, which is why this entry never reaches the edge runtime.
+    entry: { next: "src/next.ts" },
+    format: ["esm", "cjs"],
+    dts: true,
+    sourcemap: true,
+    target: "node20",
+    // tsup 8 rewrites `node:crypto` to `crypto` by default (for Node < 14);
+    // keep the prefix so bundlers can tell a built-in from a package.
+    removeNodeProtocol: false,
     external,
   },
 ]);

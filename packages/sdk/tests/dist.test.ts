@@ -21,10 +21,12 @@ describe("dist", () => {
     });
   }, 120_000);
 
-  it("emits ESM, CJS and declarations for the root entry", () => {
+  it("emits ESM, CJS and declarations for every entry", () => {
     const files = readdirSync(dist);
-    for (const f of ["index.js", "index.cjs", "index.d.ts", "index.d.cts"]) {
-      expect(files).toContain(f);
+    for (const entry of ["index", "react", "next"]) {
+      for (const ext of ["js", "cjs", "d.ts", "d.cts"]) {
+        expect(files).toContain(`${entry}.${ext}`);
+      }
     }
   });
 
@@ -39,10 +41,10 @@ describe("dist", () => {
     }
   });
 
-  it("keeps @types/react out of the root declarations", () => {
+  it("keeps @types/react out of the root and next declarations", () => {
     // React is an optional peer: `import type { ReactElement } from "react"`
-    // in the root entry would make `@types/react` mandatory for every user.
-    for (const f of ["index.d.ts", "index.d.cts"]) {
+    // in these entries would make `@types/react` mandatory for every user.
+    for (const f of ["index.d.ts", "index.d.cts", "next.d.ts", "next.d.cts"]) {
       const src = readFileSync(join(dist, f), "utf8");
       expect(src, f).not.toMatch(
         /(?:from|import|require)\s*\(?\s*["']react["']/,
@@ -56,6 +58,17 @@ describe("dist", () => {
       expect(src, f).not.toMatch(/["']node:/);
       expect(src, f).not.toMatch(/["']@sendsprite\/shared/);
       expect(src, f).not.toContain("ulid");
+    }
+  });
+
+  it("builds sendsprite/next on node:crypto alone", () => {
+    // The signature check needs a real HMAC, but neither the private shared
+    // package nor zod (which the shared barrel drags in) may ship with it.
+    for (const f of ["next.js", "next.cjs"]) {
+      const src = readFileSync(join(dist, f), "utf8");
+      expect(src, f).toMatch(/["']node:crypto["']/);
+      expect(src, f).not.toMatch(/["']@sendsprite\/shared/);
+      expect(src, f).not.toMatch(/["']zod["']/);
     }
   });
 });
