@@ -36,20 +36,31 @@ import { countSentIn, usageRow } from "./usage";
  */
 const g = globalThis as { __sendspriteBilling?: Promise<BillingProvider> };
 
-async function buildProvider(cfg: BillingConfig): Promise<BillingProvider> {
+/** Constructs the configured implementation. Warming is `buildProvider`'s job. */
+async function constructProvider(cfg: BillingConfig): Promise<BillingProvider> {
   if (cfg.provider === "fake") return createFakeProvider();
   const { createPolarProvider } = await import("./polar");
-  const provider = createPolarProvider({
+  return createPolarProvider({
     accessToken: cfg.accessToken!,
     webhookSecret: cfg.webhookSecret!,
     server: cfg.server,
     eventName: cfg.eventName,
     meterId: cfg.meterId,
   });
-  // Warms the lazily-imported SDK so the synchronous `verifyWebhook` is never
-  // cold. Without it the first delivery after every deploy is refused with
-  // "provider SDK not loaded" — recoverable, since the provider retries, but
-  // it turns each deploy into a burst of failed deliveries.
+}
+
+async function buildProvider(cfg: BillingConfig): Promise<BillingProvider> {
+  const provider = await constructProvider(cfg);
+  // Warms whatever the implementation needs before its first (synchronous)
+  // `verifyWebhook`. For Polar that is the lazily-imported SDK: without this
+  // the first delivery after every deploy is refused with "provider SDK not
+  // loaded" — recoverable, since the provider retries, but it turns each
+  // deploy into a burst of failed deliveries.
+  //
+  // Every provider goes through the same await, including the fake. A branch
+  // that returns before it would let the fake diverge from production on
+  // exactly the property this guarantees, and every later test written
+  // against the fake would then be blind to a regression here.
   await provider.ready?.();
   return provider;
 }
@@ -64,7 +75,9 @@ export function getBillingProvider(): Promise<BillingProvider> {
     const pending = buildProvider(cfg);
     g.__sendspriteBilling = pending;
     // A failed build must not be cached, or one unreachable import poisons the
-    // process for its lifetime.
+    // process for its lifetime. The warming await lives *inside* `pending`, so
+    // this covers a `ready()` rejection too — a provider that never warmed is
+    // exactly the one that must not be handed to the next caller.
     void pending.catch(() => {
       if (g.__sendspriteBilling === pending) g.__sendspriteBilling = undefined;
     });

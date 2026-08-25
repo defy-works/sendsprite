@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetEnvCache } from "@/env.schema";
 import { getBillingProvider, resetBillingProvider } from "@/services/billing";
+import type { FakeProvider } from "@/services/billing/fake";
 
 const BASE = {
   APP_URL: "https://mail.example.com",
@@ -46,6 +47,48 @@ describe("getBillingProvider", () => {
     expect(await getBillingProvider()).toBe(a);
     resetBillingProvider();
     expect(await getBillingProvider()).not.toBe(a);
+  });
+
+  it("warms the fake too, so a test written against it is not blind", async () => {
+    // The amendment is about whatever provider is configured. A factory that
+    // returns early on the fake branch would make every later test that drives
+    // billing through the fake unable to see a regression in the await.
+    withEnv({ BILLING_ENABLED: "1", BILLING_PROVIDER: "fake" });
+    const provider = (await getBillingProvider()) as FakeProvider;
+    expect(provider.readied).toBe(true);
+  });
+
+  it("does not cache a provider that failed to warm", async () => {
+    // A transient SDK-load failure at boot must not be sticky for the life of
+    // the process: the warming await happens inside the memoised promise, so
+    // its rejection has to evict the entry like any other build failure.
+    let attempts = 0;
+    vi.doMock("@/services/billing/polar", () => ({
+      createPolarProvider: () => ({
+        id: "polar",
+        ready: async () => {
+          if (++attempts === 1) throw new Error("cold start failed");
+        },
+        listPlanProducts: async () => [],
+        createCheckout: async () => ({ url: "" }),
+        createPortalSession: async () => ({ url: "" }),
+        verifyWebhook: () => ({ ok: false, reason: "stub" }),
+        ingestUsage: async () => ({ inserted: 0, duplicates: 0 }),
+      }),
+    }));
+    withEnv({
+      BILLING_ENABLED: "1",
+      BILLING_PROVIDER: "polar",
+      POLAR_ACCESS_TOKEN: "polar_at_test",
+      POLAR_WEBHOOK_SECRET: "whsec_test",
+    });
+    const { getBillingProvider: get } = await import("@/services/billing");
+    await expect(get()).rejects.toThrow(/cold start failed/);
+    // The retry rebuilds rather than handing back the provider that never warmed.
+    expect((await get()).id).toBe("polar");
+    expect(attempts).toBe(2);
+    vi.doUnmock("@/services/billing/polar");
+    vi.resetModules();
   });
 
   it("warms the provider so the first webhook after a cold start is not refused", async () => {
