@@ -1,6 +1,13 @@
 import { defineConfig } from "tsup";
 
-// The `react`, `next` and `cli` entries are added by later tasks.
+// The `next` and `cli` entries are added by later tasks.
+const external = [
+  "react",
+  "react/jsx-runtime",
+  "@react-email/render",
+  "@react-email/components",
+];
+
 export default defineConfig([
   {
     entry: { index: "src/index.ts" },
@@ -10,6 +17,14 @@ export default defineConfig([
     clean: true,
     target: "node20",
     noExternal: ["@sendsprite/shared"],
-    external: ["react", "@react-email/render", "@react-email/components"],
+    external,
+  },
+  {
+    entry: { react: "src/react.tsx" },
+    format: ["esm", "cjs"],
+    dts: true,
+    sourcemap: true,
+    target: "node20",
+    external,
   },
 ]);

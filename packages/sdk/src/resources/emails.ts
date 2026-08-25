@@ -1,15 +1,33 @@
 import type { HttpClient } from "../client";
+import { renderEmail } from "../render";
 import type {
   BatchSendInput,
+  BatchSendOptions,
   EmailDetail,
   EmailObject,
   ListEmailsParams,
   Page,
   PatchEmailInput,
   SendEmailInput,
+  SendEmailOptions,
 } from "../types";
 
 export const enc = encodeURIComponent;
+
+/**
+ * Renders `react` (when present) into `html`/`text` — explicit `html`/`text`
+ * win — and strips the element so the wire body is plain `SendEmailInput`.
+ */
+async function resolveReact(input: SendEmailOptions): Promise<SendEmailInput> {
+  const { react, ...rest } = input;
+  if (!react) return rest;
+  const rendered = await renderEmail(react);
+  return {
+    ...rest,
+    html: rest.html ?? rendered.html,
+    text: rest.text ?? rendered.text,
+  };
+}
 
 export class Emails {
   constructor(private readonly http: HttpClient) {}
@@ -18,18 +36,20 @@ export class Emails {
    * 201 `{ id }`; a replayed `idempotencyKey` returns the earlier id.
    * Retried on 429/5xx only when an `idempotencyKey` is set.
    */
-  send(input: SendEmailInput): Promise<{ id: string }> {
+  async send(input: SendEmailOptions): Promise<{ id: string }> {
+    const body = await resolveReact(input);
     return this.http.request("POST", "/emails", {
-      body: input,
-      retry: Boolean(input.idempotencyKey),
+      body,
+      retry: Boolean(body.idempotencyKey),
     });
   }
 
   /** Up to 100 emails in one call; retried only when every item carries an `idempotencyKey`. */
-  batch(input: BatchSendInput): Promise<{ data: { id: string }[] }> {
+  async batch(input: BatchSendOptions): Promise<{ data: { id: string }[] }> {
+    const body: BatchSendInput = await Promise.all(input.map(resolveReact));
     return this.http.request("POST", "/emails/batch", {
-      body: input,
-      retry: input.every((e) => Boolean(e.idempotencyKey)),
+      body,
+      retry: body.every((e) => Boolean(e.idempotencyKey)),
     });
   }
 

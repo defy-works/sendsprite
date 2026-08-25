@@ -8,6 +8,8 @@
  * inputs against `z.input`, objects against `z.output`.
  */
 
+import type { ReactElement } from "react";
+
 // ---- errors -----------------------------------------------------------------
 
 /** Machine-readable `error.code` values of the REST API. */
@@ -111,6 +113,16 @@ export interface SendEmailInput {
 
 /** Body of `POST /emails/batch`: 1–100 sends. */
 export type BatchSendInput = SendEmailInput[];
+
+/**
+ * `emails.send()` input: a `SendEmailInput` plus an optional `react` element,
+ * rendered client-side to `html`/`text` (explicit `html`/`text` win) before posting.
+ * Requires the optional peers `react` and `@react-email/render`.
+ */
+export type SendEmailOptions = SendEmailInput & { react?: ReactElement };
+
+/** `emails.batch()` input: 1–100 `SendEmailOptions`. */
+export type BatchSendOptions = SendEmailOptions[];
 
 export interface EmailObject {
   id: string;
