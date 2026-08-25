@@ -102,6 +102,22 @@ describe("buildOpenApiDocument", () => {
     expect(text).not.toMatch(/"\$defs"|"\$id"|"\$schema"/);
   });
 
+  it("output objects are open (no additionalProperties: false)", () => {
+    expect(JSON.stringify(doc)).not.toMatch(/"additionalProperties":false/);
+  });
+
+  it("date-time nodes carry the format only, not zod's pattern", () => {
+    const visit = (v: unknown): void => {
+      if (Array.isArray(v)) return v.forEach(visit);
+      if (!v || typeof v !== "object") return;
+      const o = v as Record<string, unknown>;
+      if (o.format === "date-time") expect(o.pattern).toBeUndefined();
+      Object.values(o).forEach(visit);
+    };
+    visit(schemas);
+    expect(schemas.SendEmailInput.properties?.from?.allOf).toBeDefined();
+  });
+
   it("operationIds are unique and every operation is tagged", () => {
     const ops = Object.values(doc.paths).flatMap((item) => Object.values(item));
     const ids = ops.map((op) => op.operationId);

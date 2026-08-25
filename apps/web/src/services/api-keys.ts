@@ -20,7 +20,7 @@ export type ApiKeyPermission = ApiKey["permission"];
 export const hashKey = (k: string) =>
   createHash("sha256").update(k).digest("hex");
 
-const PREFIX_LEN = 16; // "ss_live_" + 8 chars: enough to tell keys apart in the UI
+export const PREFIX_LEN = 16; // "ss_live_" + 8 chars: enough to tell keys apart in the UI
 const DENIED: Result<never> = {
   ok: false,
   code: "forbidden",

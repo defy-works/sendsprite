@@ -51,7 +51,7 @@ export interface JsonSchema {
   enum?: readonly unknown[];
   const?: unknown;
   properties?: Record<string, JsonSchema>;
-  required?: string[];
+  required?: readonly string[];
   items?: JsonSchema;
   anyOf?: JsonSchema[];
   allOf?: JsonSchema[];
@@ -122,6 +122,7 @@ const outputSchemas = {
   SuppressionPage: pageOf(SuppressionObject),
   SendStatsObject,
   MeObject,
+  // Registered only so `/stream`'s description can name it; no operation refers to it.
   StreamChange,
 };
 export type SchemaId = keyof typeof inputSchemas | keyof typeof outputSchemas;
@@ -144,9 +145,33 @@ function emit(
   return Object.fromEntries(
     Object.entries(out).map(([id, { $schema: _s, $id: _i, ...rest }]) => [
       id,
-      rest as JsonSchema,
+      tidy(rest as JsonSchema, io),
     ]),
   );
+}
+
+/**
+ * Post-process one emitted tree. Responses are not validated at runtime, so
+ * the `additionalProperties: false` zod puts on output objects is dropped:
+ * a closed shape would make every additive field a breaking change for
+ * strict generators. `z.iso.datetime()` also emits a long `pattern` next
+ * to `format: "date-time"`; the format says it all, so the pattern goes
+ * (other patterns, e.g. the address checks on `SendEmailInput`, stay).
+ */
+function tidy(node: JsonSchema, io: "input" | "output"): JsonSchema {
+  const out: JsonSchema = {};
+  for (const [k, v] of Object.entries(node)) {
+    if (io === "output" && k === "additionalProperties" && v === false)
+      continue;
+    if (k === "pattern" && node.format === "date-time") continue;
+    out[k] = walk(v, io);
+  }
+  return out;
+}
+function walk(v: unknown, io: "input" | "output"): unknown {
+  if (Array.isArray(v)) return v.map((x) => walk(x, io));
+  if (v && typeof v === "object") return tidy(v as JsonSchema, io);
+  return v;
 }
 
 const ref = (name: SchemaId): JsonSchema => ({ $ref: uri(name) });
@@ -197,7 +222,7 @@ const idParam = (name = "id", description?: string): ParameterObject => ({
   name,
   in: "path",
   required: true,
-  ...(description && { description }),
+  ...(description ? { description } : {}),
   schema: { type: "string" },
 });
 const body = (name: SchemaId): Operation["requestBody"] => ({
@@ -518,7 +543,7 @@ export function buildOpenApiDocument(opts: OpenApiOptions) {
     "/stream": {
       get: op("Account", "streamChanges", "Live change feed (SSE)", {
         description:
-          "`text/event-stream` of `event: change` messages whose `data` is a `StreamChange` (`{ type, id }`), emitted when an email or webhook delivery changes. Full keys only.",
+          "`text/event-stream` of `event: change` messages whose `data` is a `StreamChange` (`{ type, id? }`), emitted when an email or webhook delivery changes. Full keys only.",
         responses: {
           "200": {
             description: "Event stream",

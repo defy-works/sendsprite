@@ -1,7 +1,11 @@
 import { randomBytes } from "node:crypto";
 import { db } from "@/db";
 import { organization } from "@/db/schema";
-import { createApiKey, type ApiKeyPermission } from "@/services/api-keys";
+import {
+  createApiKey,
+  PREFIX_LEN,
+  type ApiKeyPermission,
+} from "@/services/api-keys";
 import type { TeamActor } from "@/services/team";
 
 /**
@@ -36,7 +40,7 @@ export async function seedTeamWithKey({
       id: res.data.id,
       name,
       permission,
-      keyPrefix: res.data.secret.slice(0, 16),
+      keyPrefix: res.data.secret.slice(0, PREFIX_LEN),
     },
     secret: res.data.secret,
   };

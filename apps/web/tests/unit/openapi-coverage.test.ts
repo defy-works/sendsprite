@@ -17,7 +17,9 @@ describe("OpenAPI covers every REST route", () => {
   const doc = buildOpenApiDocument({ serverUrl: "http://x" });
   const documented = new Set(Object.keys(doc.paths));
   const files = walk(root);
-  expect(files.length).toBeGreaterThan(0);
+  it("finds route files", () => {
+    expect(files.length).toBeGreaterThan(0);
+  });
   for (const file of files) {
     const path =
       "/" +

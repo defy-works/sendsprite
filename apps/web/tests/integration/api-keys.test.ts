@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createHash, randomBytes } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { startPg } from "./_pg";
+import { PREFIX_LEN } from "@/services/api-keys";
 
 let pg: Awaited<ReturnType<typeof startPg>>;
 beforeAll(async () => {
@@ -39,7 +40,7 @@ describe("api keys", () => {
       createHash("sha256").update(res.data.secret).digest("hex"),
     );
     expect(row!.keyHash).toHaveLength(64);
-    expect(row!.keyPrefix).toBe(res.data.secret.slice(0, 16));
+    expect(row!.keyPrefix).toBe(res.data.secret.slice(0, PREFIX_LEN));
     const { authenticateApiKey, authenticateSecret } =
       await import("@/lib/api-auth");
     const auth = await authenticateApiKey(`Bearer ${res.data.secret}`);
