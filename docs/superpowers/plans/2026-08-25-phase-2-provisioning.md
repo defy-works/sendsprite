@@ -4857,11 +4857,11 @@ git commit -m "feat(web): setup wizard — AWS (role/one-click/manual), SES prod
 - Create: `apps/web/src/app/app/settings/instance/page.tsx`, `apps/web/src/app/app/domains/page.tsx`, `apps/web/src/app/app/domains/new/page.tsx`, `apps/web/src/app/app/domains/[id]/page.tsx`, `apps/web/src/app/app/domains/actions.ts`, `apps/web/src/app/app/domains/DomainForm.tsx`, `apps/web/src/app/app/domains/RecordsTable.tsx`, `apps/web/src/app/app/domains/DomainActions.tsx`
 - Modify: `apps/web/src/app/app/settings/page.tsx` (link to Instance tab for owners), `apps/web/src/app/app/page.tsx` (checklist)
 
-- [ ] **Step 1: Instance tab**
+- [x] **Step 1: Instance tab**
 
 `settings/instance/page.tsx`: `requireOwner()`; reuse `AwsStep`, `ProductionStep`, `CloudflareStep` in three `Card`s with the same actions (import from `@/app/setup/actions`), plus a "Signup mode" select (`open|invite|closed|auto`) and "Landing page enabled" toggle written via a new `updateInstanceAction(fd)` in `setup/actions.ts` (`updateInstanceSettings({ signupMode, landingEnabled }, a)`), and "Retention days" number. Add a "Instance" link in `settings/page.tsx` when `ctx.role === "owner"`.
 
-- [ ] **Step 2: Domain actions**
+- [x] **Step 2: Domain actions**
 
 `domains/actions.ts`:
 
@@ -4909,7 +4909,7 @@ export async function deleteDomain(id: string) {
 
 Note: importing `@/jobs/handlers/domain-provision` from a route bundle registers the queue in that bundle too — harmless (registry is on `globalThis`; `startWorker` only runs in instrumentation).
 
-- [ ] **Step 3: Pages**
+- [x] **Step 3: Pages**
 
 - `domains/page.tsx`: `requireTeam()`, `listDomains(team.id)`; `EmptyState` when none ("Add your first sending domain"); otherwise a table: name, `StatusDot` (pending→`pending`, verified→`ok`, failed→`error`), DNS mode `Badge` (auto/manual), region, last checked, link to detail. Button "Add domain" → `/app/domains/new`. If `awsMode==="none"`, show a banner linking owners to `/app/settings/instance`.
 - `domains/new/page.tsx` + `DomainForm.tsx` (client): single `Input` "mail.example.com", helper text on subdomain recommendation; on success `router.push(`/app/domains/${id}`)`. Show whether Cloudflare auto mode will apply (server passes `hasCloudflare`).
@@ -4918,7 +4918,7 @@ Note: importing `@/jobs/handlers/domain-provision` from a route bundle registers
 
 Add a `CopyField` primitive in `components/ui/CopyField.tsx` (client: `navigator.clipboard.writeText`, "Copied" state) — the spec lists it and the records table needs it.
 
-- [ ] **Step 4: Typecheck, manual run, commit**
+- [x] **Step 4: Typecheck, manual run, commit**
 
 Run: `cd apps/web && bun run typecheck` → clean. Dev check: with AWS not connected, `/app/domains/new` shows the connect banner and the service returns the "Connect AWS first" error. Kill processes.
 

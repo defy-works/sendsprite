@@ -33,9 +33,10 @@ export function AwsStep({
   regions,
   defaultRegion,
   oneClickAvailable,
+  mode = "wizard",
 }: WizardProps) {
   if (settings.awsMode !== "none")
-    return <ConnectedPanel settings={settings} />;
+    return <ConnectedPanel settings={settings} mode={mode} />;
   return (
     <ConnectPanels
       regions={regions}
@@ -45,7 +46,10 @@ export function AwsStep({
   );
 }
 
-function ConnectedPanel({ settings }: Pick<WizardProps, "settings">) {
+function ConnectedPanel({
+  settings,
+  mode,
+}: Pick<WizardProps, "settings"> & { mode: "wizard" | "settings" }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -69,9 +73,11 @@ function ConnectedPanel({ settings }: Pick<WizardProps, "settings">) {
         </dd>
       </dl>
       <div className="flex items-center gap-3">
-        <Button asChild>
-          <Link href="/setup?step=production">Continue</Link>
-        </Button>
+        {mode === "wizard" && (
+          <Button asChild>
+            <Link href="/setup?step=production">Continue</Link>
+          </Button>
+        )}
         <Button
           variant="ghost"
           disabled={pending}

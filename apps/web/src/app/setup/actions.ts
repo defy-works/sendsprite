@@ -1,6 +1,7 @@
 "use server";
 import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
+import { z } from "zod";
 import { loadEnv } from "@/env.schema";
 import { requireOwner } from "@/lib/session";
 import { requestMeta } from "@/lib/audit";
@@ -18,6 +19,12 @@ export type { Result } from "@/lib/result";
 async function actor() {
   const ctx = await requireOwner();
   return { userId: ctx.userId, meta: requestMeta(await headers()) };
+}
+
+/** The wizard and the Instance settings tab render the same steps. */
+function revalidate() {
+  revalidatePath("/setup");
+  revalidatePath("/app/settings/instance");
 }
 
 const region = (v: unknown) =>
@@ -65,7 +72,7 @@ export async function startQuickCreate(
 export async function detectRole(fd: FormData) {
   const a = await actor();
   const res = await aws.detectInstanceRole(region(fd.get("region")), a);
-  revalidatePath("/setup");
+  revalidate();
   return res;
 }
 
@@ -79,7 +86,7 @@ export async function connectKeys(fd: FormData) {
     },
     a,
   );
-  revalidatePath("/setup");
+  revalidate();
   return res;
 }
 
@@ -94,36 +101,66 @@ export async function requestProduction(fd: FormData) {
     },
     a,
   );
-  revalidatePath("/setup");
+  revalidate();
   return res;
 }
 
 export async function refreshAccount() {
   const a = await actor();
   const res = await aws.refreshSesAccount(a);
-  revalidatePath("/setup");
+  revalidate();
   return res;
 }
 
 export async function connectCloudflareAction(fd: FormData) {
   const a = await actor();
   const res = await cf.connectCloudflare(String(fd.get("token") ?? ""), a);
-  revalidatePath("/setup");
+  revalidate();
   return res;
 }
 
 export async function disconnectAws() {
   const a = await actor();
   const res = await aws.disconnectAws(a);
-  revalidatePath("/setup");
+  revalidate();
   return res;
 }
 
 export async function disconnectCloudflareAction() {
   const a = await actor();
   const res = await cf.disconnectCloudflare(a);
-  revalidatePath("/setup");
+  revalidate();
   return res;
+}
+
+const SIGNUP_MODES = ["open", "invite", "closed"] as const;
+const instanceForm = z.object({
+  signupMode: z.enum([...SIGNUP_MODES, "auto"]),
+  landingEnabled: z.enum(["on", "off"]),
+  retentionDays: z.coerce.number().int().min(1).max(3650),
+});
+
+/** Instance tab: signup mode (`auto` clears the DB override), landing page, retention. */
+export async function updateInstanceAction(fd: FormData): Promise<Result> {
+  const a = await actor();
+  const parsed = instanceForm.safeParse({
+    signupMode: fd.get("signupMode"),
+    landingEnabled: fd.get("landingEnabled") ?? "off",
+    retentionDays: fd.get("retentionDays"),
+  });
+  if (!parsed.success)
+    return { ok: false, error: "Check the form: retention is 1–3650 days." };
+  const { signupMode, landingEnabled, retentionDays } = parsed.data;
+  await updateInstanceSettings(
+    {
+      signupMode: signupMode === "auto" ? null : signupMode,
+      landingEnabled: landingEnabled === "on",
+      retentionDays,
+    },
+    a,
+  );
+  revalidatePath("/app/settings/instance");
+  return { ok: true, data: undefined };
 }
 
 export async function finishSetup(): Promise<Result> {

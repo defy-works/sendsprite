@@ -14,7 +14,7 @@ import { Alert, Heading, Notice, Panel } from "./shared";
 
 const TOKENS_URL = "https://dash.cloudflare.com/profile/api-tokens";
 
-export function CloudflareStep({ settings }: WizardProps) {
+export function CloudflareStep({ settings, mode = "wizard" }: WizardProps) {
   const router = useRouter();
   const connected = Boolean(settings.cloudflareConnectedAt);
   const [zones, setZones] = useState<string[] | null>(null);
@@ -58,9 +58,11 @@ export function CloudflareStep({ settings }: WizardProps) {
           </p>
           {zones && zones.length > 0 && <ZoneList zones={zones} />}
           <div className="flex items-center gap-3">
-            <Button asChild>
-              <Link href="/setup?step=done">Continue</Link>
-            </Button>
+            {mode === "wizard" && (
+              <Button asChild>
+                <Link href="/setup?step=done">Continue</Link>
+              </Button>
+            )}
             <Button
               variant="ghost"
               disabled={disconnecting}
@@ -123,16 +125,20 @@ export function CloudflareStep({ settings }: WizardProps) {
               <Button type="submit" disabled={pending}>
                 {pending ? "Verifying…" : "Connect Cloudflare"}
               </Button>
-              <Button
-                variant="ghost"
-                onClick={() => router.push("/setup?step=done")}
-              >
-                Skip
-              </Button>
+              {mode === "wizard" && (
+                <Button
+                  variant="ghost"
+                  onClick={() => router.push("/setup?step=done")}
+                >
+                  Skip
+                </Button>
+              )}
             </div>
-            <p className="text-xs text-white/50">
-              Skip if you would rather add DNS records manually.
-            </p>
+            {mode === "wizard" && (
+              <p className="text-xs text-white/50">
+                Skip if you would rather add DNS records manually.
+              </p>
+            )}
             {state && !state.ok && <Alert>{state.error}</Alert>}
           </form>
         </>

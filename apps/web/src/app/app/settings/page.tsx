@@ -4,6 +4,7 @@ import { db } from "@/db";
 import { invitation, member, user } from "@/db/schema";
 import { requireTeam } from "@/lib/session";
 import { Card, CardHeader, CardTitle, CardBody } from "@/components/ui/Card";
+import { Link } from "@/components/ui/Link";
 import { RenameForm } from "./RenameForm";
 import { MembersPanel } from "./MembersPanel";
 import { InvitePanel } from "./InvitePanel";
@@ -82,6 +83,20 @@ export default async function SettingsPage() {
           </CardHeader>
           <CardBody>
             <InvitePanel invites={invites} />
+          </CardBody>
+        </Card>
+      )}
+      {ctx.role === "owner" && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Instance</CardTitle>
+          </CardHeader>
+          <CardBody>
+            <p className="text-sm text-white/70">
+              AWS, SES production access, Cloudflare, signup mode and retention
+              apply to the whole instance.{" "}
+              <Link href="/app/settings/instance">Open instance settings</Link>
+            </p>
           </CardBody>
         </Card>
       )}

@@ -61,7 +61,8 @@ async function attach(b: PgBoss, { name, handler, cron, queue }: Registration) {
   if (queue) {
     const { policy, ...updatable } = queue;
     void policy; // fixed at creation; updateQueue rejects it
-    await b.updateQueue(name, updatable);
+    // A policy-only registration has nothing to update.
+    if (Object.keys(updatable).length > 0) await b.updateQueue(name, updatable);
   }
   if (cron) await b.schedule(name, cron);
   await b.work(name, handler as JobHandler);

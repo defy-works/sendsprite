@@ -18,7 +18,7 @@ const DOT: Record<string, Status> = {
   sandbox: "warning",
 };
 
-export function ProductionStep({ settings }: WizardProps) {
+export function ProductionStep({ settings, mode = "wizard" }: WizardProps) {
   const router = useRouter();
   const status = settings.sesAccountStatus;
   const [state, action, pending] = useActionState(
@@ -143,20 +143,22 @@ export function ProductionStep({ settings }: WizardProps) {
         </form>
       )}
 
-      <div className="flex items-center gap-3">
-        {status === "production" ? (
-          <Button asChild>
-            <Link href="/setup?step=cloudflare">Continue</Link>
-          </Button>
-        ) : (
-          <Button
-            variant="ghost"
-            onClick={() => router.push("/setup?step=cloudflare")}
-          >
-            Skip for now
-          </Button>
-        )}
-      </div>
+      {mode === "wizard" && (
+        <div className="flex items-center gap-3">
+          {status === "production" ? (
+            <Button asChild>
+              <Link href="/setup?step=cloudflare">Continue</Link>
+            </Button>
+          ) : (
+            <Button
+              variant="ghost"
+              onClick={() => router.push("/setup?step=cloudflare")}
+            >
+              Skip for now
+            </Button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

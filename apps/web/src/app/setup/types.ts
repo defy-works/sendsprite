@@ -22,4 +22,6 @@ export interface WizardProps {
   defaultRegion: string;
   /** False when APP_URL is not https (the CFN template refuses http callbacks). */
   oneClickAvailable: boolean;
+  /** `settings` hides the wizard's Continue/Skip navigation. Default `wizard`. */
+  mode?: "wizard" | "settings";
 }
