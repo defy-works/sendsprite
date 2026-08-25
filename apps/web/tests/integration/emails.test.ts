@@ -285,6 +285,24 @@ describe("createEmail", () => {
     ).toMatchObject({ ok: false, code: "conflict" });
   });
 
+  it("a failing enqueue does not fail the request: the row is created and left to the queued sweep", async () => {
+    const { createEmail } = await import("@/services/emails");
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const res = await createEmail(ctx, base, {
+        enqueue: async () => {
+          throw new Error("pg-boss down");
+        },
+      });
+      expect(res).toMatchObject({ ok: true, created: true });
+      if (!res.ok) return;
+      expect(res.data.status).toBe("queued");
+      expect(err).toHaveBeenCalled();
+    } finally {
+      err.mockRestore();
+    }
+  });
+
   it("sending-only key scoped to a domain cannot send from another domain", async () => {
     const enqueue = vi.fn(async () => "job");
     const { createEmail } = await import("@/services/emails");

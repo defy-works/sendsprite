@@ -184,9 +184,10 @@ describe("webhooks", () => {
         new Date(t0.getTime() + 1000),
       );
     }
-    // A sweep whose send is deduped (job still queued/active) counts nothing.
+    // A sweep whose send is deduped (job still queued/active) counts nothing
+    // (a day later the 8 h retry is due, so the send is actually attempted).
     bossEnqueue.mockResolvedValueOnce(null);
-    expect(await sweepWebhookRetries(new Date(t0.getTime() + 9e5))).toBe(0);
+    expect(await sweepWebhookRetries(new Date(t0.getTime() + 9e7))).toBe(0);
     // Sixth failure: no delay left → exhausted, nothing left for the sweep.
     expect(
       await deliver(id!, {
@@ -410,6 +411,39 @@ describe("webhooks", () => {
     expect((await deleteWebhook(other, w.data.id)).ok).toBe(false);
     expect((await deleteWebhook(actor, w.data.id)).ok).toBe(true);
     expect(await listDeliveries("org_1", w.data.id)).toHaveLength(0); // cascade
+  });
+
+  it("a pending delivery whose first job was lost is due at once and picked up by the sweep", async () => {
+    const { createWebhook, fanOutEvent, deliver } = await svc();
+    const w = await createWebhook(actor, {
+      url: "https://hooks.acme.com/orphan",
+      events: ["email.delayed"],
+    });
+    if (!w.ok) throw new Error(w.error);
+    // The enqueue "succeeds" but the job never lands (dropped/expired).
+    const [id] = await fanOutEvent(
+      "org_1",
+      "email.delayed",
+      "evt_lost",
+      {},
+      { enqueue: async () => null },
+    );
+    const before = await delivery(id!);
+    expect(before.status).toBe("pending");
+    expect(before.nextRetryAt!.getTime()).toBeLessThanOrEqual(Date.now());
+    const { sweepWebhookRetries } =
+      await import("@/jobs/handlers/webhook-deliver");
+    bossEnqueue.mockClear();
+    expect(await sweepWebhookRetries()).toBe(1);
+    expect(bossEnqueue).toHaveBeenCalledWith(
+      "webhook.deliver",
+      { deliveryId: id },
+      { singletonKey: id },
+    );
+    // Once delivered nothing is due any more.
+    await deliver(id!, { fetch: fetchWith(200), enqueue: async () => "" });
+    expect((await delivery(id!)).nextRetryAt).toBeNull();
+    expect(await sweepWebhookRetries()).toBe(0);
   });
 
   it("does not follow redirects, caps the response read, records timeouts, and marks un-enqueueable deliveries failed", async () => {

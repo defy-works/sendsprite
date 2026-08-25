@@ -42,6 +42,10 @@ Tasks 1–16 shipped; the "As shipped" / "Review follow-ups" notes under each ta
 8. **Template support** (`template` + `variables` in `SendEmailInput` is accepted by the schema and currently rejected by `createEmail`): Phase 5 templates plug into `createEmail`'s render step.
 9. Ops leftovers from the Phase 2 list still open: `domains.region` for domain ops (region drift on reconnect), persisting the SNS-subscribe warning for the wizard, atomic token reissue, SNS `Timestamp` freshness check, pinning `cfn-lint` in CI, `queue: { policy }` change guard.
 
+### Integration review fixes
+
+**`fix(web): no stuck states — queued sweep, not-due re-enqueue, pending webhook recovery, failed fan-out`.** Every row now has a path out of a waiting state that does not depend on a single pg-boss job surviving. (1) `sendQueuedEmail` no longer completes a not-due row with `skipped: not_due`: it re-enqueues `email.send` with `startAfter = max(1, ceil((scheduledAt − now)/1000))` and returns `{ outcome: "deferred", retryInMs }` (`email.send` is a standard-policy queue, so the self-send is allowed; the atomic claim keeps a duplicate harmless). (2) New cron `email.queued-sweep` (`Q.emailQueuedSweep`, `*/2 * * * *`, `retryLimit: 0`) runs `sweepQueuedEmails({ enqueue }, now)`: `queued`/`scheduled` rows that are due (`scheduled_at IS NULL OR <= now`) and untouched for 5 minutes get a fresh `email.send`; `createEmail` therefore no longer fails the request when `enqueue` throws — it logs and returns `created: true`, and the sweep delivers. (3) `createDelivery` inserts webhook deliveries with `nextRetryAt = now`, so the existing retry sweep (`status='pending' AND next_retry_at <= now()`) also recovers a first job that was accepted but never ran; the exclusive `singletonKey` dedups it against a first job still queued/active. (4) `markSendFailed` (the `NO_RETRY`/final-attempt path and the reconcile `failed` branch) fans out `email.failed` with `{ email: publicEmail(row), event: { type: "failed", occurredAt, …payload } }`, so API failures reach webhooks the way SES rejections already did; `reconcileStuckSending` takes `{ enqueue }` for it. (5) Reconcile guards: both reconcile writes and `markSendFailed` update `WHERE status = 'sending'` only, the reconcile `failed` keeps `payload.reconciled: true` and a `lastError` starting with `RECONCILED_FAILED_PREFIX` ("Send did not complete"), and `recordEvent` treats such a row like `sending` — any event ranked `sent` or above (`sent`, `delivered`, `bounced`, `complained`) overtakes it, while a genuine `failed` still blocks `delivered`. Tests: `email-send.test.ts` (deferred, `email.failed` delivery row, reconciled-vs-real failure, `sweepQueuedEmails`), `emails.test.ts` (throwing enqueue → `created: true`), `webhooks.test.ts` (lost first job → sweep enqueues it; the earlier dedup assertion now runs at a due time so its `mockResolvedValueOnce(null)` is actually consumed).
+
 ## File structure (Phase 3 additions)
 
 ```
@@ -2639,8 +2643,17 @@ export async function sendQueuedEmail(
   if (!e) return { outcome: "skipped", reason: "missing" };
   if (e.status !== "queued" && e.status !== "scheduled")
     return { outcome: "skipped", reason: e.status };
-  if (e.scheduledAt && e.scheduledAt.getTime() > now.getTime() + 1000)
-    return { outcome: "skipped", reason: "not_due" }; // stale job after reschedule
+  if (e.scheduledAt && e.scheduledAt.getTime() > now.getTime() + 1000) {
+    // Not due (stale job after a reschedule / early fire): re-send a delayed
+    // job for scheduledAt so the row never depends on another job existing.
+    const retryInMs = e.scheduledAt.getTime() - now.getTime();
+    await deps.enqueue(
+      "email.send",
+      { emailId },
+      { startAfter: Math.max(1, Math.ceil(retryInMs / 1000)) },
+    );
+    return { outcome: "deferred", retryInMs };
+  }
   const token = await takeSesToken(now);
   if (!token.ok) {
     await deps.enqueue(
@@ -2791,11 +2804,11 @@ On the final failed attempt (I3 pattern from Phase 2: `includeMetadata`), mark t
 **Shipped (deviations from the sketch; review fixes folded in):**
 
 - Attachments go through SESv2 `Content.Simple.Attachments` (the installed SDK has it); no nodemailer. `ConfigurationOverrides.Tracking` values are the SDK enum `"DISABLED"` (the sketch's `"false"` does not typecheck).
-- Order is pre-read (cheap skips: `missing`, `cancelled`…, `not_due`) → token → **atomic claim** (`UPDATE … WHERE status IN (queued, scheduled) AND due RETURNING`; loser → `skipped: not_claimed`) → SES. Token before claim so rows are never parked in `sending` while waiting; the cost is one wasted token when a claim loses a race. Concurrency test: two parallel sends → one SES call, one `sent` event.
+- Order is pre-read (cheap skips: `missing`, `cancelled`…; a not-due row is `deferred`: re-enqueued with `startAfter` for its `scheduledAt`, see "Integration review fixes") → token → **atomic claim** (`UPDATE … WHERE status IN (queued, scheduled) AND due RETURNING`; loser → `skipped: not_claimed`) → SES. Token before claim so rows are never parked in `sending` while waiting; the cost is one wasted token when a claim loses a race. Concurrency test: two parallel sends → one SES call, one `sent` event.
 - `finalAttempt` lives in `sendQueuedEmail` (as in `provisionDomain`); handlers derive it with `isFinalAttempt(job)` from `jobs/boss.ts`. A retryable error on the final attempt marks `failed` + `failed` event and still throws.
 - `NO_RETRY` also covers `NotFoundException` and `ValidationException`. Sandbox detection matches SES's "…failed the check in region…" text (`sandbox_restricted:` prefix in `lastError`, `code` in the event payload).
 - `sent` event `occurredAt` is the SES response time. `email.send` `expireInSeconds: 300`; `makeSes` bounds requests (`NodeHttpHandler` 5 s connect / 120 s request, `maxAttempts: 3`; `@smithy/node-http-handler` added as a direct dep). The e2e fake client path is untouched.
-- Stuck `sending` recovery: cron `email.reconcile-sending` (`*/5 * * * *`, `retryLimit: 0`) runs `reconcileStuckSending(now)`: `sending` rows with `updated_at` older than 10 min become `sent` (dedupe `local:<id>:reconciled`) when a `ses_message_id` exists, else `failed` ("Send did not complete (worker interrupted); not retried because SES may have accepted it.") with a `failed` event.
+- Stuck `sending` recovery: cron `email.reconcile-sending` (`*/5 * * * *`, `retryLimit: 0`) runs `reconcileStuckSending({ enqueue }, now)`: `sending` rows with `updated_at` older than 10 min become `sent` (dedupe `local:<id>:reconciled`) when a `ses_message_id` exists, else `failed` ("Send did not complete (worker interrupted); not retried because SES may have accepted it.") with a `failed` event and an `email.failed` fan-out; both writes are guarded on `status = 'sending'`, and a reconciled `failed` (recognised by the `RECONCILED_FAILED_PREFIX` of `lastError`) is still overtaken by a later `sent`/`delivered`/`bounced` in `recordEvent`.
 
 ---
 
@@ -3258,7 +3271,7 @@ Write the sketched functions fully. Handler `webhook-deliver.ts`: `registerQueue
 
 - Target validation: `lib/url-safety.ts` `isPublicHttpUrl(url, { httpsOnly })` (pure, unit-tested) rejects `localhost`, `*.localhost`, `*.local`, `*.internal`, single-label hosts, credentials in the URL, and literal IPs in loopback / RFC 1918 / link-local (incl. `169.254.169.254`) / CGNAT / `0.0.0.0/8` / multicast-reserved / `::1` / `::` / ULA / IPv6 link-local / IPv4-mapped forms. The zod `url` refine uses it (message "Webhook URL must be a public https address"; https is mandatory only in production). **Deferred:** DNS-rebinding-safe resolution (resolve, check, connect to the checked address); until then operators should network-isolate the worker (README says so).
 - `deliver()`: `redirect: "manual"`; any 3xx is a failed attempt (status code recorded, excerpt `redirect not followed`). Response bodies are read through `res.body.getReader()` up to 500 bytes then cancelled (`text()` only when there is no body).
-- `fanOutEvent(teamId, type: WebhookEventType, eventId, data, { enqueue, createdAt? })` builds a `WebhookPayload` literal with the event time (`ingest.ts` / `tracking.ts` pass `row.occurredAt`); `WEBHOOK_TYPE` is `Partial<Record<EmailEventType, WebhookEventType>>`. A failed enqueue marks that delivery `failed` (`could not enqueue`) instead of leaving an orphan pending row.
+- `fanOutEvent(teamId, type: WebhookEventType, eventId, data, { enqueue, createdAt? })` builds a `WebhookPayload` literal with the event time (`ingest.ts` / `tracking.ts` pass `row.occurredAt`); `WEBHOOK_TYPE` is `Partial<Record<EmailEventType, WebhookEventType>>`. A failed enqueue marks that delivery `failed` (`could not enqueue`) instead of leaving an orphan pending row; a delivery is inserted with `nextRetryAt = now`, so a first job that was accepted but lost is re-sent by the retry sweep within a minute (exclusive dedup covers a first job still queued/active).
 - Tests cover the 3xx path, an endless response stream (cancelled after 500 bytes), a `TimeoutError` rejection (failure recorded, retry scheduled) and the enqueue failure. Add `"webhooks.manage"` already in the shared `ACTIONS`. REST: `GET/POST /api/v1/webhooks`, `PATCH/DELETE /api/v1/webhooks/[id]`, `POST /api/v1/webhooks/[id]/test`. UI: list (url, events chips, enabled/disabled Badge with reason, failing-since), create (url, event checkboxes) → secret shown once; detail page: deliveries table (event, attempt, status, code, time) with Replay; Rotate secret; Enable/Disable; Delete.
 
 - [x] **Step 3: Run, commit** → `feat(web): webhooks — signed deliveries with retry schedule, REST, dashboard`.

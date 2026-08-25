@@ -287,11 +287,21 @@ export async function createEmail(
     dedupeKey: `local:${id}:queued`,
     payload: { source: ctx.source, status },
   });
-  await deps.enqueue(
-    Q.emailSend,
-    { emailId: id },
-    scheduledAt ? delayOpts(scheduledAt, now) : undefined,
-  );
+  // The row is committed; a queue failure (pg-boss down) must not fail
+  // the request. The `email.queued-sweep` cron re-sends jobs for due rows
+  // untouched for 5 minutes (`sweepQueuedEmails`).
+  try {
+    await deps.enqueue(
+      Q.emailSend,
+      { emailId: id },
+      scheduledAt ? delayOpts(scheduledAt, now) : undefined,
+    );
+  } catch (e) {
+    console.error(
+      `[emails] enqueue failed for ${id}; the queued sweep will pick it up:`,
+      e,
+    );
+  }
   return { ok: true, data: row, created: true };
 }
 

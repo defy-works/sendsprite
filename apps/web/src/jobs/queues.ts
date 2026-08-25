@@ -6,6 +6,7 @@ export const Q = {
   domainVerifySweep: "domain.verify-sweep",
   emailSend: "email.send",
   emailReconcile: "email.reconcile-sending",
+  emailQueuedSweep: "email.queued-sweep",
   webhookDeliver: "webhook.deliver",
   webhookRetrySweep: "webhook.retry-sweep",
   retentionPurge: "retention.purge",

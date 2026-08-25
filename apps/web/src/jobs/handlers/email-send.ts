@@ -1,7 +1,11 @@
 import { isFinalAttempt, registerQueue } from "../boss";
 import { enqueue } from "../enqueue";
 import { Q } from "../queues";
-import { reconcileStuckSending, sendQueuedEmail } from "@/services/ses-send";
+import {
+  reconcileStuckSending,
+  sendQueuedEmail,
+  sweepQueuedEmails,
+} from "@/services/ses-send";
 
 registerQueue<{ emailId: string }>(
   Q.emailSend,
@@ -28,8 +32,16 @@ registerQueue<{ emailId: string }>(
 );
 
 // Settles rows a crashed worker left in `sending` (see `reconcileStuckSending`).
-registerQueue(Q.emailReconcile, () => reconcileStuckSending(), {
+registerQueue(Q.emailReconcile, () => reconcileStuckSending({ enqueue }), {
   cron: "*/5 * * * *",
   // retryLimit 0: a failed sweep is simply retried by the next tick.
+  queue: { retryLimit: 0 },
+});
+
+// Re-sends `email.send` for due queued/scheduled rows whose job was lost
+// (see `sweepQueuedEmails`). `email.send` is a standard-policy queue, so a
+// duplicate job is allowed and the atomic claim makes it a no-op.
+registerQueue(Q.emailQueuedSweep, () => sweepQueuedEmails({ enqueue }), {
+  cron: "*/2 * * * *",
   queue: { retryLimit: 0 },
 });

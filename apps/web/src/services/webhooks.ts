@@ -239,9 +239,12 @@ export async function rotateSecret(
 }
 
 /**
- * Inserts the pending delivery row, then enqueues it. If the enqueue fails
- * (pg-boss down) the row is marked `failed` so it never lingers as a
- * pending delivery nothing will pick up; Replay can retry it.
+ * Inserts the pending delivery row with `nextRetryAt = now`, then enqueues
+ * it. The retry sweep therefore also covers a first job that was lost
+ * (dropped, expired, never landed): the row is due at once and the
+ * exclusive `singletonKey` dedups the sweep's send against a first job that
+ * is still queued/active. If the enqueue itself throws (pg-boss down) the
+ * row is marked `failed` (`could not enqueue`); Replay can retry it.
  */
 async function createDelivery(
   hook: Pick<Webhook, "id" | "teamId">,
@@ -258,6 +261,7 @@ async function createDelivery(
       eventId: payload.id,
       eventType: payload.type,
       payload: payload as unknown as Record<string, unknown>,
+      nextRetryAt: new Date(),
     });
   try {
     await enqueueDelivery(deps.enqueue, id);

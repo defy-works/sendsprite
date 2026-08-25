@@ -8,12 +8,16 @@ import { formatAddress, parseAddress } from "@/lib/email-address";
 import { Q } from "@/jobs/queues";
 import { getInstanceSettings } from "./instance-settings";
 import { takeSesToken } from "./send-limits";
-import { recordEvent } from "./email-events";
+import { RECONCILED_FAILED_PREFIX, recordEvent } from "./email-events";
+import { publicEmail } from "./ingest";
+import { fanOutEvent } from "./webhooks";
 import type { Enqueue } from "./domains";
 
+type EmailRow = typeof emails.$inferSelect;
 export type SendOutcome =
   | { outcome: "sent" }
   | { outcome: "throttled"; retryInMs: number }
+  | { outcome: "deferred"; retryInMs: number }
   | { outcome: "skipped"; reason: string }
   | { outcome: "failed"; error: string };
 
@@ -39,6 +43,8 @@ const isSandboxRejection = (name: string, message: string) =>
 
 /** A `sending` row older than this has lost its worker (crash, SIGKILL). */
 const STUCK_SENDING_MS = 10 * 60 * 1000;
+/** A due `queued`/`scheduled` row untouched this long has lost its job. */
+const STALE_QUEUED_MS = 5 * 60 * 1000;
 
 /** A job may fire this much before `scheduledAt` (pg-boss polling jitter). */
 const DUE_SLACK_MS = 1000;
@@ -46,8 +52,11 @@ const SENDABLE = ["queued", "scheduled"] as const;
 
 /**
  * One `email.send` attempt. Order matters:
- *  1. cheap skip for rows that are gone, cancelled, or not due (a stale job
- *     after a reschedule) — no SES token is spent on them;
+ *  1. cheap skip for rows that are gone or cancelled — no SES token is spent
+ *     on them. A row not yet due (a stale job after a reschedule, or a
+ *     delayed job that fired early) is `deferred`: a fresh delayed job is
+ *     sent for its `scheduledAt`, so the row never depends on another job
+ *     still existing;
  *  2. take an instance-wide SES token; when empty, re-enqueue with a delay
  *     and leave the row untouched (`throttled` is not a failure);
  *  3. claim the row atomically (`queued|scheduled` → `sending`), so two
@@ -73,8 +82,15 @@ export async function sendQueuedEmail(
   if (!(SENDABLE as readonly string[]).includes(pre.status))
     return { outcome: "skipped", reason: pre.status };
   const dueBy = new Date(now.getTime() + DUE_SLACK_MS);
-  if (pre.scheduledAt && pre.scheduledAt > dueBy)
-    return { outcome: "skipped", reason: "not_due" };
+  if (pre.scheduledAt && pre.scheduledAt > dueBy) {
+    const retryInMs = pre.scheduledAt.getTime() - now.getTime();
+    await deps.enqueue(
+      Q.emailSend,
+      { emailId },
+      { startAfter: Math.max(1, Math.ceil(retryInMs / 1000)) },
+    );
+    return { outcome: "deferred", retryInMs };
+  }
 
   const token = await takeSesToken(now);
   if (!token.ok) {
@@ -181,11 +197,12 @@ export async function sendQueuedEmail(
       ? `sandbox_restricted: ${message}`
       : `${name}: ${message}`;
     if (NO_RETRY.has(name) || finalAttempt) {
-      await markSendFailed(e, lastError, {
-        name,
-        message,
-        ...(sandbox && { code: "sandbox_restricted" }),
-      });
+      await markSendFailed(
+        e,
+        lastError,
+        { name, message, ...(sandbox && { code: "sandbox_restricted" }) },
+        deps,
+      );
       if (NO_RETRY.has(name)) return { outcome: "failed", error: message };
       throw err;
     }
@@ -197,23 +214,74 @@ export async function sendQueuedEmail(
   }
 }
 
+/**
+ * `sending` → `failed` with a `failed` timeline event and an `email.failed`
+ * webhook fan-out. Guarded on `status = 'sending'`: a row that something
+ * else already moved (an SNS event, a concurrent reconcile) is left alone
+ * and gets no event.
+ */
 async function markSendFailed(
-  e: { id: string; teamId: string; attempts: number },
+  e: EmailRow,
   lastError: string,
   payload: Record<string, unknown>,
+  deps: { enqueue: Enqueue },
 ) {
-  await db()
+  const [row] = await db()
     .update(emails)
     .set({ status: "failed", lastError })
-    .where(eq(emails.id, e.id));
-  await recordEvent({
+    .where(and(eq(emails.id, e.id), eq(emails.status, "sending")))
+    .returning();
+  if (!row) return;
+  const occurredAt = new Date();
+  const ev = await recordEvent({
     emailId: e.id,
     teamId: e.teamId,
     type: "failed",
     dedupeKey: `local:${e.id}:failed:${e.attempts}`,
     payload,
-    occurredAt: new Date(),
+    occurredAt,
   });
+  if (!ev) return;
+  await fanOutEvent(
+    e.teamId,
+    "email.failed",
+    ev.id,
+    {
+      email: publicEmail(row),
+      event: {
+        type: "failed",
+        occurredAt: occurredAt.toISOString(),
+        ...payload,
+      },
+    },
+    { enqueue: deps.enqueue, createdAt: occurredAt },
+  );
+}
+
+/**
+ * Cron fallback for due `queued`/`scheduled` rows whose `email.send` job
+ * was lost (the enqueue at create time failed, pg-boss dropped or expired
+ * it, a deferred re-send never landed). A row untouched for 5 minutes past
+ * its due time gets a fresh job; the atomic claim in `sendQueuedEmail`
+ * makes a duplicate job harmless. Returns the ids enqueued.
+ */
+export async function sweepQueuedEmails(
+  deps: { enqueue: Enqueue },
+  now = new Date(),
+): Promise<string[]> {
+  const rows = await db()
+    .select({ id: emails.id })
+    .from(emails)
+    .where(
+      and(
+        inArray(emails.status, [...SENDABLE]),
+        or(isNull(emails.scheduledAt), lte(emails.scheduledAt, now)),
+        lt(emails.updatedAt, new Date(now.getTime() - STALE_QUEUED_MS)),
+      ),
+    )
+    .orderBy(emails.createdAt);
+  for (const r of rows) await deps.enqueue(Q.emailSend, { emailId: r.id });
+  return rows.map((r) => r.id);
 }
 
 /**
@@ -222,10 +290,14 @@ async function markSendFailed(
  * row whose `updated_at` is older than 10 minutes is settled from what we
  * know: with a `ses_message_id` the send completed and only the bookkeeping
  * was lost → `sent`; without one we cannot tell whether SES accepted the
- * message, and a retry could double-send → `failed`, no retry. Returns the
- * ids settled each way.
+ * message, and a retry could double-send → `failed`, no retry. Both writes
+ * are guarded on the row still being `sending`, and a `failed` set here is
+ * recognisable by its `lastError` prefix (`RECONCILED_FAILED_PREFIX`) so a
+ * late SNS `delivered`/`bounced` can still overtake it (see `recordEvent`).
+ * Returns the ids settled each way.
  */
 export async function reconcileStuckSending(
+  deps: { enqueue: Enqueue },
   now = new Date(),
 ): Promise<{ sent: string[]; failed: string[] }> {
   const cutoff = new Date(now.getTime() - STUCK_SENDING_MS);
@@ -250,8 +322,9 @@ export async function reconcileStuckSending(
     } else {
       await markSendFailed(
         e,
-        "Send did not complete (worker interrupted); not retried because SES may have accepted it.",
+        `${RECONCILED_FAILED_PREFIX} (worker interrupted); not retried because SES may have accepted it.`,
         { name: "WorkerInterrupted", reconciled: true },
+        deps,
       );
       out.failed.push(e.id);
     }

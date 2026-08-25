@@ -210,15 +210,20 @@ describe("sendQueuedEmail", () => {
     });
   });
 
-  it("MessageRejected → failed with a failed event; no rethrow", async () => {
+  it("MessageRejected → failed with a failed event and an email.failed webhook delivery; no rethrow", async () => {
     ses
       .on(SendEmailCommand)
       .rejects(awsErr("MessageRejected", "Email address is blacklisted."));
+    const { createWebhook } = await import("@/services/webhooks");
+    const hook = await createWebhook(
+      { userId: "u1", teamId: "org_1", teamName: "Acme", role: "owner" },
+      { url: "https://hooks.acme.com/failed", events: ["email.failed"] },
+    );
+    if (!hook.ok) throw new Error(hook.error);
     const created = await create();
+    const enqueue = vi.fn(async () => "");
     const { sendQueuedEmail } = await import("@/services/ses-send");
-    const out = await sendQueuedEmail(created.id, {
-      enqueue: vi.fn(async () => ""),
-    });
+    const out = await sendQueuedEmail(created.id, { enqueue });
     expect(out).toEqual({
       outcome: "failed",
       error: "Email address is blacklisted.",
@@ -230,6 +235,25 @@ describe("sendQueuedEmail", () => {
       sesMessageId: null,
     });
     expect(await events(created.id)).toEqual(["queued", "failed"]);
+    const { webhookDeliveries, webhooks } = await import("@/db/schema");
+    const rows = await pg.db
+      .select()
+      .from(webhookDeliveries)
+      .where(eq(webhookDeliveries.webhookId, hook.data.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.payload).toMatchObject({
+      type: "email.failed",
+      data: {
+        email: { id: created.id, status: "failed" },
+        event: { type: "failed", name: "MessageRejected" },
+      },
+    });
+    expect(enqueue).toHaveBeenCalledWith(
+      "webhook.deliver",
+      { deliveryId: rows[0]!.id },
+      { singletonKey: rows[0]!.id },
+    );
+    await pg.db.delete(webhooks).where(eq(webhooks.id, hook.data.id));
   });
 
   it("TooManyRequestsException → throws for pg-boss retry; status back to queued with lastError", async () => {
@@ -287,19 +311,26 @@ describe("sendQueuedEmail", () => {
     });
   });
 
-  it("skips a scheduled email that is not yet due (stale job after reschedule)", async () => {
+  it("defers a scheduled email that is not yet due: re-enqueues for scheduledAt, no SES call", async () => {
     ses.on(SendEmailCommand).resolves({ MessageId: "never" });
-    const created = await create({
-      scheduledAt: new Date(Date.now() + 3600_000).toISOString(),
-    });
+    const now = new Date();
+    const at = new Date(now.getTime() + 3600_000);
+    const created = await create({ scheduledAt: at.toISOString() });
     expect(created.status).toBe("scheduled");
+    const enqueue = vi.fn(async () => "");
     const { sendQueuedEmail } = await import("@/services/ses-send");
-    const out = await sendQueuedEmail(created.id, {
-      enqueue: vi.fn(async () => ""),
-    });
-    expect(out).toEqual({ outcome: "skipped", reason: "not_due" });
+    const out = await sendQueuedEmail(created.id, { enqueue, now });
+    expect(out).toEqual({ outcome: "deferred", retryInMs: 3600_000 });
+    expect(enqueue).toHaveBeenCalledWith(
+      "email.send",
+      { emailId: created.id },
+      { startAfter: 3600 },
+    );
     expect(ses.commandCalls(SendEmailCommand)).toHaveLength(0);
-    expect(await load(created.id)).toMatchObject({ status: "scheduled" });
+    expect(await load(created.id)).toMatchObject({
+      status: "scheduled",
+      attempts: 0,
+    });
   });
 
   it("sends a scheduled email once its time has come", async () => {
@@ -407,7 +438,8 @@ describe("reconcileStuckSending", () => {
     const without = await stuck(null, 11 * 60_000);
     const fresh = await stuck(null, 60_000);
     const { reconcileStuckSending } = await import("@/services/ses-send");
-    const out = await reconcileStuckSending();
+    const noop = { enqueue: vi.fn(async () => "") };
+    const out = await reconcileStuckSending(noop);
     expect(out.sent).toEqual([withId]);
     expect(out.failed).toEqual([without]);
 
@@ -429,6 +461,76 @@ describe("reconcileStuckSending", () => {
     expect(await events(fresh)).toEqual(["queued"]);
 
     // Idempotent: a second sweep finds nothing.
-    expect(await reconcileStuckSending()).toEqual({ sent: [], failed: [] });
+    expect(await reconcileStuckSending(noop)).toEqual({ sent: [], failed: [] });
+  });
+
+  it("a reconciled failed row is overtaken by a late delivered; a real failure is not", async () => {
+    const { reconcileStuckSending } = await import("@/services/ses-send");
+    const { recordEvent } = await import("@/services/email-events");
+    const guessed = await stuck(null, 11 * 60_000);
+    await reconcileStuckSending({ enqueue: vi.fn(async () => "") });
+    expect((await load(guessed)).status).toBe("failed");
+    // SES had accepted it after all: the SNS Delivery wins.
+    await recordEvent({
+      emailId: guessed,
+      teamId: "org_1",
+      type: "delivered",
+      dedupeKey: "sns:late-delivery",
+    });
+    expect((await load(guessed)).status).toBe("delivered");
+
+    ses
+      .on(SendEmailCommand)
+      .rejects(awsErr("MessageRejected", "Email address is blacklisted."));
+    const real = await create();
+    const { sendQueuedEmail } = await import("@/services/ses-send");
+    await sendQueuedEmail(real.id, { enqueue: vi.fn(async () => "") });
+    await recordEvent({
+      emailId: real.id,
+      teamId: "org_1",
+      type: "delivered",
+      dedupeKey: "sns:impossible-delivery",
+    });
+    expect((await load(real.id)).status).toBe("failed");
+  });
+});
+
+describe("sweepQueuedEmails", () => {
+  it("re-enqueues due queued/scheduled rows untouched for 5 minutes; leaves fresh and future rows alone", async () => {
+    const { emails } = await import("@/db/schema");
+    const age = (id: string, ms: number, scheduledAt?: Date) =>
+      pg.db
+        .update(emails)
+        .set({
+          updatedAt: new Date(Date.now() - ms),
+          ...(scheduledAt && { scheduledAt }),
+        })
+        .where(eq(emails.id, id));
+    const stale = await create();
+    await age(stale.id, 6 * 60_000);
+    const fresh = await create();
+    await age(fresh.id, 60_000);
+    const dueScheduled = await create({
+      scheduledAt: new Date(Date.now() + 3600_000).toISOString(),
+    });
+    await age(dueScheduled.id, 6 * 60_000, new Date(Date.now() - 1000));
+    const future = await create({
+      scheduledAt: new Date(Date.now() + 3600_000).toISOString(),
+    });
+    await age(future.id, 6 * 60_000);
+    const enqueue = vi.fn(async () => "");
+    const { sweepQueuedEmails } = await import("@/services/ses-send");
+    const ids = await sweepQueuedEmails({ enqueue });
+    expect(ids).toContain(stale.id);
+    expect(ids).toContain(dueScheduled.id);
+    expect(ids).not.toContain(fresh.id);
+    expect(ids).not.toContain(future.id);
+    expect(enqueue).toHaveBeenCalledWith("email.send", { emailId: stale.id });
+    expect(enqueue).toHaveBeenCalledWith("email.send", {
+      emailId: dueScheduled.id,
+    });
+    // Only still-sendable rows are ever swept: settled ones never appear.
+    for (const id of ids)
+      expect((await load(id)).status).toMatch(/^(queued|scheduled)$/);
   });
 });

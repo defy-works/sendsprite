@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, like, or, sql } from "drizzle-orm";
 import { newId, EMAIL_STATUS } from "@sendsprite/shared";
 import { db } from "@/db";
 import {
@@ -45,6 +45,18 @@ const overtakes = (next: EmailStatus) =>
   EMAIL_STATUS.filter((s) => RANK[s] <= RANK[next]);
 
 /**
+ * `lastError` prefix of a `failed` written by `reconcileStuckSending` for a
+ * row with no `ses_message_id`. That verdict is a guess (SES may have
+ * accepted the message), so such a row ranks like `sending` here: any
+ * post-send event (`sent`, `delivered`, `bounced`, …) still overtakes it.
+ */
+export const RECONCILED_FAILED_PREFIX = "Send did not complete";
+const reconciledFailed = and(
+  eq(emails.status, "failed"),
+  like(emails.lastError, `${RECONCILED_FAILED_PREFIX}%`),
+);
+
+/**
  * Idempotent insert keyed by `(emailId, dedupeKey)`; advances the email
  * status in a single conditional UPDATE (no read-then-write, so concurrent
  * events cannot regress it). `sentAt` is set once, by the first `sent`.
@@ -87,7 +99,12 @@ export async function recordEvent(i: {
         }),
       })
       .where(
-        and(eq(emails.id, i.emailId), inArray(emails.status, overtakes(next))),
+        and(
+          eq(emails.id, i.emailId),
+          RANK[next] >= RANK.sent
+            ? or(inArray(emails.status, overtakes(next)), reconciledFailed)
+            : inArray(emails.status, overtakes(next)),
+        ),
       );
   await notifyTeam(i.teamId, { type: "email", id: i.emailId });
   return row;
