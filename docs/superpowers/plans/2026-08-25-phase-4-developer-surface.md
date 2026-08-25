@@ -32,6 +32,105 @@
 
 ---
 
+## Phase 4 status: COMPLETE (2026-08-25, `db5edbe` + this block; tagged `phase-4-complete`)
+
+Tasks 1–14 shipped. The task bodies below are the plan as written, not a record of what landed — where the two differ the code, the commit messages listed here, `README.md` ("Send your first email", "Packages", "Docs", "Releasing"), the `/docs` site and `apps/web/tests/e2e/sdk.spec.ts` are what shipped.
+
+### What shipped
+
+| Task | Commits                                    | What                                                                                                                             |
+| ---- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | `4bf6da4`, `a0f8c46`, `8af23f1`            | Shared zod contracts for every REST resource; `node:crypto`-free root barrel + `@sendsprite/shared/node`.                        |
+| 2    | `724b4f6`, `33bab0e`, `baf0cc5`            | Cursor pagination on api-keys/domains/webhooks/suppressions; one `serviceFailure()` mapper; millisecond-precise keyset anchors.  |
+| 3    | `1fc7502`                                  | `GET /api/v1/me`, `GET /api/v1/stats`, API-key SSE at `GET /api/v1/stream`.                                                      |
+| 4    | `5fce59d`, `35dda72`                       | OpenAPI 3.1 at `/api/v1/openapi.json`, generated from the shared contracts (`z.toJSONSchema`, no extra library).                 |
+| 5    | `f7c5f77`                                  | `sendsprite` package: retrying HTTP core, `SendspriteError`, dual ESM/CJS with `@sendsprite/shared` inlined.                     |
+| 6    | `1f64a87`, `e934607`                       | Resource namespaces, `iterate()` pagination, SSE `stream()`.                                                                     |
+| 7    | `5987e0c`, `e934607`, `8f28a81`            | `sendsprite/react`: React Email primitives, `renderEmail`, `emails.send({ react })`; React kept an optional peer.                |
+| 8    | `d755b0e`, `d9b171c`, `b64286a`, `7709c56` | `sendsprite/next`: `verifyWebhook`, `createWebhookHandler`; empty webhook secrets refused.                                       |
+| 9    | `4ff0ea5`, `b64286a`                       | `npx sendsprite`: `login`, `whoami`, `domains list`, `emails send`, `emails tail`; env-over-file credentials resolved as a pair. |
+| 10   | `869cfe1`, `f24fa78`                       | `@sendsprite/mcp`: six tools over stdio and streamable HTTP; loopback bind, rebinding protection, 20 MB body cap, stdout guard.  |
+| 11   | `3eedf91`, `7fcafc6`, `1aa6d75`            | `/docs` MDX site and the self-hosted Scalar API reference at `/docs/api`.                                                        |
+| 12   | `2672767`, `53d0f4c`                       | Landing page at `/` (`LANDING_ENABLED`); `install.sh` and `docker-compose.yml` served by the app.                                |
+| 13   | `97b1a76`, `79c9357`                       | Changesets release pipeline; CI builds and `npm pack --dry-run`s both packages.                                                  |
+| 14   | `d4ad66f`, `db5edbe`                       | e2e through the built `dist` of both packages (SDK, CLI, MCP); README/docs consistency pass.                                     |
+
+### Test counts (all green, 2026-08-25)
+
+| Gate                       | Result                                                                                                                 |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `bun run typecheck`        | 4 workspaces, clean                                                                                                    |
+| `bun run lint`             | clean                                                                                                                  |
+| `bun run format:check`     | clean                                                                                                                  |
+| `bun run test`             | 326 tests / 38 files — `@sendsprite/shared` 55/7, `sendsprite` 115/8, `@sendsprite/mcp` 32/3, `@sendsprite/web` 124/20 |
+| `bun run test:integration` | 220 tests / 33 files (`@sendsprite/web`)                                                                               |
+| `bun run test:e2e`         | 11 tests / 6 specs (setup 1, smoke 1, landing 2, docs 3, send 1, sdk 3)                                                |
+
+`test:e2e` now builds `sendsprite` and `@sendsprite/mcp` first: `sdk.spec.ts` imports the emitted bundles, not the sources.
+
+### Notes from Task 14
+
+- **Playwright spec order is not deterministic.** The `app` project leaves `fullyParallel` off, which serialises tests _within_ a file but still hands whole files to different workers at once (5 workers on the dev machine). There is no "after `send.spec.ts`" to depend on, and `send.spec.ts`'s verified domain belongs to a different team and is deleted at the end of that spec — so `sdk.spec.ts` provisions and verifies its own domain through the SDK. That is also the only coverage `domains.create`/`domains.verify` get against a real server.
+- **Credentials cross workers in a file, not the environment.** Workers are processes forked before any test runs, so `setup.spec.ts` writes the dashboard-created key to `project.outputDir` (`tests/e2e/credentials.ts`), which Playwright clears once per run.
+- **Types from `src`, values from `dist`.** `dist/` is gitignored and CI typechecks before it builds, so `sdk.spec.ts` type-imports from the packages' sources and `await import()`s the built files.
+
+---
+
+## Phase 5 openers
+
+**Templates and contacts (the body of Phase 5).**
+
+1. Templates + variables, and contacts/audiences — the whole of Phase 5. `template`/`variables` are already accepted by `SendEmailInput` and rejected by `createEmail`; Phase 5 plugs the render step in and the field stops being a lie.
+2. CLI `templates pull|push` (`COMMANDS` in `packages/sdk/src/cli/index.ts` is a registry — one `registerTemplates` entry).
+3. MCP `list_templates`, `render_template`, `add_contact` (`TOOLS` in `packages/mcp/src/server.ts`, same shape).
+4. `/docs` gains a Templates page; `DocsNavItem.soon` is currently unused and exists for exactly that badge.
+
+**Audit.**
+
+5. Audit log UI (nothing renders `audit_log` today).
+6. Audit rows for email cancel/resend/reschedule.
+7. REST audit `ip`/`user-agent` (`keyActor` sets no `meta`).
+8. Consistent audit action naming.
+
+**API surface decisions.**
+
+9. Decide whether `sending_only` keys should be able to `GET /emails`. Today they cannot: the only routes they reach are `POST /emails`, `POST /emails/batch` and `GET /me`, so an agent given a "safe" key cannot check what happened to what it sent.
+10. Per-key connection cap on `GET /api/v1/stream`. API keys are scriptable, and nothing limits how many streams one key opens. An in-process `Map<keyId, count>` is a single-replica stopgap; a real cap needs cross-process coordination.
+11. Team ids come from the auth provider and carry no prefix, while every other public id does (`em_`, `dom_`, `key_`, `wh_`). Either prefix them or document the exception — the CLI docs got it wrong until Task 14.
+
+**MCP.**
+
+12. Allowlist the configured `Host` when `SENDSPRITE_MCP_HOST` is overridden. Rebinding protection is loopback-only today; a non-loopback bind gets a startup warning and no `allowedHosts`, so the operator's reverse proxy has to do it.
+13. The ESM pre-import stdout hazard: `stdout-guard` is the first statement in `bin.ts`, but ESM evaluates every imported module before any statement runs, so a dependency that writes to stdout while its module body evaluates still lands on fd 1. A loader hook or a CJS shim would close it.
+14. `@sendsprite/mcp` depends on `sendsprite: workspace:*`. npm is supposed to substitute the published range at publish time, but that is unproven here and `npm pack --dry-run` cannot check it — watch the first publish and install the tarball before announcing it.
+
+**CLI.**
+
+15. Column padding counts code points, so wide CJK and emoji cells misalign (`packages/sdk/src/cli/output.ts` says as much).
+16. The masked password prompt overrides a private `readline` API; a Node change can break `login`'s interactive path.
+
+**Carried from Phase 3, still open.**
+
+17. `worker.ts` / `WORKER_MODE=separate`: the standalone image has no `bun run worker`; trace `src/worker.ts` into the image or drop `separate` from the docs.
+18. Webhook retry-sweep granularity (the 1 m step lands at 1–2 m).
+19. SMTP PROXY protocol, so login throttling per remote IP survives a load balancer.
+20. `email_events` payload PII purge in retention.
+21. Body caps on non-email routes.
+22. SNS `Timestamp` freshness check.
+23. `email.send` worker `batchSize` / `localConcurrency` sized from `MaxSendRate`.
+24. Align the shutdown timeout with the SES request timeout.
+25. `domain.provision` `singletonKey`.
+
+**Operational, not yet done.**
+
+26. Push to GitHub (`defy-works/sendsprite`). Nothing has run CI or the Docker job for real yet — both are written and unexercised.
+27. Publish `infra/aws/sendsprite-connect.yaml` to its S3 bucket and un-comment the CI upload. CloudFormation quick-create only accepts S3 URLs, so sendsprite.com cannot serve the template; `CFN_TEMPLATE_URL` points at a bucket that does not exist yet.
+28. Real AWS/SNS validation. Everything AWS-shaped is exercised against `src/lib/aws/fake-client.ts`.
+29. First npm publish of both packages, then rotate the shared `NPM_TOKEN`.
+30. `apps/web/next-env.d.ts` flip-flops between `next typegen` (`.next/types`) and `next dev` (`.next/dev/types`), so running the dev server leaves the tree dirty. Pick one and pin it.
+
+---
+
 ## File structure
 
 ```
@@ -3834,6 +3933,8 @@ git add -A
 git commit -m "test(e2e): SDK, CLI and MCP against the running server; README and Phase 4 status"
 git tag phase-4-complete
 ```
+
+**As shipped:** three deviations from the sketch above, all recorded in the status block at the top of this file. (1) The API key travels in `test-results/e2e-api-key.txt` (`tests/e2e/credentials.ts`), not `process.env` — Playwright workers are forked before any test runs. (2) `sdk.spec.ts` does not inherit `send.spec.ts`'s domain: the `app` project hands spec files to workers concurrently (no order to depend on), and that domain belongs to another team and is deleted at the end of that spec — so this spec provisions and verifies its own through the SDK, which is also the only real-server coverage `domains.create`/`domains.verify` have. (3) Types are imported from the packages' `src`, values from `dist` via `await import()`: `dist/` is gitignored and CI typechecks before it builds, so a static import of `dist` would fail `bun run typecheck` on a fresh clone. `apps/web` gained `@modelcontextprotocol/sdk` as a devDependency (the spec is a real MCP client), and `test:e2e` builds both packages first. The docs pass also corrected two inaccuracies: `/docs/mcp` still said the server was forthcoming, and `/docs/cli` showed a `team_`-prefixed team id that the auth provider never produces.
 
 ---
 
