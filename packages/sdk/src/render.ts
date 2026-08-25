@@ -1,4 +1,5 @@
 import type { ReactElement } from "react";
+import type { ReactElementLike } from "./types";
 
 export interface Rendered {
   html: string;
@@ -24,3 +25,12 @@ export async function renderEmail(element: ReactElement): Promise<Rendered> {
   ]);
   return { html, text };
 }
+
+/**
+ * Internal bridge for `emails.send({ react })`. `SendEmailOptions.react` is
+ * typed structurally so `dist/index.d.ts` needs no `@types/react`; the value
+ * is a real element at runtime, so the cast is safe.
+ */
+export const renderElementLike = (
+  element: ReactElementLike,
+): Promise<Rendered> => renderEmail(element as unknown as ReactElement);

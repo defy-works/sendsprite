@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { Sendsprite } from "../src/index";
+import { Sendsprite, SendspriteError } from "../src/index";
 import { parseSse } from "../src/stream";
 
 const sse = (chunks: string[]) =>
@@ -107,9 +107,122 @@ describe("client.stream()", () => {
     expect(errors[0]).toMatchObject({ code: "network_error" });
     expect(fetch).toHaveBeenCalledTimes(2);
   });
+
+  it("backs off when the server accepts and then immediately drops", async () => {
+    // The reset of the backoff counter belongs *after* the first parsed event,
+    // not after connecting: otherwise this server is hammered once a second.
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementation(() => Promise.resolve(sse([])));
+    const c = new Sendsprite({ apiKey: "k", baseUrl: "https://x", fetch });
+    vi.useFakeTimers();
+    try {
+      const s = c.stream({ onChange: () => {} });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(fetch).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(fetch).toHaveBeenCalledTimes(2); // second wait is 2s, not 1s
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(fetch).toHaveBeenCalledTimes(3);
+      s.close();
+      await s.done;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resets the backoff once a connection has delivered an event", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementation(() =>
+        Promise.resolve(sse(['event: change\ndata: {"type":"email"}\n\n'])),
+      );
+    const c = new Sendsprite({ apiKey: "k", baseUrl: "https://x", fetch });
+    vi.useFakeTimers();
+    try {
+      const s = c.stream({ onChange: () => {} });
+      for (const expected of [2, 3, 4]) {
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(fetch).toHaveBeenCalledTimes(expected);
+      }
+      s.close();
+      await s.done;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects done with the caller's own error when onChange throws", async () => {
+    const boom = new Error("handler blew up");
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementation(() =>
+        Promise.resolve(
+          sse(['event: change\ndata: {"type":"email","id":"em_1"}\n\n']),
+        ),
+      );
+    const c = new Sendsprite({ apiKey: "k", baseUrl: "https://x", fetch });
+    const errors: unknown[] = [];
+    const s = c.stream({
+      onChange: () => {
+        throw boom;
+      },
+      onError: (e) => errors.push(e),
+    });
+    await expect(s.done).rejects.toBe(boom);
+    // Not relabelled as network_error, and no reconnect.
+    expect(errors).toEqual([]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips a malformed data frame instead of reconnecting", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        sse([
+          "event: change\ndata: {not json}\n\n",
+          'event: change\ndata: {"type":"email","id":"em_9"}\n\n',
+        ]),
+      );
+    const c = new Sendsprite({ apiKey: "k", baseUrl: "https://x", fetch });
+    const seen: unknown[] = [];
+    const errors: SendspriteError[] = [];
+    const s = c.stream({
+      onChange: (e) => seen.push(e),
+      onError: (e) => errors.push(e),
+      reconnect: false,
+    });
+    await s.done;
+    expect(seen).toEqual([{ type: "email", id: "em_9" }]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(SendspriteError);
+    expect(errors[0]!.message).toMatch(/Malformed SSE data frame/);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("parseSse", () => {
+  it("cancels the body stream when the consumer stops early", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(
+          new TextEncoder().encode('event: change\ndata: {"type":"email"}\n\n'),
+        );
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    for await (const ev of parseSse(body)) {
+      expect(ev.event).toBe("change");
+      break; // the stream never ends on its own; `finally` must cancel it
+    }
+    expect(cancelled).toBe(true);
+  });
+
   it("handles CRLF, multi-line data and chunk boundaries inside a line", async () => {
     const body = sse([
       "event: chan",

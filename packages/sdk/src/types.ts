@@ -8,7 +8,18 @@
  * inputs against `z.input`, objects against `z.output`.
  */
 
-import type { ReactElement } from "react";
+/**
+ * Structural stand-in for React's `ReactElement`. The root entry must be
+ * usable without `@types/react` installed (React is an *optional* peer), so
+ * `dist/index.d.ts` may not carry a React module specifier. Anything React
+ * produces satisfies this shape; `sendsprite/react`'s `renderEmail` keeps the
+ * real `ReactElement` parameter type for authors who do have the types.
+ */
+export type ReactElementLike = {
+  type: unknown;
+  props: unknown;
+  key?: string | null;
+};
 
 // ---- errors -----------------------------------------------------------------
 
@@ -119,7 +130,7 @@ export type BatchSendInput = SendEmailInput[];
  * rendered client-side to `html`/`text` (explicit `html`/`text` win) before posting.
  * Requires the optional peers `react` and `@react-email/render`.
  */
-export type SendEmailOptions = SendEmailInput & { react?: ReactElement };
+export type SendEmailOptions = SendEmailInput & { react?: ReactElementLike };
 
 /** `emails.batch()` input: 1–100 `SendEmailOptions`. */
 export type BatchSendOptions = SendEmailOptions[];

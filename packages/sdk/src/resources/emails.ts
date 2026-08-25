@@ -1,5 +1,5 @@
 import type { HttpClient } from "../client";
-import { renderEmail } from "../render";
+import { renderElementLike } from "../render";
 import type {
   BatchSendInput,
   BatchSendOptions,
@@ -21,7 +21,7 @@ export const enc = encodeURIComponent;
 async function resolveReact(input: SendEmailOptions): Promise<SendEmailInput> {
   const { react, ...rest } = input;
   if (!react) return rest;
-  const rendered = await renderEmail(react);
+  const rendered = await renderElementLike(react);
   return {
     ...rest,
     html: rest.html ?? rendered.html,

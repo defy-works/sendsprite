@@ -7,13 +7,34 @@
  *   type it mirrors (inputs → `z.input`, response objects → `z.output`), so
  *   `bun run typecheck` fails when either side drifts;
  * - run-time: the enum unions are checked against the shared constant arrays.
+ *
+ * NOTE: the compile-time half is enforced by `tsc` (root `bun run typecheck`),
+ * **not** by vitest. Vitest transpiles without type-checking, so a broken
+ * `Checks` tuple still runs green here — the `it()` below only proves the file
+ * was reached. Never treat a passing vitest run as parity evidence.
  */
 import * as shared from "@sendsprite/shared";
 import { describe, expect, it } from "vitest";
 import type { z } from "zod";
 import type * as sdk from "../src/types";
 
-type Mutual<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+/** `any` is assignable both ways, so it would silently satisfy `Mutual`. */
+type IsAny<T> = 0 extends 1 & T ? true : false;
+/**
+ * `true` only when `A` and `B` are mutually assignable *and* neither has
+ * degraded to `any` — a shared schema slipping to `z.any()` must fail, not
+ * pass vacuously.
+ */
+type Mutual<A, B> =
+  IsAny<A> extends true
+    ? false
+    : IsAny<B> extends true
+      ? false
+      : [A] extends [B]
+        ? [B] extends [A]
+          ? true
+          : false
+        : false;
 type In<S extends z.ZodType> = z.input<S>;
 type Out<S extends z.ZodType> = z.output<S>;
 

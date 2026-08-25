@@ -58,7 +58,16 @@ export class HttpClient {
     // Browsers throw "Illegal invocation" when `fetch` is called with a
     // receiver other than `window`, so never call it as `this.fetchImpl(...)`
     // with an unbound global.
-    this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
+    const fetchImpl =
+      options.fetch ??
+      (typeof globalThis.fetch === "function"
+        ? globalThis.fetch.bind(globalThis)
+        : undefined);
+    if (!fetchImpl) {
+      // Node < 18, a polyfill-free jsdom, or a locked-down runtime.
+      throw new Error("Sendsprite: no fetch available; pass options.fetch");
+    }
+    this.fetchImpl = fetchImpl;
   }
 
   /** Perform one API call against `/api/v1<path>`, retrying per the options. */
@@ -269,15 +278,21 @@ async function responseError(res: Response): Promise<SendspriteError> {
   );
 }
 
+/** Codes the API would have sent, for responses whose body carried none. */
+const STATUS_FALLBACK_CODES: Readonly<Record<number, SendspriteErrorCode>> = {
+  401: "unauthorized",
+  403: "forbidden",
+  404: "not_found",
+  409: "conflict",
+  413: "payload_too_large",
+  429: "rate_limited",
+};
+
 function fallbackCode(status: number): SendspriteErrorCode {
-  if (status === 429) return "rate_limited";
-  if (status >= 500) return "internal_error";
-  if (status === 401) return "unauthorized";
-  if (status === 403) return "forbidden";
-  if (status === 404) return "not_found";
-  if (status === 409) return "conflict";
-  if (status === 413) return "payload_too_large";
-  return "validation_error";
+  return (
+    STATUS_FALLBACK_CODES[status] ??
+    (status >= 500 ? "internal_error" : "validation_error")
+  );
 }
 
 const readEnv = (key: string): string | undefined =>

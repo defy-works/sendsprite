@@ -39,6 +39,17 @@ describe("dist", () => {
     }
   });
 
+  it("keeps @types/react out of the root declarations", () => {
+    // React is an optional peer: `import type { ReactElement } from "react"`
+    // in the root entry would make `@types/react` mandatory for every user.
+    for (const f of ["index.d.ts", "index.d.cts"]) {
+      const src = readFileSync(join(dist, f), "utf8");
+      expect(src, f).not.toMatch(
+        /(?:from|import|require)\s*\(?\s*["']react["']/,
+      );
+    }
+  });
+
   it("keeps node: builtins and the shared runtime out of the root bundle", () => {
     for (const f of ["index.js", "index.cjs"]) {
       const src = readFileSync(join(dist, f), "utf8");

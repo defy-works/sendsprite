@@ -5,7 +5,12 @@ import type { StreamChange } from "./types";
 export interface StreamOptions {
   /** Called for every `change` event (`{ type: "email" | "webhook", id? }`). */
   onChange: (change: StreamChange) => void;
-  /** Called before each reconnect attempt with the error that dropped the stream. */
+  /**
+   * Called with every error the stream survives: the failure that dropped a
+   * connection before each reconnect, and a `data:` frame that could not be
+   * parsed (which is skipped, not reconnected). An error thrown by `onChange`
+   * is *not* reported here — it rejects `done` instead.
+   */
   onError?: (err: SendspriteError) => void;
   /** Reconnect with backoff after a dropped connection (default `true`). */
   reconnect?: boolean;
@@ -19,12 +24,21 @@ export interface StreamHandle {
   /**
    * Resolves when the stream was closed (by `close()`, the `signal`, or the
    * server when `reconnect: false`); rejects with a non-retryable
-   * `SendspriteError` (e.g. 401/403) or any error when `reconnect: false`.
+   * `SendspriteError` (e.g. 401/403), any error when `reconnect: false`, or
+   * the error thrown by `onChange` (unwrapped, and the stream stops).
    */
   readonly done: Promise<void>;
 }
 
 const MAX_RECONNECT_DELAY_MS = 30_000;
+
+/**
+ * Marks an exception thrown by the caller's `onChange` so the reconnect loop
+ * never mistakes their bug for a transport failure.
+ */
+class CallerError {
+  constructor(readonly cause: unknown) {}
+}
 
 /** Open `GET /api/v1/stream` (SSE) and dispatch `change` events. */
 export function openStream(
@@ -46,25 +60,44 @@ export function openStream(
           { accept: "text/event-stream" },
           ac.signal,
         );
-        attempt = 0;
         for await (const ev of parseSse(res.body ?? emptyStream())) {
           if (ac.signal.aborted) return;
-          if (ev.event === "change") {
-            opts.onChange(JSON.parse(ev.data) as StreamChange);
+          // Reset only once the connection has delivered something: a server
+          // that accepts and then immediately drops must still back off
+          // rather than be hammered every second.
+          attempt = 0;
+          if (ev.event !== "change") continue;
+          let change: StreamChange;
+          try {
+            change = JSON.parse(ev.data) as StreamChange;
+          } catch (cause) {
+            // A frame we cannot parse is the server's problem, not the
+            // connection's — skip it instead of tearing the stream down.
+            opts.onError?.(
+              new SendspriteError(
+                "internal_error",
+                `Malformed SSE data frame: ${describe(cause)}`,
+                null,
+              ),
+            );
+            continue;
+          }
+          try {
+            opts.onChange(change);
+          } catch (cause) {
+            throw new CallerError(cause);
           }
         }
         // Server closed the connection cleanly.
         if (opts.reconnect === false) return;
       } catch (cause) {
+        // The caller's handler threw: surface their error as-is and stop.
+        if (cause instanceof CallerError) throw cause.cause;
         if (ac.signal.aborted) return;
         const err =
           cause instanceof SendspriteError
             ? cause
-            : new SendspriteError(
-                "network_error",
-                cause instanceof Error ? cause.message : String(cause),
-                null,
-              );
+            : new SendspriteError("network_error", describe(cause), null);
         if (!err.retryable || opts.reconnect === false) throw err;
         opts.onError?.(err);
       }
@@ -120,9 +153,14 @@ export async function* parseSse(
       }
     }
   } finally {
-    reader.releaseLock();
+    // `cancel()` rather than a bare `releaseLock()`: `close()`, a `break` and
+    // an exception thrown by the consumer must all tear the body down.
+    await reader.cancel().catch(() => {});
   }
 }
+
+const describe = (cause: unknown) =>
+  cause instanceof Error ? cause.message : String(cause);
 
 const emptyStream = () =>
   new ReadableStream<Uint8Array>({

@@ -19,6 +19,7 @@ const mock = (...responses: Response[]) => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
@@ -447,6 +448,52 @@ describe("review fix-ups", () => {
       expect(err).toBeInstanceOf(SendspriteError);
       expect((err as SendspriteError).retryable).toBe(false);
       expect(fetch).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("fails fast when no fetch exists and none was passed", () => {
+    vi.stubGlobal("fetch", undefined);
+    expect(() => new Sendsprite({ apiKey: "k", baseUrl: "https://x" })).toThrow(
+      "Sendsprite: no fetch available; pass options.fetch",
+    );
+    // An injected fetch is enough on a runtime without a global one.
+    expect(
+      () =>
+        new Sendsprite({
+          apiKey: "k",
+          baseUrl: "https://x",
+          fetch: vi.fn<typeof globalThis.fetch>(),
+        }),
+    ).not.toThrow();
+  });
+
+  it("derives the fallback error code from the status when the body has none", async () => {
+    const table = [
+      [401, "unauthorized"],
+      [403, "forbidden"],
+      [404, "not_found"],
+      [409, "conflict"],
+      [413, "payload_too_large"],
+      [429, "rate_limited"],
+      [418, "validation_error"],
+      [422, "validation_error"],
+      [500, "internal_error"],
+      [503, "internal_error"],
+    ] as const;
+    for (const [status, code] of table) {
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(new Response("", { status }));
+      const c = new Sendsprite({
+        apiKey: "k",
+        baseUrl: "https://x",
+        fetch,
+        maxRetries: 0,
+      });
+      await expect(c.request("GET", "/me")).rejects.toMatchObject({
+        code,
+        status,
+      });
     }
   });
 });
