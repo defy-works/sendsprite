@@ -30,6 +30,7 @@ import type {
   DomainObject,
   Sendsprite,
   SendspriteOptions,
+  StreamHandle,
 } from "../../../../packages/sdk/src/index";
 import { baseUrl, loadApiKey } from "./credentials";
 
@@ -56,6 +57,14 @@ let base: string;
 let apiKey: string;
 let client: Sendsprite;
 let domain: DomainObject;
+/**
+ * Held here, not in the test that opens it: a test that fails or times out
+ * never reaches its own `close()`, and afterEach runs either way. An SSE
+ * connection is the one thing this suite opens that outlives the test body,
+ * and leaving one attached to `next dev` after the run should have finished
+ * is how a red spec turns into a wedged job.
+ */
+let feed: StreamHandle | undefined;
 
 /** Provisioning is a background job; `verify` is a conflict until it has stored the DKIM tokens. */
 async function provisionDomain(name: string): Promise<DomainObject> {
@@ -83,9 +92,19 @@ test.beforeAll(async () => {
   const { Sendsprite } = (await import(SDK_DIST.href)) as {
     Sendsprite: SendspriteCtor;
   };
-  client = new Sendsprite({ apiKey, baseUrl: base });
+  // 60 s rather than the SDK's 30 s default: `next dev` compiles a route on
+  // its first hit, which is seconds on a cold CI runner, and that budget now
+  // also covers the stream's connect (see `StreamHandle.ready`).
+  client = new Sendsprite({ apiKey, baseUrl: base, timeoutMs: 60_000 });
   const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   domain = await provisionDomain(`mail.e2e-sdk-${suffix}.com`);
+});
+
+test.afterEach(async () => {
+  const open = feed;
+  feed = undefined;
+  open?.close();
+  await open?.done.catch(() => undefined);
 });
 
 test.afterAll(async () => {
@@ -104,14 +123,20 @@ test("SDK: me, domains.list, emails.send + get, and stream sees the change", asy
   expect(domains.data.map((d) => d.id)).toContain(domain.id);
   expect(domains.data.find((d) => d.id === domain.id)?.status).toBe("verified");
 
-  // Opened before the send so the queued/sent transitions cannot be missed.
   const seen: string[] = [];
-  const stream = client.stream({
+  const stream = (feed = client.stream({
     onChange: (change) => {
       if (change.type === "email" && change.id) seen.push(change.id);
     },
     reconnect: false,
-  });
+  }));
+  // Opening the stream is not the same as having it: the request still has to
+  // reach a route `next dev` may only now be compiling, and a `queued`/`sent`
+  // change emitted before the server has the subscription is gone for good —
+  // no timeout can recover a missed event. `ready` is the server's own
+  // confirmation (its `: connected` frame), and it rejects rather than hangs
+  // if the stream never opens.
+  await stream.ready;
 
   const { id } = await client.emails.send({
     from: `hi@${domain.name}`,
@@ -138,6 +163,8 @@ test("SDK: me, domains.list, emails.send + get, and stream sees the change", asy
       message: "the SSE stream never reported the email",
     })
     .toBe(true);
+  // afterEach closes it too; doing it here as well is what proves `close()`
+  // and `done` behave on a stream that really was live.
   stream.close();
   await stream.done;
 });

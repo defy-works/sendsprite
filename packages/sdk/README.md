@@ -85,6 +85,8 @@ const stream = sendsprite.stream({
   onChange: ({ type, id }) => console.log(type, id),
   onError: (err) => console.warn("reconnecting after", err.code),
 });
+await stream.ready; // the server has the subscription; nothing can be missed
+await sendsprite.emails.send(welcome); // its changes are guaranteed to arrive
 // later
 stream.close();
 await stream.done;
@@ -93,6 +95,12 @@ await stream.done;
 `stream()` connects to `GET /api/v1/stream` (server-sent events) and needs a
 `full` key. Dropped connections are re-established with backoff unless
 `reconnect: false`; pass a `signal` to close it from an `AbortController`.
+
+`stream()` only _starts_ connecting, so await `ready` before triggering
+whatever you opened the stream to watch — a change emitted before the server
+has the subscription is gone, and no timeout brings it back. `ready` rejects
+(it never hangs) if the stream ends before it ever opened, including when the
+connect exceeds `timeoutMs`.
 
 ### Retries
 

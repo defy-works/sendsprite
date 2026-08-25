@@ -33,9 +33,14 @@ const MAX_RETRY_AFTER_MS = 60_000;
 
 export class HttpClient {
   readonly baseUrl: string;
+  /**
+   * Per-request timeout; also how long `openStream` waits for the stream's
+   * response headers. Not exported from the package — `HttpClient` itself is
+   * internal — so this is only visible to the resources and to `stream.ts`.
+   */
+  readonly timeoutMs: number;
   private readonly apiKey: string;
   private readonly maxRetries: number;
-  private readonly timeoutMs: number;
   private readonly fetchImpl: typeof globalThis.fetch;
 
   constructor(options: SendspriteOptions = {}) {

@@ -22,6 +22,19 @@ export interface StreamHandle {
   /** Abort the connection; `done` then resolves. */
   close(): void;
   /**
+   * Resolves once the server has *confirmed* the subscription: the feed's
+   * first bytes have arrived (this instance opens with a `: connected`
+   * comment), which is the point from which no change can be missed. Await it
+   * before triggering whatever you opened the stream to observe — merely
+   * calling `stream()` only queues the request, so an event emitted while the
+   * route is still being routed, compiled or authenticated is lost.
+   *
+   * Stays resolved once open, across reconnects. It never hangs: if the
+   * stream ends without ever opening it rejects with the failure that ended
+   * it (or with the connect timeout, which is the client's `timeoutMs`).
+   */
+  readonly ready: Promise<void>;
+  /**
    * Resolves when the stream was closed (by `close()`, the `signal`, or the
    * server when `reconnect: false`); rejects with a non-retryable
    * `SendspriteError` (e.g. 401/403), any error when `reconnect: false`, or
@@ -50,22 +63,59 @@ export function openStream(
   if (opts.signal?.aborted) closeFromSignal();
   else opts.signal?.addEventListener("abort", closeFromSignal, { once: true });
 
+  let markReady!: () => void;
+  let failReady!: (err: unknown) => void;
+  const ready = new Promise<void>((resolve, reject) => {
+    markReady = resolve;
+    failReady = reject;
+  });
+  // Same reason as `done` below: a caller may legitimately never await it.
+  void ready.catch(() => {});
+
   const run = async (): Promise<void> => {
     let attempt = 0;
     while (!ac.signal.aborted) {
+      // One controller per attempt, relaying `close()`. It exists so the
+      // *connect* can be given a deadline the long-lived body must not have:
+      // a server that accepts the socket and then never answers — a dev
+      // server wedged compiling the route, a proxy that swallowed the
+      // request — would otherwise park the caller for good, since `raw()`
+      // applies no timeout of its own.
+      const conn = new AbortController();
+      const relay = () => conn.abort(ac.signal.reason);
+      if (ac.signal.aborted) relay();
+      else ac.signal.addEventListener("abort", relay, { once: true });
+      let connectTimer: ReturnType<typeof setTimeout> | undefined = setTimeout(
+        () =>
+          conn.abort(
+            new SendspriteError(
+              "network_error",
+              `Timed out after ${http.timeoutMs}ms waiting for the stream to open`,
+              null,
+            ),
+          ),
+        http.timeoutMs,
+      );
       try {
         const res = await http.raw(
           "GET",
           "/stream",
           { accept: "text/event-stream" },
-          ac.signal,
+          conn.signal,
         );
-        for await (const ev of parseSse(res.body ?? emptyStream())) {
+        // Headers are in; the body is meant to stay open indefinitely.
+        clearTimeout(connectTimer);
+        connectTimer = undefined;
+        for await (const frame of parseSse(res.body ?? emptyStream())) {
           if (ac.signal.aborted) return;
-          if (ev.event !== "change") continue;
+          // Any frame at all — the `: connected` comment included — proves
+          // the server has the subscription live, which is what `ready`
+          // promises. Resolving twice is a no-op.
+          markReady();
+          if (frame.kind !== "event" || frame.event !== "change") continue;
           let change: StreamChange;
           try {
-            change = JSON.parse(ev.data) as StreamChange;
+            change = JSON.parse(frame.data) as StreamChange;
           } catch (cause) {
             // A frame we cannot parse is the server's problem, not the
             // connection's — skip it instead of tearing the stream down.
@@ -105,6 +155,11 @@ export function openStream(
             : new SendspriteError("network_error", describe(cause), null);
         if (!err.retryable || opts.reconnect === false) throw err;
         opts.onError?.(err);
+      } finally {
+        // Per attempt, so a stream that reconnects for hours never piles
+        // relays up on the one long-lived `ac.signal`.
+        clearTimeout(connectTimer);
+        ac.signal.removeEventListener("abort", relay);
       }
       await sleep(
         Math.min(MAX_RECONNECT_DELAY_MS, 1_000 * 2 ** attempt++),
@@ -123,17 +178,40 @@ export function openStream(
   // no-op catch so a rejection is never "unhandled" — that would take the Node
   // process down — while the same promise still rejects for whoever awaits it.
   void done.catch(() => {});
-  return { close: () => ac.abort(), done };
+
+  // `ready` can never outlive `done`: whatever ended a stream that never
+  // opened is what a caller awaiting `ready` gets, so awaiting it is bounded
+  // by the same failures `done` is. Rejecting an already-resolved promise is
+  // a no-op, so a stream that did open is unaffected.
+  void done.then(
+    () =>
+      failReady(
+        new SendspriteError(
+          "network_error",
+          "The stream closed before the server confirmed it was open",
+          null,
+        ),
+      ),
+    failReady,
+  );
+  return { close: () => ac.abort(), ready, done };
 }
+
+/** One dispatched SSE frame: a `:` comment line, or an `event`/`data` block. */
+export type SseFrame =
+  | { kind: "comment"; text: string }
+  | { kind: "event"; event: string; data: string };
 
 /**
  * Minimal SSE parser: `event:` and `data:` fields, a blank line dispatches,
- * `:` comment lines are ignored, CRLF tolerated, multi-line `data` joined
- * with `\n`. Anything left in the buffer when the body ends is discarded.
+ * `:` comment lines are yielded as `comment` frames — they carry nothing a
+ * consumer acts on, but the first of them is how a caller learns the feed is
+ * live — CRLF tolerated, multi-line `data` joined with `\n`. Anything left in
+ * the buffer when the body ends is discarded.
  */
 export async function* parseSse(
   body: ReadableStream<Uint8Array>,
-): AsyncGenerator<{ event: string; data: string }, void, undefined> {
+): AsyncGenerator<SseFrame, void, undefined> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -149,11 +227,12 @@ export async function* parseSse(
         const line = buffer.slice(0, newline).replace(/\r$/, "");
         buffer = buffer.slice(newline + 1);
         if (line === "") {
-          if (data.length > 0) yield { event, data: data.join("\n") };
+          if (data.length > 0)
+            yield { kind: "event", event, data: data.join("\n") };
           event = "message";
           data = [];
         } else if (line.startsWith(":")) {
-          continue;
+          yield { kind: "comment", text: line.slice(1).trim() };
         } else if (line.startsWith("event:")) {
           event = line.slice(6).trim();
         } else if (line.startsWith("data:")) {

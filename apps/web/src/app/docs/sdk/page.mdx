@@ -123,6 +123,9 @@ const stream = sendsprite.stream({
   onError: (err) => console.warn("reconnecting after", err.code),
 });
 
+await stream.ready; // the server has the subscription
+await sendsprite.emails.send(welcome); // its changes are guaranteed to arrive
+
 // later
 stream.close();
 await stream.done;
@@ -133,6 +136,12 @@ key. Dropped connections are re-established with exponential backoff up to 30
 seconds unless you pass `reconnect: false`; pass a `signal` to close it from
 an `AbortController`. `done` resolves on a clean close and rejects on a
 non-retryable error (401/403) or on anything your `onChange` throws.
+
+Calling `stream()` only starts the connection, so anything you trigger before
+the server has the subscription can be missed — `ready` resolves once the
+server has confirmed it (and stays resolved across reconnects). It rejects
+rather than hangs if the stream ends before it ever opened, or if the connect
+takes longer than `timeoutMs`.
 
 The events carry only `{ type, id }` — fetch the object itself when you need
 its contents.
