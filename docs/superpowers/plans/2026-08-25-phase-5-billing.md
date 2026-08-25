@@ -2119,6 +2119,15 @@ git commit -m "feat(billing): Polar provider — catalog, checkout, portal, webh
 
 ## Openers discovered during Phase 5 (fold into the status block in Task 12)
 
+- **Embedded-Postgres starvation under full-suite load.** Two different integration files have
+  now failed once each in a full 36-file run at `maxWorkers: 4` and passed in isolation:
+  `retention.test.ts` hit the 180 s hook timeout in `startPg()`'s `beforeAll`, and the
+  concurrent-claim test below failed with `not_claimed`. Two distinct files pointing at
+  start-up starvation suggests the cause is the harness, not the tests — worth capping workers
+  for the integration project, or sharing one Postgres instance across files, before CI starts
+  failing intermittently on unrelated PRs.
+- **Vitest must be run from `apps/web`.** `bunx vitest --root apps/web` from the repo root
+  breaks `startPg`'s embedded Postgres. Worth a line in the contributing docs.
 - **Flaky concurrent-claim test.** `apps/web/tests/integration/email-send.test.ts` →
   `sendQueuedEmail > two concurrent attempts: exactly one SES call, one sent event, the loser is
 skipped` failed once with `not_claimed` during a full 35-file integration run under load, and
