@@ -828,7 +828,7 @@ Run: `cd packages/shared && bun run test && bun run typecheck` → PASS. Commit 
 - Create: `apps/web/src/lib/email-address.ts`, `apps/web/src/lib/tracking.ts`, `apps/web/src/lib/ses-events.ts`
 - Test: `apps/web/tests/unit/{email-address,tracking,ses-events}.test.ts`
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 `email-address.test.ts`:
 
@@ -1046,7 +1046,7 @@ describe("parseSesEvent", () => {
 
 Run: `cd apps/web && bun run test` → FAIL.
 
-- [ ] **Step 2: Implement**
+- [x] **Step 2: Implement**
 
 `lib/email-address.ts`:
 
@@ -1243,7 +1243,7 @@ export function parseSesEvent(raw: unknown): NormalisedSesEvent | null {
 }
 ```
 
-- [ ] **Step 3: Run, commit**
+- [x] **Step 3: Run, commit**
 
 Run: `cd apps/web && bun run test` → PASS. Commit `feat(web): address parsing, tracking rewrite, SES event normalisation`.
 
