@@ -2097,6 +2097,15 @@ git commit -m "feat(billing): Polar provider — catalog, checkout, portal, webh
 
 ---
 
+## Openers discovered during Phase 5 (fold into the status block in Task 12)
+
+- **Flaky concurrent-claim test.** `apps/web/tests/integration/email-send.test.ts` →
+  `sendQueuedEmail > two concurrent attempts: exactly one SES call, one sent event, the loser is
+skipped` failed once with `not_claimed` during a full 35-file integration run under load, and
+  passed both in isolation (15/15) and on a full re-run (226/226). Phase 3 code, unrelated to
+  billing. A race test that fails intermittently under load will make CI untrustworthy — it needs
+  an owner before it starts failing on other people's PRs.
+
 ## Amendment before Task 6 — decisions taken after this plan was written
 
 These override the task bodies below where they conflict. Implement them as part of the
