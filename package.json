@@ -19,7 +19,8 @@
     "test:e2e": "bun run --filter @sendsprite/web test:e2e",
     "db:generate": "bun run --filter @sendsprite/web db:generate",
     "db:migrate": "bun run --filter @sendsprite/web db:migrate",
-    "db:studio": "bun run --filter @sendsprite/web db:studio"
+    "db:studio": "bun run --filter @sendsprite/web db:studio",
+    "sync:scripts": "bun run scripts/sync-public-scripts.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.30.0",

@@ -9,7 +9,7 @@ Bun · Next.js 16 · Postgres · Drizzle · pg-boss · BetterAuth · MIT
 ## Install (self-host)
 
 ```bash
-curl -fsSL https://sendsprite.dev/install.sh | sh
+curl -fsSL https://sendsprite.com/install.sh | sh
 ```
 
 That writes `~/sendsprite/.env` with generated secrets, starts the app and

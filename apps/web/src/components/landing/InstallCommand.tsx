@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 
 export const INSTALL_COMMAND =
-  "curl -fsSL https://raw.githubusercontent.com/defy-works/sendsprite/main/install.sh | bash";
+  "curl -fsSL https://sendsprite.com/install.sh | sh";
 
 const RESET_MS = 1800;
 
