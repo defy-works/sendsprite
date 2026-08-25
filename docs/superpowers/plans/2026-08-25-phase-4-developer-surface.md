@@ -2266,14 +2266,12 @@ import { describe, expect, it, vi } from "vitest";
 import { Sendsprite } from "../src/index";
 
 function client(status = 200, body: unknown = {}) {
-  const fetch = vi
-    .fn<typeof globalThis.fetch>()
-    .mockResolvedValue(
-      new Response(JSON.stringify(body), {
-        status,
-        headers: { "content-type": "application/json" },
-      }),
-    );
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json" },
+    }),
+  );
   return {
     c: new Sendsprite({
       apiKey: "k",
@@ -2652,16 +2650,14 @@ describe("client.stream()", () => {
     await expect(s.done).resolves.toBeUndefined();
   });
   it("surfaces a 403 as SendspriteError", async () => {
-    const fetch = vi
-      .fn<typeof globalThis.fetch>()
-      .mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            error: { code: "forbidden", message: "full key required" },
-          }),
-          { status: 403 },
-        ),
-      );
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: { code: "forbidden", message: "full key required" },
+        }),
+        { status: 403 },
+      ),
+    );
     const c = new Sendsprite({ apiKey: "k", baseUrl: "https://x", fetch });
     await expect(
       c.stream({ onChange: () => {}, reconnect: false }).done,
@@ -3102,48 +3098,42 @@ import { loadConfig, saveConfig } from "../src/cli/config";
 
 const dir = () => mkdtempSync(join(tmpdir(), "ss-cli-"));
 const fakeClient = () => ({
-  me: vi
-    .fn()
-    .mockResolvedValue({
-      team: { id: "t", name: "Acme" },
-      apiKey: {
-        id: "k",
-        name: "ci",
-        permission: "full",
-        keyPrefix: "ss_live_ab",
-        domainId: null,
-      },
-    }),
+  me: vi.fn().mockResolvedValue({
+    team: { id: "t", name: "Acme" },
+    apiKey: {
+      id: "k",
+      name: "ci",
+      permission: "full",
+      keyPrefix: "ss_live_ab",
+      domainId: null,
+    },
+  }),
   domains: {
-    list: vi
-      .fn()
-      .mockResolvedValue({
-        data: [
-          {
-            id: "d1",
-            name: "mail.x.io",
-            status: "verified",
-            dnsMode: "cloudflare",
-            region: "us-east-1",
-            records: [],
-            lastError: null,
-            createdAt: "",
-            verifiedAt: "",
-          },
-        ],
-        nextCursor: null,
-      }),
+    list: vi.fn().mockResolvedValue({
+      data: [
+        {
+          id: "d1",
+          name: "mail.x.io",
+          status: "verified",
+          dnsMode: "cloudflare",
+          region: "us-east-1",
+          records: [],
+          lastError: null,
+          createdAt: "",
+          verifiedAt: "",
+        },
+      ],
+      nextCursor: null,
+    }),
   },
   emails: {
     send: vi.fn().mockResolvedValue({ id: "em_1" }),
-    get: vi
-      .fn()
-      .mockResolvedValue({
-        id: "em_1",
-        status: "sent",
-        to: ["c@d.io"],
-        subject: "s",
-      }),
+    get: vi.fn().mockResolvedValue({
+      id: "em_1",
+      status: "sent",
+      to: ["c@d.io"],
+      subject: "s",
+    }),
   },
   stream: vi.fn(),
 });
@@ -3367,45 +3357,37 @@ import { createServer } from "../src/server";
 const fake = () => ({
   emails: {
     send: vi.fn().mockResolvedValue({ id: "em_1" }),
-    get: vi
-      .fn()
-      .mockResolvedValue({
-        id: "em_1",
-        status: "delivered",
-        to: ["c@d.io"],
-        subject: "s",
-        events: [{ type: "delivered", occurredAt: "t", payload: {} }],
-      }),
-    list: vi
-      .fn()
-      .mockResolvedValue({
-        data: [
-          {
-            id: "em_1",
-            status: "sent",
-            to: ["c@d.io"],
-            subject: "s",
-            createdAt: "t",
-          },
-        ],
-        nextCursor: null,
-      }),
+    get: vi.fn().mockResolvedValue({
+      id: "em_1",
+      status: "delivered",
+      to: ["c@d.io"],
+      subject: "s",
+      events: [{ type: "delivered", occurredAt: "t", payload: {} }],
+    }),
+    list: vi.fn().mockResolvedValue({
+      data: [
+        {
+          id: "em_1",
+          status: "sent",
+          to: ["c@d.io"],
+          subject: "s",
+          createdAt: "t",
+        },
+      ],
+      nextCursor: null,
+    }),
   },
   domains: {
-    list: vi
-      .fn()
-      .mockResolvedValue({
-        data: [{ id: "d1", name: "mail.x.io", status: "verified" }],
-        nextCursor: null,
-      }),
-  },
-  stats: vi
-    .fn()
-    .mockResolvedValue({
-      sent: { today: 1, d7: 2, d30: 3 },
-      rates: { delivered: 1, bounced: 0, complained: 0 },
-      alerts: [],
+    list: vi.fn().mockResolvedValue({
+      data: [{ id: "d1", name: "mail.x.io", status: "verified" }],
+      nextCursor: null,
     }),
+  },
+  stats: vi.fn().mockResolvedValue({
+    sent: { today: 1, d7: 2, d30: 3 },
+    rates: { delivered: 1, bounced: 0, complained: 0 },
+    alerts: [],
+  }),
 });
 
 async function connect(client = fake()) {
