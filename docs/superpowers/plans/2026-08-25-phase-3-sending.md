@@ -3250,7 +3250,7 @@ Write the sketched functions fully. Handler `webhook-deliver.ts`: `registerQueue
 - Create: `apps/web/src/app/t/o/[id]/route.ts`, `apps/web/src/app/t/c/[id]/route.ts`, `apps/web/src/app/api/stream/route.ts`, `apps/web/src/components/app/useTeamStream.ts`
 - Test: `apps/web/tests/integration/tracking.test.ts`, `apps/web/tests/integration/stream.test.ts`
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```ts
 describe("tracking", () => {
@@ -3293,7 +3293,7 @@ describe("tracking", () => {
 
 `stream.test.ts`: subscribe via `listenTeam(teamId, cb)` from `@/lib/notify`, call `notifyTeam`, expect the callback within 2 s; unsubscribe stops it.
 
-- [ ] **Step 2: Implement**
+- [x] **Step 2: Implement**
 
 Pixel route: 1×1 transparent GIF bytes (`Buffer.from("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", "base64")`), `recordEvent` with `dedupeKey: open:<sha256(ua).slice(0,12)>:<date>` and `type: "opened"`, payload `{ ip, userAgent }` (ip from `requestMeta`), fan-out `email.opened`. Never 404 (always the gif). Click route: parse `u`, `s`; `verifyClick`; allow only `http(s)`; `recordEvent` type `clicked` with dedupe `click:<sha256(url+ua).slice(0,16)>:<date>`; fan-out `email.clicked`; `302` with `cache-control: no-store`. Both mark `trackOpens/trackClicks` respect: if the email has tracking off, still redirect but don't record.
 
@@ -3315,7 +3315,7 @@ export async function listenTeam(
 
 SSE route `api/stream/route.ts`: `requireTeam()`; `ReadableStream` that writes `event: change\ndata: {...}\n\n` on each notification, a `: ping` comment every 25 s, cleans up on `req.signal` abort; headers `content-type: text/event-stream`, `cache-control: no-store`, `x-accel-buffering: no`. `useTeamStream()` client hook: `new EventSource("/api/stream")`, on `change` → `router.refresh()` (debounced 500 ms); used by the emails list/detail and webhooks detail (Task 12/14).
 
-- [ ] **Step 3: Run, commit** → `feat(web): open/click tracking endpoints and SSE team stream`.
+- [x] **Step 3: Run, commit** → `feat(web): open/click tracking endpoints and SSE team stream`.
 
 ---
 
