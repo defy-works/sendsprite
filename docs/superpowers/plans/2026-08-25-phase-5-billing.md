@@ -396,12 +396,12 @@ In `packages/shared/src/index.ts`, add after the other `api/*` exports:
 export * from "./api/billing";
 ```
 
-No `node:` import is introduced, so `packages/shared/tests/root-barrel.test.ts` stays green. Add `"src/api/billing.ts"` to the `files` array in that test so the new module is covered by the no-Node-builtins assertion.
+No `node:` import is introduced, so `packages/shared/tests/root-barrel.test.ts` stays green. That test needs no edit: it walks the import graph from `index.ts` by matching `from "./…"`, which picks up `export * from "./api/billing"` automatically, so the new module is covered by the no-Node-builtins assertion the moment the barrel exports it.
 
 - [ ] **Step 5: Run it to verify it passes**
 
 Run: `cd packages/shared && bunx vitest run`
-Expected: PASS, including `root-barrel.test.ts` with the new entry.
+Expected: PASS, including `root-barrel.test.ts` (its walker now reaches `api/billing.ts`).
 
 - [ ] **Step 6: Commit**
 
@@ -2046,6 +2046,41 @@ git commit -m "feat(billing): Polar provider — catalog, checkout, portal, webh
 ```
 
 ---
+
+## Amendment before Task 6 — decisions taken after this plan was written
+
+These override the task bodies below where they conflict. Implement them as part of the
+task they touch.
+
+**A. `past_due` gets a 7-day grace, then Free caps.** As drafted, Task 6's `entitlementFrom`
+treats `past_due` as entitled indefinitely, which means a dead card buys unlimited sending
+until the provider eventually flips the status. Instead: while `status === "past_due"`, keep
+the paid caps until `pastDueAt + 7 days`, and past that point resolve the Free entitlement.
+`pastDueAt` is already stamped and cleared by the webhook handler, so this is a read-path
+change: add `pastDueAt` to `BillingSnapshot`'s selection and to `Entitlement`, apply the
+window in `entitlementFrom`, and carry it into `teamBillingState` so the dashboard can render
+a deadline. `isEntitledStatus("past_due")` stays `true` — the grace clock lives with the
+entitlement, not the status.
+
+**B. Refuse to downgrade on malformed metadata.** Task 1 exports `claimsPlanMetadata()`.
+Where `applySubscription` currently writes `FREE_PLAN_METADATA` whenever
+`planFromProductMetadata()` returns `null`, split the two cases: if the product does not
+claim to be ours, the existing behaviour is right; if it claims a known `plan` but the rest
+of the metadata is malformed, log loudly naming the product and the team, leave the previous
+snapshot intact, and do not overwrite a paid entitlement with Free on the strength of a bad
+string.
+
+**C. Overage ceilings exist on the Polar price, not in metadata.** Pro is capped at $200 of
+overage per cycle and Scale at $500 via `cap_amount` on their metered prices. Nothing in the
+app enforces this; it is provider configuration. Surface it if it is cheaply available on the
+subscription payload, but do not model it in `PlanMetadata`.
+
+**D. Verify the subscription-status list against the SDK.** `SUBSCRIPTION_STATUSES` in
+Task 1 was written from memory and looks like Stripe's set — `paused` is not a Polar status.
+During Task 5, diff it against `SubscriptionStatus` in `@polar-sh/sdk` and correct both the
+constant and this plan. The constant is documentation only: the DB column is plain `text` and
+`BillingStateObject.status` is `z.string()`, so an unmodelled status is stored verbatim and is
+non-entitling by construction.
 
 ## Task 6: The billing service — state, plan resolution, event application
 
