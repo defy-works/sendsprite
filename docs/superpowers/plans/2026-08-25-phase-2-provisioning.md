@@ -4675,10 +4675,10 @@ git commit -m "feat(web): domains service — create, provision (SES + Cloudflar
 
 **Files:**
 
-- Create: `apps/web/src/app/setup/page.tsx`, `apps/web/src/app/setup/actions.ts`, `apps/web/src/app/setup/SetupWizard.tsx`, `apps/web/src/app/setup/steps/AwsStep.tsx`, `apps/web/src/app/setup/steps/ProductionStep.tsx`, `apps/web/src/app/setup/steps/CloudflareStep.tsx`, `apps/web/src/app/setup/steps/DoneStep.tsx`, `apps/web/src/app/app/waiting/page.tsx`
+- Create: `apps/web/src/app/setup/page.tsx`, `apps/web/src/app/setup/actions.ts`, `apps/web/src/app/setup/SetupWizard.tsx`, `apps/web/src/app/setup/steps/AwsStep.tsx`, `apps/web/src/app/setup/steps/ProductionStep.tsx`, `apps/web/src/app/setup/steps/CloudflareStep.tsx`, `apps/web/src/app/setup/steps/DoneStep.tsx`, `apps/web/src/app/(onboarding)/waiting/page.tsx`
 - Modify: `apps/web/src/app/app/layout.tsx`, `apps/web/src/lib/session.ts` (`requireOwner`)
 
-- [ ] **Step 1: Owner helper + gating**
+- [x] **Step 1: Owner helper + gating**
 
 `session.ts`: add
 
@@ -4693,7 +4693,7 @@ export async function requireOwner() {
 
 `app/app/layout.tsx`: after `requireTeam()`, `const s = await getInstanceSettings(); if (!s.setupCompleted) { if (ctx.role === "owner") redirect("/setup"); else redirect("/app/waiting"); }` — but `/app/waiting` is under this layout; render it without the redirect by checking `headers().get("x-invoke-path")`? No — simpler: move waiting to `apps/web/src/app/(onboarding)/waiting/page.tsx` (outside `/app`) and redirect there. It says "An owner is finishing setup. Refresh in a minute." with the owner emails.
 
-- [ ] **Step 2: Server actions**
+- [x] **Step 2: Server actions**
 
 `apps/web/src/app/setup/actions.ts`:
 
@@ -4809,7 +4809,7 @@ export async function finishSetup() {
 }
 ```
 
-- [ ] **Step 3: Wizard page and steps**
+- [x] **Step 3: Wizard page and steps**
 
 `apps/web/src/app/setup/page.tsx` (server): `requireOwner()`, load settings, compute `step` from `?step=` (default: aws if not connected, else production if sandbox, else cloudflare, else done), render `<SetupWizard settings={plain} step={step} regions={SES_REGIONS} defaultRegion={env.AWS_DEFAULT_REGION} />` inside the auth layout style (`glass-strong` card, max-w-2xl, step indicator with `num-stamp`). Pass only serialisable, non-secret fields (`awsMode, awsRegion, awsAccountId, sesAccountStatus, sesReviewStatus, sesDailyQuota, sesMaxSendRate, cloudflareConnectedAt, cloudflareAccountName, setupCompleted`).
 
@@ -4830,16 +4830,23 @@ export async function finishSetup() {
 
 Every form uses `useActionState` + `pending` disable + `role="alert"` errors, same as Phase 1's `RenameForm`.
 
-- [ ] **Step 4: Typecheck and manual run**
+- [x] **Step 4: Typecheck and manual run**
 
 Run: `cd apps/web && bun run typecheck` → clean. Dev check (`bun run db:dev` + `bun run dev -- -p 3001`): first owner is redirected `/app` → `/setup`; manual path with fake keys shows the AWS error inline; "Skip" through to Done; `/app` renders after `finishSetup`. Kill background processes.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web
 git commit -m "feat(web): setup wizard — AWS (role/one-click/manual), SES production access, Cloudflare"
 ```
+
+**Review follow-ups (applied with the Task 14 commit):**
+
+- `SES_REGIONS` lives in `@/lib/aws/regions` (not `clients`). The waiting page is `app/(onboarding)/waiting/page.tsx` (outside `/app`, as Step 1 concluded); `listOwnerEmails()` in `lib/team.ts` feeds it.
+- `STEPS`, `Step`, `WizardSettings`, `WizardProps` live in `app/setup/types.ts`, a plain module: a value exported from a `"use client"` file arrives in a server component as a client reference (`STEPS.includes is not a function`).
+- `startQuickCreate` refuses (`ok:false`) when `APP_URL` is not https (template `CallbackUrl` allows only `^https://`); the panel also disables the button via the `oneClickAvailable` prop. The popup is opened synchronously on click and given its URL after the action resolves; when blocked, the link is rendered.
+- `AwsStep` fetches `/api/setup/aws/status` once on mount (resumes polling on a pending token, surfaces `lastFailure.reason`) and every 3 s while pending; connect `warning`s render as amber notices. Shared `Heading/Panel/Alert/Notice` are in `steps/shared.tsx`.
 
 ---
 

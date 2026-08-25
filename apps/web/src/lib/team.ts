@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { TEAM_ROLES, type TeamRole } from "@sendsprite/shared";
 import { db } from "@/db";
-import { member, organization } from "@/db/schema";
+import { member, organization, user } from "@/db/schema";
 import type { auth } from "./auth";
 
 export type Session = NonNullable<
@@ -47,4 +47,15 @@ export async function resolveTeam(
     ? (row.role as TeamRole)
     : "member";
   return { userId, team: { id: row.id, name: row.name, slug: row.slug }, role };
+}
+
+/** Distinct emails of every team owner — shown to members waiting on setup. */
+export async function listOwnerEmails(): Promise<string[]> {
+  const rows = await db()
+    .selectDistinct({ email: user.email })
+    .from(member)
+    .innerJoin(user, eq(member.userId, user.id))
+    .where(eq(member.role, "owner"))
+    .orderBy(user.email);
+  return rows.map((r) => r.email);
 }

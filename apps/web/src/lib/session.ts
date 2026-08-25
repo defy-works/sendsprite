@@ -32,3 +32,10 @@ export async function requireTeam(): Promise<TeamContext> {
   if (!ctx) redirect("/teams/new");
   return { ...ctx, session: s };
 }
+
+/** Instance-level actions: any owner of any team may perform them (§6.1: "first user"; later owners too). */
+export async function requireOwner(): Promise<TeamContext> {
+  const ctx = await requireTeam();
+  if (ctx.role !== "owner") redirect("/app");
+  return ctx;
+}
