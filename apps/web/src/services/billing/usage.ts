@@ -1,4 +1,14 @@
-import { and, count, eq, gte, inArray, isNotNull, lt, sql } from "drizzle-orm";
+import {
+  and,
+  count,
+  eq,
+  gte,
+  inArray,
+  isNotNull,
+  lt,
+  max,
+  sql,
+} from "drizzle-orm";
 import { db } from "@/db";
 import {
   billingUsage,
@@ -62,6 +72,33 @@ export async function usageRow(
       ),
     );
   return row;
+}
+
+/**
+ * How far this team has been reported *at all*, across every period.
+ *
+ * The watermark is a per-team fact, not a per-period one, because bucket ids
+ * are aligned to the global UTC hour rather than to a period. Reading it per
+ * period loses an hour at every renewal: `reported_through` only ever reaches
+ * the last *settled* hour, so it sits behind the new `period_start` the moment
+ * the renewal lands, and a per-period read then restarts at
+ * `floorHour(newPeriodStart)` — the bucket in between is abandoned by the old
+ * row and never reached by the new one. That is a permanent under-bill, once
+ * per team per cycle, and silent.
+ *
+ * Resuming from the maximum can only ever *re-emit* a bucket, never skip one,
+ * and re-emission is free: the provider deduplicates on `externalId`.
+ */
+export async function reportedThroughMax(teamId: string): Promise<Date | null> {
+  const [row] = await db()
+    .select({ max: max(billingUsage.reportedThrough) })
+    .from(billingUsage)
+    .where(eq(billingUsage.teamId, teamId));
+  // An aggregate has no column behind it, so the driver hands back whatever
+  // Postgres printed rather than a decoded `Date` — the same trap as the
+  // epoch-seconds bucket key below. Coerced here so no caller has to know.
+  const value: Date | string | null = row?.max ?? null;
+  return value === null || value instanceof Date ? value : new Date(value);
 }
 
 // --------------------------------------------------------------- rollup
@@ -174,8 +211,10 @@ export async function planTeamRollup(
   eventName: string,
   now: Date,
 ): Promise<TeamRollup | null> {
-  const row = await usageRow(teamId, periodStart);
-  const from = row?.reportedThrough ?? floorHour(periodStart);
+  // Across every period, not just this one: a renewal moves `period_start`
+  // past the last settled hour, and reading the watermark per period would
+  // abandon the bucket in between. See `reportedThroughMax`.
+  const from = (await reportedThroughMax(teamId)) ?? floorHour(periodStart);
   const buckets = hourlyBuckets(from, now);
   if (buckets.length === 0) return null;
   const counts = await countByHour(

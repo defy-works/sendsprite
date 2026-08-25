@@ -186,6 +186,50 @@ describe("rollupUsage", () => {
     expect(r.units).toBe(2);
   });
 
+  it("does not lose the hour a renewal lands in", async () => {
+    // The renewal moves `period_start` forward mid-hour. `reported_through`
+    // is behind it by construction — only settled hours are ever reported —
+    // so a per-period watermark read would restart at the new period start
+    // and abandon the bucket in between. Once per team per cycle, silently.
+    const { rollupUsage } = await import("@/services/billing/usage");
+    const { db } = await import("@/db");
+    const { billingUsage, teamBilling } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    const oldStart = new Date("2026-07-25T14:23:00Z");
+    const renewal = new Date("2026-08-25T14:23:00Z");
+    const team = await seedTeam({ start: oldStart, end: renewal });
+    // Caught up to noon by the runs earlier in the cycle.
+    await db()
+      .insert(billingUsage)
+      .values({
+        teamId: team.id,
+        periodStart: oldStart,
+        periodEnd: renewal,
+        reportedThrough: new Date("2026-08-25T12:00:00Z"),
+        reportedUnits: 0,
+      });
+    // 12:00 settles before the renewal; 13:00 is the hour the renewal lands in.
+    await seedEmails(team.id, new Date("2026-08-25T12:30:00Z"), 3);
+    await seedEmails(team.id, new Date("2026-08-25T13:30:00Z"), 7);
+    await rollupUsage(provider, "email.sent", new Date("2026-08-25T13:40:00Z"));
+    expect(provider.ingested.get(team.id)).toBe(3);
+
+    // The renewal webhook lands: the period moves to 14:23.
+    await db()
+      .update(teamBilling)
+      .set({
+        periodStart: renewal,
+        periodEnd: new Date("2026-09-25T14:23:00Z"),
+      })
+      .where(eq(teamBilling.teamId, team.id));
+
+    await rollupUsage(provider, "email.sent", new Date("2026-08-25T15:40:00Z"));
+    expect(provider.ingestedIds).toContain(
+      `${team.id}:2026-08-25T13:00:00.000Z`,
+    );
+    expect(provider.ingested.get(team.id)).toBe(10);
+  });
+
   it("keys usage on the stored period, not the entitlement's substitute", async () => {
     // A stored period that does not contain `now` — a renewal webhook that
     // has not landed. `entitlementFrom` substitutes the calendar month for
