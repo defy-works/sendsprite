@@ -14,25 +14,35 @@ export interface Rendered {
  */
 const RENDER_PACKAGE = ["@react-email", "render"].join("/");
 
+/** Node, Vite, webpack, Rollup and Deno each phrase this differently. */
 const MISSING_MODULE =
-  /Cannot find module|ERR_MODULE_NOT_FOUND|Failed to resolve|Failed to load/i;
+  /Cannot find module|Cannot find package|ERR_MODULE_NOT_FOUND|Failed to resolve|Failed to load|Can't resolve|Module not found/i;
 
 /**
  * Distinguishes "not installed" from "installed but broken". Loaders wrap the
  * real failure (Node, Vite and bundlers all do), so follow the `cause` chain
  * rather than looking at the outermost message only.
+ *
+ * The message must also *name* the package: `@react-email/render` failing to
+ * resolve one of its own dependencies throws `MODULE_NOT_FOUND` too, and
+ * telling that user to install a package they already have sends them looking
+ * for the wrong bug.
  */
-function isMissingModule(cause: unknown): boolean {
+function isMissingModule(cause: unknown, specifier: string): boolean {
   for (let error = cause, depth = 0; error != null && depth < 5; depth++) {
-    if (typeof error !== "object") return MISSING_MODULE.test(String(error));
-    const { code, message: text } = error as {
-      code?: unknown;
-      message?: unknown;
-    };
-    if (code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") {
-      return true;
+    const text =
+      typeof error === "object"
+        ? (error as { message?: unknown }).message
+        : String(error);
+    if (typeof text === "string") {
+      const { code } = error as { code?: unknown };
+      const looksMissing =
+        MISSING_MODULE.test(text) ||
+        code === "ERR_MODULE_NOT_FOUND" ||
+        code === "MODULE_NOT_FOUND";
+      if (looksMissing && text.includes(specifier)) return true;
     }
-    if (typeof text === "string" && MISSING_MODULE.test(text)) return true;
+    if (typeof error !== "object") return false;
     error = (error as { cause?: unknown }).cause;
   }
   return false;
@@ -52,7 +62,7 @@ export async function renderEmail(element: ReactElement): Promise<Rendered> {
     // Only a resolution failure means "install the peer". Anything else — a
     // broken transitive dependency, an ESM/CJS mismatch, a throw during module
     // init — must reach the caller unchanged, or they debug the wrong problem.
-    if (!isMissingModule(cause)) throw cause;
+    if (!isMissingModule(cause, RENDER_PACKAGE)) throw cause;
     throw new Error(
       "sendsprite: sending `react` requires the optional peer dependency — install @react-email/render (and @react-email/components for the primitives).",
       { cause },

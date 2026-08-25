@@ -4,12 +4,25 @@
  * spawned and no real `~/.config` is touched. `tests/dist.test.ts` smokes the
  * built `dist/cli.js` binary itself.
  */
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { defaultConfigDir, loadConfig, saveConfig } from "../src/cli/config";
+import {
+  defaultConfigDir,
+  loadConfig,
+  normalizeInstanceUrl,
+  saveConfig,
+} from "../src/cli/config";
+import { SendspriteError } from "../src/errors";
 import { buildProgram } from "../src/cli/index";
+import { table } from "../src/cli/output";
 
 const dir = () => mkdtempSync(join(tmpdir(), "ss-cli-"));
 
@@ -61,8 +74,10 @@ const run = async (
   client: FakeClient = fakeClient(),
   configDir = dir(),
   env: NodeJS.ProcessEnv = {},
+  prompt?: (question: string, opts?: { mask?: boolean }) => Promise<string>,
 ) => {
   const out: string[] = [];
+  const err: string[] = [];
   const created: { url: string; apiKey: string }[] = [];
   const program = buildProgram({
     configDir,
@@ -71,10 +86,19 @@ const run = async (
       return client as never;
     },
     write: (s) => out.push(s),
+    writeError: (s) => err.push(s),
     env,
+    prompt,
   });
   await program.parseAsync(["node", "sendsprite", ...argv]);
-  return { out: out.join("\n"), client, configDir, created };
+  return {
+    out: out.join("\n"),
+    lines: out,
+    err: err.join("\n"),
+    client,
+    configDir,
+    created,
+  };
 };
 
 const loggedIn = () => {
@@ -85,13 +109,60 @@ const loggedIn = () => {
 
 describe("cli config", () => {
   it("prefers SENDSPRITE_CONFIG_DIR, then XDG, then the platform default", () => {
-    expect(defaultConfigDir({ SENDSPRITE_CONFIG_DIR: "/explicit" })).toBe(
-      "/explicit",
+    // Resolved, so a relative value survives a change of directory.
+    expect(defaultConfigDir({ SENDSPRITE_CONFIG_DIR: "explicit" })).toBe(
+      resolve("explicit"),
     );
-    expect(defaultConfigDir({ XDG_CONFIG_HOME: "/xdg" })).toBe(
-      join("/xdg", "sendsprite"),
+    expect(
+      defaultConfigDir({
+        SENDSPRITE_CONFIG_DIR: "/explicit",
+        XDG_CONFIG_HOME: "/xdg",
+      }),
+    ).toBe(resolve("/explicit"));
+    expect(
+      defaultConfigDir({ XDG_CONFIG_HOME: "/xdg", APPDATA: "/appdata" }),
+    ).toBe(join("/xdg", "sendsprite"));
+    expect(defaultConfigDir({ APPDATA: "/appdata" }, "win32")).toBe(
+      join("/appdata", "sendsprite"),
     );
-    expect(defaultConfigDir({})).toMatch(/sendsprite$/);
+    // The same env on a POSIX host must not take the %APPDATA% branch.
+    expect(defaultConfigDir({ APPDATA: "/appdata" }, "linux")).toMatch(
+      /sendsprite$/,
+    );
+    expect(defaultConfigDir({}, "linux")).toMatch(/sendsprite$/);
+  });
+
+  it("normalizes instance URLs and explains bad ones", () => {
+    expect(normalizeInstanceUrl("https://mail.acme.com/")).toBe(
+      "https://mail.acme.com",
+    );
+    // Copied from the API docs; the client appends /api/v1 itself, so leaving
+    // it on would send every request to /api/v1/api/v1/....
+    expect(normalizeInstanceUrl("https://mail.acme.com/api/v1")).toBe(
+      "https://mail.acme.com",
+    );
+    expect(normalizeInstanceUrl("  https://mail.acme.com/api/v1/  ")).toBe(
+      "https://mail.acme.com",
+    );
+    expect(normalizeInstanceUrl("http://localhost:3000")).toBe(
+      "http://localhost:3000",
+    );
+    // A sub-path deployment keeps its prefix.
+    expect(normalizeInstanceUrl("https://acme.com/mail/")).toBe(
+      "https://acme.com/mail",
+    );
+    expect(() => normalizeInstanceUrl("mail.acme.com")).toThrow(
+      /not a valid URL/,
+    );
+    expect(() => normalizeInstanceUrl("mail.acme.com")).toThrow(
+      /https:\/\/mail\.acme\.com/,
+    );
+    expect(() => normalizeInstanceUrl("ftp://mail.acme.com")).toThrow(
+      /http\(s\) URL/,
+    );
+    expect(() => normalizeInstanceUrl("", "SENDSPRITE_URL")).toThrow(
+      /SENDSPRITE_URL is not a valid URL/,
+    );
   });
 
   it("round-trips the config and returns null when there is none", () => {
@@ -105,6 +176,14 @@ describe("cli config", () => {
     const d = dir();
     writeFileSync(join(d, "config.json"), "{ not json");
     expect(loadConfig(d)).toBeNull();
+  });
+
+  it("replaces the file atomically and leaves no temp behind", () => {
+    const d = dir();
+    saveConfig(d, { url: "https://x", apiKey: "old" });
+    saveConfig(d, { url: "https://y", apiKey: "new" });
+    expect(loadConfig(d)).toEqual({ url: "https://y", apiKey: "new" });
+    expect(readdirSync(d)).toEqual(["config.json"]);
   });
 
   it("writes config.json owner-only", () => {
@@ -150,6 +229,70 @@ describe("cli", () => {
     await expect(run(["login"])).rejects.toThrow(/--url/);
   });
 
+  it("login normalizes the URL it saves and rejects unusable ones", async () => {
+    const d = dir();
+    // The URL people copy out of the API reference. Left as-is, every later
+    // request would go to /api/v1/api/v1/....
+    await run(
+      ["login", "--url", "https://mail.acme.com/api/v1/", "--api-key", "k"],
+      fakeClient(),
+      d,
+    );
+    expect(loadConfig(d)).toEqual({
+      url: "https://mail.acme.com",
+      apiKey: "k",
+    });
+    await expect(
+      run(
+        ["login", "--url", "mail.acme.com", "--api-key", "k"],
+        fakeClient(),
+        dir(),
+      ),
+    ).rejects.toThrow(/not a valid URL/);
+    await expect(
+      run(
+        ["login", "--url", "ftp://mail.acme.com", "--api-key", "k"],
+        fakeClient(),
+        dir(),
+      ),
+    ).rejects.toThrow(/http\(s\) URL/);
+  });
+
+  it("login prompts for a missing key and asks for it to be masked", async () => {
+    const asked: { question: string; mask: boolean }[] = [];
+    const prompt = (question: string, opts?: { mask?: boolean }) => {
+      asked.push({ question, mask: opts?.mask === true });
+      return Promise.resolve(
+        question.startsWith("API key") ? "ss_live_typed" : "https://typed.io",
+      );
+    };
+    const d = dir();
+    const { out } = await run(["login"], fakeClient(), d, {}, prompt);
+    expect(asked).toEqual([
+      { question: "Instance URL: ", mask: false },
+      // The whole point of prompting instead of passing --api-key.
+      { question: "API key: ", mask: true },
+    ]);
+    expect(loadConfig(d)).toEqual({
+      url: "https://typed.io",
+      apiKey: "ss_live_typed",
+    });
+    expect(out).not.toContain("ss_live_typed");
+  });
+
+  it("login mentions that --api-key is visible to other processes", () => {
+    const help = buildProgram({
+      configDir: dir(),
+      createClient: () => fakeClient() as never,
+      write: () => {},
+      env: {},
+    })
+      .commands.find((c) => c.name() === "login")!
+      .helpInformation();
+    expect(help).toMatch(/ps` and your shell history/);
+    expect(help).toMatch(/SENDSPRITE_API_KEY/);
+  });
+
   it("whoami prints team and key", async () => {
     const { out } = await run(["whoami"], fakeClient(), loggedIn());
     expect(out).toMatch(/Acme.*t/s);
@@ -177,6 +320,117 @@ describe("cli", () => {
     });
   });
 
+  it("never mixes an env URL with the saved key, or the reverse", async () => {
+    // `SENDSPRITE_URL=https://evil.test sendsprite whoami` on a logged-in
+    // machine used to send the saved ss_live_ key to the attacker's host.
+    const d = loggedIn();
+    await expect(
+      run(["whoami"], fakeClient(), d, {
+        SENDSPRITE_URL: "https://evil.test",
+      }),
+    ).rejects.toThrow(/SENDSPRITE_API_KEY is not/);
+    await expect(
+      run(["whoami"], fakeClient(), d, { SENDSPRITE_API_KEY: "ss_live_env" }),
+    ).rejects.toThrow(/SENDSPRITE_URL is not/);
+    // Nothing was ever built, so nothing could have been sent.
+    const half = await run(["whoami"], fakeClient(), d, {
+      SENDSPRITE_URL: "https://evil.test",
+    }).catch(() => null);
+    expect(half).toBeNull();
+    // A blank export is not "set" — it must not strand a logged-in machine.
+    const blank = await run(["whoami"], fakeClient(), d, {
+      SENDSPRITE_URL: "  ",
+      SENDSPRITE_API_KEY: "",
+    });
+    expect(blank.created[0]).toEqual({ url: "https://x", apiKey: "k" });
+  });
+
+  it("normalizes SENDSPRITE_URL the same way as --url", async () => {
+    const { created } = await run(["whoami"], fakeClient(), dir(), {
+      SENDSPRITE_URL: "https://env.acme.com/api/v1/",
+      SENDSPRITE_API_KEY: "ss_live_env",
+    });
+    expect(created[0]!.url).toBe("https://env.acme.com");
+  });
+
+  it("names the instance and the credential source when auth fails", async () => {
+    // With env winning over the file, a stale exported key silently shadows a
+    // fresh `login`; without this the operator has nothing to go on.
+    const client = fakeClient();
+    client.me.mockRejectedValue(
+      new SendspriteError("unauthorized", "Invalid API key.", 401),
+    );
+    const fromFile = await run(["whoami"], client, loggedIn()).catch(
+      (e: unknown) => e,
+    );
+    expect(String(fromFile)).toMatch(/Invalid API key/);
+    expect(String(fromFile)).toMatch(/https:\/\/x .*the config file/s);
+    const fromEnv = await run(["whoami"], client, loggedIn(), {
+      SENDSPRITE_URL: "https://env.acme.com",
+      SENDSPRITE_API_KEY: "ss_live_env",
+    }).catch((e: unknown) => e);
+    expect(String(fromEnv)).toMatch(
+      /https:\/\/env\.acme\.com .*the environment/s,
+    );
+    // Errors that are not about credentials are left alone.
+    client.me.mockRejectedValue(
+      new SendspriteError("internal_error", "boom", 500),
+    );
+    const other = await run(["whoami"], client, loggedIn()).catch(
+      (e: unknown) => e,
+    );
+    expect(String(other)).not.toMatch(/instance:/);
+  });
+
+  it("whoami --json prints the raw /me response", async () => {
+    const { out } = await run(["whoami", "--json"], fakeClient(), loggedIn());
+    expect(JSON.parse(out)).toEqual({
+      team: { id: "t", name: "Acme" },
+      apiKey: {
+        id: "k",
+        name: "ci",
+        permission: "full",
+        keyPrefix: "ss_live_ab",
+        domainId: null,
+      },
+    });
+  });
+
+  it("never prints a full API key", async () => {
+    // The one credential worth protecting: it must not reach stdout, stderr
+    // or a thrown message from any command, however it was supplied.
+    const key = "ss_live_supersecretvalue";
+    const d = dir();
+    const seen: string[] = [];
+    const collect = (r: { out: string; err: string }) => {
+      seen.push(r.out, r.err);
+    };
+    collect(
+      await run(
+        ["login", "--url", "https://mail.acme.com", "--api-key", key],
+        fakeClient(),
+        d,
+      ),
+    );
+    collect(await run(["whoami"], fakeClient(), d));
+    collect(await run(["whoami", "--json"], fakeClient(), d));
+    collect(await run(["domains", "list"], fakeClient(), d));
+    collect(
+      await run(["whoami"], fakeClient(), dir(), {
+        SENDSPRITE_URL: "https://x",
+        SENDSPRITE_API_KEY: key,
+      }),
+    );
+    const client = fakeClient();
+    client.me.mockRejectedValue(
+      new SendspriteError("unauthorized", "Invalid API key.", 401),
+    );
+    seen.push(
+      String(await run(["whoami"], client, d).catch((e: unknown) => e)),
+    );
+    for (const text of seen) expect(text).not.toContain(key);
+  });
+
   it("domains list renders a table and --json raw", async () => {
     const d = loggedIn();
     expect((await run(["domains", "list"], fakeClient(), d)).out).toMatch(
@@ -187,6 +441,31 @@ describe("cli", () => {
         (await run(["domains", "list", "--json"], fakeClient(), d)).out,
       )[0].id,
     ).toBe("d1");
+  });
+
+  it("domains list rejects a --limit that is not a page size", async () => {
+    const d = loggedIn();
+    for (const limit of ["abc", "0", "101", "2.5", ""]) {
+      await expect(
+        run(["domains", "list", "--limit", limit], fakeClient(), d),
+        limit,
+      ).rejects.toThrow(/1 to 100/);
+    }
+    const ok = await run(["domains", "list", "--limit", "10"], fakeClient(), d);
+    expect(ok.client.domains.list).toHaveBeenCalledWith({ limit: 10 });
+  });
+
+  it("domains list aligns columns for non-ASCII names", () => {
+    // `.length` counts an astral character twice and pads the column short.
+    const emoji = String.fromCodePoint(0x1f600).repeat(2);
+    const [header, row] = table([
+      ["NAME", "STATUS"],
+      [emoji, "verified"],
+    ]);
+    // Compared in code points, which is what the padding now counts.
+    const column = (line: string, text: string) =>
+      [...line.slice(0, line.indexOf(text))].length;
+    expect(column(header!, "STATUS")).toBe(column(row!, "verified"));
   });
 
   it("emails send maps flags to SendEmailInput", async () => {
@@ -325,9 +604,70 @@ describe("cli", () => {
         return { close() {}, done: Promise.resolve() };
       },
     );
-    const { out } = await run(["emails", "tail"], client, loggedIn());
+    const { out, err } = await run(["emails", "tail"], client, loggedIn());
     expect(client.emails.get).toHaveBeenCalledTimes(1);
-    expect(out).toContain("gone");
+    // Diagnostics belong on stderr so stdout stays a clean stream of rows.
+    expect(err).toContain("gone");
+    expect(out).toBe("");
+  });
+
+  it("emails tail --json keeps stdout parseable on the error path", async () => {
+    const client = fakeClient();
+    client.emails.get
+      .mockResolvedValueOnce({
+        id: "em_1",
+        status: "sent",
+        to: ["c@d.io"],
+        subject: "s",
+      })
+      .mockRejectedValueOnce(new Error("gone"));
+    client.stream.mockImplementation(
+      ({ onChange }: { onChange: (c: unknown) => void }) => {
+        onChange({ type: "email", id: "em_1" });
+        onChange({ type: "email", id: "em_2" });
+        return { close() {}, done: Promise.resolve() };
+      },
+    );
+    const { lines, err } = await run(
+      ["emails", "tail", "--json"],
+      client,
+      loggedIn(),
+    );
+    // Every stdout line must survive `| jq`, failures included.
+    expect(lines).toHaveLength(2);
+    expect(lines.map((l) => JSON.parse(l))).toEqual([
+      { id: "em_1", status: "sent", to: ["c@d.io"], subject: "s" },
+      { id: "em_2", error: "gone" },
+    ]);
+    expect(err).toBe("");
+  });
+
+  it("emails tail flushes rows already fetched when the stream fails", async () => {
+    const client = fakeClient();
+    client.stream.mockImplementation(
+      ({ onChange }: { onChange: (c: unknown) => void }) => {
+        onChange({ type: "email", id: "em_1" });
+        return {
+          close() {},
+          done: Promise.reject(new Error("stream dropped")),
+        };
+      },
+    );
+    // Built here rather than through `run` so stdout is readable after the
+    // rejection: a dropped connection must not swallow rows already fetched.
+    const out: string[] = [];
+    const program = buildProgram({
+      configDir: loggedIn(),
+      createClient: () => client as never,
+      write: (line) => out.push(line),
+      writeError: () => {},
+      env: {},
+    });
+    await expect(
+      program.parseAsync(["node", "sendsprite", "emails", "tail"]),
+    ).rejects.toThrow(/stream dropped/);
+    expect(client.emails.get).toHaveBeenCalledWith("em_1");
+    expect(out.join("")).toMatch(/em_1/);
   });
 
   it("emails tail closes the stream on SIGINT and removes its listener", async () => {

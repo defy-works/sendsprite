@@ -25,11 +25,18 @@ export function signWebhook(
 }
 
 /**
- * A timestamp followed by one or more lower-case hex `v1` digests, and
- * nothing else: an unknown field is a header we do not understand, which must
- * fail rather than be ignored.
+ * A canonical timestamp followed by 1–8 lower-case hex `v1` digests, and
+ * nothing else.
+ *
+ * - An unknown field is a header we do not understand, which must fail rather
+ *   than be silently ignored.
+ * - The timestamp has exactly one spelling (no `0001`, no 13-digit values):
+ *   two header strings that verify against the same digest would otherwise
+ *   let a replay past a cache keyed on the raw header.
+ * - The repetition is bounded so an enormous header cannot make us hash and
+ *   compare indefinitely.
  */
-const HEADER_RE = /^t=(\d+)((?:,v1=[a-f0-9]{64})+)$/;
+const HEADER_RE = /^t=(0|[1-9]\d{0,11})((?:,v1=[a-f0-9]{64}){1,8})$/;
 
 export function verifyWebhookSignature(
   body: string,
@@ -37,7 +44,14 @@ export function verifyWebhookSignature(
   secret: string,
   opts: { now?: number; toleranceSeconds?: number } = {},
 ): boolean {
-  const m = HEADER_RE.exec(header ?? "");
+  // `createHmac("sha256", "")` is legal in Node, so an unset
+  // `process.env.WEBHOOK_SECRET ?? ""` would happily verify anything an
+  // attacker signed with the empty key. Refuse before we ever hash.
+  if (!secret) return false;
+  // A repeated HTTP header arrives as an array in several frameworks, and
+  // `["t=1", "v1=<hex>"]` stringifies straight into a well-formed header.
+  if (typeof header !== "string") return false;
+  const m = HEADER_RE.exec(header);
   if (!m) return false;
   const t = Number(m[1]);
   const now = opts.now ?? Math.floor(Date.now() / 1000);

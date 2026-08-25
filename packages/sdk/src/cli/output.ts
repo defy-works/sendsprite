@@ -8,17 +8,27 @@ export function table(rows: readonly (readonly string[])[]): string[] {
   if (rows.length === 0) return [];
   const columns = Math.max(...rows.map((r) => r.length));
   const widths = Array.from({ length: columns }, (_, i) =>
-    Math.max(...rows.map((r) => (r[i] ?? "").length)),
+    Math.max(...rows.map((r) => width(cell(r, i)))),
   );
   return rows.map((row) =>
-    Array.from({ length: columns }, (_, i) => r(row, i))
-      .map((cell, i) => (i === columns - 1 ? cell : cell.padEnd(widths[i]!)))
+    Array.from({ length: columns }, (_, i) => cell(row, i))
+      .map((text, i) => (i === columns - 1 ? text : pad(text, widths[i]!)))
       .join("  ")
       .trimEnd(),
   );
 }
 
-const r = (row: readonly string[], i: number) => row[i] ?? "";
+const cell = (row: readonly string[], i: number) => row[i] ?? "";
+
+/**
+ * Code points, not UTF-16 units: `.length` counts an emoji or an astral
+ * character twice and pads that column short, so an internationalised domain
+ * knocks the whole table out of alignment. (Still not East-Asian display
+ * width — that needs a table this package will not carry.)
+ */
+const width = (text: string) => [...text].length;
+
+const pad = (text: string, to: number) => text + " ".repeat(to - width(text));
 
 /** `Team  Acme (t)` — a label padded to a common width, then a value. */
 export const field = (label: string, value: string): string =>

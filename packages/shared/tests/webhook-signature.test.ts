@@ -56,6 +56,63 @@ describe("webhook signature", () => {
     );
   });
 
+  it("refuses an empty secret instead of verifying against the empty key", () => {
+    // `createHmac("sha256", "")` is legal, so `process.env.SECRET ?? ""` would
+    // otherwise accept anything an attacker signed with the empty key.
+    const forged = signWebhook(BODY, "", T);
+    expect(verifyWebhookSignature(BODY, forged, "", at(T))).toBe(false);
+    expect(verifyWebhookSignature(BODY, forged, SECRET, at(T))).toBe(false);
+    const real = signWebhook(BODY, SECRET, T);
+    expect(verifyWebhookSignature(BODY, real, "", at(T))).toBe(false);
+  });
+
+  it("refuses a non-string header (a repeated header arrives as an array)", () => {
+    const header = signWebhook(BODY, SECRET, T);
+    // `["t=1700000000", "v1=<hex>"]` stringifies into a well-formed header.
+    const split = [`t=${T}`, header.slice(`t=${T},`.length)];
+    expect(String(split)).toBe(header); // the trap this guards against
+    for (const value of [
+      split,
+      null,
+      undefined,
+      42,
+      { toString: () => header },
+    ])
+      expect(
+        verifyWebhookSignature(BODY, value as unknown as string, SECRET, at(T)),
+      ).toBe(false);
+  });
+
+  it("accepts exactly one spelling of the timestamp", () => {
+    const digest = signWebhook(BODY, SECRET, T).slice("t=1700000000,".length);
+    // A replay cache keyed on the raw header would see these as new headers.
+    for (const t of [`0${T}`, `00${T}`, `${T}000000000000`, "+1700000000"]) {
+      expect(
+        verifyWebhookSignature(BODY, `t=${t},${digest}`, SECRET, at(T)),
+        t,
+      ).toBe(false);
+    }
+    expect(
+      verifyWebhookSignature(BODY, `t=${T},${digest}`, SECRET, at(T)),
+    ).toBe(true);
+    // `t=0` is still a legal spelling, just far outside the tolerance.
+    const epoch = signWebhook(BODY, SECRET, 0);
+    expect(verifyWebhookSignature(BODY, epoch, SECRET, { now: 0 })).toBe(true);
+  });
+
+  it("bounds how many digests one header may carry", () => {
+    const mine = signWebhook(BODY, SECRET, T).slice("t=1700000000,".length);
+    const filler = `v1=${"0".repeat(64)}`;
+    const eight = [...Array(7).fill(filler), mine].join(",");
+    expect(verifyWebhookSignature(BODY, `t=${T},${eight}`, SECRET, at(T))).toBe(
+      true,
+    );
+    const nine = [...Array(8).fill(filler), mine].join(",");
+    expect(verifyWebhookSignature(BODY, `t=${T},${nine}`, SECRET, at(T))).toBe(
+      false,
+    );
+  });
+
   it("rejects malformed headers rather than ignoring what it cannot parse", () => {
     const good = signWebhook(BODY, SECRET, T);
     const digest = good.slice("t=1700000000,v1=".length);
@@ -69,6 +126,8 @@ describe("webhook signature", () => {
       ["no digest at all", `t=${T}`],
       ["trailing comma", `t=${T},v1=${digest},`],
       ["leading whitespace", ` t=${T},v1=${digest}`],
+      ["trailing newline", `t=${T},v1=${digest}` + "\n"],
+      ["embedded newline", `t=${T}\nv1=${digest}`],
       ["empty", ""],
     ];
     for (const [name, header] of cases) {

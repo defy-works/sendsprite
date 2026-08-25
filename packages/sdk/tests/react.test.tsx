@@ -90,7 +90,7 @@ describe("sendsprite/react", () => {
   it("send({ react }) without @react-email/render installed fails with a clear error", async () => {
     vi.resetModules();
     vi.doMock("@react-email/render", () => {
-      throw new Error("Cannot find module");
+      throw new Error("Cannot find module '@react-email/render'");
     });
     const { renderEmail: r } = await import("../src/react");
     await expect(r(<Text>x</Text>)).rejects.toThrow(
@@ -115,6 +115,28 @@ describe("sendsprite/react", () => {
       /install @react-email\/render/,
     );
     expect(causes(error)).toContain(boom);
+    vi.doUnmock("@react-email/render");
+    vi.resetModules();
+  });
+
+  it("does not claim the peer is missing when one of its own deps is", async () => {
+    // `@react-email/render` resolves, then fails to resolve something of its
+    // own. Telling the user to install a package they already have sends them
+    // hunting for the wrong bug.
+    vi.resetModules();
+    const transitive = Object.assign(
+      new Error("Cannot find module 'html-to-text'"),
+      { code: "MODULE_NOT_FOUND" },
+    );
+    vi.doMock("@react-email/render", () => {
+      throw transitive;
+    });
+    const { renderEmail: r } = await import("../src/react");
+    const error: unknown = await r(<Text>x</Text>).catch((e: unknown) => e);
+    expect(String((error as Error).message)).not.toMatch(
+      /install @react-email\/render/,
+    );
+    expect(causes(error)).toContain(transitive);
     vi.doUnmock("@react-email/render");
     vi.resetModules();
   });

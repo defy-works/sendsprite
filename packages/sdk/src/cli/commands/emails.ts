@@ -20,7 +20,13 @@ interface SendOptions {
 }
 
 /** `sendsprite emails send` and `sendsprite emails tail` */
-export function registerEmails({ program, client, write }: CommandContext) {
+export function registerEmails({
+  program,
+  client,
+  write,
+  writeError,
+  run,
+}: CommandContext) {
   const emails = program
     .command("emails")
     .description("Send and follow email")
@@ -42,49 +48,62 @@ export function registerEmails({ program, client, write }: CommandContext) {
     .option("--schedule <iso>", "Send at an ISO 8601 time in the future")
     .option("--idempotency-key <key>", "Replay-safe key for this send")
     .option("--json", "Print the raw response")
-    .action(async (opts: SendOptions) => {
-      const input = buildSendInput(opts);
-      const sent = await client().emails.send(input);
-      write(opts.json ? JSON.stringify(sent, null, 2) : `Queued ${sent.id}`);
-    });
+    .action(
+      run(async (opts: SendOptions) => {
+        const input = buildSendInput(opts);
+        const sent = await client().emails.send(input);
+        write(opts.json ? JSON.stringify(sent, null, 2) : `Queued ${sent.id}`);
+      }),
+    );
 
   emails
     .command("tail")
     .description("Stream email changes until interrupted")
-    .option("--json", "Print the raw email object per change")
-    .action(async (opts: { json?: boolean }) => {
-      const api = client();
-      // One chain rather than parallel lookups: the feed is chronological and
-      // interleaved output would be unreadable. Every link is caught, so a
-      // failed lookup never rejects `onChange` (which would end the stream).
-      let pending: Promise<void> = Promise.resolve();
-      const handle = api.stream({
-        onChange: (change) => {
-          if (change.type !== "email" || change.id === undefined) return;
-          const id = change.id;
-          pending = pending
-            .then(async () => {
-              const email = await api.emails.get(id);
-              write(opts.json ? JSON.stringify(email) : row(email));
-            })
-            .catch((cause: unknown) =>
-              write(`${id}  error: ${message(cause)}`),
-            );
-        },
-      });
-      // Ctrl-C ends the stream instead of killing the process mid-write. Go
-      // through the EventEmitter view: `@types/node` declares no signal
-      // overload for `process.removeListener`.
-      const signals: NodeJS.EventEmitter = process;
-      const onInterrupt = () => handle.close();
-      signals.once("SIGINT", onInterrupt);
-      try {
-        await handle.done;
-        await pending;
-      } finally {
-        signals.removeListener("SIGINT", onInterrupt);
-      }
-    });
+    .option("--json", "Print one JSON object per change")
+    .action(
+      run(async (opts: { json?: boolean }) => {
+        const api = client();
+        // One chain rather than parallel lookups: the feed is chronological
+        // and interleaved output would be unreadable. Every link is caught, so
+        // a failed lookup never rejects `onChange` (which would end the
+        // stream).
+        let pending: Promise<void> = Promise.resolve();
+        const handle = api.stream({
+          onChange: (change) => {
+            if (change.type !== "email" || change.id === undefined) return;
+            const id = change.id;
+            pending = pending
+              .then(async () => {
+                const email = await api.emails.get(id);
+                write(opts.json ? JSON.stringify(email) : row(email));
+              })
+              .catch((cause: unknown) => {
+                // Under `--json` stdout is a JSON-lines stream someone is
+                // piping to `jq`; a plain-text error line would kill the pipe.
+                if (opts.json) {
+                  write(JSON.stringify({ id, error: message(cause) }));
+                } else {
+                  writeError(`${id}  error: ${message(cause)}`);
+                }
+              });
+          },
+        });
+        // Ctrl-C ends the stream instead of killing the process mid-write. Go
+        // through the EventEmitter view: `@types/node` declares no signal
+        // overload for `process.removeListener`.
+        const signals: NodeJS.EventEmitter = process;
+        const onInterrupt = () => handle.close();
+        signals.once("SIGINT", onInterrupt);
+        try {
+          await handle.done;
+        } finally {
+          // Even when the stream ended badly, rows already fetched belong on
+          // stdout - dropping them loses events the operator saw arrive.
+          await pending;
+          signals.removeListener("SIGINT", onInterrupt);
+        }
+      }),
+    );
 }
 
 const collect = (value: string, previous: string[]): string[] => [
