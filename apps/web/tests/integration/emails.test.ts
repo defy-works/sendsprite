@@ -107,6 +107,17 @@ describe("createEmail", () => {
         { enqueue },
       ),
     ).toMatchObject({ ok: false, code: "validation_error" });
+    expect(
+      await createEmail(
+        ctx,
+        { ...base, text: undefined, template: "welcome" },
+        { enqueue },
+      ),
+    ).toMatchObject({
+      ok: false,
+      code: "validation_error",
+      error: expect.stringContaining("template"),
+    });
     const { suppressFromEvent, addSuppression } =
       await import("@/services/suppressions");
     await suppressFromEvent(
@@ -171,6 +182,24 @@ describe("createEmail", () => {
         { enqueue },
       ),
     ).toMatchObject({ ok: false, code: "idempotency_conflict" });
+    // The key is checked before the domain: an unverified domain still
+    // returns the row a retry already created.
+    const { domains } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    await pg.db
+      .update(domains)
+      .set({ status: "pending" })
+      .where(eq(domains.id, "dom_1"));
+    const c = await createEmail(
+      ctx,
+      { ...base, scheduledAt: when, idempotencyKey: "k1" },
+      { enqueue },
+    );
+    expect(c.ok && a.ok && c.data.id === a.data.id).toBe(true);
+    await pg.db
+      .update(domains)
+      .set({ status: "verified" })
+      .where(eq(domains.id, "dom_1"));
     // The fingerprint covers the body too, not just subject + to.
     expect(
       await createEmail(
@@ -214,15 +243,20 @@ describe("createEmail", () => {
       await rescheduleEmail("org_other", id, later, { enqueue }),
     ).toMatchObject({ ok: false, code: "not_found" });
 
+    const moved = await listEvents(id);
+    expect(moved.map((x) => x.type)).toEqual(["queued", "queued"]);
+    expect(moved[1]!.payload).toEqual({ rescheduledTo: later });
+
     const c = await cancelEmail("org_1", id, "u1");
     expect(c).toMatchObject({ ok: true, data: { status: "cancelled" } });
     expect((await listEvents(id)).map((x) => x.type)).toEqual([
+      "queued",
       "queued",
       "cancelled",
     ]);
     expect(await cancelEmail("org_1", id, "u1")).toMatchObject({
       ok: false,
-      code: "validation_error",
+      code: "conflict",
     });
     expect(await cancelEmail("org_other", id, "u1")).toMatchObject({
       ok: false,
@@ -230,7 +264,7 @@ describe("createEmail", () => {
     });
     expect(
       await rescheduleEmail("org_1", id, later, { enqueue }),
-    ).toMatchObject({ ok: false, code: "validation_error" });
+    ).toMatchObject({ ok: false, code: "conflict" });
 
     // A sent email can neither be cancelled nor rescheduled.
     const sent = await createEmail(ctx, base, { enqueue });
@@ -244,11 +278,11 @@ describe("createEmail", () => {
     expect((await getEmail("org_1", sent.data.id))?.status).toBe("sent");
     expect(await cancelEmail("org_1", sent.data.id, "u1")).toMatchObject({
       ok: false,
-      code: "validation_error",
+      code: "conflict",
     });
     expect(
       await rescheduleEmail("org_1", sent.data.id, later, { enqueue }),
-    ).toMatchObject({ ok: false, code: "validation_error" });
+    ).toMatchObject({ ok: false, code: "conflict" });
   });
 
   it("sending-only key scoped to a domain cannot send from another domain", async () => {
@@ -308,6 +342,33 @@ describe("createBatch", () => {
 });
 
 describe("listEmails", () => {
+  it("does not skip rows sharing a millisecond across pages", async () => {
+    const { listEmails } = await import("@/services/emails");
+    const { emails } = await import("@/db/schema");
+    await pg.db.execute(
+      `insert into "organization"(id,name,slug,created_at) values ('org_3','Gamma','gamma',now())`,
+    );
+    const createdAt = new Date("2026-08-25T00:00:00.123Z");
+    const row = (id: string) => ({
+      id,
+      teamId: "org_3",
+      from: "a@mail.acme.com",
+      fromEmail: "a@mail.acme.com",
+      to: ["r@x.io"],
+      subject: "s",
+      createdAt,
+    });
+    await pg.db.insert(emails).values([row("em_same_a"), row("em_same_b")]);
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await listEmails("org_3", { limit: 1, cursor });
+      seen.push(...page.data.map((e) => e.id));
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    expect(seen).toEqual(["em_same_b", "em_same_a"]);
+  });
+
   it("paginates with a keyset cursor and filters by status, to, domain and tag", async () => {
     const enqueue = vi.fn(async () => "job");
     const { createEmail, listEmails } = await import("@/services/emails");

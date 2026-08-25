@@ -71,7 +71,10 @@ export const emails = pgTable(
     scheduledAt: timestamp("scheduled_at", { withTimezone: true }),
     sentAt: timestamp("sent_at", { withTimezone: true }),
     bodyPurgedAt: timestamp("body_purged_at", { withTimezone: true }),
-    createdAt: timestamp("created_at", { withTimezone: true })
+    // Millisecond precision on purpose: the list cursor round-trips
+    // `createdAt` through a JS Date (ms), so a �s column would make the
+    // keyset comparison skip rows created within the same millisecond.
+    createdAt: timestamp("created_at", { withTimezone: true, precision: 3 })
       .notNull()
       .defaultNow(),
     // `$onUpdate` fires only via drizzle `.update()`; upserts must set it.

@@ -2487,13 +2487,16 @@ Write `createBatch`, `listEmails`, `cancelEmail`, `rescheduleEmail` out fully (t
 
 - [x] **Step 3: Run, commit** → `feat(web): emails service — create/batch/list/cancel/reschedule with tracking, suppression, limits`.
 
-**Shipped (deviations from the sketch):**
+**Shipped (deviations from the sketch; review fixes folded in):**
 
-- Idempotency compares a fingerprint � `subject`, sorted `to`, sha256 of `html` and `text` � not just `subject + to`. The stored html is the tracking-rewritten body, so the retry's html is rewritten with the existing id first (the rewrite is deterministic per id). After retention purged the body only `subject + to` can be compared.
-- `createBatch` runs `createEmail` per item with no outer transaction: on the first failure it returns `{ ok:false, code, error, details:{ index, cause? } }` and the earlier items stay queued (partial success; the Phase 4 SDK surfaces it).
+- Idempotency: the key is looked up before the domain check (a retry after un-verification still returns the row it created) and compares a fingerprint — `subject`, sorted `to`, sha256 of `html` and `text` — not just `subject + to`. The stored html is the tracking-rewritten body, so the retry's html is rewritten with the existing id first (deterministic per id); tracking flags are not part of the fingerprint (lenient by design). After retention purged the body only `subject + to` can be compared.
+- `template` is refused with `validation_error` until Phase 5 templates exist.
+- `recordEvent` advances the status with one conditional `UPDATE … WHERE status IN (<ranks <= next>)` (no read-then-write); `sentAt` is `coalesce(sent_at, occurred_at)` so the first `sent` wins; `cancelled` ranks 1 (beats only queued/scheduled/sending). Covered by `tests/integration/email-events.test.ts`.
+- `emails.created_at` is `timestamptz(3)` (migration `0009`) because the list cursor round-trips through a JS Date (ms); with µs precision the keyset comparison skipped rows created in the same millisecond.
+- `createBatch` runs `createEmail` per item with no outer transaction: on the first failure it returns `{ ok:false, code, error, details:{ index, cause? } }` and the earlier items stay queued (partial success; the Phase 4 SDK surfaces it). The whole batch is parsed up front; Task 12 caps the REST body.
 - `listEmails` returns `{ data, nextCursor }`; cursor = base64url of `${createdAt.toISOString()}|${id}`, a malformed cursor is ignored (first page). `to` uses jsonb `?`, `tag` is `k:v` via `->>`.
-- `cancelEmail` flips status with a single conditional `UPDATE � WHERE status IN (queued, scheduled)` (no check-then-write race) and records `cancelled`; `rescheduleEmail` requires a future ISO time, only for `scheduled`, records no event.
-- `email.send` is registered in `Q` only; the handler is Task 8. SSE `listen()` is Task 11 � `lib/notify.ts` has `notifyTeam` + `teamChannel` only.
+- `cancelEmail` flips status with a single conditional `UPDATE … WHERE status IN (queued, scheduled)` and records `cancelled`; `rescheduleEmail` requires a future ISO time, only for `scheduled`, records a `queued` event `{ rescheduledTo }` (dedupe `local:<id>:reschedule:<iso>`) and notifies the team. Wrong-state cancel/reschedule return the new `conflict` error code (HTTP 409, added to `packages/shared`).
+- `email.send` is registered in `Q` only; the handler is Task 8. SSE `listen()` is Task 11 — `lib/notify.ts` has `notifyTeam` + `teamChannel` only.
 
 ---
 

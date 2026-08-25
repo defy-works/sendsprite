@@ -8,8 +8,15 @@ import {
   type ErrorCode,
 } from "@sendsprite/shared";
 import { db } from "@/db";
-import { domains, emailAttachments, emails, teamSettings } from "@/db/schema";
+import {
+  domains,
+  emailAttachments,
+  emails,
+  teamSettings,
+  type EmailSource,
+} from "@/db/schema";
 import { domainOf, parseAddress } from "@/lib/email-address";
+import { notifyTeam } from "@/lib/notify";
 import { injectPixel, wrapLinks } from "@/lib/tracking";
 import { loadEnv } from "@/env.schema";
 import { Q } from "@/jobs/queues";
@@ -20,7 +27,7 @@ import type { Domain, Enqueue } from "./domains";
 
 export interface SendContext {
   teamId: string;
-  source: "api" | "smtp" | "campaign" | "dashboard";
+  source: EmailSource;
   apiKeyId: string | null;
   actorUserId: string | null;
   /** A key restricted to one sending domain (`api_keys.domain_id`). */
@@ -122,6 +129,8 @@ export async function createEmail(
       parsed.error.issues,
     );
   const input = parsed.data;
+  if (input.template)
+    return fail("validation_error", "template is not supported yet (Phase 5).");
   const now = deps.now ?? new Date();
   const from = parseAddress(input.from);
   if (!from) return fail("validation_error", "from is not a valid address.");
@@ -135,15 +144,8 @@ export async function createEmail(
   if (!isList(to) || !isList(cc) || !isList(bcc) || !isList(replyTo))
     return fail("validation_error", "A recipient address is invalid.");
 
-  const domain = await resolveSendingDomain(ctx.teamId, from.email);
-  if (!domain)
-    return fail(
-      "domain_not_verified",
-      `No verified sending domain for ${from.email}.`,
-    );
-  if (ctx.keyDomainId && ctx.keyDomainId !== domain.id)
-    return fail("forbidden", "This API key is restricted to another domain.");
-
+  // Before the domain check: a retry after the domain was un-verified still
+  // gets the email it already created.
   if (input.idempotencyKey) {
     const [existing] = await db()
       .select()
@@ -155,7 +157,9 @@ export async function createEmail(
         ),
       );
     if (existing) {
-      // A purged body can no longer be compared; the key alone decides then.
+      // Tracking flags are not part of the fingerprint (lenient by design:
+      // the stored row's flags are reused so the html compares equal).
+      // A purged body can no longer be compared; subject + to decide then.
       const same = existing.bodyPurgedAt
         ? existing.subject === input.subject &&
           JSON.stringify([...existing.to].sort()) ===
@@ -175,6 +179,15 @@ export async function createEmail(
           );
     }
   }
+
+  const domain = await resolveSendingDomain(ctx.teamId, from.email);
+  if (!domain)
+    return fail(
+      "domain_not_verified",
+      `No verified sending domain for ${from.email}.`,
+    );
+  if (ctx.keyDomainId && ctx.keyDomainId !== domain.id)
+    return fail("forbidden", "This API key is restricted to another domain.");
 
   const sup = await isSuppressed(ctx.teamId, [...to, ...cc, ...bcc]);
   const blocking = sup.filter(
@@ -296,6 +309,10 @@ const pgCode = (e: unknown): string | undefined => {
  * failure the earlier items are already queued and stay so. The failure
  * carries `details.index` so the caller can tell which item stopped the
  * batch (the Phase 4 SDK surfaces the partial success).
+ *
+ * Memory: the whole batch is parsed up front, so 100 items x 10 MB of
+ * base64 attachments is the worst case; the REST layer must cap the request
+ * body (Task 12) rather than rely on this function to stream.
  */
 export async function createBatch(
   ctx: SendContext,
@@ -425,7 +442,7 @@ export async function cancelEmail(
     .returning();
   if (!row)
     return fail(
-      "validation_error",
+      "conflict",
       `Only queued or scheduled emails can be cancelled (status: ${current.status}).`,
     );
   await recordEvent({
@@ -441,7 +458,9 @@ export async function cancelEmail(
 const futureIso = z.iso.datetime({ offset: true });
 
 /**
- * Moves a `scheduled` email and sends a fresh delayed job. The earlier job
+ * Moves a `scheduled` email, records a `queued` event carrying the new time
+ * so the timeline shows the move, notifies the team and sends a fresh
+ * delayed job. The earlier job
  * still fires at the old time; the `email.send` handler sees `scheduledAt`
  * still in the future and skips it, so the stale job is harmless.
  */
@@ -474,9 +493,17 @@ export async function rescheduleEmail(
     .returning();
   if (!row)
     return fail(
-      "validation_error",
+      "conflict",
       `Only scheduled emails can be rescheduled (status: ${current.status}).`,
     );
+  await recordEvent({
+    emailId: id,
+    teamId,
+    type: "queued",
+    dedupeKey: `local:${id}:reschedule:${at.toISOString()}`,
+    payload: { rescheduledTo: at.toISOString() },
+  });
+  await notifyTeam(teamId, { type: "email", id });
   await deps.enqueue(Q.emailSend, { emailId: id }, delayOpts(at, now));
   return { ok: true, data: row };
 }

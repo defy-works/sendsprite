@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { ERROR_CODES, HTTP_STATUS } from "../src";
 import { SendEmailInput } from "../src/api/emails";
 
 const base = {
@@ -122,5 +123,14 @@ describe("SendEmailInput", () => {
     expect(
       SendEmailInput.parse({ ...base, tags: { "camp-1_a": "v" } }).tags,
     ).toEqual({ "camp-1_a": "v" });
+  });
+});
+
+describe("error codes", () => {
+  it("maps every code to an HTTP status; conflict codes are 409", () => {
+    for (const c of ERROR_CODES) expect(HTTP_STATUS[c]).toBeGreaterThan(399);
+    expect(HTTP_STATUS.conflict).toBe(409);
+    expect(HTTP_STATUS.idempotency_conflict).toBe(409);
+    expect(ERROR_CODES).toContain("conflict");
   });
 });

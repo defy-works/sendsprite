@@ -11,6 +11,7 @@ export const ERROR_CODES = [
   "monthly_quota_exceeded",
   "sandbox_restricted",
   "idempotency_conflict",
+  "conflict",
   "payload_too_large",
   "internal_error",
 ] as const;
@@ -32,6 +33,7 @@ export const HTTP_STATUS: Record<ErrorCode, number> = {
   monthly_quota_exceeded: 429,
   sandbox_restricted: 422,
   idempotency_conflict: 409,
+  conflict: 409,
   payload_too_large: 413,
   internal_error: 500,
 };
