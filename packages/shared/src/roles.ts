@@ -17,6 +17,7 @@ export const ACTIONS = [
   "campaigns.manage",
   "templates.manage",
   "settings.manage",
+  "billing.manage",
   "instance.manage",
 ] as const;
 export type Action = (typeof ACTIONS)[number];
@@ -39,6 +40,7 @@ const ADMIN: readonly Action[] = [
   "webhooks.manage",
   "campaigns.manage",
   "settings.manage",
+  "billing.manage",
 ];
 const OWNER: readonly Action[] = [...ADMIN, "team.delete", "instance.manage"];
 

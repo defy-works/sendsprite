@@ -33,3 +33,14 @@ describe("roles", () => {
     }
   });
 });
+
+describe("billing.manage", () => {
+  it("is a known action", () => {
+    expect(ACTIONS).toContain("billing.manage");
+  });
+  it("is owner and admin only — a member can look but not buy", () => {
+    expect(can("owner", "billing.manage")).toBe(true);
+    expect(can("admin", "billing.manage")).toBe(true);
+    expect(can("member", "billing.manage")).toBe(false);
+  });
+});

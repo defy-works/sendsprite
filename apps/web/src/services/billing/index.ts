@@ -1,11 +1,18 @@
 import { eq } from "drizzle-orm";
 import {
+  can,
   FREE_PLAN_METADATA,
   type BillingStateObject,
+  type TeamRole,
 } from "@sendsprite/shared";
 import { db } from "@/db";
 import { billingEvents, organization, teamBilling } from "@/db/schema";
-import { computeDiff, recordAudit, type AuditInput } from "@/lib/audit";
+import {
+  computeDiff,
+  recordAudit,
+  type AuditInput,
+  type RequestMeta,
+} from "@/lib/audit";
 import type { Result } from "@/lib/result";
 import { billingConfig, type BillingConfig } from "./config";
 import { createFakeProvider } from "./fake";
@@ -443,30 +450,80 @@ export async function applySubscription(
 
 // ------------------------------------------------------- checkout/portal
 
-/** Provider checkout URL for a plan, or a typed refusal. */
+/**
+ * The slice of the team context billing mutations need. `role` is not
+ * optional: a caller that cannot say who is acting cannot be allowed to buy,
+ * and making the gate a property of the actor is what keeps the check at the
+ * service seam rather than in one particular UI.
+ */
+export interface BillingActor {
+  teamId: string;
+  userId: string;
+  role: TeamRole;
+  /** Prefills the provider's checkout form when we know it. */
+  email?: string;
+  /** Client ip / UA for the audit row; absent outside a request. */
+  meta?: RequestMeta;
+}
+
+const DENIED: Result<never> = {
+  ok: false,
+  code: "forbidden",
+  error: "You don't have permission to do that.",
+};
+
+const DISABLED: Result<never> = {
+  ok: false,
+  code: "not_configured",
+  error: "Billing is not enabled on this instance.",
+};
+
+/**
+ * A provider that cannot be built or reached is an operator problem, not a
+ * customer one, and it deserves its own answer: `not_configured` is a 503 the
+ * caller can render as "come back later", where the generic `internal_error`
+ * reads as "your click was wrong". The provider's own message is logged, not
+ * shown — it names environment variables the person clicking cannot fix.
+ */
+const UNAVAILABLE: Result<never> = {
+  ok: false,
+  code: "not_configured",
+  error:
+    "Billing is unavailable: the payment provider is not configured correctly on this instance. Please contact support.",
+};
+
+const providerFailure = (what: string, e: unknown, fallback: Result<never>) => {
+  console.error(`[billing] ${what} failed`, e);
+  return e instanceof BillingUnavailableError ? UNAVAILABLE : fallback;
+};
+
+/**
+ * Provider checkout URL for a plan, or a typed refusal.
+ *
+ * The caller names a **plan**, never a product id: the id is resolved from the
+ * provider's own catalog, so a hand-crafted form post cannot subscribe a team
+ * to an arbitrary product. `provider` is the same injection seam
+ * `handleProviderEvent` takes as its first argument — production passes
+ * nothing and gets the configured one.
+ */
 export async function startCheckout(
-  actor: { teamId: string; userId: string; email?: string },
+  actor: BillingActor,
   plan: string,
+  provider?: BillingProvider,
 ): Promise<Result<{ url: string }>> {
   const cfg = billingConfig();
-  if (!cfg.enabled)
-    return {
-      ok: false,
-      error: "Billing is not enabled.",
-      code: "not_configured",
-    };
+  if (!cfg.enabled) return DISABLED;
+  if (!can(actor.role, "billing.manage")) return DENIED;
   try {
-    const provider = await getBillingProvider();
-    const product = (await provider.listPlanProducts()).find(
-      (p) => p.plan === plan,
-    );
+    const p = provider ?? (await getBillingProvider());
+    const product = (await p.listPlanProducts()).find((x) => x.plan === plan);
     if (!product)
       return {
         ok: false,
         error: `No product for plan "${plan}".`,
         code: "not_found",
       };
-    const { url } = await provider.createCheckout({
+    const { url } = await p.createCheckout({
       productId: product.productId,
       externalCustomerId: actor.teamId,
       ...(actor.email && { customerEmail: actor.email }),
@@ -475,33 +532,29 @@ export async function startCheckout(
     await recordAudit({
       teamId: actor.teamId,
       actorUserId: actor.userId,
+      ...actor.meta,
       action: "billing.checkout",
       targetType: "plan",
       targetId: plan,
     });
     return { ok: true, data: { url } };
   } catch (e) {
-    console.error("[billing] checkout failed", e);
-    return {
+    return providerFailure("checkout", e, {
       ok: false,
       error: "Could not start checkout. Please try again.",
       code: "internal_error",
-    };
+    });
   }
 }
 
 /** Provider customer-portal URL, or a typed refusal. */
-export async function openPortal(actor: {
-  teamId: string;
-  userId: string;
-}): Promise<Result<{ url: string }>> {
+export async function openPortal(
+  actor: BillingActor,
+  provider?: BillingProvider,
+): Promise<Result<{ url: string }>> {
   const cfg = billingConfig();
-  if (!cfg.enabled)
-    return {
-      ok: false,
-      error: "Billing is not enabled.",
-      code: "not_configured",
-    };
+  if (!cfg.enabled) return DISABLED;
+  if (!can(actor.role, "billing.manage")) return DENIED;
   const row = await billingRow(actor.teamId);
   if (!row?.providerCustomerId)
     return {
@@ -510,26 +563,26 @@ export async function openPortal(actor: {
       code: "not_found",
     };
   try {
-    const provider = await getBillingProvider();
-    const { url } = await provider.createPortalSession({
+    const p = provider ?? (await getBillingProvider());
+    const { url } = await p.createPortalSession({
       externalCustomerId: actor.teamId,
       returnUrl: cfg.returnUrl,
     });
     await recordAudit({
       teamId: actor.teamId,
       actorUserId: actor.userId,
+      ...actor.meta,
       action: "billing.portal",
       targetType: "subscription",
       targetId: row.subscriptionId ?? actor.teamId,
     });
     return { ok: true, data: { url } };
   } catch (e) {
-    console.error("[billing] portal failed", e);
-    return {
+    return providerFailure("portal", e, {
       ok: false,
       error: "Could not open the billing portal. Please try again.",
       code: "internal_error",
-    };
+    });
   }
 }
 
