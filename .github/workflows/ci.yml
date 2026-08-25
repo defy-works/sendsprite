@@ -1,7 +1,9 @@
 name: CI
 on:
   push:
-    branches: [main]
+    # Both names, so a push runs CI whichever the repository ends up using
+    # (the checkout is `master`; GitHub creates `main` for new repos).
+    branches: [main, master]
   pull_request:
 
 jobs:

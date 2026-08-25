@@ -19,6 +19,8 @@ the changelogs. Merging that PR publishes to npm.
 
 See <https://github.com/changesets/changesets> for the full format.
 
-`baseBranch` is `main`, matching the branch CI builds. `bun run changeset` on a
-checkout without a local `main` falls back to `bun run changeset -- --empty` (or
-fetch `main` first) — `changeset status` diffs against that branch.
+`baseBranch` is `master`, the branch this repository actually uses; both
+workflows trigger on `main` and `master`, so nothing breaks if the GitHub
+default ends up being `main`. If the branch is ever renamed, change
+`baseBranch` to match — `changeset status` and interactive `changeset add`
+diff against it and fail when it does not exist.
