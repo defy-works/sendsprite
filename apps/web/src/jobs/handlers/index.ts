@@ -7,3 +7,4 @@ import "./domain-verify";
 import "./email-send";
 import "./webhook-deliver";
 import "./retention-purge";
+import "./billing-meter";

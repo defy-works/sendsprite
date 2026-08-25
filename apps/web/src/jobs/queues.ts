@@ -10,5 +10,6 @@ export const Q = {
   webhookDeliver: "webhook.deliver",
   webhookRetrySweep: "webhook.retry-sweep",
   retentionPurge: "retention.purge",
+  billingMeterSweep: "billing.meter-sweep",
 } as const;
 export type QueueName = (typeof Q)[keyof typeof Q];
