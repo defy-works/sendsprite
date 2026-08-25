@@ -85,3 +85,18 @@ test("checkout sends the browser to the provider", async ({ page }) => {
   await expect.poll(() => seen.length, { timeout: 15_000 }).toBeGreaterThan(0);
   expect(seen[0]).toContain("/checkout/prod_pro");
 });
+
+test("the provider webhook endpoint is mounted and refuses an unsigned delivery", async ({
+  request,
+}) => {
+  // With billing off this route is a bare 404, and every other spec in the
+  // suite would see that; here it must exist. It must also refuse: nothing
+  // that has not been signature-verified is ever applied, so an unsigned POST
+  // is a 403 and not a 200 with `applied: false`.
+  const res = await request.post("/api/billing/webhook", {
+    data: { type: "subscription.updated", data: {} },
+  });
+  expect(res.status()).toBe(403);
+  const body = (await res.json()) as { error: { code: string } };
+  expect(body.error.code).toBe("forbidden");
+});

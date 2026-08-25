@@ -83,7 +83,8 @@ package or `zod` into your dependency tree.
 ## Docs
 
 Every instance serves its own documentation at `/docs` — getting started,
-self-hosting, domains, sending, API keys, webhooks, SDK, CLI, MCP server —
+self-hosting, domains, sending, API keys, webhooks, billing, SDK, CLI,
+MCP server —
 with an interactive API reference at `/docs/api` rendered from
 `/api/v1/openapi.json` (OpenAPI 3.1, generated from the same zod contracts the
 server validates with). The pages live in
@@ -291,7 +292,10 @@ that does not speak PROXY protocol every client shares one counter, so expose
   job re-queues itself, nothing is dropped) plus optional per-team daily and
   monthly caps (`team_settings.daily_limit` / `monthly_limit`, unset by
   default; UTC calendar windows → `429 daily_quota_exceeded` /
-  `monthly_quota_exceeded`). Email responses
+  `monthly_quota_exceeded`) and, on an instance with `BILLING_ENABLED=1`, the
+  subscription plan's included volume — measured over the billing period, not
+  the calendar month, and only where `team_settings` has not been set, which
+  always wins. Email responses
   carry `x-ratelimit-limit` and `x-ratelimit-remaining` (the team daily cap,
   else the SES 24 h quota, else `unlimited`); `x-ratelimit-reset` (next UTC
   midnight) is present only with a team daily cap.
@@ -362,27 +366,42 @@ default branch the release workflow runs `changesets/action`:
 
 ## Environment reference
 
-| Variable                                             | Default       | Notes                                                                        |
-| ---------------------------------------------------- | ------------- | ---------------------------------------------------------------------------- |
-| `APP_URL`                                            | —             | Public URL, with protocol                                                    |
-| `APP_SECRET`                                         | —             | ≥ 32 chars; encrypts stored credentials                                      |
-| `DATABASE_URL`                                       | —             | Postgres connection string                                                   |
-| `POSTGRES_PASSWORD`                                  | —             | Compose only; alphanumeric recommended (interpolated unencoded into URL)     |
-| `SIGNUP_MODE`                                        | `auto`        | `auto` → open until first user, then invite; or `open`/`invite`/`closed`     |
-| `EMAIL_PASSWORD_ENABLED`                             | `false`       | Email + password sign-in                                                     |
-| `GOOGLE_CLIENT_ID/SECRET`, `GITHUB_CLIENT_ID/SECRET` | —             | OAuth providers                                                              |
-| `WORKER_MODE`                                        | `inline`      | `inline` / `separate` / `none`                                               |
-| `SMTP_ENABLED`                                       | `true`        | SMTP relay (username anything, password = API key); AUTH requires STARTTLS   |
-| `SMTP_ALLOW_INSECURE_AUTH`                           | `false`       | Dev only: accept AUTH on a plain connection (the API key travels in clear)   |
-| `SMTP_PORT`                                          | `587`         | Relay port. Under compose: the host port, mapped onto 2587 in the container  |
-| `SMTP_TLS_CERT`, `SMTP_TLS_KEY`                      | —             | PEM paths for STARTTLS; unset → self-signed cert (clients must skip verify)  |
-| `SMTP_MAX_SIZE`                                      | `10485760`    | Max message size in bytes (552 above it)                                     |
-| `LANDING_ENABLED`                                    | `true`        | `false` sends `/` to `/app`                                                  |
-| `AWS_DEFAULT_REGION`                                 | `us-east-1`   | Region preselected in the AWS connect wizard                                 |
-| `CFN_TEMPLATE_URL`                                   | Sendsprite S3 | S3 URL of the one-click CloudFormation template (must be S3)                 |
-| `SOURCE_URL`                                         | this repo     | Source offered to users (AGPL §13); set it to yours if you modify the server |
-| `AWS_E2E_MOCK`                                       | —             | `1` swaps AWS clients for an in-memory fake; ignored in production (tests)   |
-| `AWS_E2E_VERIFY`                                     | —             | With the fake: `1` reports DKIM/MAIL FROM as SUCCESS (dev/test only)         |
+| Variable                                             | Default       | Notes                                                                                       |
+| ---------------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------- |
+| `APP_URL`                                            | —             | Public URL, with protocol                                                                   |
+| `APP_SECRET`                                         | —             | ≥ 32 chars; encrypts stored credentials                                                     |
+| `DATABASE_URL`                                       | —             | Postgres connection string                                                                  |
+| `POSTGRES_PASSWORD`                                  | —             | Compose only; alphanumeric recommended (interpolated unencoded into URL)                    |
+| `SIGNUP_MODE`                                        | `auto`        | `auto` → open until first user, then invite; or `open`/`invite`/`closed`                    |
+| `EMAIL_PASSWORD_ENABLED`                             | `false`       | Email + password sign-in                                                                    |
+| `GOOGLE_CLIENT_ID/SECRET`, `GITHUB_CLIENT_ID/SECRET` | —             | OAuth providers                                                                             |
+| `WORKER_MODE`                                        | `inline`      | `inline` / `separate` / `none`                                                              |
+| `SMTP_ENABLED`                                       | `true`        | SMTP relay (username anything, password = API key); AUTH requires STARTTLS                  |
+| `SMTP_ALLOW_INSECURE_AUTH`                           | `false`       | Dev only: accept AUTH on a plain connection (the API key travels in clear)                  |
+| `SMTP_PORT`                                          | `587`         | Relay port. Under compose: the host port, mapped onto 2587 in the container                 |
+| `SMTP_TLS_CERT`, `SMTP_TLS_KEY`                      | —             | PEM paths for STARTTLS; unset → self-signed cert (clients must skip verify)                 |
+| `SMTP_MAX_SIZE`                                      | `10485760`    | Max message size in bytes (552 above it)                                                    |
+| `LANDING_ENABLED`                                    | `true`        | `false` sends `/` to `/app`                                                                 |
+| `AWS_DEFAULT_REGION`                                 | `us-east-1`   | Region preselected in the AWS connect wizard                                                |
+| `CFN_TEMPLATE_URL`                                   | Sendsprite S3 | S3 URL of the one-click CloudFormation template (must be S3)                                |
+| `SOURCE_URL`                                         | this repo     | Source offered to users (AGPL §13); set it to yours if you modify the server                |
+| `AWS_E2E_MOCK`                                       | —             | `1` swaps AWS clients for an in-memory fake; ignored in production (tests)                  |
+| `AWS_E2E_VERIFY`                                     | —             | With the fake: `1` reports DKIM/MAIL FROM as SUCCESS (dev/test only)                        |
+| `BILLING_ENABLED`                                    | `false`       | Hosted-service billing. Off: no Billing page, no checkout, no webhook route, no plan limits |
+| `POLAR_ACCESS_TOKEN`                                 | —             | Polar organization token; required when billing is on                                       |
+| `POLAR_WEBHOOK_SECRET`                               | —             | Polar webhook signing secret; required when billing is on                                   |
+| `POLAR_SERVER`                                       | `production`  | `sandbox` while developing                                                                  |
+| `POLAR_METER_ID`                                     | —             | Optional, display only: shows Polar's own meter balance on the billing page                 |
+
+Billing is a hosted-service feature and is off by default; a self-hosted
+instance never loads the payment SDK and never registers the billing job.
+Plans are read from the provider's product metadata (`plan`,
+`included_emails`, `overage_per_1k_cents`), so prices change in the Polar
+dashboard without a deploy — no product id is compiled in. Turning the flag
+on an instance that already has teams caps every one of them at the Free
+allowance retroactively; grandfather them first — the runbook is in
+[`/docs/self-hosting`](apps/web/src/app/docs/self-hosting/page.mdx), under
+"Turning billing on".
 
 SMTP login throttling is per remote IP (5 failed logins → 10 minute lockout)
 and per process. Behind a proxy or load balancer that does not speak PROXY
@@ -403,8 +422,9 @@ only the default until a landing value is saved.
 Phase 1: foundation — done. Phase 2: AWS one-click connect, Cloudflare,
 domains — done. Phase 3: sending API, events, webhooks, tracking, SMTP relay —
 done. Phase 4: SDK, CLI, MCP, OpenAPI, `/docs`, landing page, release
-pipeline — done. Phase 5 (next): templates, preview, contacts, campaigns,
-audit UI.
+pipeline — done. Phase 5: billing — plans, usage metering, entitlements,
+`BILLING_ENABLED` — done. Phase 6 (next): templates, preview, contacts,
+campaigns, audit UI.
 Design: `docs/superpowers/specs/2026-08-24-sendsprite-design.md`.
 
 ## Licensing
