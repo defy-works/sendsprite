@@ -322,13 +322,131 @@ describe("Sendsprite client core", () => {
   });
 
   it("reads SENDSPRITE_API_KEY / SENDSPRITE_URL when options are omitted", () => {
-    process.env.SENDSPRITE_API_KEY = "ss_live_env";
-    process.env.SENDSPRITE_URL = "https://env.example";
-    const c = new Sendsprite();
-    expect(c.baseUrl).toBe("https://env.example");
-    delete process.env.SENDSPRITE_API_KEY;
-    delete process.env.SENDSPRITE_URL;
-    expect(() => new Sendsprite()).toThrow(/apiKey/);
-    expect(() => new Sendsprite({ apiKey: "k" })).toThrow(/baseUrl/);
+    vi.stubEnv("SENDSPRITE_API_KEY", "ss_live_env");
+    vi.stubEnv("SENDSPRITE_URL", "https://env.example");
+    try {
+      const c = new Sendsprite();
+      expect(c.baseUrl).toBe("https://env.example");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    vi.stubEnv("SENDSPRITE_API_KEY", undefined);
+    vi.stubEnv("SENDSPRITE_URL", undefined);
+    try {
+      expect(() => new Sendsprite()).toThrow(/apiKey/);
+      expect(() => new Sendsprite({ apiKey: "k" })).toThrow(/baseUrl/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe("review fix-ups", () => {
+  const json = (body: unknown, init: ResponseInit = {}) =>
+    new Response(JSON.stringify(body), { status: 200, ...init });
+
+  it("calls fetch without the client as receiver (browser-safe)", async () => {
+    const fetch = vi.fn(function (this: unknown, ..._args: unknown[]) {
+      expect(this === undefined || this === globalThis).toBe(true);
+      return Promise.resolve(json({ ok: 1 }));
+    }) as unknown as typeof globalThis.fetch;
+    const c = new Sendsprite({ apiKey: "k", baseUrl: "https://x", fetch });
+    await expect(c.request("GET", "/me")).resolves.toEqual({ ok: 1 });
+  });
+
+  it("caps retry-after at 60 s and accepts an HTTP-date", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValueOnce(
+          new Response("{}", {
+            status: 503,
+            headers: { "retry-after": "600" },
+          }),
+        )
+        .mockResolvedValueOnce(
+          new Response("{}", {
+            status: 503,
+            headers: {
+              "retry-after": new Date(Date.now() + 5_000).toUTCString(),
+            },
+          }),
+        )
+        .mockResolvedValueOnce(json({ ok: 1 }));
+      const c = new Sendsprite({
+        apiKey: "k",
+        baseUrl: "https://x",
+        fetch,
+        maxRetries: 2,
+      });
+      const p = c.request("GET", "/me");
+      await vi.advanceTimersByTimeAsync(59_000);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1_100);
+      expect(fetch).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(5_100);
+      expect(fetch).toHaveBeenCalledTimes(3);
+      await expect(p).resolves.toEqual({ ok: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("aborting during the backoff sleep throws promptly", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(
+          new Response("{}", { status: 503, headers: { "retry-after": "30" } }),
+        );
+      const c = new Sendsprite({ apiKey: "k", baseUrl: "https://x", fetch });
+      const ac = new AbortController();
+      const p = c.request("GET", "/me", { signal: ac.signal }).catch((e) => e);
+      await vi.advanceTimersByTimeAsync(10);
+      ac.abort();
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(p).resolves.toMatchObject({ status: 503 });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("2xx with an empty body resolves undefined; non-JSON 2xx is a SendspriteError", async () => {
+    let fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response(null, { status: 200 }));
+    let c = new Sendsprite({ apiKey: "k", baseUrl: "https://x", fetch });
+    await expect(c.request("GET", "/me")).resolves.toBeUndefined();
+
+    fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response("<html>", { status: 200 }));
+    c = new Sendsprite({ apiKey: "k", baseUrl: "https://x", fetch });
+    await expect(c.request("GET", "/me")).rejects.toBeInstanceOf(
+      SendspriteError,
+    );
+  });
+
+  it("maps a bare 409 to conflict and treats 501/505 as non-retryable", async () => {
+    let fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response("", { status: 409 }));
+    let c = new Sendsprite({ apiKey: "k", baseUrl: "https://x", fetch });
+    await expect(c.request("GET", "/me")).rejects.toMatchObject({
+      code: "conflict",
+    });
+    for (const status of [501, 505]) {
+      fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(new Response("", { status }));
+      c = new Sendsprite({ apiKey: "k", baseUrl: "https://x", fetch });
+      const err = await c.request("GET", "/me").catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(SendspriteError);
+      expect((err as SendspriteError).retryable).toBe(false);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    }
   });
 });

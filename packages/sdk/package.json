@@ -56,19 +56,19 @@
     "prepublishOnly": "bun run build"
   },
   "dependencies": {
-    "commander": "^15.0.0",
-    "eventsource": "^5.1.1"
+    "commander": "^15.0.0"
   },
   "devDependencies": {
-    "@sendsprite/shared": "workspace:*",
     "@react-email/components": "^1.0.12",
     "@react-email/render": "^2.1.0",
+    "@sendsprite/shared": "workspace:*",
     "@types/node": "^22.19.0",
     "@types/react": "^19.2.18",
+    "bun-types": "^1.2.0",
     "react": "^19.2.8",
     "tsup": "^8.5.1",
     "vitest": "^4.1.0",
-    "bun-types": "^1.2.0"
+    "zod": "^4.4.3"
   },
   "peerDependencies": {
     "@react-email/components": ">=0.0.30",

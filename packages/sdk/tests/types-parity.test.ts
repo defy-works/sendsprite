@@ -1,0 +1,191 @@
+/**
+ * The SDK ships hand-written types (`src/types.ts`) so its `.d.ts` has no
+ * dependency on the private `@sendsprite/shared` package or on zod. This file
+ * pins them to the shared zod contracts:
+ *
+ * - compile-time: every SDK type must be mutually assignable with the schema
+ *   type it mirrors (inputs → `z.input`, response objects → `z.output`), so
+ *   `bun run typecheck` fails when either side drifts;
+ * - run-time: the enum unions are checked against the shared constant arrays.
+ */
+import * as shared from "@sendsprite/shared";
+import { describe, expect, it } from "vitest";
+import type { z } from "zod";
+import type * as sdk from "../src/types";
+
+type Mutual<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+type In<S extends z.ZodType> = z.input<S>;
+type Out<S extends z.ZodType> = z.output<S>;
+
+// Each entry must be `true`; a mismatch turns the tuple element into `false`
+// and the annotation below fails to compile.
+type Checks = [
+  Mutual<sdk.ErrorCode, shared.ErrorCode>,
+  Mutual<sdk.EmailStatus, shared.EmailStatus>,
+  Mutual<sdk.EmailEventType, shared.EmailEventType>,
+  Mutual<sdk.AttachmentInput, In<typeof shared.AttachmentInput>>,
+  Mutual<sdk.SendEmailInput, In<typeof shared.SendEmailInput>>,
+  Mutual<sdk.BatchSendInput, In<typeof shared.BatchSendInput>>,
+  Mutual<sdk.EmailObject, Out<typeof shared.EmailObject>>,
+  Mutual<sdk.EmailEventObject, Out<typeof shared.EmailEventObject>>,
+  Mutual<sdk.EmailDetail, Out<typeof shared.EmailDetail>>,
+  Mutual<sdk.PatchEmailInput, In<typeof shared.PatchEmailInput>>,
+  // `z.coerce.number()` accepts `unknown` on input; the SDK deliberately
+  // narrows `limit` to `number`, so compare the parsed (output) shapes.
+  Mutual<
+    Required<sdk.ListEmailsParams>,
+    Required<Out<typeof shared.ListQuery>>
+  >,
+  Mutual<Required<sdk.PageParams>, Required<Out<typeof shared.PageQuery>>>,
+  Mutual<sdk.DomainStatus, shared.DomainStatus>,
+  Mutual<sdk.DnsMode, shared.DnsMode>,
+  Mutual<sdk.DnsRecordKind, shared.DnsRecordKind>,
+  Mutual<sdk.CreateDomainInput, In<typeof shared.CreateDomainInput>>,
+  Mutual<sdk.DnsRecordObject, Out<typeof shared.DnsRecordObject>>,
+  Mutual<sdk.DomainObject, Out<typeof shared.DomainObject>>,
+  Mutual<sdk.ApiKeyPermission, shared.ApiKeyPermission>,
+  Mutual<sdk.CreateApiKeyInput, In<typeof shared.CreateApiKeyInput>>,
+  Mutual<sdk.ApiKeyObject, Out<typeof shared.ApiKeyObject>>,
+  Mutual<sdk.ApiKeyCreated, Out<typeof shared.ApiKeyCreated>>,
+  Mutual<sdk.WebhookEventType, shared.WebhookEventType>,
+  Mutual<sdk.WebhookPayload, shared.WebhookPayload>,
+  Mutual<sdk.CreateWebhookInput, In<typeof shared.CreateWebhookInput>>,
+  Mutual<sdk.UpdateWebhookInput, In<typeof shared.UpdateWebhookInput>>,
+  Mutual<sdk.WebhookObject, Out<typeof shared.WebhookObject>>,
+  Mutual<sdk.WebhookCreated, Out<typeof shared.WebhookCreated>>,
+  Mutual<sdk.WebhookTestAccepted, Out<typeof shared.WebhookTestAccepted>>,
+  Mutual<sdk.SuppressionReason, shared.SuppressionReason>,
+  Mutual<sdk.AddSuppressionInput, In<typeof shared.AddSuppressionInput>>,
+  Mutual<sdk.SuppressionObject, Out<typeof shared.SuppressionObject>>,
+  Mutual<sdk.SendStatsObject, Out<typeof shared.SendStatsObject>>,
+  Mutual<sdk.MeObject, Out<typeof shared.MeObject>>,
+  Mutual<sdk.StreamChange, Out<typeof shared.StreamChange>>,
+];
+const allTrue: Checks = [
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+];
+
+describe("SDK types mirror @sendsprite/shared", () => {
+  it("compile-time parity checks are all true", () => {
+    expect(allTrue.every(Boolean)).toBe(true);
+  });
+
+  it("enum unions match the shared constant arrays", () => {
+    // Exhaustiveness is enforced by the `Record<union, true>` annotations:
+    // adding a member to a shared array without adding it here fails typecheck.
+    const emailStatus: Record<sdk.EmailStatus, true> = {
+      queued: true,
+      scheduled: true,
+      sending: true,
+      sent: true,
+      delivered: true,
+      bounced: true,
+      complained: true,
+      failed: true,
+      cancelled: true,
+    };
+    expect(Object.keys(emailStatus).sort()).toEqual(
+      [...shared.EMAIL_STATUS].sort(),
+    );
+    const eventTypes: Record<sdk.EmailEventType, true> = {
+      queued: true,
+      sent: true,
+      delivered: true,
+      delivery_delayed: true,
+      bounced: true,
+      complained: true,
+      rejected: true,
+      opened: true,
+      clicked: true,
+      failed: true,
+      cancelled: true,
+    };
+    expect(Object.keys(eventTypes).sort()).toEqual(
+      [...shared.EMAIL_EVENT_TYPES].sort(),
+    );
+    const errorCodes: Record<sdk.ErrorCode, true> = {
+      validation_error: true,
+      unauthorized: true,
+      forbidden: true,
+      not_found: true,
+      domain_not_verified: true,
+      suppressed_recipient: true,
+      rate_limited: true,
+      daily_quota_exceeded: true,
+      monthly_quota_exceeded: true,
+      sandbox_restricted: true,
+      idempotency_conflict: true,
+      conflict: true,
+      payload_too_large: true,
+      not_configured: true,
+      internal_error: true,
+    };
+    expect(Object.keys(errorCodes).sort()).toEqual(
+      [...shared.ERROR_CODES].sort(),
+    );
+    const webhookEvents: Record<sdk.WebhookEventType, true> = {
+      "email.sent": true,
+      "email.delivered": true,
+      "email.delayed": true,
+      "email.bounced": true,
+      "email.complained": true,
+      "email.opened": true,
+      "email.clicked": true,
+      "email.failed": true,
+      "contact.created": true,
+      "contact.updated": true,
+      "contact.unsubscribed": true,
+      "contact.resubscribed": true,
+      "domain.verified": true,
+      "domain.failed": true,
+      "campaign.sent": true,
+      "campaign.completed": true,
+    };
+    expect(Object.keys(webhookEvents).sort()).toEqual(
+      [...shared.WEBHOOK_EVENT_TYPES].sort(),
+    );
+    const dnsKinds: Record<sdk.DnsRecordKind, true> = {
+      DKIM: true,
+      MAIL_FROM_MX: true,
+      MAIL_FROM_SPF: true,
+      DMARC: true,
+    };
+    expect(Object.keys(dnsKinds).sort()).toEqual(
+      [...shared.DNS_RECORD_KINDS].sort(),
+    );
+  });
+});

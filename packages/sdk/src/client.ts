@@ -28,6 +28,8 @@ export interface RequestOptions {
 
 const BASE_DELAY_MS = 500;
 const MAX_DELAY_MS = 8_000;
+/** Upper bound honoured for a server-sent `retry-after`. */
+const MAX_RETRY_AFTER_MS = 60_000;
 
 export class HttpClient {
   readonly baseUrl: string;
@@ -53,7 +55,10 @@ export class HttpClient {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
     this.maxRetries = options.maxRetries ?? 2;
     this.timeoutMs = options.timeoutMs ?? 30_000;
-    this.fetchImpl = options.fetch ?? globalThis.fetch;
+    // Browsers throw "Illegal invocation" when `fetch` is called with a
+    // receiver other than `window`, so never call it as `this.fetchImpl(...)`
+    // with an unbound global.
+    this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
 
   /** Perform one API call against `/api/v1<path>`, retrying per the options. */
@@ -62,41 +67,86 @@ export class HttpClient {
     path: string,
     options: RequestOptions = {},
   ): Promise<T> {
-    const url = new URL(`${this.baseUrl}/api/v1${path}`);
-    for (const [key, value] of Object.entries(options.query ?? {})) {
-      if (value !== undefined) url.searchParams.set(key, String(value));
-    }
+    const url = this.url(path, options.query);
     const retry = options.retry ?? method.toUpperCase() !== "POST";
+    const body =
+      options.body === undefined ? undefined : JSON.stringify(options.body);
 
     for (let attempt = 0; ; attempt++) {
-      const outcome = await this.attempt(method, url, options);
+      const outcome = await this.attempt(method, url, body, options.signal);
 
       if (outcome.ok) return outcome.value as T;
 
       const { error, retryAfterMs } = outcome;
       const exhausted = attempt >= this.maxRetries;
-      const cancelled = options.signal?.aborted === true;
-      if (!retry || !error.retryable || exhausted || cancelled) throw error;
+      if (
+        !retry ||
+        !error.retryable ||
+        exhausted ||
+        options.signal?.aborted === true
+      ) {
+        throw error;
+      }
 
-      await sleep(retryAfterMs ?? backoffMs(attempt));
+      await sleep(retryAfterMs ?? backoffMs(attempt), options.signal);
+      if (options.signal?.aborted) throw error;
     }
+  }
+
+  /**
+   * One authenticated fetch of `/api/v1<path>` without retry, timeout or JSON
+   * parsing — for long-lived responses such as the SSE stream. A non-2xx
+   * status is mapped to a `SendspriteError` exactly like `request()`.
+   */
+  async raw(
+    method: string,
+    path: string,
+    headers: Record<string, string>,
+    signal?: AbortSignal,
+  ): Promise<Response> {
+    const fetchImpl = this.fetchImpl;
+    const res = await fetchImpl(this.url(path).toString(), {
+      method,
+      headers: { ...this.headers(false), ...headers },
+      signal,
+    });
+    if (!res.ok) throw await responseError(res);
+    return res;
+  }
+
+  private url(path: string, query?: RequestOptions["query"]): URL {
+    const url = new URL(`${this.baseUrl}/api/v1${path}`);
+    for (const [key, value] of Object.entries(query ?? {})) {
+      if (value !== undefined) url.searchParams.set(key, String(value));
+    }
+    return url;
+  }
+
+  private headers(hasBody: boolean): Record<string, string> {
+    const headers: Record<string, string> = {
+      authorization: `Bearer ${this.apiKey}`,
+      "user-agent": `sendsprite-node/${SDK_VERSION}`,
+      accept: "application/json",
+    };
+    if (hasBody) headers["content-type"] = "application/json";
+    return headers;
   }
 
   private async attempt(
     method: string,
     url: URL,
-    options: RequestOptions,
+    body: string | undefined,
+    signal: AbortSignal | undefined,
   ): Promise<Attempt> {
     let res: Response;
     try {
-      res = await this.send(method, url, options);
+      res = await this.send(method, url, body, signal);
     } catch (cause) {
       return { ok: false, error: networkError(cause), retryAfterMs: null };
     }
 
     if (res.ok) {
-      const value = res.status === 204 ? undefined : await res.json();
-      return { ok: true, value };
+      return { ok: true, value: await successBody(res) };
     }
     return {
       ok: false,
@@ -108,34 +158,27 @@ export class HttpClient {
   private send(
     method: string,
     url: URL,
-    options: RequestOptions,
+    body: string | undefined,
+    signal: AbortSignal | undefined,
   ): Promise<Response> {
     const controller = new AbortController();
     const timer = setTimeout(
       () => controller.abort(new Error("Request timed out")),
       this.timeoutMs,
     );
-    const onOuterAbort = () => controller.abort(options.signal?.reason);
-    if (options.signal?.aborted) onOuterAbort();
-    else
-      options.signal?.addEventListener("abort", onOuterAbort, { once: true });
+    const onOuterAbort = () => controller.abort(signal?.reason);
+    if (signal?.aborted) onOuterAbort();
+    else signal?.addEventListener("abort", onOuterAbort, { once: true });
 
-    const headers: Record<string, string> = {
-      authorization: `Bearer ${this.apiKey}`,
-      "user-agent": `sendsprite-node/${SDK_VERSION}`,
-      accept: "application/json",
-    };
-    const hasBody = options.body !== undefined;
-    if (hasBody) headers["content-type"] = "application/json";
-
-    return this.fetchImpl(url.toString(), {
+    const fetchImpl = this.fetchImpl;
+    return fetchImpl(url.toString(), {
       method,
-      headers,
-      body: hasBody ? JSON.stringify(options.body) : undefined,
+      headers: this.headers(body !== undefined),
+      body,
       signal: controller.signal,
     }).finally(() => {
       clearTimeout(timer);
-      options.signal?.removeEventListener("abort", onOuterAbort);
+      signal?.removeEventListener("abort", onOuterAbort);
     });
   }
 }
@@ -151,19 +194,60 @@ function backoffMs(attempt: number): number {
   return base * jitter;
 }
 
-/** `retry-after` in seconds → ms; `null` when absent or unparsable. */
+/**
+ * `retry-after` as delay-seconds or an HTTP-date → ms, capped at 60 s;
+ * `null` when absent or unparsable.
+ */
 function parseRetryAfter(header: string | null): number | null {
   if (header === null) return null;
   const seconds = Number(header);
-  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null;
+  let ms: number;
+  if (Number.isFinite(seconds)) ms = seconds * 1000;
+  else {
+    const at = Date.parse(header);
+    if (Number.isNaN(at)) return null;
+    ms = at - Date.now();
+  }
+  return ms > 0 ? Math.min(ms, MAX_RETRY_AFTER_MS) : null;
 }
 
-const sleep = (ms: number) =>
-  new Promise<void>((resolve) => setTimeout(resolve, ms));
+/** Sleep that returns early when `signal` aborts. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (signal?.aborted) return resolve();
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    function onAbort() {
+      clearTimeout(timer);
+      resolve();
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 function networkError(cause: unknown): SendspriteError {
   const message = cause instanceof Error ? cause.message : String(cause);
   return new SendspriteError("network_error", message, null);
+}
+
+/** 2xx body: `undefined` for 204/empty, parsed JSON otherwise. */
+async function successBody(res: Response): Promise<unknown> {
+  if (res.status === 204) return undefined;
+  const text = await res.text();
+  if (text === "") return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new SendspriteError(
+      "internal_error",
+      `Expected a JSON response body (HTTP ${res.status})`,
+      res.status,
+      undefined,
+      res.headers.get("x-request-id"),
+    );
+  }
 }
 
 interface ErrorEnvelope {
@@ -191,6 +275,8 @@ function fallbackCode(status: number): SendspriteErrorCode {
   if (status === 401) return "unauthorized";
   if (status === 403) return "forbidden";
   if (status === 404) return "not_found";
+  if (status === 409) return "conflict";
+  if (status === 413) return "payload_too_large";
   return "validation_error";
 }
 

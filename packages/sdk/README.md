@@ -49,12 +49,63 @@ try {
 }
 ```
 
+### Resources
+
+```ts
+const { id } = await sendsprite.emails.send({
+  from: "Acme <hello@mail.acme.com>",
+  to: "ada@example.com",
+  subject: "Welcome",
+  html: "<p>Hi Ada</p>",
+  idempotencyKey: "welcome-ada-1", // optional; makes the send safely retryable
+});
+const email = await sendsprite.emails.get(id);
+for await (const e of sendsprite.emails.iterate({ status: "delivered" })) {
+  console.log(e.id);
+}
+
+await sendsprite.domains.create({ name: "mail.acme.com" });
+await sendsprite.webhooks.create({
+  url: "https://acme.com/hooks",
+  events: ["email.delivered"],
+});
+await sendsprite.suppressions.add({ email: "bounce@example.com" });
+const key = await sendsprite.apiKeys.create({ name: "ci" }); // `key.secret`
+const stats = await sendsprite.stats();
+const me = await sendsprite.me();
+```
+
+Every `list()` returns `{ data, nextCursor }` and accepts `{ limit, cursor }`;
+`emails.iterate()` walks all pages for you.
+
+### Live changes
+
+```ts
+const stream = sendsprite.stream({
+  onChange: ({ type, id }) => console.log(type, id),
+  onError: (err) => console.warn("reconnecting after", err.code),
+});
+// later
+stream.close();
+await stream.done;
+```
+
+`stream()` connects to `GET /api/v1/stream` (server-sent events) and needs a
+`full` key. Dropped connections are re-established with backoff unless
+`reconnect: false`; pass a `signal` to close it from an `AbortController`.
+
 ### Retries
 
 Requests that fail with 429, 5xx or a network error are retried with
 exponential backoff (500 ms · 2ⁿ ± 20 %, capped at 8 s) and honour
-`retry-after`. `POST` requests are not retried unless `retry: true` is
-passed — the resource helpers do this for calls that are safe to repeat.
+`retry-after` (seconds or HTTP-date, capped at 60 s). `POST` requests are
+not retried unless `retry: true` is passed — the resource helpers do this for
+calls that are safe to repeat (`cancel`, `verify`, `test`, and sends with an
+`idempotencyKey`).
+
+`request(method, path, { body, query, retry, signal })` is the escape hatch
+for endpoints without a helper; `signal` aborts both the in-flight fetch and
+any pending retry delay.
 
 ## License
 

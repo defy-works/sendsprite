@@ -1,4 +1,4 @@
-import type { ErrorCode } from "@sendsprite/shared";
+import type { ErrorCode } from "./types";
 
 /** Every REST error code plus `network_error` (no response was received). */
 export type SendspriteErrorCode = ErrorCode | "network_error";
@@ -20,8 +20,12 @@ export class SendspriteError extends Error {
     super(message);
   }
 
-  /** True for network errors, 429 and 5xx: the request may be retried as-is. */
+  /**
+   * True for network errors, 429 and 5xx: the request may be retried as-is.
+   * 501 (not implemented) and 505 (unsupported HTTP version) are permanent.
+   */
   get retryable(): boolean {
-    return this.status === null || this.status === 429 || this.status >= 500;
+    if (this.status === null || this.status === 429) return true;
+    return this.status >= 500 && this.status !== 501 && this.status !== 505;
   }
 }
