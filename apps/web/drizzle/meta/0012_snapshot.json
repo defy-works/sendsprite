@@ -1,5 +1,5 @@
 {
-  "id": "6975c8e0-2ed5-4199-bcc4-8532ce2aaf7c",
+  "id": "c19b3bd9-820f-4339-b97e-35c495c98d28",
   "prevId": "5274bd8d-ec4c-4a65-aac7-f5b0086299be",
   "version": "7",
   "dialect": "postgresql",
@@ -2447,7 +2447,7 @@
         },
         "period_start": {
           "name": "period_start",
-          "type": "timestamp with time zone",
+          "type": "timestamp (3) with time zone",
           "primaryKey": false,
           "notNull": true
         },
@@ -2585,7 +2585,7 @@
         },
         "period_start": {
           "name": "period_start",
-          "type": "timestamp with time zone",
+          "type": "timestamp (3) with time zone",
           "primaryKey": false,
           "notNull": true
         },
@@ -2597,13 +2597,19 @@
         },
         "provider_modified_at": {
           "name": "provider_modified_at",
-          "type": "timestamp with time zone",
+          "type": "timestamp (3) with time zone",
           "primaryKey": false,
           "notNull": true
         },
         "past_due_at": {
           "name": "past_due_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_order_paid_at": {
+          "name": "last_order_paid_at",
+          "type": "timestamp (3) with time zone",
           "primaryKey": false,
           "notNull": false
         },

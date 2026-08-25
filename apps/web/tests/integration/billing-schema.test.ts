@@ -64,6 +64,29 @@ describe("billing schema", () => {
       .values({ ...row, periodStart: new Date("2026-09-01T00:00:00Z") });
   });
 
+  // Migration 0011 exists because a µs/ms mismatch silently skipped rows.
+  // These four columns are compared to each other or ordered against a value
+  // that has been through a JS `Date`, so lock the precision down rather than
+  // trusting the next `db:generate` to preserve it.
+  it("stores millisecond precision on the compared timestamps", async () => {
+    const { sql } = await import("drizzle-orm");
+    const rows = await pg.db.execute(
+      sql`select table_name, column_name, datetime_precision
+          from information_schema.columns
+          where table_schema = 'public'
+            and (table_name, column_name) in (
+              ('team_billing', 'period_start'),
+              ('team_billing', 'provider_modified_at'),
+              ('team_billing', 'last_order_paid_at'),
+              ('billing_usage', 'period_start'),
+              ('billing_events', 'created_at')
+            )
+          order by table_name, column_name`,
+    );
+    expect(rows).toHaveLength(5);
+    for (const r of rows) expect(r.datetime_precision).toBe(3);
+  });
+
   it("billing_events rejects a duplicate delivery id (the idempotency key)", async () => {
     const { db } = await import("@/db");
     const { billingEvents } = await import("@/db/schema");

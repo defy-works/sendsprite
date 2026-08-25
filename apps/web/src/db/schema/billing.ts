@@ -34,18 +34,50 @@ export const teamBilling = pgTable("team_billing", {
   plan: text("plan", { enum: PLANS }).notNull().default("free"),
   /** Provider status verbatim (`active`, `past_due`, …); null before any subscription. */
   status: text("status"),
+  /**
+   * Deliberately `notNull()` with **no** DB default: drizzle types a column
+   * like this as *required* in `$inferInsert`, so an upsert that forgets the
+   * allowance fails to compile. A `DEFAULT 3000` would instead be silently
+   * accepted and cap a paying Scale customer at the Free allowance.
+   */
   includedEmails: integer("included_emails").notNull(),
   overagePer1kCents: integer("overage_per_1k_cents").notNull().default(0),
   /** The subscription carries a metered price → no hard monthly cap. */
   overageEnabled: boolean("overage_enabled").notNull().default(false),
   cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
-  periodStart: timestamp("period_start", { withTimezone: true }).notNull(),
+  // Millisecond precision, matching `billing_events.created_at` and the rule
+  // migration 0011 established: this value is compared for equality against
+  // `billing_usage.period_start` and round-trips through a JS `Date` (ms), so
+  // a microsecond column could make the two tables disagree about one period.
+  periodStart: timestamp("period_start", {
+    withTimezone: true,
+    precision: 3,
+  }).notNull(),
   periodEnd: timestamp("period_end", { withTimezone: true }).notNull(),
-  /** `modified_at` of the newest provider payload applied; ordering guard. */
+  /**
+   * `modified_at` of the newest provider payload applied; the ordering guard
+   * that drops an out-of-order webhook. Millisecond precision because it is
+   * compared with `<` against a value that has been through a JS `Date`.
+   */
   providerModifiedAt: timestamp("provider_modified_at", {
     withTimezone: true,
+    precision: 3,
   }).notNull(),
+  /** When the past-due grace clock started; null while not past due. */
   pastDueAt: timestamp("past_due_at", { withTimezone: true }),
+  /**
+   * `paid_at` of the newest `order.paid` applied — the ordering guard for
+   * *clearing* `pastDueAt`. Without it, a late or replayed `order.paid` for an
+   * earlier invoice, arriving after the subscription has gone `past_due`
+   * again, would reset the grace clock and buy another week of paid caps on a
+   * dead card. Task 6 clears `pastDueAt` only when the incoming `paid_at` is
+   * newer than this. Millisecond precision for the same reason as
+   * `providerModifiedAt`: it is a `<` guard against a JS `Date`.
+   */
+  lastOrderPaidAt: timestamp("last_order_paid_at", {
+    withTimezone: true,
+    precision: 3,
+  }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -70,7 +102,13 @@ export const billingUsage = pgTable(
     teamId: text("team_id")
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
-    periodStart: timestamp("period_start", { withTimezone: true }).notNull(),
+    // Millisecond precision: half the primary key, and matched for equality
+    // against `team_billing.period_start`. Both sides must round-trip through
+    // a JS `Date` identically or a lookup silently misses its row.
+    periodStart: timestamp("period_start", {
+      withTimezone: true,
+      precision: 3,
+    }).notNull(),
     periodEnd: timestamp("period_end", { withTimezone: true }).notNull(),
     reportedThrough: timestamp("reported_through", { withTimezone: true }),
     reportedUnits: integer("reported_units").notNull().default(0),
@@ -94,6 +132,19 @@ export type BillingUsage = typeof billingUsage.$inferSelect;
  * `onConflictDoNothing` — no lookup, no race between two replicas handling
  * the same retry. Never key on the resource id: `order.created` and
  * `order.paid` share one.
+ *
+ * **The insert and the `appliedAt` / `skippedReason` update belong in one
+ * transaction** (Task 6). Run as two statements they open a crash window: die
+ * between them and the row exists — so every retry short-circuits as a
+ * duplicate — while the event was never applied, silently losing a
+ * subscription change. A transaction is atomic and needs no recovery sweep:
+ * the provider retries on a non-2xx, so a rolled-back delivery is simply
+ * redelivered and its dedupe key is free again.
+ *
+ * `teamId` deliberately carries **no** foreign key: the row is written before
+ * the team is resolved (so an FK would make the endpoint retry a delivery it
+ * can never store), and a cascade would erase the very idempotency keys this
+ * table exists to hold. `audit.ts` is the house precedent.
  */
 export const billingEvents = pgTable(
   "billing_events",
@@ -107,6 +158,12 @@ export const billingEvents = pgTable(
     appliedAt: timestamp("applied_at", { withTimezone: true }),
     /** Why it was skipped (stale, unknown team, unmodelled type). */
     skippedReason: text("skipped_reason"),
+    /**
+     * A `{ type }` stub, kept as a debugging aid only. Deliberately **not** a
+     * replay record — redelivery is the provider's job — and deliberately
+     * **not** the raw request body, which would pull customer PII into a
+     * table that has no purge story.
+     */
     payload: jsonb("payload")
       .$type<Record<string, unknown>>()
       .notNull()
