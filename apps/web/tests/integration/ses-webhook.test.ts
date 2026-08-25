@@ -91,6 +91,35 @@ describe("POST /api/webhooks/ses", () => {
     expect((await getInstanceSettings()).snsSubscriptionArn).toBe(SUB);
   });
 
+  it("falls back to SubscribeURL when the SDK confirm is refused", async () => {
+    const { updateInstanceSettings, getInstanceSettings } = await settings();
+    await updateInstanceSettings({ snsSubscriptionArn: null });
+    sns
+      .on(ConfirmSubscriptionCommand)
+      .rejects(
+        Object.assign(
+          new Error("not authorized to perform: SNS:ConfirmSubscription"),
+          { name: "AuthorizationError" },
+        ),
+      );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const res = await post(confirmation({ MessageId: "m1a" }));
+      expect(res.status).toBe(200);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringMatching(/falling back/),
+        expect.stringMatching(/ConfirmSubscription/),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+    expect(sns.commandCalls(ConfirmSubscriptionCommand)).toHaveLength(1);
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0]!.url).toContain("ConfirmSubscription");
+    expect(fetchCalls[0]!.init?.redirect).toBe("error");
+    expect((await getInstanceSettings()).snsSubscriptionArn).toBe(SUB);
+  });
+
   it("does not overwrite the stored ARN when SNS returns none", async () => {
     const { getInstanceSettings } = await settings();
     sns.on(ConfirmSubscriptionCommand).resolves({});

@@ -14,6 +14,7 @@ export const dynamic = "force-dynamic";
 const MAX_BODY_BYTES = 524_288;
 const SUBSCRIBE_URL = /^https:\/\/sns\.[a-z0-9-]+\.amazonaws\.com(\.cn)?\//;
 const isArn = (v: string | undefined): v is string => !!v?.startsWith("arn:");
+const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 type Confirm = { arn: string | null } | { error: string; status: number };
 
@@ -21,9 +22,11 @@ type Confirm = { arn: string | null } | { error: string; status: number };
  * Confirm via the SDK when AWS is connected: the response is a typed ARN (no
  * XML scraping) and `AuthenticateOnUnsubscribe` makes SNS require a signed
  * request to unsubscribe, so a leaked SubscribeURL/Token cannot be replayed
- * to drop the subscription. Only when there are no credentials to sign with
- * does it fall back to GET SubscribeURL (the unauthenticated confirm SNS
- * documents), host-guarded and time-limited.
+ * to drop the subscription. When there are no credentials to sign with, or
+ * the SDK call fails (a policy without `sns:ConfirmSubscription`, a stale
+ * key…), it falls back to GET SubscribeURL (the unauthenticated confirm SNS
+ * documents), host-guarded, redirect-free and time-limited: a subscription
+ * that never confirms is worse than one without the unsubscribe guard.
  */
 async function confirmSubscription(msg: {
   TopicArn: string;
@@ -32,18 +35,26 @@ async function confirmSubscription(msg: {
 }): Promise<Confirm> {
   const ctx = await resolveAwsContext().catch(() => null);
   if (ctx) {
-    const r = await makeSns(ctx).send(
-      new ConfirmSubscriptionCommand({
-        TopicArn: msg.TopicArn,
-        Token: msg.Token,
-        AuthenticateOnUnsubscribe: "true",
-      }),
-    );
-    return { arn: isArn(r.SubscriptionArn) ? r.SubscriptionArn : null };
+    try {
+      const r = await makeSns(ctx).send(
+        new ConfirmSubscriptionCommand({
+          TopicArn: msg.TopicArn,
+          Token: msg.Token,
+          AuthenticateOnUnsubscribe: "true",
+        }),
+      );
+      return { arn: isArn(r.SubscriptionArn) ? r.SubscriptionArn : null };
+    } catch (e) {
+      console.warn(
+        "[ses] ConfirmSubscription via the SDK failed; falling back to SubscribeURL:",
+        errMsg(e),
+      );
+    }
   }
   if (!SUBSCRIBE_URL.test(msg.SubscribeURL))
     return { error: "bad_subscribe_url", status: 400 };
   const r = await fetch(msg.SubscribeURL, {
+    redirect: "error",
     signal: AbortSignal.timeout(10_000),
   });
   if (!r.ok) return { error: "confirm_failed", status: 502 };

@@ -229,7 +229,7 @@ describe("connectWithKeys", () => {
     expect(slept).toEqual([3000, 3000]);
     expect((await settings()).awsMode).toBe("keys");
   });
-  it("gives up after 6 propagation failures with no state and the error code", async () => {
+  it("gives up after 5 propagation failures (≤ 15 s budget) with no state and the error code", async () => {
     happyMocks();
     sts
       .on(GetCallerIdentityCommand)
@@ -243,7 +243,7 @@ describe("connectWithKeys", () => {
     } finally {
       setSleepForTests((ms) => new Promise((r) => setTimeout(r, ms)));
     }
-    expect(sts.commandCalls(GetCallerIdentityCommand)).toHaveLength(6);
+    expect(sts.commandCalls(GetCallerIdentityCommand)).toHaveLength(5);
     expect((await settings()).awsMode).toBe("none");
     expect(await instanceAudits()).toHaveLength(0);
   });

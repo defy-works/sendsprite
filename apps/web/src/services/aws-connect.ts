@@ -69,13 +69,18 @@ const PROPAGATION_ERRORS = new Set([
   "InvalidSignatureException",
   "AuthFailure",
 ]);
-const PROPAGATION_ATTEMPTS = 6;
+// 5 attempts × 3 s = 12 s of sleeping, ≤ 15 s in total with the calls
+// themselves. Keep it there: the CloudFormation Lambda's POST timeout is 45 s
+// (infra/aws/sendsprite-connect.yaml) and it does not retry (single-use
+// token), so the rest of the connect (config set, topic, subscribe) must fit
+// in the remaining budget.
+const PROPAGATION_ATTEMPTS = 5;
 const PROPAGATION_DELAY_MS = 3_000;
 
 /**
  * STS + GetAccount. A key created seconds ago (the CloudFormation Lambda)
- * can be rejected until IAM propagates it, so both calls are retried up to
- * ~18 s on propagation errors; the Lambda's POST timeout is 25 s.
+ * can be rejected until IAM propagates it, so both calls are retried on
+ * propagation errors within the budget above.
  */
 async function verifyIdentity(ctx: AwsContext) {
   for (let attempt = 1; ; attempt++) {

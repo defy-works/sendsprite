@@ -66,7 +66,9 @@ but domains cannot be added until it is connected.
 After any path Sendsprite creates the `sendsprite` configuration set, the
 `sendsprite-events` SNS topic and an HTTPS subscription to
 `<APP_URL>/api/webhooks/ses` (confirmed automatically through the SNS SDK with
-`AuthenticateOnUnsubscribe`), and reads your account status and quota.
+`AuthenticateOnUnsubscribe` — the one-click policy grants
+`sns:ConfirmSubscription` for that; without it the webhook falls back to the
+plain SubscribeURL confirm), and reads your account status and quota.
 
 **Sandbox.** New SES accounts start in the sandbox: you can only send to
 verified addresses and at a low quota. The wizard's production step submits

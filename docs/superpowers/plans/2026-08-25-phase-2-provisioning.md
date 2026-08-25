@@ -42,6 +42,8 @@ Blocking findings from the Phase 2 integration review, fixed in three commits. T
 
 **C2 — queues did not exist in the web process.** With `WORKER_MODE=separate`/`none` the web process never called `createQueue`, so `enqueue("domain.provision")` from the server action threw. `getBoss()` now imports `./handlers` (registration side effects only) after `start()` and runs `ensureQueue()` (createQueue + updateQueue, shared with `attach`) for every registration, without `work()`. Non-worker processes construct `new PgBoss({ supervise: false, schedule: false })` (pg-boss `MaintenanceOptions.supervise` / `SchedulingOptions.schedule`; only the worker supervises and schedules); `startWorker()` replaces a send-only instance with a supervising one. `createDomain` wraps the enqueue in try/catch: on failure the row is kept with `lastError: "Could not queue provisioning: <msg>"` and `ok:true` is returned; `retryProvisioning(actor, id, { enqueue })` (audit `domains.retry_provisioning`, refused once tokens exist) plus a "Retry provisioning" button in `DomainActions` (shown when `dkimTokens.length === 0 && lastError`) re-sends the job. Terminal provisioning failure (I3): `domain.provision` is registered with `includeMetadata: true` (new `registerQueue` option → `JobWithMetadata` handler), and on the attempt where `job.retryCount >= job.retryLimit` (pg-boss bumps `retry_count` on every re-fetch) the handler passes `{ finalAttempt: true }` so `provisionDomain` also sets `status: "failed"`; Re-verify stays disabled for such rows and "Retry provisioning" is the way out.
 
+**One-click policy, webhook fallback, timeouts (commit 2).** The one-click IAM policy lacked `sns:ConfirmSubscription`, so the SDK confirm the webhook prefers failed under one-click and the route returned 500 without ever trying SubscribeURL. `infra/aws/sendsprite-connect.yaml` now grants `sns:ConfirmSubscription` and `sns:SetTopicAttributes` in the `sendsprite-*`-scoped statement (cfn-lint clean; the inline Python still `ast.parse`s), and `POST /api/webhooks/ses` wraps the `ConfirmSubscriptionCommand` path in try/catch: any SDK error is logged and the host-guarded `fetch(SubscribeURL, { redirect: "error", signal })` path runs instead (`ses-webhook.test.ts`: `AuthorizationError` → fetch used, 200). Timeout alignment: the Lambda's POST timeout is 45 s (function `Timeout: 60`), and `verifyIdentity`'s propagation retry budget is capped at 5 attempts × 3 s (≤ 15 s) so the whole connect fits; `aws-connect.test.ts` expects 5 STS calls. `infra/aws/README.md` and the README list the new permissions.
+
 ---
 
 ## File structure (Phase 2 additions)
@@ -1583,13 +1585,18 @@ const PROPAGATION_ERRORS = new Set([
   "InvalidSignatureException",
   "AuthFailure",
 ]);
-const PROPAGATION_ATTEMPTS = 6;
+// 5 attempts × 3 s = 12 s of sleeping, ≤ 15 s in total with the calls
+// themselves. Keep it there: the CloudFormation Lambda's POST timeout is 45 s
+// (infra/aws/sendsprite-connect.yaml) and it does not retry (single-use
+// token), so the rest of the connect (config set, topic, subscribe) must fit
+// in the remaining budget.
+const PROPAGATION_ATTEMPTS = 5;
 const PROPAGATION_DELAY_MS = 3_000;
 
 /**
  * STS + GetAccount. A key created seconds ago (the CloudFormation Lambda)
- * can be rejected until IAM propagates it, so both calls are retried up to
- * ~18 s on propagation errors; the Lambda's POST timeout is 25 s.
+ * can be rejected until IAM propagates it, so both calls are retried on
+ * propagation errors within the budget above.
  */
 async function verifyIdentity(ctx: AwsContext) {
   for (let attempt = 1; ; attempt++) {
@@ -1988,11 +1995,15 @@ Resources:
                   - ses:SendEmail
                   - ses:SendRawEmail
                 Resource: "*"
+              # ConfirmSubscription: the webhook confirms through the SDK (with
+              # AuthenticateOnUnsubscribe) instead of GET SubscribeURL.
               - Effect: Allow
                 Action:
                   - sns:CreateTopic
                   - sns:Subscribe
+                  - sns:ConfirmSubscription
                   - sns:GetTopicAttributes
+                  - sns:SetTopicAttributes
                   - sns:ListSubscriptionsByTopic
                 Resource: !Sub "arn:aws:sns:*:${AWS::AccountId}:sendsprite-*"
               # Subscription ARNs carry a UUID suffix; they are not topic-scoped.
@@ -2034,7 +2045,8 @@ Resources:
   #           the key it just created and report FAILED with the callback's
   #           response body as the reason. The POST is not retried: the
   #           callback token is single-use, and Sendsprite itself waits out
-  #           IAM propagation of the new key (retrying its STS check ~18 s).
+  #           IAM propagation of the new key (retrying its STS check for up
+  #           to ~15 s, well inside the 45 s POST timeout below).
   #   Delete: remove every access key of the user so the user can be deleted.
   #   Update: no-op.
   CallbackFunction:
@@ -2058,7 +2070,7 @@ Resources:
           def post(url, payload):
               req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST", headers={"content-type": "application/json"})
               try:
-                  with urllib.request.urlopen(req, timeout=25) as r:
+                  with urllib.request.urlopen(req, timeout=45) as r:
                       return r.status, ""
               except urllib.error.HTTPError as e:
                   return e.code, e.read()[:500].decode("utf-8", "replace")
@@ -2774,6 +2786,7 @@ export const dynamic = "force-dynamic";
 const MAX_BODY_BYTES = 524_288;
 const SUBSCRIBE_URL = /^https:\/\/sns\.[a-z0-9-]+\.amazonaws\.com(\.cn)?\//;
 const isArn = (v: string | undefined): v is string => !!v?.startsWith("arn:");
+const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 type Confirm = { arn: string | null } | { error: string; status: number };
 
@@ -2781,9 +2794,11 @@ type Confirm = { arn: string | null } | { error: string; status: number };
  * Confirm via the SDK when AWS is connected: the response is a typed ARN (no
  * XML scraping) and `AuthenticateOnUnsubscribe` makes SNS require a signed
  * request to unsubscribe, so a leaked SubscribeURL/Token cannot be replayed
- * to drop the subscription. Only when there are no credentials to sign with
- * does it fall back to GET SubscribeURL (the unauthenticated confirm SNS
- * documents), host-guarded and time-limited.
+ * to drop the subscription. When there are no credentials to sign with, or
+ * the SDK call fails (a policy without `sns:ConfirmSubscription`, a stale
+ * key…), it falls back to GET SubscribeURL (the unauthenticated confirm SNS
+ * documents), host-guarded, redirect-free and time-limited: a subscription
+ * that never confirms is worse than one without the unsubscribe guard.
  */
 async function confirmSubscription(msg: {
   TopicArn: string;
@@ -2792,18 +2807,26 @@ async function confirmSubscription(msg: {
 }): Promise<Confirm> {
   const ctx = await resolveAwsContext().catch(() => null);
   if (ctx) {
-    const r = await makeSns(ctx).send(
-      new ConfirmSubscriptionCommand({
-        TopicArn: msg.TopicArn,
-        Token: msg.Token,
-        AuthenticateOnUnsubscribe: "true",
-      }),
-    );
-    return { arn: isArn(r.SubscriptionArn) ? r.SubscriptionArn : null };
+    try {
+      const r = await makeSns(ctx).send(
+        new ConfirmSubscriptionCommand({
+          TopicArn: msg.TopicArn,
+          Token: msg.Token,
+          AuthenticateOnUnsubscribe: "true",
+        }),
+      );
+      return { arn: isArn(r.SubscriptionArn) ? r.SubscriptionArn : null };
+    } catch (e) {
+      console.warn(
+        "[ses] ConfirmSubscription via the SDK failed; falling back to SubscribeURL:",
+        errMsg(e),
+      );
+    }
   }
   if (!SUBSCRIBE_URL.test(msg.SubscribeURL))
     return { error: "bad_subscribe_url", status: 400 };
   const r = await fetch(msg.SubscribeURL, {
+    redirect: "error",
     signal: AbortSignal.timeout(10_000),
   });
   if (!r.ok) return { error: "confirm_failed", status: 502 };
