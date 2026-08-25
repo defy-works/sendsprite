@@ -98,8 +98,10 @@ The Phase 4 plan closes with 30 open items. Read `docs/superpowers/plans/2026-08
 
 ```
 packages/shared/src/
-  api/billing.ts                     NEW: PLANS, PlanMetadata, PlanEntitlement, BillingStateObject,
+  api/billing.ts                     NEW: PLANS, PlanMetadata, BillingStateObject,
                                           planFromProductMetadata(), SUBSCRIPTION_STATUSES
+                                          (PlanEntitlement is NOT here -- it is a server-side
+                                          concern, defined in services/billing/plans.ts, Task 5)
   index.ts                           + export * from "./api/billing" (modified)
 
 apps/web/
