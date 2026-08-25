@@ -533,4 +533,43 @@ describe("sweepQueuedEmails", () => {
     for (const id of ids)
       expect((await load(id)).status).toMatch(/^(queued|scheduled)$/);
   });
+
+  it("does not sweep a row a worker just throttled or deferred (updated_at is touched)", async () => {
+    const { emails } = await import("@/db/schema");
+    const { resetRateForTests } = await import("@/services/send-limits");
+    const { sendQueuedEmail, sweepQueuedEmails } =
+      await import("@/services/ses-send");
+    const now = new Date();
+    const enqueue = vi.fn(async () => "");
+    const stale = (id: string, extra: object = {}) =>
+      pg.db
+        .update(emails)
+        .set({ updatedAt: new Date(now.getTime() - 10 * 60_000), ...extra })
+        .where(eq(emails.id, id));
+    // Empty bucket: the attempt is throttled.
+    await resetRateForTests(now);
+    const throttled = await create();
+    await stale(throttled.id);
+    expect(await sendQueuedEmail(throttled.id, { enqueue, now })).toMatchObject(
+      { outcome: "throttled" },
+    );
+    // Not due for an hour: the attempt is deferred.
+    const deferred = await create({
+      scheduledAt: new Date(now.getTime() + 3600_000).toISOString(),
+    });
+    await stale(deferred.id);
+    expect(await sendQueuedEmail(deferred.id, { enqueue, now })).toMatchObject({
+      outcome: "deferred",
+    });
+    for (const id of [throttled.id, deferred.id])
+      expect((await load(id)).updatedAt.getTime()).toBeGreaterThanOrEqual(
+        now.getTime(),
+      );
+    const ids = await sweepQueuedEmails(
+      { enqueue },
+      new Date(now.getTime() + 4 * 60_000),
+    );
+    expect(ids).not.toContain(throttled.id);
+    expect(ids).not.toContain(deferred.id);
+  });
 });

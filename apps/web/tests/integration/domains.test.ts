@@ -635,12 +635,29 @@ describe("domains", () => {
     // Without force the verified row is untouched (a stray plain job).
     await verifyDomain(d.id, noop);
     expect(ses.commandCalls(GetEmailIdentityCommand)).toHaveLength(0);
-    // Forced: SES reports FAILED → demoted, `domain.failed` fanned out.
+    // Forced: SES reports FAILED → demoted, `domain.failed` fanned out. The
+    // original 72 h window is long gone; demotion opens a fresh one.
+    await pg.db
+      .update(domains)
+      .set({ verifyUntil: new Date(Date.now() - 1000) })
+      .where(eq(domains.id, d.id));
     const enqueue = vi.fn(async () => "job");
     ses.on(GetEmailIdentityCommand).resolves(failedIdentity);
     await verifyDomain(d.id, { resolver: emptyDns, enqueue }, { force: true });
-    expect((await byName("mail.acme.com")).status).toBe("pending");
+    const demotedRow = await byName("mail.acme.com");
+    expect(demotedRow.status).toBe("pending");
+    expect(demotedRow.verifyUntil!.getTime()).toBeGreaterThan(
+      Date.now() + 71 * 3600_000,
+    );
     expect(await selectSweepCandidates()).toEqual([]);
+    // The following sweep tick (still FAILED) keeps it pending, not failed.
+    await pg.db
+      .update(domains)
+      .set({ lastCheckedAt: new Date(Date.now() - 200_000) })
+      .where(eq(domains.id, d.id));
+    expect(await selectSweepCandidates()).toEqual([{ id: d.id, force: false }]);
+    await verifyDomain(d.id, { resolver: emptyDns, enqueue });
+    expect((await byName("mail.acme.com")).status).toBe("pending");
     const deliveries = () =>
       pg.db
         .select()

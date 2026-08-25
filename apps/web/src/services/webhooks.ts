@@ -381,7 +381,8 @@ function pinnedFetch(addrs: Resolved): FetchLike {
 
 /**
  * One delivery attempt. Never throws on the HTTP side: a non-2xx (redirects
- * are not followed and count as failures), a timeout (10 s) or a network
+ * are not followed and count as failures — undici reports one as an
+ * `opaqueredirect` with status 0), a timeout (10 s) or a network
  * error sets `nextRetryAt` per RETRY_SCHEDULE_S (the once-a-minute sweep
  * enqueues it when due), and the sixth failure marks the delivery
  * `exhausted`. Before connecting the host is resolved and every address
@@ -449,11 +450,14 @@ export async function deliver(
         redirect: "manual",
         signal: AbortSignal.timeout(TIMEOUT_MS),
       });
+      // A 3xx under `redirect: "manual"` comes back as the 3xx itself
+      // (undici 8, Node's global, the tests' injected fetch); a spec-style
+      // `opaqueredirect` (status 0) is handled too.
+      const redirected =
+        res.type === "opaqueredirect" ||
+        (res.status >= 300 && res.status < 400);
       statusCode = res.status;
-      excerpt =
-        res.status >= 300 && res.status < 400
-          ? "redirect not followed"
-          : await readExcerpt(res);
+      excerpt = redirected ? "redirect not followed" : await readExcerpt(res);
     } catch (e) {
       excerpt = (e as Error).message.slice(0, EXCERPT_LEN);
     }

@@ -368,7 +368,7 @@ async function setError(id: string, lastError: string) {
  * `NOT_STARTED` (or the identity is gone). A transient SES status
  * (`PENDING`, `TEMPORARY_FAILURE`) keeps it verified — sending still works
  * — with `lastError` noting it; the 72 h `verifyUntil` window never applies
- * to a domain that is already verified.
+ * to a domain that is already verified, and a demotion starts a fresh one.
  */
 export async function verifyDomain(
   domainId: string,
@@ -424,6 +424,9 @@ export async function verifyDomain(
   // Already verified and SES reports only a transient state: keep sending.
   const transient = d.status === "verified" && !sesOk && !hardFailure;
   const verified = sesOk || transient;
+  // Demotion opens a fresh 72 h window: the old one (set when the domain
+  // was added) has long passed and would fail it on the very next sweep.
+  const demoted = d.status === "verified" && !verified;
   const expired =
     d.status !== "verified" &&
     !verified &&
@@ -440,6 +443,7 @@ export async function verifyDomain(
       lastCheckedAt: new Date(),
       status: verified ? "verified" : expired ? "failed" : "pending",
       verifiedAt: verified ? (d.verifiedAt ?? new Date()) : null,
+      ...(demoted && { verifyUntil: new Date(Date.now() + VERIFY_WINDOW_MS) }),
       lastError: transient
         ? `SES reported ${sesStatuses
             .filter((s) => s && s !== "SUCCESS")

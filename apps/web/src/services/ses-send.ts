@@ -45,6 +45,18 @@ const isSandboxRejection = (name: string, message: string) =>
 const STUCK_SENDING_MS = 10 * 60 * 1000;
 /** A due `queued`/`scheduled` row untouched this long has lost its job. */
 const STALE_QUEUED_MS = 5 * 60 * 1000;
+/** Rows one queued sweep re-enqueues at most; the next tick takes the rest. */
+const SWEEP_BATCH = 5000;
+
+/**
+ * Bumps `updated_at` so `sweepQueuedEmails` (5-minute staleness) does not
+ * treat a row a worker is actively throttling/deferring as orphaned.
+ */
+const touch = (emailId: string) =>
+  db()
+    .update(emails)
+    .set({ updatedAt: new Date() })
+    .where(eq(emails.id, emailId));
 
 /** A job may fire this much before `scheduledAt` (pg-boss polling jitter). */
 const DUE_SLACK_MS = 1000;
@@ -84,6 +96,7 @@ export async function sendQueuedEmail(
   const dueBy = new Date(now.getTime() + DUE_SLACK_MS);
   if (pre.scheduledAt && pre.scheduledAt > dueBy) {
     const retryInMs = pre.scheduledAt.getTime() - now.getTime();
+    await touch(emailId);
     await deps.enqueue(
       Q.emailSend,
       { emailId },
@@ -94,6 +107,7 @@ export async function sendQueuedEmail(
 
   const token = await takeSesToken(now);
   if (!token.ok) {
+    await touch(emailId);
     await deps.enqueue(
       Q.emailSend,
       { emailId },
@@ -263,7 +277,10 @@ async function markSendFailed(
  * was lost (the enqueue at create time failed, pg-boss dropped or expired
  * it, a deferred re-send never landed). A row untouched for 5 minutes past
  * its due time gets a fresh job; the atomic claim in `sendQueuedEmail`
- * makes a duplicate job harmless. Returns the ids enqueued.
+ * makes a duplicate job harmless. Throttled/deferred rows are touched by
+ * the worker so they are not swept. At most SWEEP_BATCH rows per tick (a
+ * backlog after a long outage is drained over a few ticks rather than
+ * flooding the queue in one). Returns the ids enqueued.
  */
 export async function sweepQueuedEmails(
   deps: { enqueue: Enqueue },
@@ -279,7 +296,8 @@ export async function sweepQueuedEmails(
         lt(emails.updatedAt, new Date(now.getTime() - STALE_QUEUED_MS)),
       ),
     )
-    .orderBy(emails.createdAt);
+    .orderBy(emails.createdAt)
+    .limit(SWEEP_BATCH);
   for (const r of rows) await deps.enqueue(Q.emailSend, { emailId: r.id });
   return rows.map((r) => r.id);
 }

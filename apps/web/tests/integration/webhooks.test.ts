@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import dns from "node:dns";
+import http from "node:http";
 import { eq } from "drizzle-orm";
 import { startPg } from "./_pg";
 import { webhookDeliveries, webhooks } from "@/db/schema";
@@ -10,6 +11,16 @@ const { bossEnqueue } = vi.hoisted(() => ({
   bossEnqueue: vi.fn(async (): Promise<string | null> => "job"),
 }));
 vi.mock("@/jobs/enqueue", () => ({ enqueue: bossEnqueue }));
+// The loopback tests point the pinned connection at a local listener, which
+// the vetting would refuse; it is let through only while `allow.private`.
+const allow = vi.hoisted(() => ({ private: false }));
+vi.mock("@/lib/url-safety", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("@/lib/url-safety")>();
+  return {
+    ...mod,
+    isPublicIp: (ip: string) => allow.private || mod.isPublicIp(ip),
+  };
+});
 
 let pg: Awaited<ReturnType<typeof startPg>>;
 /** `deliver()` resolves the target before connecting; the fixtures' hosts do not exist. */
@@ -486,6 +497,75 @@ describe("webhooks", () => {
       responseExcerpt: "dns: getaddrinfo ENOTFOUND",
     });
     expect(f.calls).toHaveLength(1);
+  });
+
+  it("real pinned connection: a 302 from the endpoint is a failure and its target is never hit; a 200 is delivered", async () => {
+    const hits: string[] = [];
+    const server = http.createServer((req, res) => {
+      hits.push(req.url ?? "");
+      if (req.url === "/redirect") {
+        res.writeHead(302, { location: "/elsewhere" });
+        res.end();
+      } else res.end("resp");
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    const { createWebhook, fanOutEvent, deliver } = await svc();
+    const enqueue = vi.fn(async () => "");
+    // Every lookup answers loopback; `allow.private` lets vetting pass.
+    lookup.mockResolvedValue([{ address: "127.0.0.1", family: 4 }] as never);
+    allow.private = true;
+    try {
+      const w302 = await createWebhook(actor, {
+        url: `http://pin.acme.test:${port}/redirect`,
+        events: ["email.clicked"],
+      });
+      if (!w302.ok) throw new Error(w302.error);
+      const [r] = await fanOutEvent(
+        "org_1",
+        "email.clicked",
+        "evt_302",
+        {},
+        {
+          enqueue,
+        },
+      );
+      // No `fetch` injected: the service resolves, pins and fetches itself.
+      // undici 8 hands the 3xx itself back under `redirect: "manual"` (an
+      // `opaqueredirect` with status 0 is also accepted by `deliver()`).
+      expect(await deliver(r!, { enqueue })).toMatchObject({
+        status: "pending",
+        attempt: 1,
+        statusCode: 302,
+        responseExcerpt: "redirect not followed",
+      });
+      expect(hits).toEqual(["/redirect"]);
+
+      const w200 = await createWebhook(actor, {
+        url: `http://pin.acme.test:${port}/ok`,
+        events: ["email.complained"],
+      });
+      if (!w200.ok) throw new Error(w200.error);
+      const [ok] = await fanOutEvent(
+        "org_1",
+        "email.complained",
+        "evt_200",
+        {},
+        {
+          enqueue,
+        },
+      );
+      expect(await deliver(ok!, { enqueue })).toMatchObject({
+        status: "delivered",
+        statusCode: 200,
+        responseExcerpt: "resp",
+      });
+      expect(hits).toEqual(["/redirect", "/ok"]);
+    } finally {
+      allow.private = false;
+      lookup.mockImplementation(async () => PUBLIC as never);
+      await new Promise<void>((r) => server.close(() => r()));
+    }
   });
 
   it("a pending delivery whose first job was lost is due at once and picked up by the sweep", async () => {
