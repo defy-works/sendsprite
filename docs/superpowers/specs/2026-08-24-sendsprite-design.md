@@ -175,6 +175,11 @@ Delete: `DeleteEmailIdentity`; in auto mode also delete the records Sendsprite c
 
 **As shipped (Phase 2):** verification is a per-domain re-enqueued pg-boss job (`domain.verify`, `policy: "exclusive"` + `singletonKey: domainId`; first check after 30 s, then every 120 s until `verify_until` = created + 72 h), not a global cron. SPF/DMARC checks use `dns.Resolver` against `1.1.1.1`/`8.8.8.8` (3 s timeout, 2 tries; outbound port 53 required). SPF and DMARC are one-per-name (RFC 7208/7489), so the Cloudflare upsert PATCHes an existing `v=spf1`/`v=DMARC1` TXT at that name instead of adding a second. Auto mode with Cloudflare disconnected degrades to manual with `last_error` set. `POST /domains/:id/verify` is a dashboard action in Phase 2 (`reverifyDomain`); the REST endpoint ships with §7 in Phase 3.
 
+**Tenancy decisions (recorded 2026-08-25 after the Phase 2 integration review):**
+
+- An instance is a single trust domain. Any owner of any team is an instance administrator (may connect/disconnect AWS and Cloudflare, request SES production access, change instance settings). Teams share the one SES account and the instance-wide domain namespace; a domain (and any sub/super-domain relationship) belongs to whichever team added it first, and duplicate errors are therefore visible across teams. Operators who need isolation run separate instances.
+- Because team creation grants `owner`, `SIGNUP_MODE=auto` (open only until the first user) is the default; operators choosing `open` accept that any self-registered user becomes an instance administrator by creating a team.
+
 ## 7. REST API (`/api/v1`)
 
 Auth: `Authorization: Bearer ss_live_<32 chars>`. JSON. Cursor pagination (`?limit&cursor`). Rate-limit headers on every response. Errors: `{ "error": { "code", "message", "details"? } }` with stable codes: `validation_error`, `unauthorized`, `forbidden`, `not_found`, `domain_not_verified`, `suppressed_recipient`, `rate_limited`, `daily_quota_exceeded`, `sandbox_restricted`, `idempotency_conflict`, `internal_error`.
