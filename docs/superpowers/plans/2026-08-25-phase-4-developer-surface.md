@@ -1469,10 +1469,7 @@ export function buildOpenApiDocument(opts: {
               {
                 type: "object",
                 properties: {
-                  leftoverDnsRecords: {
-                    type: "array",
-                    items: { type: "object" },
-                  },
+                  leftoverDnsRecords: { type: "integer" },
                 },
               },
               "Deleted; some DNS records need manual cleanup",
@@ -2551,7 +2548,7 @@ export class Emails {
 export const enc = encodeURIComponent;
 ```
 
-Same style for `Domains` (`list(q?)`, `create`, `get`, `verify` (retry true), `delete` → `Promise<{ leftoverDnsRecords?: DnsRecordObject[] } | void>`), `ApiKeys` (`list`, `create`, `revoke`), `Webhooks` (`list`, `create`, `update`, `test` (retry true), `delete`), `Suppressions` (`list`, `add`, `remove(email)` with `enc`). Query key order for `list`: pass `{ limit, cursor, ...rest }` so the URL in the test (`limit=5&cursor=c&status=sent`) is produced — build the object in that order in `HttpClient.request` is not enough; construct it in the resource: `{ limit: q.limit, cursor: q.cursor, status: q.status, to: q.to, domainId: q.domainId, tag: q.tag }`.
+Same style for `Domains` (`list(q?)`, `create`, `get`, `verify` (retry true), `delete` → `Promise<{ leftoverDnsRecords: number } | void>` (200 with a count of Cloudflare records that need manual cleanup, else 204)), `ApiKeys` (`list`, `create`, `revoke`), `Webhooks` (`list`, `create`, `update`, `test` (retry true), `delete`), `Suppressions` (`list`, `add`, `remove(email)` with `enc`). Query key order for `list`: pass `{ limit, cursor, ...rest }` so the URL in the test (`limit=5&cursor=c&status=sent`) is produced — build the object in that order in `HttpClient.request` is not enough; construct it in the resource: `{ limit: q.limit, cursor: q.cursor, status: q.status, to: q.to, domainId: q.domainId, tag: q.tag }`.
 
 `packages/sdk/src/index.ts`:
 
