@@ -3,10 +3,13 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
+  "sideEffects": false,
   "exports": {
     ".": "./src/index.ts",
     "./node": "./src/node.ts",
-    "./openapi": "./src/openapi.ts"
+    "./openapi": "./src/openapi.ts",
+    "./webhooks": "./src/api/webhooks.ts",
+    "./webhook-signature": "./src/api/webhook-signature.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

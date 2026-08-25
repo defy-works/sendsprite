@@ -17,48 +17,20 @@
  * It needs `node:crypto`, which keeps it off the edge runtime; the root
  * `sendsprite` entry stays runtime-agnostic.
  */
-import { createHmac, timingSafeEqual } from "node:crypto";
+// The signature check is the server's own `verifyWebhookSignature`, imported
+// rather than re-implemented: a second copy of the scheme could drift, and the
+// way it fails is "forged webhooks verify as genuine". Both modules are
+// zod-free leaves of `@sendsprite/shared` (constants plus `node:crypto`), so
+// tsup inlines them without pulling the package's schema barrel in.
+import { verifyWebhookSignature } from "@sendsprite/shared/webhook-signature";
+import { EVENT_ID_HEADER, SIGNATURE_HEADER } from "@sendsprite/shared/webhooks";
 import type { WebhookEventType, WebhookPayload } from "./types";
 
 export type { WebhookEventType, WebhookPayload };
 
-/**
- * The scheme implemented by `@sendsprite/shared`'s `signWebhook` /
- * `verifyWebhookSignature`, re-implemented here in ~15 lines rather than
- * imported: that package is private, its root barrel is not side-effect free,
- * and inlining it would drag all of zod (≈540 KB) into the published bundle.
- * `tests/next.test.ts` signs its requests with the *real* server-side helper,
- * so the two cannot drift apart unnoticed.
- */
-const SIGNATURE_HEADER = "sendsprite-signature";
-const EVENT_ID_HEADER = "sendsprite-event-id";
-const TOLERANCE_SECONDS = 300;
-const SIGNATURE_RE = /^t=(\d+),v1=([a-f0-9]{64})$/;
-
 /** Thrown when a request is not a genuine, fresh Sendsprite delivery. */
 export class WebhookVerificationError extends Error {
   override readonly name = "WebhookVerificationError";
-}
-
-/** Constant-time check of `t=<unix seconds>,v1=<hmac-sha256 of "<t>.<body>">`. */
-function signatureMatches(
-  body: string,
-  header: string,
-  secret: string,
-): boolean {
-  const parsed = SIGNATURE_RE.exec(header);
-  if (!parsed) return false;
-  const timestamp = Number(parsed[1]);
-  // Replay window: an old capture must not be accepted, and a clock that runs
-  // ahead of ours must not lock the endpoint out either.
-  if (Math.abs(Math.floor(Date.now() / 1000) - timestamp) > TOLERANCE_SECONDS) {
-    return false;
-  }
-  const expected = createHmac("sha256", secret)
-    .update(`${timestamp}.${body}`)
-    .digest();
-  const actual = Buffer.from(parsed[2]!, "hex");
-  return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
 /**
@@ -77,7 +49,7 @@ export async function verifyWebhook<T = Record<string, unknown>>(
     throw new WebhookVerificationError(`Missing ${SIGNATURE_HEADER} header.`);
   }
   const body = await req.text();
-  if (!signatureMatches(body, signature, secret)) {
+  if (!verifyWebhookSignature(body, signature, secret)) {
     throw new WebhookVerificationError("Invalid webhook signature.");
   }
   try {
