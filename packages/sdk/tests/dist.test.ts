@@ -105,6 +105,18 @@ describe("dist", () => {
     );
   });
 
+  it("never names @react-email/* as a specifier in the root bundle", () => {
+    // A literal `import("@react-email/render")` is resolved at build time by
+    // Webpack/Turbopack, so a Next app that installs `sendsprite` without the
+    // optional peer fails to build with `Module not found`.
+    for (const f of ["index.js", "index.cjs"]) {
+      const src = readFileSync(join(dist, f), "utf8");
+      expect(src, f).not.toMatch(
+        /(?:from|import|require)\s*\(?\s*["']@react-email\//,
+      );
+    }
+  });
+
   it("builds sendsprite/next on node:crypto alone", () => {
     // The signature check needs a real HMAC, but neither the private shared
     // package nor zod (which the shared barrel drags in) may ship with it.

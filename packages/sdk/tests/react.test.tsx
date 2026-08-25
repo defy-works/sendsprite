@@ -2,6 +2,16 @@ import { describe, expect, it, vi } from "vitest";
 import { Sendsprite } from "../src/index";
 import { Button, Html, Text, renderEmail } from "../src/react";
 
+/** An error and everything reachable through its `cause` chain. */
+const causes = (error: unknown): unknown[] => {
+  const seen: unknown[] = [];
+  for (let e = error; e != null && seen.length < 5;) {
+    seen.push(e);
+    e = (e as { cause?: unknown }).cause;
+  }
+  return seen;
+};
+
 describe("sendsprite/react", () => {
   it("renders an element to html + text", async () => {
     const out = await renderEmail(
@@ -87,5 +97,40 @@ describe("sendsprite/react", () => {
       /install @react-email\/render/,
     );
     vi.doUnmock("@react-email/render");
+  });
+
+  it("propagates a module that exists but fails to evaluate", async () => {
+    // "install the peer" would send the reader hunting for a missing package
+    // that is in fact installed and broken.
+    vi.resetModules();
+    const boom = new Error("boom in module init");
+    vi.doMock("@react-email/render", () => {
+      throw boom;
+    });
+    const { renderEmail: r } = await import("../src/react");
+    const error: unknown = await r(<Text>x</Text>).catch((e: unknown) => e);
+    // The loader may wrap it, but it must not be swapped for the misleading
+    // "install the peer" message, and the real failure stays reachable.
+    expect(String((error as Error).message)).not.toMatch(
+      /install @react-email\/render/,
+    );
+    expect(causes(error)).toContain(boom);
+    vi.doUnmock("@react-email/render");
+    vi.resetModules();
+  });
+
+  it("rejects a `react` value that is not an element", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const c = new Sendsprite({ apiKey: "k", baseUrl: "https://x", fetch });
+    await expect(
+      c.emails.send({
+        from: "a@b.io",
+        to: "c@d.io",
+        subject: "s",
+        // What a caller passing a component instead of an element produces.
+        react: { type: Text, props: {} },
+      }),
+    ).rejects.toThrow(/must be a React element/);
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

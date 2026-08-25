@@ -11,7 +11,11 @@ import { SIGNATURE_TOLERANCE_SECONDS } from "./webhooks";
 const digest = (timestamp: number, body: string, secret: string) =>
   createHmac("sha256", secret).update(`${timestamp}.${body}`).digest("hex");
 
-/** `t=<unix seconds>,v1=<hex hmac-sha256 of "<t>.<body>">`. */
+/**
+ * `t=<unix seconds>,v1=<hex hmac-sha256 of "<t>.<body>">`. Always one `v1`;
+ * the verifier accepts several so a future rotation can sign with both keys
+ * without breaking receivers that are already deployed.
+ */
 export function signWebhook(
   body: string,
   secret: string,
@@ -20,13 +24,20 @@ export function signWebhook(
   return `t=${timestamp},v1=${digest(timestamp, body, secret)}`;
 }
 
+/**
+ * A timestamp followed by one or more lower-case hex `v1` digests, and
+ * nothing else: an unknown field is a header we do not understand, which must
+ * fail rather than be ignored.
+ */
+const HEADER_RE = /^t=(\d+)((?:,v1=[a-f0-9]{64})+)$/;
+
 export function verifyWebhookSignature(
   body: string,
   header: string,
   secret: string,
   opts: { now?: number; toleranceSeconds?: number } = {},
 ): boolean {
-  const m = /^t=(\d+),v1=([a-f0-9]{64})$/.exec(header ?? "");
+  const m = HEADER_RE.exec(header ?? "");
   if (!m) return false;
   const t = Number(m[1]);
   const now = opts.now ?? Math.floor(Date.now() / 1000);
@@ -34,7 +45,14 @@ export function verifyWebhookSignature(
     Math.abs(now - t) > (opts.toleranceSeconds ?? SIGNATURE_TOLERANCE_SECONDS)
   )
     return false;
-  const a = Buffer.from(m[2]!, "hex");
-  const b = Buffer.from(digest(t, body, secret), "hex");
-  return a.length === b.length && timingSafeEqual(a, b);
+  const expected = Buffer.from(digest(t, body, secret), "hex");
+  // Any matching `v1` is enough — during a secret rotation the sender emits
+  // one digest per live key, and an SDK pinned in a user's deployed app has
+  // to keep verifying both.
+  for (const field of m[2]!.split(",").slice(1)) {
+    const actual = Buffer.from(field.slice("v1=".length), "hex");
+    if (actual.length === expected.length && timingSafeEqual(actual, expected))
+      return true;
+  }
+  return false;
 }

@@ -23,10 +23,23 @@
 // zod-free leaves of `@sendsprite/shared` (constants plus `node:crypto`), so
 // tsup inlines them without pulling the package's schema barrel in.
 import { verifyWebhookSignature } from "@sendsprite/shared/webhook-signature";
-import { EVENT_ID_HEADER, SIGNATURE_HEADER } from "@sendsprite/shared/webhooks";
+import {
+  EVENT_ID_HEADER as SHARED_EVENT_ID_HEADER,
+  SIGNATURE_HEADER as SHARED_SIGNATURE_HEADER,
+} from "@sendsprite/shared/webhooks";
 import type { WebhookEventType, WebhookPayload } from "./types";
 
 export type { WebhookEventType, WebhookPayload };
+
+/**
+ * The headers every Sendsprite delivery carries, for hand-rolled handlers.
+ * Re-declared with explicit literal types rather than re-exported: a bare
+ * `export … from` would leave `@sendsprite/shared/webhooks` as a specifier in
+ * `dist/next.d.ts`, and the package is private. The assignments still fail to
+ * compile if the shared constants ever change.
+ */
+export const SIGNATURE_HEADER: "sendsprite-signature" = SHARED_SIGNATURE_HEADER;
+export const EVENT_ID_HEADER: "sendsprite-event-id" = SHARED_EVENT_ID_HEADER;
 
 /** Thrown when a request is not a genuine, fresh Sendsprite delivery. */
 export class WebhookVerificationError extends Error {
@@ -44,6 +57,11 @@ export async function verifyWebhook<T = Record<string, unknown>>(
   req: Request,
   secret: string,
 ): Promise<WebhookPayload<T>> {
+  if (!secret) {
+    // Not a verification failure — a configuration one. Callers must not turn
+    // this into a 401.
+    throw new Error("sendsprite: verifyWebhook needs a non-empty `secret`.");
+  }
   const signature = req.headers.get(SIGNATURE_HEADER);
   if (!signature) {
     throw new WebhookVerificationError(`Missing ${SIGNATURE_HEADER} header.`);
@@ -52,12 +70,25 @@ export async function verifyWebhook<T = Record<string, unknown>>(
   if (!verifyWebhookSignature(body, signature, secret)) {
     throw new WebhookVerificationError("Invalid webhook signature.");
   }
+  let parsed: unknown;
   try {
-    return JSON.parse(body) as WebhookPayload<T>;
+    parsed = JSON.parse(body);
   } catch {
     // Signed, so it came from Sendsprite — but it is not a payload we can use.
     throw new WebhookVerificationError("Webhook body is not valid JSON.");
   }
+  // `null`, a number or an object without a string `type` must never reach the
+  // dispatch below, where it would be used as a property key.
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    typeof (parsed as { type?: unknown }).type !== "string"
+  ) {
+    throw new WebhookVerificationError(
+      "Webhook body is not a Sendsprite event.",
+    );
+  }
+  return parsed as WebhookPayload<T>;
 }
 
 /** One handler per event type; every handler is awaited before responding. */
@@ -81,18 +112,37 @@ export interface WebhookHandlerOptions {
 export function createWebhookHandler(
   opts: WebhookHandlerOptions,
 ): (req: Request) => Promise<Response> {
+  // Fail at wiring time, not per request: an unset env var would otherwise
+  // reach `createHmac` and surface as a 401, which reads like "your signature
+  // is wrong" and is the hardest webhook bug to diagnose.
+  if (!opts.secret) {
+    throw new Error(
+      "sendsprite: createWebhookHandler needs a non-empty `secret` (the value shown once when the webhook was created).",
+    );
+  }
   return async (req: Request): Promise<Response> => {
     let event: WebhookPayload;
     try {
       event = await verifyWebhook(req, opts.secret);
     } catch (cause) {
-      return Response.json(
-        { error: cause instanceof Error ? cause.message : "invalid" },
-        { status: 401 },
-      );
+      // Only a real verification failure is a 401. Anything else is our bug or
+      // the runtime's, and a 401 would tell Sendsprite to stop retrying.
+      if (!(cause instanceof WebhookVerificationError)) {
+        console.error("[sendsprite webhook]", cause);
+        return Response.json(
+          { error: "webhook verification failed" },
+          { status: 500 },
+        );
+      }
+      return Response.json({ error: cause.message }, { status: 401 });
     }
     try {
-      const handler = opts.on[event.type] ?? opts.onUnhandled;
+      // `Object.hasOwn`, not a plain lookup: a signed payload with
+      // `type: "toString"` would otherwise resolve to `Object.prototype`'s
+      // method, silently skip `onUnhandled` and answer 200.
+      const handler = Object.hasOwn(opts.on, event.type)
+        ? opts.on[event.type]
+        : opts.onUnhandled;
       await handler?.(event);
       return Response.json({
         received: true,

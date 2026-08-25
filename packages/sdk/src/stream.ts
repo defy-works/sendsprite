@@ -62,10 +62,6 @@ export function openStream(
         );
         for await (const ev of parseSse(res.body ?? emptyStream())) {
           if (ac.signal.aborted) return;
-          // Reset only once the connection has delivered something: a server
-          // that accepts and then immediately drops must still back off
-          // rather than be hammered every second.
-          attempt = 0;
           if (ev.event !== "change") continue;
           let change: StreamChange;
           try {
@@ -82,6 +78,11 @@ export function openStream(
             );
             continue;
           }
+          // Reset only once the connection has delivered a usable event: a
+          // server that accepts and then immediately drops — or that only ever
+          // emits garbage — must still back off rather than be hammered every
+          // second.
+          attempt = 0;
           try {
             opts.onChange(change);
           } catch (cause) {
@@ -92,6 +93,10 @@ export function openStream(
         if (opts.reconnect === false) return;
       } catch (cause) {
         // The caller's handler threw: surface their error as-is and stop.
+        // Deliberately no `ac.abort()` here — leaving the loop already ran
+        // `parseSse`'s `finally`, which cancels the response body, and
+        // aborting would flip `ac.signal.aborted` so `done`'s catch below
+        // swallowed the very error we are propagating.
         if (cause instanceof CallerError) throw cause.cause;
         if (ac.signal.aborted) return;
         const err =
@@ -114,6 +119,10 @@ export function openStream(
     })
     .finally(() => opts.signal?.removeEventListener("abort", closeFromSignal));
 
+  // Callers may legitimately ignore `done` (fire-and-forget tailing). Attach a
+  // no-op catch so a rejection is never "unhandled" — that would take the Node
+  // process down — while the same promise still rejects for whoever awaits it.
+  void done.catch(() => {});
   return { close: () => ac.abort(), done };
 }
 

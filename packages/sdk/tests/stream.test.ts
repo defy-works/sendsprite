@@ -14,6 +14,8 @@ const sse = (chunks: string[]) =>
     { status: 200, headers: { "content-type": "text/event-stream" } },
   );
 
+const BAD_FRAME = "event: change\ndata: {not json}\n\n";
+
 /** A fetch that never responds and rejects with AbortError once its signal fires. */
 const hanging = () =>
   vi
@@ -200,6 +202,55 @@ describe("client.stream()", () => {
     expect(errors[0]).toBeInstanceOf(SendspriteError);
     expect(errors[0]!.message).toMatch(/Malformed SSE data frame/);
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reset the backoff for a frame it could not parse", async () => {
+    // A server stuck emitting garbage is as broken as one that drops the
+    // connection; it must not be retried once a second forever.
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementation(() => Promise.resolve(sse([BAD_FRAME])));
+    const c = new Sendsprite({ apiKey: "k", baseUrl: "https://x", fetch });
+    vi.useFakeTimers();
+    try {
+      const s = c.stream({ onChange: () => {}, onError: () => {} });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(fetch).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(fetch).toHaveBeenCalledTimes(2); // second wait is 2s, not 1s
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(fetch).toHaveBeenCalledTimes(3);
+      s.close();
+      await s.done;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("pre-handles `done` so ignoring it cannot crash the process", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    // Via the EventEmitter view: bun-types shadows `process.off`'s generic
+    // overload with its `memoryPressure` one.
+    const events: NodeJS.EventEmitter = process;
+    events.on("unhandledRejection", onUnhandled);
+    try {
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(
+          new Response(
+            JSON.stringify({ error: { code: "forbidden", message: "no" } }),
+            { status: 403 },
+          ),
+        );
+      const c = new Sendsprite({ apiKey: "k", baseUrl: "https://x", fetch });
+      // `done` deliberately not awaited: fire-and-forget tailing is legal.
+      c.stream({ onChange: () => {}, reconnect: false });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    } finally {
+      events.off("unhandledRejection", onUnhandled);
+    }
+    expect(unhandled).toEqual([]);
   });
 });
 
