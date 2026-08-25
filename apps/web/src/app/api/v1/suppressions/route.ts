@@ -1,26 +1,30 @@
-import { AddSuppressionInput } from "@sendsprite/shared";
 import { keyActor } from "@/lib/api-auth";
-import { fail, ok, readJson, withApiKey } from "@/lib/api-response";
+import {
+  fail,
+  ok,
+  parsePage,
+  readJson,
+  serviceFailure,
+  withApiKey,
+} from "@/lib/api-response";
 import {
   addSuppression,
-  listSuppressions,
-  type Suppression,
+  listSuppressionsPage,
+  publicSuppression,
 } from "@/services/suppressions";
 
 export const dynamic = "force-dynamic";
 
-const view = (s: Suppression) => ({
-  id: s.id,
-  email: s.email,
-  reason: s.reason,
-  note: s.note,
-  sourceEmailId: s.sourceEmailId,
-  createdAt: s.createdAt,
-});
-
 export const GET = withApiKey(
-  async (_req, auth) =>
-    ok({ data: (await listSuppressions(auth.team.id)).map(view) }),
+  async (req, auth) => {
+    const q = parsePage(req);
+    if (!q.ok) return q.res;
+    const page = await listSuppressionsPage(auth.team.id, q.data);
+    return ok({
+      data: page.data.map(publicSuppression),
+      nextCursor: page.nextCursor,
+    });
+  },
   { permission: "full" },
 );
 
@@ -30,15 +34,9 @@ export const POST = withApiKey(
     const json = await readJson(req);
     if (json === undefined)
       return fail("validation_error", "Body must be JSON.");
-    const p = AddSuppressionInput.safeParse(json);
-    if (!p.success)
-      return fail(
-        "validation_error",
-        p.error.issues[0]?.message ?? "Invalid input.",
-      );
-    const res = await addSuppression(keyActor(auth), p.data);
-    if (!res.ok) return fail("validation_error", res.error);
-    return ok(view(res.data), { status: 201 });
+    const res = await addSuppression(keyActor(auth), json);
+    if (!res.ok) return serviceFailure(res);
+    return ok(publicSuppression(res.data), { status: 201 });
   },
   { permission: "full" },
 );

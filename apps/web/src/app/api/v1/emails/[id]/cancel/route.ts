@@ -1,7 +1,11 @@
-import { ok, rateHeaders, withApiKey } from "@/lib/api-response";
+import {
+  ok,
+  rateHeaders,
+  withApiKey,
+  serviceFailure,
+} from "@/lib/api-response";
 import { cancelEmail } from "@/services/emails";
 import { publicEmail } from "@/services/ingest";
-import { sendFailure } from "../../_shared";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +15,7 @@ export const POST = withApiKey(
     const { id } = await ctx.params;
     const headers = await rateHeaders(auth.team.id);
     const res = await cancelEmail(auth.team.id, id ?? "", `api:${auth.key.id}`);
-    if (!res.ok) return sendFailure(res, headers);
+    if (!res.ok) return serviceFailure(res, headers);
     return ok(publicEmail(res.data), { headers });
   },
   { permission: "full" },

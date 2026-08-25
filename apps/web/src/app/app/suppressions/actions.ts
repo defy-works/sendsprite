@@ -26,7 +26,7 @@ export async function addSuppression(fd: FormData): Promise<Result> {
     reason: fd.get("reason"),
     // An empty input arrives as ""; the shared schema has no transforms
     // (OpenAPI), so unset is decided here.
-    note: fd.get("note") || undefined,
+    note: String(fd.get("note") ?? "").trim() || undefined,
   });
   if (!res.ok) return res;
   revalidatePath("/app/suppressions");

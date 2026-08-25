@@ -1,7 +1,12 @@
 import { keyActor } from "@/lib/api-auth";
-import { fail, noContent, ok, withApiKey } from "@/lib/api-response";
+import {
+  fail,
+  noContent,
+  ok,
+  serviceFailure,
+  withApiKey,
+} from "@/lib/api-response";
 import { deleteDomain, getDomain, publicDomain } from "@/services/domains";
-import { domainFailure } from "../_shared";
 
 export const dynamic = "force-dynamic";
 
@@ -24,7 +29,7 @@ export const DELETE = withApiKey(
   async (_req, auth, ctx) => {
     const { id } = await ctx.params;
     const res = await deleteDomain(keyActor(auth), id ?? "", {});
-    if (!res.ok) return domainFailure(res);
+    if (!res.ok) return serviceFailure(res);
     return res.data.leftoverDnsRecords > 0 ? ok(res.data) : noContent();
   },
   { permission: "full" },

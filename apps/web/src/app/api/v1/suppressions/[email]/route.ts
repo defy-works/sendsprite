@@ -1,5 +1,10 @@
 import { keyActor } from "@/lib/api-auth";
-import { fail, noContent, withApiKey } from "@/lib/api-response";
+import {
+  fail,
+  noContent,
+  serviceFailure,
+  withApiKey,
+} from "@/lib/api-response";
 import { removeSuppression } from "@/services/suppressions";
 
 export const dynamic = "force-dynamic";
@@ -15,11 +20,7 @@ export const DELETE = withApiKey(
       return fail("validation_error", "Malformed email in URL.");
     }
     const res = await removeSuppression(keyActor(auth), decoded);
-    if (!res.ok)
-      return fail(
-        res.code === "forbidden" ? "forbidden" : "not_found",
-        res.error,
-      );
+    if (!res.ok) return serviceFailure(res);
     return noContent();
   },
   { permission: "full" },

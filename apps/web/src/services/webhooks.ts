@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import dns from "node:dns";
-import { and, desc, eq, lte } from "drizzle-orm";
+import { and, desc, eq, lt, lte, or } from "drizzle-orm";
 import { Agent, fetch as undiciFetch } from "undici";
 import { z } from "zod";
 import {
@@ -9,6 +9,7 @@ import {
   SIGNATURE_HEADER,
   EVENT_ID_HEADER,
   WebhookEvents,
+  type PageQuery,
   type WebhookEventType,
   type WebhookPayload,
 } from "@sendsprite/shared";
@@ -110,6 +111,47 @@ export const listWebhooks = (teamId: string): Promise<Webhook[]> =>
     .from(webhooks)
     .where(eq(webhooks.teamId, teamId))
     .orderBy(desc(webhooks.createdAt));
+
+/**
+ * REST page, newest first. Keyset paging on `(created_at, id)`; `cursor` is the last returned id.
+ */
+export async function listWebhooksPage(
+  teamId: string,
+  q: PageQuery,
+): Promise<{ data: Webhook[]; nextCursor: string | null }> {
+  const after = q.cursor
+    ? await db()
+        .select({ createdAt: webhooks.createdAt, id: webhooks.id })
+        .from(webhooks)
+        .where(and(eq(webhooks.teamId, teamId), eq(webhooks.id, q.cursor)))
+        .then((r) => r[0])
+    : undefined;
+  const rows = await db()
+    .select()
+    .from(webhooks)
+    .where(
+      and(
+        eq(webhooks.teamId, teamId),
+
+        after
+          ? or(
+              lt(webhooks.createdAt, after.createdAt),
+              and(
+                eq(webhooks.createdAt, after.createdAt),
+                lt(webhooks.id, after.id),
+              ),
+            )
+          : undefined,
+      ),
+    )
+    .orderBy(desc(webhooks.createdAt), desc(webhooks.id))
+    .limit(q.limit + 1);
+  const data = rows.slice(0, q.limit);
+  return {
+    data,
+    nextCursor: rows.length > q.limit ? (data.at(-1)?.id ?? null) : null,
+  };
+}
 
 export async function getWebhook(
   teamId: string,

@@ -5,10 +5,11 @@ import {
   readJson,
   tooLarge,
   withApiKey,
+  serviceFailure,
 } from "@/lib/api-response";
 import { enqueue } from "@/jobs/enqueue";
 import { createBatch } from "@/services/emails";
-import { sendContext, sendFailure } from "../_shared";
+import { sendContext } from "../_shared";
 
 export const dynamic = "force-dynamic";
 
@@ -24,6 +25,6 @@ export const POST = withApiKey(async (req, auth) => {
   if (body === undefined) return fail("validation_error", "Body must be JSON.");
   const res = await createBatch(sendContext(auth), body, { enqueue });
   const headers = await rateHeaders(auth.team.id);
-  if (!res.ok) return sendFailure(res, headers);
+  if (!res.ok) return serviceFailure(res, headers);
   return ok({ data: res.data }, { status: 201, headers });
 });

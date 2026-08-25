@@ -6,11 +6,12 @@ import {
   readJson,
   tooLarge,
   withApiKey,
+  serviceFailure,
 } from "@/lib/api-response";
 import { enqueue } from "@/jobs/enqueue";
 import { createEmail, listEmails } from "@/services/emails";
 import { publicEmail } from "@/services/ingest";
-import { sendContext, sendFailure } from "./_shared";
+import { sendContext } from "./_shared";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +26,7 @@ export const POST = withApiKey(async (req, auth) => {
   if (body === undefined) return fail("validation_error", "Body must be JSON.");
   const res = await createEmail(sendContext(auth), body, { enqueue });
   const headers = await rateHeaders(auth.team.id);
-  if (!res.ok) return sendFailure(res, headers);
+  if (!res.ok) return serviceFailure(res, headers);
   return ok({ id: res.data.id }, { status: res.created ? 201 : 200, headers });
 });
 

@@ -1,6 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, isNull } from "drizzle-orm";
-import { can, CreateApiKeyInput, newId } from "@sendsprite/shared";
+import { and, desc, eq, isNull, lt, or } from "drizzle-orm";
+import {
+  can,
+  CreateApiKeyInput,
+  newId,
+  type PageQuery,
+} from "@sendsprite/shared";
 import { db } from "@/db";
 import { apiKeys, domains } from "@/db/schema";
 import { recordAudit } from "@/lib/audit";
@@ -17,6 +22,7 @@ export const hashKey = (k: string) =>
 const PREFIX_LEN = 16; // "ss_live_" + 8 chars: enough to tell keys apart in the UI
 const DENIED: Result<never> = {
   ok: false,
+  code: "forbidden",
   error: "You don't have permission to do that.",
 };
 
@@ -28,6 +34,59 @@ export function listApiKeys(teamId: string): Promise<ApiKey[]> {
     .where(eq(apiKeys.teamId, teamId))
     .orderBy(desc(apiKeys.createdAt));
 }
+
+/**
+ * REST page of live keys (revoked ones are omitted), newest first.
+ * Keyset paging on `(created_at, id)`; `cursor` is the last returned id.
+ */
+export async function listApiKeysPage(
+  teamId: string,
+  q: PageQuery,
+): Promise<{ data: ApiKey[]; nextCursor: string | null }> {
+  const after = q.cursor
+    ? await db()
+        .select({ createdAt: apiKeys.createdAt, id: apiKeys.id })
+        .from(apiKeys)
+        .where(and(eq(apiKeys.teamId, teamId), eq(apiKeys.id, q.cursor)))
+        .then((r) => r[0])
+    : undefined;
+  const rows = await db()
+    .select()
+    .from(apiKeys)
+    .where(
+      and(
+        eq(apiKeys.teamId, teamId),
+        isNull(apiKeys.revokedAt),
+        after
+          ? or(
+              lt(apiKeys.createdAt, after.createdAt),
+              and(
+                eq(apiKeys.createdAt, after.createdAt),
+                lt(apiKeys.id, after.id),
+              ),
+            )
+          : undefined,
+      ),
+    )
+    .orderBy(desc(apiKeys.createdAt), desc(apiKeys.id))
+    .limit(q.limit + 1);
+  const data = rows.slice(0, q.limit);
+  return {
+    data,
+    nextCursor: rows.length > q.limit ? (data.at(-1)?.id ?? null) : null,
+  };
+}
+
+/** REST shape: never the hash; the prefix is all that identifies the secret. */
+export const publicApiKey = (k: ApiKey) => ({
+  id: k.id,
+  name: k.name,
+  permission: k.permission,
+  keyPrefix: k.keyPrefix,
+  domainId: k.domainId,
+  lastUsedAt: k.lastUsedAt,
+  createdAt: k.createdAt,
+});
 
 /** The secret is returned exactly once; it cannot be recovered afterwards. */
 export async function createApiKey(
@@ -89,7 +148,8 @@ export async function revokeApiKey(
       ),
     )
     .returning({ id: apiKeys.id });
-  if (!row) return { ok: false, error: "API key not found." };
+  if (!row)
+    return { ok: false, code: "not_found", error: "API key not found." };
   await recordAudit({
     teamId: actor.teamId,
     actorUserId: actor.userId,

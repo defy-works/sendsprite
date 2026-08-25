@@ -1,5 +1,10 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
-import { AddSuppressionInput, can, newId } from "@sendsprite/shared";
+import { and, desc, eq, inArray, lt, or } from "drizzle-orm";
+import {
+  AddSuppressionInput,
+  can,
+  newId,
+  type PageQuery,
+} from "@sendsprite/shared";
 import { db } from "@/db";
 import { suppressions, type SuppressionReason } from "@/db/schema";
 import { recordAudit } from "@/lib/audit";
@@ -25,6 +30,59 @@ export function listSuppressions(teamId: string): Promise<Suppression[]> {
     .where(eq(suppressions.teamId, teamId))
     .orderBy(desc(suppressions.createdAt));
 }
+
+/**
+ * REST page, newest first. Keyset paging on `(created_at, id)`; `cursor` is the last returned id.
+ */
+export async function listSuppressionsPage(
+  teamId: string,
+  q: PageQuery,
+): Promise<{ data: Suppression[]; nextCursor: string | null }> {
+  const after = q.cursor
+    ? await db()
+        .select({ createdAt: suppressions.createdAt, id: suppressions.id })
+        .from(suppressions)
+        .where(
+          and(eq(suppressions.teamId, teamId), eq(suppressions.id, q.cursor)),
+        )
+        .then((r) => r[0])
+    : undefined;
+  const rows = await db()
+    .select()
+    .from(suppressions)
+    .where(
+      and(
+        eq(suppressions.teamId, teamId),
+
+        after
+          ? or(
+              lt(suppressions.createdAt, after.createdAt),
+              and(
+                eq(suppressions.createdAt, after.createdAt),
+                lt(suppressions.id, after.id),
+              ),
+            )
+          : undefined,
+      ),
+    )
+    .orderBy(desc(suppressions.createdAt), desc(suppressions.id))
+    .limit(q.limit + 1);
+  const data = rows.slice(0, q.limit);
+  return {
+    data,
+    nextCursor: rows.length > q.limit ? (data.at(-1)?.id ?? null) : null,
+  };
+}
+
+/** REST shape: no team id. */
+export const publicSuppression = (s: Suppression) => ({
+  id: s.id,
+  email: s.email,
+  reason: s.reason,
+  note: s.note,
+  sourceEmailId: s.sourceEmailId,
+  createdAt: s.createdAt,
+});
 
 /** The suppressed subset of `emails` (normalised), with each one's reason. */
 export async function isSuppressed(
@@ -133,7 +191,12 @@ export async function removeSuppression(
       ),
     )
     .returning({ email: suppressions.email });
-  if (!row) return { ok: false, error: "Not on the suppression list." };
+  if (!row)
+    return {
+      ok: false,
+      code: "not_found",
+      error: "Not on the suppression list.",
+    };
   await recordAudit({
     teamId: actor.teamId,
     actorUserId: actor.userId,

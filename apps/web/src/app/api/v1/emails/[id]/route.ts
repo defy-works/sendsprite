@@ -5,12 +5,12 @@ import {
   rateHeaders,
   readJson,
   withApiKey,
+  serviceFailure,
 } from "@/lib/api-response";
 import { enqueue } from "@/jobs/enqueue";
 import { listEvents } from "@/services/email-events";
 import { getEmail, rescheduleEmail } from "@/services/emails";
 import { publicEmail } from "@/services/ingest";
-import { sendFailure } from "../_shared";
 
 export const dynamic = "force-dynamic";
 
@@ -51,7 +51,7 @@ export const PATCH = withApiKey(
       body.data.scheduledAt,
       { enqueue, actorUserId: `api:${auth.key.id}` },
     );
-    if (!res.ok) return sendFailure(res, headers);
+    if (!res.ok) return serviceFailure(res, headers);
     return ok(publicEmail(res.data), { headers });
   },
   { permission: "full" },

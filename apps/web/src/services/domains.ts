@@ -1,11 +1,16 @@
-import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
 import {
   CreateEmailIdentityCommand,
   DeleteEmailIdentityCommand,
   GetEmailIdentityCommand,
   PutEmailIdentityMailFromAttributesCommand,
 } from "@aws-sdk/client-sesv2";
-import { can, CreateDomainInput, newId } from "@sendsprite/shared";
+import {
+  can,
+  CreateDomainInput,
+  newId,
+  type PageQuery,
+} from "@sendsprite/shared";
 import { db } from "@/db";
 import { domains } from "@/db/schema";
 import { makeSes } from "@/lib/aws/clients";
@@ -56,6 +61,7 @@ const FIRST_VERIFY_AFTER_S = 30;
 const VERIFY_WINDOW_MS = 72 * 3600 * 1000;
 const DENIED: Result<never> = {
   ok: false,
+  code: "forbidden",
   error: "You don't have permission to do that.",
 };
 const DUPLICATE: Result<never> = {
@@ -87,6 +93,48 @@ export async function listDomains(teamId: string): Promise<Domain[]> {
     .from(domains)
     .where(eq(domains.teamId, teamId))
     .orderBy(domains.createdAt);
+}
+
+/**
+ * REST page, newest first (the dashboard's `listDomains` is oldest first).
+ * Keyset paging on `(created_at, id)`; `cursor` is the last returned id.
+ */
+export async function listDomainsPage(
+  teamId: string,
+  q: PageQuery,
+): Promise<{ data: Domain[]; nextCursor: string | null }> {
+  const after = q.cursor
+    ? await db()
+        .select({ createdAt: domains.createdAt, id: domains.id })
+        .from(domains)
+        .where(and(eq(domains.teamId, teamId), eq(domains.id, q.cursor)))
+        .then((r) => r[0])
+    : undefined;
+  const rows = await db()
+    .select()
+    .from(domains)
+    .where(
+      and(
+        eq(domains.teamId, teamId),
+
+        after
+          ? or(
+              lt(domains.createdAt, after.createdAt),
+              and(
+                eq(domains.createdAt, after.createdAt),
+                lt(domains.id, after.id),
+              ),
+            )
+          : undefined,
+      ),
+    )
+    .orderBy(desc(domains.createdAt), desc(domains.id))
+    .limit(q.limit + 1);
+  const data = rows.slice(0, q.limit);
+  return {
+    data,
+    nextCursor: rows.length > q.limit ? (data.at(-1)?.id ?? null) : null,
+  };
 }
 
 export async function getDomain(

@@ -25,7 +25,7 @@ export async function createApiKey(fd: FormData) {
     permission: fd.get("permission"),
     // The empty <select> option arrives as ""; the shared schema has no
     // transforms (OpenAPI), so unset is decided here.
-    domainId: fd.get("domainId") || undefined,
+    domainId: String(fd.get("domainId") ?? "").trim() || undefined,
   });
   if (res.ok) revalidatePath("/app/api-keys");
   return res;

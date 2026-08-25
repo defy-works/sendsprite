@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
-import { HTTP_STATUS, type ErrorCode } from "@sendsprite/shared";
+import { HTTP_STATUS, PageQuery, type ErrorCode } from "@sendsprite/shared";
 import {
   authenticateApiKey,
   requireFullPermission,
   type ApiAuthOk,
 } from "./api-auth";
 import { usageSnapshot } from "@/services/send-limits";
+import { isErrorCode, type Result } from "./result";
 
 /** Error envelope (spec §12): `{ error: { code, message, details? } }`. */
 export const fail = (
@@ -29,6 +30,38 @@ export const ok = (
   });
 
 export const noContent = () => new Response(null, { status: 204 });
+
+/**
+ * One mapping from a failed service `Result` to the error envelope: a known
+ * `ErrorCode` keeps its status, an upstream code (AWS error names) is a
+ * 500, and no code at all means the input was rejected (400).
+ */
+export function serviceFailure(
+  r: Extract<Result<unknown>, { ok: false }>,
+  headers?: HeadersInit,
+) {
+  if (r.code === undefined)
+    return fail("validation_error", r.error, r.details, headers);
+  if (isErrorCode(r.code)) return fail(r.code, r.error, r.details, headers);
+  return fail("internal_error", r.error, r.details, headers);
+}
+
+/** `?limit=&cursor=` → `PageQuery`, or a 400 response. */
+export function parsePage(req: Request) {
+  const q = PageQuery.safeParse(
+    Object.fromEntries(new URL(req.url).searchParams),
+  );
+  return q.success
+    ? { ok: true as const, data: q.data }
+    : {
+        ok: false as const,
+        res: fail(
+          "validation_error",
+          q.error.issues[0]?.message ?? "Invalid query.",
+          q.error.issues,
+        ),
+      };
+}
 
 /** Largest JSON body accepted (a batch of base64 attachments). */
 export const MAX_BODY_BYTES = 25 * 1024 * 1024;

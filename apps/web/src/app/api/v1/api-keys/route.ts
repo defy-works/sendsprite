@@ -1,24 +1,28 @@
 import { keyActor } from "@/lib/api-auth";
-import { fail, ok, readJson, withApiKey } from "@/lib/api-response";
-import { createApiKey, listApiKeys } from "@/services/api-keys";
+import {
+  fail,
+  ok,
+  parsePage,
+  readJson,
+  serviceFailure,
+  withApiKey,
+} from "@/lib/api-response";
+import {
+  createApiKey,
+  listApiKeysPage,
+  publicApiKey,
+} from "@/services/api-keys";
 
 export const dynamic = "force-dynamic";
 
 export const GET = withApiKey(
-  async (_req, auth) => {
-    const rows = await listApiKeys(auth.team.id);
+  async (req, auth) => {
+    const q = parsePage(req);
+    if (!q.ok) return q.res;
+    const page = await listApiKeysPage(auth.team.id, q.data);
     return ok({
-      data: rows
-        .filter((k) => !k.revokedAt)
-        .map((k) => ({
-          id: k.id,
-          name: k.name,
-          permission: k.permission,
-          keyPrefix: k.keyPrefix,
-          domainId: k.domainId,
-          lastUsedAt: k.lastUsedAt,
-          createdAt: k.createdAt,
-        })),
+      data: page.data.map(publicApiKey),
+      nextCursor: page.nextCursor,
     });
   },
   { permission: "full" },
@@ -31,7 +35,7 @@ export const POST = withApiKey(
     if (body === undefined)
       return fail("validation_error", "Body must be JSON.");
     const res = await createApiKey(keyActor(auth), body);
-    if (!res.ok) return fail("validation_error", res.error);
+    if (!res.ok) return serviceFailure(res);
     return ok(res.data, { status: 201 });
   },
   { permission: "full" },
