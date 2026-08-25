@@ -20,13 +20,7 @@ export function Panel({
   );
 }
 
-export function Alert({ children }: { children: ReactNode }) {
-  return (
-    <p role="alert" className="text-sm text-red-300">
-      {children}
-    </p>
-  );
-}
+export { Alert } from "@/components/ui/Alert";
 
 /** Amber, non-blocking: the action succeeded but something needs attention. */
 export function Notice({ children }: { children: ReactNode }) {

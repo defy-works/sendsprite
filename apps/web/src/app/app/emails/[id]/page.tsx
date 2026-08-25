@@ -4,7 +4,9 @@ import { Badge } from "@/components/ui/Badge";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Link } from "@/components/ui/Link";
 import { formatWhen } from "@/lib/format";
+import { prepareDetail } from "@/lib/email-detail";
 import { requireTeam } from "@/lib/session";
+import { loadEnv } from "@/env.schema";
 import { listApiKeys } from "@/services/api-keys";
 import { listDomains } from "@/services/domains";
 import { listEvents, type EmailEvent } from "@/services/email-events";
@@ -78,8 +80,10 @@ function detailsOf(ev: EmailEvent): string[] {
     case "cancelled":
       break;
   }
-  if (Array.isArray(p.recipients) && p.recipients.length)
-    out.push(`Recipients: ${(p.recipients as string[]).join(", ")}`);
+  const rcpt = Array.isArray(p.recipients)
+    ? p.recipients.filter((r): r is string => typeof r === "string")
+    : [];
+  if (rcpt.length) out.push(`Recipients: ${rcpt.join(", ")}`);
   return out;
 }
 
@@ -106,7 +110,9 @@ export default async function EmailPage({
   ]);
   const key = keys.find((k) => k.id === e.apiKeyId);
   const domain = domains.find((d) => d.id === e.domainId);
-  const purged = Boolean(e.bodyPurgedAt);
+  const body = prepareDetail(e, loadEnv().APP_URL);
+  const purged = body.purged;
+  const inFlight = ["queued", "scheduled", "sending"].includes(e.status);
   const canSend = can(ctx.role, "emails.send");
   const timeline: EventView[] = events.map((ev) => ({
     id: ev.id,
@@ -209,7 +215,7 @@ export default async function EmailPage({
               <EmailActions
                 id={e.id}
                 cancellable={e.status === "queued" || e.status === "scheduled"}
-                resendable={!purged}
+                resendable={!purged && !inFlight}
               />
             </CardBody>
           </Card>
@@ -217,8 +223,8 @@ export default async function EmailPage({
       </div>
 
       <EmailDetail
-        html={purged ? null : e.html}
-        text={purged ? null : e.text}
+        html={body.html}
+        text={body.text}
         purged={purged}
         headers={e.headers}
         events={timeline}

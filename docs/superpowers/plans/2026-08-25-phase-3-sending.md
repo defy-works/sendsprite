@@ -3586,6 +3586,8 @@ describe("teamStats", () => {
 
 - [x] **Step 3: Commit** → `feat(web): email log and detail with events timeline, live stream, overview stats + alerts`.
 
+**As shipped (review of Task 14):** the preview is `<iframe sandbox="" srcDoc>` fed by `lib/email-detail.ts` `prepareDetail` (tracking unwrapped, so viewing never records an open) — no `/api/internal/.../preview` route. Alerts need ≥ 20 sends in the 24 h window (a single bounce would otherwise trip them); `sent.today` is a rolling 24 h. Stats run one 30-day scan over `emails_sent_at_idx` (migration `0010`). Resend refuses in-flight (`queued`/`scheduled`/`sending`) and purged emails.
+
 ---
 
 ### Task 15: Openers — retention purge, heartbeat persistence, verified-domain re-check, distinct audit actions

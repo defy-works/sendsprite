@@ -2,7 +2,7 @@
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { Button } from "@/components/ui/Button";
-import { Alert } from "@/app/setup/steps/shared";
+import { Alert } from "@/components/ui/Alert";
 import { cancelEmail, resendEmail } from "./actions";
 
 export function EmailActions({
@@ -21,21 +21,23 @@ export function EmailActions({
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-3">
-        <Button
-          variant="secondary"
-          disabled={busy || !resendable}
-          title={resendable ? undefined : "Body purged by retention"}
-          onClick={() =>
-            start(async () => {
-              setError(null);
-              const res = await resendEmail(id);
-              if (res.ok) router.push(`/app/emails/${res.data.id}`);
-              else setError(res.error);
-            })
-          }
-        >
-          Resend
-        </Button>
+        {/* Only finished emails: false while in flight or once the body is purged. */}
+        {resendable && (
+          <Button
+            variant="secondary"
+            disabled={busy}
+            onClick={() =>
+              start(async () => {
+                setError(null);
+                const res = await resendEmail(id);
+                if (res.ok) router.push(`/app/emails/${res.data.id}`);
+                else setError(res.error);
+              })
+            }
+          >
+            Resend
+          </Button>
+        )}
         {cancellable && (
           <Button
             variant="ghost"

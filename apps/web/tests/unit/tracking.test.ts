@@ -88,4 +88,8 @@ describe("unwrapTracking", () => {
     const html = '<a href="https://x.io">x</a><img src="https://x.io/p.png">';
     expect(unwrapTracking(html, base)).toBe(html);
   });
+  it("leaves a click href alone when its u param is malformed", () => {
+    const html = `<a href="${base}/t/c/em_1?u=%E0&s=abc">x</a>`;
+    expect(unwrapTracking(html, base)).toBe(html);
+  });
 });

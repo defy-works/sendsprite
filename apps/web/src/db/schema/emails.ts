@@ -92,5 +92,8 @@ export const emails = pgTable(
     index("emails_team_created_idx").on(t.teamId, t.createdAt),
     index("emails_team_status_idx").on(t.teamId, t.status),
     index("emails_purge_idx").on(t.bodyPurgedAt, t.createdAt),
+    // Overview stats scan `sent_at` windows per team and instance-wide.
+    index("emails_sent_at_idx").on(t.teamId, t.sentAt),
+    index("emails_sent_at_all_idx").on(t.sentAt),
   ],
 );

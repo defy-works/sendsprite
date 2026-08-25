@@ -529,6 +529,14 @@ export async function resendEmail(
       "conflict",
       "The body was purged by retention; nothing to resend.",
     );
+  if (["queued", "scheduled", "sending"].includes(e.status))
+    return fail(
+      "conflict",
+      `This email is still ${e.status}; wait for it to finish before resending.`,
+    );
+  // Peak memory is roughly 3x the attachment total: the raw bytes, their
+  // base64 string, and the copy `createEmail` decodes again (bounded by the
+  // per-attachment size limit in the shared schema).
   const atts = await db()
     .select({
       filename: emailAttachments.filename,

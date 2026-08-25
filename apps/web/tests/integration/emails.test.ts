@@ -446,3 +446,29 @@ describe("listEmails", () => {
     ).toBe(true);
   });
 });
+
+describe("prepareDetail", () => {
+  it("strips our pixel and click rewrites from the stored html", async () => {
+    const { createEmail } = await import("@/services/emails");
+    const { prepareDetail } = await import("@/lib/email-detail");
+    const res = await createEmail(
+      ctx,
+      { ...base, html: '<p><a href="https://x.io/p?a=1&b=2">x</a></p>' },
+      { enqueue: async () => "job" },
+    );
+    if (!res.ok) throw new Error(res.error);
+    expect(res.data.html).toContain("/t/c/");
+    const d = prepareDetail(res.data, "http://localhost:3000");
+    expect(d.purged).toBe(false);
+    expect(d.html).not.toContain("/t/o/");
+    expect(d.html).not.toContain("/t/c/");
+    expect(d.html).toContain('href="https://x.io/p?a=1&amp;b=2"');
+    expect(
+      prepareDetail({ ...res.data, bodyPurgedAt: new Date() }, "x"),
+    ).toEqual({
+      html: null,
+      text: null,
+      purged: true,
+    });
+  });
+});

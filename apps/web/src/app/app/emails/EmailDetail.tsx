@@ -33,16 +33,12 @@ export function EmailDetail({
   const [tab, setTab] = useState<Tab>(purged ? "Events" : "Preview");
   return (
     <Card className="p-0">
-      <div
-        role="tablist"
-        className="flex flex-wrap gap-1 border-b border-white/10 px-3 pt-3"
-      >
+      <div className="flex flex-wrap gap-1 border-b border-white/10 px-3 pt-3">
         {TABS.map((t) => (
           <button
             key={t}
             type="button"
-            role="tab"
-            aria-selected={tab === t}
+            aria-pressed={tab === t}
             onClick={() => setTab(t)}
             className={cn(
               "rounded-t-md px-3 py-2 text-sm transition-colors",
@@ -66,12 +62,17 @@ export function EmailDetail({
         ) : tab === "Preview" ? (
           html ? (
             // No scripts, no same-origin: the message cannot touch the app.
-            <iframe
-              title="Email preview"
-              sandbox=""
-              srcDoc={html}
-              className="h-[32rem] w-full rounded-md border border-white/10 bg-white"
-            />
+            <div className="flex flex-col gap-2">
+              <iframe
+                title="Email preview"
+                sandbox=""
+                srcDoc={html}
+                className="h-[32rem] w-full rounded-md border border-white/10 bg-white"
+              />
+              <p className="text-xs text-white/50">
+                Tracking is stripped from this preview; links are live.
+              </p>
+            </div>
           ) : (
             <p className="text-sm text-white/60">No HTML body.</p>
           )

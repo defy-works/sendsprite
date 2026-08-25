@@ -43,8 +43,8 @@ export function StatsTiles({ stats }: { stats: SendStats }) {
 }
 
 const WORDING: Record<StatsAlert["kind"], string> = {
-  bounce: `SES suspends sending at a 10% bounce rate and reviews accounts from 5%. Keep it under ${pct(THRESHOLDS.bounce.warning)}.`,
-  complaint: `SES suspends sending at a 0.5% complaint rate and reviews accounts from 0.1%. Keep it under ${pct(THRESHOLDS.complaint.warning)}.`,
+  bounce: `SES pauses sending at a ${pct(THRESHOLDS.bounce.pause)} bounce rate and reviews accounts from ${pct(THRESHOLDS.bounce.critical)}. Keep it under ${pct(THRESHOLDS.bounce.warning)}.`,
+  complaint: `SES pauses sending at a ${pct(THRESHOLDS.complaint.pause)} complaint rate and reviews accounts from ${pct(THRESHOLDS.complaint.critical)}. Keep it under ${pct(THRESHOLDS.complaint.warning)}.`,
 };
 
 export function AlertBanners({

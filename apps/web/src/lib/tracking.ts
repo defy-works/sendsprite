@@ -69,9 +69,11 @@ export function unwrapTracking(html: string, base: string): string {
   );
   return html
     .replace(pixel, "")
-    .replace(
-      click,
-      (_m: string, pre: string, q: string, u: string) =>
-        `${pre}${q}${decodeURIComponent(u).replace(/&/g, "&amp;")}${q}`,
-    );
+    .replace(click, (m: string, pre: string, q: string, u: string) => {
+      try {
+        return `${pre}${q}${decodeURIComponent(u).replace(/&/g, "&amp;")}${q}`;
+      } catch {
+        return m; // malformed percent-encoding: leave the tracked href as is
+      }
+    });
 }

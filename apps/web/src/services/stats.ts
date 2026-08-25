@@ -16,8 +16,8 @@ export interface StatsAlert {
 
 /** SES account-health thresholds (spec §12): warn a little before SES does. */
 export const THRESHOLDS = {
-  bounce: { warning: 0.04, critical: 0.05 },
-  complaint: { warning: 0.0008, critical: 0.001 },
+  bounce: { warning: 0.04, critical: 0.05, pause: 0.1 },
+  complaint: { warning: 0.0008, critical: 0.001, pause: 0.005 },
 } as const;
 /** Below this many sends in 24 h a single bounce would trip the alert. */
 const MIN_SAMPLE = 20;
@@ -30,31 +30,38 @@ type Counts = {
   bounced: number;
   complained: number;
 };
+type Windows = { h24: Counts; d7: Counts; d30: Counts };
 
 /**
- * One pass over the emails sent in `(since, now]`: the denominator is the
- * `sent_at` window, each numerator counts emails (not events) that have at
- * least one event of that type, so duplicates never inflate a rate.
+ * One scan of the emails sent in the last 30 days (`emails_sent_at_idx`),
+ * split into the three windows with `filter` clauses. Each numerator counts
+ * emails (not events) that have at least one event of that type, so
+ * duplicate events never inflate a rate.
  */
-async function counts(
-  teamId: string | null,
-  since: Date,
-  now: Date,
-): Promise<Counts> {
+async function windows(teamId: string | null, now: Date): Promise<Windows> {
+  const at = (h: number) =>
+    sql`${new Date(now.getTime() - h * HOUR).toISOString()}::timestamptz`;
   const has = (type: string) =>
-    sql`count(*) filter (where exists (select 1 from email_events ev where ev.email_id = e.id and ev.type = ${type}))::int`;
-  const rows = await db().execute<Counts>(sql`
-    select
-      count(*)::int as sent,
-      ${has("delivered")} as delivered,
-      ${has("bounced")} as bounced,
-      ${has("complained")} as complained
+    sql`exists (select 1 from email_events ev where ev.email_id = e.id and ev.type = ${type})`;
+  const cols = (w: string, since: ReturnType<typeof at>) => sql`
+      count(*) filter (where e.sent_at > ${since})::int as ${sql.raw(w + "_sent")},
+      count(*) filter (where e.sent_at > ${since} and ${has("delivered")})::int as ${sql.raw(w + "_delivered")},
+      count(*) filter (where e.sent_at > ${since} and ${has("bounced")})::int as ${sql.raw(w + "_bounced")},
+      count(*) filter (where e.sent_at > ${since} and ${has("complained")})::int as ${sql.raw(w + "_complained")}`;
+  const [row] = await db().execute<Record<string, number>>(sql`
+    select ${cols("h24", at(24))}, ${cols("d7", at(7 * 24))}, ${cols("d30", at(30 * 24))}
     from emails e
-    where e.sent_at > ${since.toISOString()}::timestamptz
+    where e.sent_at > ${at(30 * 24)}
       and e.sent_at <= ${now.toISOString()}::timestamptz
       ${teamId ? sql`and e.team_id = ${teamId}` : sql``}
   `);
-  return rows[0] ?? { sent: 0, delivered: 0, bounced: 0, complained: 0 };
+  const pick = (w: string): Counts => ({
+    sent: row?.[`${w}_sent`] ?? 0,
+    delivered: row?.[`${w}_delivered`] ?? 0,
+    bounced: row?.[`${w}_bounced`] ?? 0,
+    complained: row?.[`${w}_complained`] ?? 0,
+  });
+  return { h24: pick("h24"), d7: pick("d7"), d30: pick("d30") };
 }
 
 const ratio = (n: number, d: number) => (d ? n / d : 0);
@@ -75,11 +82,7 @@ function alertsFor(c: Counts): StatsAlert[] {
 }
 
 async function stats(teamId: string | null, now: Date): Promise<SendStats> {
-  const [h24, d7, d30] = await Promise.all([
-    counts(teamId, new Date(now.getTime() - 24 * HOUR), now),
-    counts(teamId, new Date(now.getTime() - 7 * 24 * HOUR), now),
-    counts(teamId, new Date(now.getTime() - 30 * 24 * HOUR), now),
-  ]);
+  const { h24, d7, d30 } = await windows(teamId, now);
   return {
     sent: { today: h24.sent, d7: d7.sent, d30: d30.sent },
     rates: {
