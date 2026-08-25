@@ -3556,7 +3556,7 @@ As shipped: `loadOrGenerateCert` is async (selfsigned 5 is promise-only, `notAft
 - Modify: `apps/web/src/app/app/page.tsx`
 - Test: `apps/web/tests/integration/stats.test.ts`
 
-- [ ] **Step 1: Stats (TDD)**
+- [x] **Step 1: Stats (TDD)**
 
 ```ts
 describe("teamStats", () => {
@@ -3580,11 +3580,11 @@ describe("teamStats", () => {
 
 `services/stats.ts`: `teamStats(teamId)` → `{ sent: { today, d7, d30 }, rates: { delivered, bounced, complained } over last 30 d sent }`, `alerts` when bounce ≥ 4 % (warning) / 5 % (critical) or complaint ≥ 0.08 % / 0.1 % over the last 24 h with ≥ 20 sends; `instanceStats()` same across teams for the owner banner. Overview page: three metric tiles (`metric-xl`), rate tiles with `StatusDot`, alert banner (amber/red) per spec §12, recent 10 emails, domain health, existing checklist ("Create an API key" done when a key exists; "Send your first email" done when any email exists).
 
-- [ ] **Step 2: Emails UI**
+- [x] **Step 2: Emails UI**
 
 `/app/emails`: filters (status select, `to` contains, domain, tag `k:v`), table (to, subject, status `StatusDot`, domain, created, sent) with cursor pagination ("Load more"), `useTeamStream()` for live refresh. `/app/emails/[id]`: header (subject, from → to/cc/bcc, status, tags, source, api key prefix), tabs: **Preview** (`<iframe sandbox="" srcDoc>` — served through `/api/internal/emails/[id]/preview` with `content-security-policy: default-src 'none'; img-src data: https:; style-src 'unsafe-inline'` — as `srcdoc` with `sandbox` attributes, no scripts), **Text**, **Headers**, **Events** timeline (`recordEvent` rows with payload details: bounce type/diagnostic, smtp response, open UA/IP, click link), attachments list (name/size — download deferred), **Resend** (creates a new email from the same content via `createEmail` with `source: "dashboard"`, `can("emails.send")`), **Cancel** for queued/scheduled. `bodyPurgedAt` set → show "Body purged by retention".
 
-- [ ] **Step 3: Commit** → `feat(web): email log and detail with events timeline, live stream, overview stats + alerts`.
+- [x] **Step 3: Commit** → `feat(web): email log and detail with events timeline, live stream, overview stats + alerts`.
 
 ---
 

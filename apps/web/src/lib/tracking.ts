@@ -53,3 +53,25 @@ export function injectPixel(html: string, emailId: string, base: string) {
     ? html.replace(/<\/body>/i, `${tag}</body>`)
     : html + tag;
 }
+
+/**
+ * Inverse of `wrapLinks` + `injectPixel` for a stored body: drops our open
+ * pixel and restores each `/t/c/:id?u=…` href to its original URL so a
+ * resend can be re-tracked under the new email id. `&` in the restored href
+ * is written as `&amp;` (the attribute-safe form).
+ */
+export function unwrapTracking(html: string, base: string): string {
+  const b = base.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+  const pixel = new RegExp(`<img src="${b}/t/o/[^"]+\\.gif"[^>]*>`, "gi");
+  const click = new RegExp(
+    `(href=)(["'])${b}/t/c/[^"'?]+\\?u=([^&"']*)&s=[^"']*\\2`,
+    "gi",
+  );
+  return html
+    .replace(pixel, "")
+    .replace(
+      click,
+      (_m: string, pre: string, q: string, u: string) =>
+        `${pre}${q}${decodeURIComponent(u).replace(/&/g, "&amp;")}${q}`,
+    );
+}

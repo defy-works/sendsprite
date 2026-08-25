@@ -16,7 +16,7 @@ import {
   type EmailSource,
 } from "@/db/schema";
 import { domainOf, parseAddress } from "@/lib/email-address";
-import { injectPixel, wrapLinks } from "@/lib/tracking";
+import { injectPixel, unwrapTracking, wrapLinks } from "@/lib/tracking";
 import { loadEnv } from "@/env.schema";
 import { Q } from "@/jobs/queues";
 import { recordEvent } from "./email-events";
@@ -510,4 +510,55 @@ export async function rescheduleEmail(
   });
   await deps.enqueue(Q.emailSend, { emailId: id }, delayOpts(at, now));
   return { ok: true, data: row };
+}
+
+/**
+ * Dashboard "Resend": a fresh email from the stored content. Tracking
+ * rewrites are undone first (`createEmail` re-applies them under the new
+ * id); attachment bytes are re-read while retention still holds them.
+ */
+export async function resendEmail(
+  ctx: SendContext,
+  id: string,
+  deps: { enqueue: Enqueue; now?: Date },
+): Promise<CreateResult> {
+  const e = await getEmail(ctx.teamId, id);
+  if (!e) return fail("not_found", "Email not found.");
+  if (e.bodyPurgedAt)
+    return fail(
+      "conflict",
+      "The body was purged by retention; nothing to resend.",
+    );
+  const atts = await db()
+    .select({
+      filename: emailAttachments.filename,
+      contentType: emailAttachments.contentType,
+      bytes: emailAttachments.bytes,
+    })
+    .from(emailAttachments)
+    .where(eq(emailAttachments.emailId, id));
+  const base = loadEnv().APP_URL;
+  return createEmail(
+    ctx,
+    {
+      from: e.from,
+      to: e.to,
+      cc: e.cc,
+      bcc: e.bcc,
+      replyTo: e.replyTo,
+      subject: e.subject,
+      html: e.html ? unwrapTracking(e.html, base) : undefined,
+      text: e.text ?? undefined,
+      headers: e.headers,
+      tags: e.tags,
+      trackOpens: e.trackOpens,
+      trackClicks: e.trackClicks,
+      attachments: atts.map((a) => ({
+        filename: a.filename,
+        contentType: a.contentType,
+        content: Buffer.from(a.bytes).toString("base64"),
+      })),
+    },
+    deps,
+  );
 }

@@ -5,6 +5,7 @@ import {
   injectPixel,
   signClick,
   verifyClick,
+  unwrapTracking,
 } from "@/lib/tracking";
 
 const base = "https://mail.acme.com";
@@ -65,5 +66,26 @@ describe("tracking", () => {
     expect(injectPixel("<body><p>hi</p></body>", "em_1", base)).toMatch(
       /<img [^>]+><\/body>$/,
     );
+  });
+});
+
+describe("unwrapTracking", () => {
+  it("removes the open pixel and restores wrapped click links", () => {
+    const html =
+      '<p><a href="https://x.io/a?b=1&c=2">x</a> <a href="mailto:a@b">m</a></p>';
+    const tracked = injectPixel(
+      wrapLinks(html, "em_1", base, secret),
+      "em_1",
+      base,
+    );
+    expect(tracked).not.toBe(html);
+    const out = unwrapTracking(tracked, base);
+    expect(out).toBe(
+      '<p><a href="https://x.io/a?b=1&amp;c=2">x</a> <a href="mailto:a@b">m</a></p>',
+    );
+  });
+  it("leaves html without tracking alone", () => {
+    const html = '<a href="https://x.io">x</a><img src="https://x.io/p.png">';
+    expect(unwrapTracking(html, base)).toBe(html);
   });
 });
