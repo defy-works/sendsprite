@@ -502,12 +502,16 @@ describe("REST /api/v1/domains", () => {
     expect(await json(bad)).toMatchObject({
       error: { code: "validation_error" },
     });
-    // AWS is not connected on this instance: a valid name is refused too.
+    // AWS is not connected on this instance: a valid name is refused with
+    // 503 `not_configured` (the caller cannot fix it; the operator can).
     const noAws = await POST(
       req("/domains", { method: "POST", body: { name: "x.io" } }),
       noParams,
     );
-    expect(noAws.status).toBe(400);
+    expect(noAws.status).toBe(503);
+    expect(await json(noAws)).toMatchObject({
+      error: { code: "not_configured" },
+    });
     // Never provisioned (no DKIM tokens): verify is refused, domain untouched.
     const v = await verify(
       req("/domains/dom_1/verify", { method: "POST" }),

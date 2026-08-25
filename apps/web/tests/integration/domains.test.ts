@@ -324,7 +324,11 @@ describe("domains", () => {
           throw new Error("still down");
         },
       }),
-    ).toEqual({ ok: false, error: "Could not queue provisioning: still down" });
+    ).toEqual({
+      ok: false,
+      code: "internal_error",
+      error: "Could not queue provisioning: still down",
+    });
     expect((await byName("queued.acme.com")).lastError).toMatch(/still down/);
     // Once provisioned, Re-verify is the tool, not a second provision.
     await pg.db

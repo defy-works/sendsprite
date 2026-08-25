@@ -1,30 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startPg } from "./_pg";
+import { seedTeamWithKey } from "./helpers";
 
 let pg: Awaited<ReturnType<typeof startPg>>;
 let secret: string;
 let sendingOnly: string;
 beforeAll(async () => {
   pg = await startPg();
-  process.env.APP_SECRET = "x".repeat(40);
-  await pg.db.execute(
-    `insert into "organization"(id,name,slug,created_at) values ('org_1','Acme','acme',now())`,
-  );
-  const { createApiKey } = await import("@/services/api-keys");
-  const actor = {
-    userId: "u1",
-    teamId: "org_1",
-    teamName: "Acme",
-    role: "owner" as const,
-  };
-  const a = await createApiKey(actor, { name: "root" });
-  const b = await createApiKey(actor, {
-    name: "send",
-    permission: "sending_only",
-  });
-  if (!a.ok || !b.ok) throw new Error("seed failed");
-  secret = a.data.secret;
-  sendingOnly = b.data.secret;
+  secret = (await seedTeamWithKey()).secret;
+  sendingOnly = (await seedTeamWithKey({ permission: "sending_only" })).secret;
 });
 afterAll(async () => {
   await pg.stop();

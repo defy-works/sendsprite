@@ -15,6 +15,7 @@ import {
   teamSettings,
   type EmailSource,
 } from "@/db/schema";
+import { decodeCursor, encodeCursor } from "@/lib/cursor";
 import { domainOf, parseAddress } from "@/lib/email-address";
 import { injectPixel, unwrapTracking, wrapLinks } from "@/lib/tracking";
 import { loadEnv } from "@/env.schema";
@@ -387,19 +388,6 @@ export interface EmailPage {
   nextCursor: string | null;
 }
 
-const encodeCursor = (r: Pick<EmailRow, "createdAt" | "id">) =>
-  Buffer.from(`${r.createdAt.toISOString()}|${r.id}`).toString("base64url");
-
-/** Malformed cursors are ignored (first page) rather than rejected. */
-function decodeCursor(c: string): { createdAt: Date; id: string } | null {
-  const s = Buffer.from(c, "base64url").toString();
-  const i = s.indexOf("|");
-  if (i <= 0) return null;
-  const createdAt = new Date(s.slice(0, i));
-  const id = s.slice(i + 1);
-  return Number.isNaN(createdAt.getTime()) || !id ? null : { createdAt, id };
-}
-
 /** Newest first; keyset pagination on `(created_at desc, id desc)`. */
 export async function listEmails(
   teamId: string,
@@ -415,6 +403,7 @@ export async function listEmails(
     const v = i < 0 ? "" : q.tag.slice(i + 1);
     where.push(sql`${emails.tags} ->> ${k} = ${v}`);
   }
+  // Malformed cursors are ignored (first page) rather than rejected.
   const cur = q.cursor ? decodeCursor(q.cursor) : null;
   if (cur)
     where.push(

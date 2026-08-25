@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { HTTP_STATUS, PageQuery, type ErrorCode } from "@sendsprite/shared";
+import type { Page } from "@/db/keyset";
 import {
   authenticateApiKey,
   requireFullPermission,
@@ -44,6 +45,25 @@ export function serviceFailure(
     return fail("validation_error", r.error, r.details, headers);
   if (isErrorCode(r.code)) return fail(r.code, r.error, r.details, headers);
   return fail("internal_error", r.error, r.details, headers);
+}
+
+/**
+ * The list GET in one call: parse `?limit=&cursor=`, run the paged service
+ * call, map each row through its public view, and emit `{ data, nextCursor }`.
+ */
+export async function pagedList<T>(
+  req: Request,
+  list: (q: PageQuery) => Promise<Result<Page<T>>>,
+  view: (row: T) => unknown,
+): Promise<Response> {
+  const q = parsePage(req);
+  if (!q.ok) return q.res;
+  const page = await list(q.data);
+  if (!page.ok) return serviceFailure(page);
+  return ok({
+    data: page.data.data.map(view),
+    nextCursor: page.data.nextCursor,
+  });
 }
 
 /** `?limit=&cursor=` → `PageQuery`, or a 400 response. */

@@ -13,6 +13,7 @@ export const ERROR_CODES = [
   "idempotency_conflict",
   "conflict",
   "payload_too_large",
+  "not_configured",
   "internal_error",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -35,5 +36,6 @@ export const HTTP_STATUS: Record<ErrorCode, number> = {
   idempotency_conflict: 409,
   conflict: 409,
   payload_too_large: 413,
+  not_configured: 503,
   internal_error: 500,
 };

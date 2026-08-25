@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
+import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
 import {
   CreateEmailIdentityCommand,
   DeleteEmailIdentityCommand,
@@ -12,6 +12,7 @@ import {
   type PageQuery,
 } from "@sendsprite/shared";
 import { db } from "@/db";
+import { keysetPage, type Page } from "@/db/keyset";
 import { domains } from "@/db/schema";
 import { makeSes } from "@/lib/aws/clients";
 import { resolveAwsContext } from "@/lib/aws/credentials";
@@ -99,43 +100,11 @@ export async function listDomains(teamId: string): Promise<Domain[]> {
  * REST page, newest first (the dashboard's `listDomains` is oldest first).
  * Keyset paging on `(created_at, id)`; `cursor` is the last returned id.
  */
-export async function listDomainsPage(
+export const listDomainsPage = (
   teamId: string,
   q: PageQuery,
-): Promise<{ data: Domain[]; nextCursor: string | null }> {
-  const after = q.cursor
-    ? await db()
-        .select({ createdAt: domains.createdAt, id: domains.id })
-        .from(domains)
-        .where(and(eq(domains.teamId, teamId), eq(domains.id, q.cursor)))
-        .then((r) => r[0])
-    : undefined;
-  const rows = await db()
-    .select()
-    .from(domains)
-    .where(
-      and(
-        eq(domains.teamId, teamId),
-
-        after
-          ? or(
-              lt(domains.createdAt, after.createdAt),
-              and(
-                eq(domains.createdAt, after.createdAt),
-                lt(domains.id, after.id),
-              ),
-            )
-          : undefined,
-      ),
-    )
-    .orderBy(desc(domains.createdAt), desc(domains.id))
-    .limit(q.limit + 1);
-  const data = rows.slice(0, q.limit);
-  return {
-    data,
-    nextCursor: rows.length > q.limit ? (data.at(-1)?.id ?? null) : null,
-  };
-}
+): Promise<Result<Page<Domain>>> =>
+  keysetPage(domains, q, eq(domains.teamId, teamId));
 
 export async function getDomain(
   teamId: string,
@@ -182,7 +151,11 @@ export async function createDomain(
   const name = parsed.data.name;
   const settings = await getInstanceSettings();
   if (settings.awsMode === "none" || !settings.awsRegion)
-    return { ok: false, error: "Connect AWS first (Settings → Instance)." };
+    return {
+      ok: false,
+      code: "not_configured",
+      error: "Connect AWS first (Settings → Instance).",
+    };
   const [dupe] = await db()
     .select({ id: domains.id })
     .from(domains)
@@ -281,7 +254,7 @@ export async function retryProvisioning(
   } catch (e) {
     const lastError = `Could not queue provisioning: ${errMsg(e)}`;
     await db().update(domains).set({ lastError }).where(eq(domains.id, id));
-    return { ok: false, error: lastError };
+    return { ok: false, code: "internal_error", error: lastError };
   }
   return { ok: true, data: undefined };
 }
@@ -602,7 +575,11 @@ export async function reverifyDomain(
   try {
     await verifyDomain(id, deps, { force: true });
   } catch (e) {
-    return { ok: false, error: `Check failed: ${errMsg(e)}` };
+    return {
+      ok: false,
+      code: "internal_error",
+      error: `Check failed: ${errMsg(e)}`,
+    };
   }
   return { ok: true, data: undefined };
 }
@@ -639,7 +616,11 @@ export async function deleteDomain(
           if (errName(e) !== "NotFoundException") throw e;
         });
     } catch (e) {
-      return { ok: false, error: `Could not remove: ${errMsg(e)}` };
+      return {
+        ok: false,
+        code: "internal_error",
+        error: `Could not remove: ${errMsg(e)}`,
+      };
     }
   }
   let leftoverDnsRecords = 0;

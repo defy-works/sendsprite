@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, isNull, lt, or } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import {
   can,
   CreateApiKeyInput,
@@ -7,6 +7,7 @@ import {
   type PageQuery,
 } from "@sendsprite/shared";
 import { db } from "@/db";
+import { keysetPage, type Page } from "@/db/keyset";
 import { apiKeys, domains } from "@/db/schema";
 import { recordAudit } from "@/lib/audit";
 import type { Result } from "@/lib/result";
@@ -39,43 +40,15 @@ export function listApiKeys(teamId: string): Promise<ApiKey[]> {
  * REST page of live keys (revoked ones are omitted), newest first.
  * Keyset paging on `(created_at, id)`; `cursor` is the last returned id.
  */
-export async function listApiKeysPage(
+export const listApiKeysPage = (
   teamId: string,
   q: PageQuery,
-): Promise<{ data: ApiKey[]; nextCursor: string | null }> {
-  const after = q.cursor
-    ? await db()
-        .select({ createdAt: apiKeys.createdAt, id: apiKeys.id })
-        .from(apiKeys)
-        .where(and(eq(apiKeys.teamId, teamId), eq(apiKeys.id, q.cursor)))
-        .then((r) => r[0])
-    : undefined;
-  const rows = await db()
-    .select()
-    .from(apiKeys)
-    .where(
-      and(
-        eq(apiKeys.teamId, teamId),
-        isNull(apiKeys.revokedAt),
-        after
-          ? or(
-              lt(apiKeys.createdAt, after.createdAt),
-              and(
-                eq(apiKeys.createdAt, after.createdAt),
-                lt(apiKeys.id, after.id),
-              ),
-            )
-          : undefined,
-      ),
-    )
-    .orderBy(desc(apiKeys.createdAt), desc(apiKeys.id))
-    .limit(q.limit + 1);
-  const data = rows.slice(0, q.limit);
-  return {
-    data,
-    nextCursor: rows.length > q.limit ? (data.at(-1)?.id ?? null) : null,
-  };
-}
+): Promise<Result<Page<ApiKey>>> =>
+  keysetPage(
+    apiKeys,
+    q,
+    and(eq(apiKeys.teamId, teamId), isNull(apiKeys.revokedAt)),
+  );
 
 /** REST shape: never the hash; the prefix is all that identifies the secret. */
 export const publicApiKey = (k: ApiKey) => ({
@@ -104,7 +77,13 @@ export async function createApiKey(
       .where(
         and(eq(domains.id, p.data.domainId), eq(domains.teamId, actor.teamId)),
       );
-    if (!d) return { ok: false, error: "Domain not found." };
+    if (!d)
+      return {
+        ok: false,
+        code: "validation_error",
+        error: "Domain not found.",
+        details: { field: "domainId" },
+      };
   }
   const secret = `ss_live_${randomBytes(32).toString("base64url")}`;
   const id = newId("key");

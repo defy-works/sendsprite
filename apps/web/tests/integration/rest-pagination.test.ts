@@ -124,6 +124,42 @@ describe("cursor pagination", () => {
     }
   });
 
+  it("keeps walking after the cursor row is deleted; garbage cursor is 400", async () => {
+    const { GET: listKeys, POST: createKey } =
+      await import("@/app/api/v1/api-keys/route");
+    const { DELETE: revokeKey } =
+      await import("@/app/api/v1/api-keys/[id]/route");
+    const { secret } = await seedTeamWithKey();
+    for (let i = 0; i < 4; i++)
+      await post(createKey, secret, { name: `k${i}` });
+    const p1 = (await (await get(listKeys, secret, "?limit=2")).json()) as {
+      data: { id: string }[];
+      nextCursor: string;
+    };
+    const lastOnPage = p1.data[1]!.id;
+    const del = await revokeKey(
+      new Request("http://x", {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${secret}` },
+      }),
+      { params: Promise.resolve({ id: lastOnPage }) },
+    );
+    expect(del.status).toBe(204);
+    // The cursor row is gone; the next page still starts right after it.
+    const p2 = (await (
+      await get(listKeys, secret, `?limit=2&cursor=${p1.nextCursor}`)
+    ).json()) as { data: { id: string }[] };
+    const p1Ids = p1.data.map((k) => k.id);
+    expect(p2.data).toHaveLength(2);
+    for (const k of p2.data) expect(p1Ids).not.toContain(k.id);
+
+    const bad = await get(listKeys, secret, "?limit=2&cursor=garbage");
+    expect(bad.status).toBe(400);
+    expect(await bad.json()).toMatchObject({
+      error: { code: "validation_error", message: "Invalid cursor." },
+    });
+  });
+
   it("rejects a bad limit", async () => {
     const { GET: listKeys } = await import("@/app/api/v1/api-keys/route");
     const { secret } = await seedTeamWithKey();

@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, lt, or } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import {
   AddSuppressionInput,
   can,
@@ -6,6 +6,7 @@ import {
   type PageQuery,
 } from "@sendsprite/shared";
 import { db } from "@/db";
+import { keysetPage, type Page } from "@/db/keyset";
 import { suppressions, type SuppressionReason } from "@/db/schema";
 import { recordAudit } from "@/lib/audit";
 import { normaliseEmail } from "@/lib/email-address";
@@ -34,45 +35,11 @@ export function listSuppressions(teamId: string): Promise<Suppression[]> {
 /**
  * REST page, newest first. Keyset paging on `(created_at, id)`; `cursor` is the last returned id.
  */
-export async function listSuppressionsPage(
+export const listSuppressionsPage = (
   teamId: string,
   q: PageQuery,
-): Promise<{ data: Suppression[]; nextCursor: string | null }> {
-  const after = q.cursor
-    ? await db()
-        .select({ createdAt: suppressions.createdAt, id: suppressions.id })
-        .from(suppressions)
-        .where(
-          and(eq(suppressions.teamId, teamId), eq(suppressions.id, q.cursor)),
-        )
-        .then((r) => r[0])
-    : undefined;
-  const rows = await db()
-    .select()
-    .from(suppressions)
-    .where(
-      and(
-        eq(suppressions.teamId, teamId),
-
-        after
-          ? or(
-              lt(suppressions.createdAt, after.createdAt),
-              and(
-                eq(suppressions.createdAt, after.createdAt),
-                lt(suppressions.id, after.id),
-              ),
-            )
-          : undefined,
-      ),
-    )
-    .orderBy(desc(suppressions.createdAt), desc(suppressions.id))
-    .limit(q.limit + 1);
-  const data = rows.slice(0, q.limit);
-  return {
-    data,
-    nextCursor: rows.length > q.limit ? (data.at(-1)?.id ?? null) : null,
-  };
-}
+): Promise<Result<Page<Suppression>>> =>
+  keysetPage(suppressions, q, eq(suppressions.teamId, teamId));
 
 /** REST shape: no team id. */
 export const publicSuppression = (s: Suppression) => ({

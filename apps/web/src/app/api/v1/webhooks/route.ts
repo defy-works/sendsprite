@@ -2,7 +2,7 @@ import { keyActor } from "@/lib/api-auth";
 import {
   fail,
   ok,
-  parsePage,
+  pagedList,
   readJson,
   serviceFailure,
   withApiKey,
@@ -16,15 +16,8 @@ import {
 export const dynamic = "force-dynamic";
 
 export const GET = withApiKey(
-  async (req, auth) => {
-    const q = parsePage(req);
-    if (!q.ok) return q.res;
-    const page = await listWebhooksPage(auth.team.id, q.data);
-    return ok({
-      data: page.data.map(publicWebhook),
-      nextCursor: page.nextCursor,
-    });
-  },
+  (req, auth) =>
+    pagedList(req, (q) => listWebhooksPage(auth.team.id, q), publicWebhook),
   { permission: "full" },
 );
 
