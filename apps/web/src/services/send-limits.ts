@@ -1,5 +1,5 @@
 import { and, count, eq, gte, inArray, isNotNull, lt } from "drizzle-orm";
-import type { ErrorCode } from "@sendsprite/shared";
+import { SEND_CONSUMING_STATUS, type ErrorCode } from "@sendsprite/shared";
 import { db } from "@/db";
 import { emails, sendRateState, teamSettings } from "@/db/schema";
 import { billingEnabled } from "./billing/config";
@@ -10,16 +10,13 @@ export type TokenResult = { ok: true } | { ok: false; retryInMs: number };
 export type CapResult =
   { ok: true } | { ok: false; code: ErrorCode; message: string };
 
-/** Statuses that consumed (or will consume) a send; failed/cancelled never count. */
-const ACTIVE = [
-  "queued",
-  "scheduled",
-  "sending",
-  "sent",
-  "delivered",
-  "bounced",
-  "complained",
-] as const;
+/**
+ * Statuses that consumed (or will consume) a send; failed/cancelled never
+ * count. Shared with the usage meter (`billing/usage.ts` re-exports it as
+ * `BILLABLE`) so the rows a cap refuses and the rows an invoice charges for
+ * can never drift apart.
+ */
+const ACTIVE = SEND_CONSUMING_STATUS;
 
 /**
  * One token = one SES SendEmail. Refills continuously at MaxSendRate/s with

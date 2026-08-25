@@ -140,6 +140,32 @@ export const EMAIL_STATUS = [
 ] as const;
 export type EmailStatus = (typeof EMAIL_STATUS)[number];
 
+/**
+ * Statuses that consumed a send.
+ *
+ * The caps count these and the meter bills these, and the two sets must be the
+ * same one: a set the meter has and the caps do not bills a customer for a send
+ * a cap refused, and the reverse lets them send past an allowance nobody
+ * charged for. The two services used to hold hand-copied tuples with a comment
+ * saying they must match and nothing that made them, which is a silent
+ * mis-bill one status away.
+ *
+ * `failed` and `cancelled` are the only exclusions, and they are excluded by
+ * being left out rather than by filtering `EMAIL_STATUS`: a status added later
+ * should have to be considered, not silently billed. `satisfies` keeps every
+ * entry a real status.
+ */
+export const SEND_CONSUMING_STATUS = [
+  "queued",
+  "scheduled",
+  "sending",
+  "sent",
+  "delivered",
+  "bounced",
+  "complained",
+] as const satisfies readonly EmailStatus[];
+export type SendConsumingStatus = (typeof SEND_CONSUMING_STATUS)[number];
+
 export const EmailObject = z.object({
   id: z.string(),
   from: z.string(),

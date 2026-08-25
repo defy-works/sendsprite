@@ -9,6 +9,7 @@ import {
   max,
   sql,
 } from "drizzle-orm";
+import { SEND_CONSUMING_STATUS } from "@sendsprite/shared";
 import { db } from "@/db";
 import {
   billingUsage,
@@ -20,19 +21,11 @@ import { meteringPeriodStart, type UsageWindow } from "./plans";
 import type { BillingProvider, UsageEvent } from "./provider";
 
 /**
- * Statuses that consumed a send. Identical to `ACTIVE` in
- * `services/send-limits.ts` on purpose: the meter and the caps must count the
- * same rows, or a customer gets billed for sends a cap refused.
+ * Statuses that consumed a send — the same constant `send-limits.ts` caps on,
+ * not a copy of it. The meter and the caps must count the same rows or a
+ * customer is billed for a send a cap refused.
  */
-export const BILLABLE = [
-  "queued",
-  "scheduled",
-  "sending",
-  "sent",
-  "delivered",
-  "bounced",
-  "complained",
-] as const;
+export const BILLABLE = SEND_CONSUMING_STATUS;
 
 /** Emails a team created in `[w.start, w.end)` that count towards usage. */
 export async function countSentIn(

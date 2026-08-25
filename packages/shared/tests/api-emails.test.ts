@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { ERROR_CODES, HTTP_STATUS } from "../src";
-import { SendEmailInput } from "../src/api/emails";
+import {
+  EMAIL_STATUS,
+  SEND_CONSUMING_STATUS,
+  SendEmailInput,
+} from "../src/api/emails";
 
 const base = {
   from: "Acme <hello@mail.acme.com>",
@@ -132,5 +136,17 @@ describe("error codes", () => {
     expect(HTTP_STATUS.conflict).toBe(409);
     expect(HTTP_STATUS.idempotency_conflict).toBe(409);
     expect(ERROR_CODES).toContain("conflict");
+  });
+});
+
+describe("send-consuming statuses", () => {
+  it("is a real subset of the status list, excluding only failed and cancelled", () => {
+    for (const status of SEND_CONSUMING_STATUS)
+      expect(EMAIL_STATUS).toContain(status);
+    expect(
+      EMAIL_STATUS.filter(
+        (s) => !(SEND_CONSUMING_STATUS as readonly string[]).includes(s),
+      ),
+    ).toEqual(["failed", "cancelled"]);
   });
 });
