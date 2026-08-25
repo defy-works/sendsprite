@@ -52,6 +52,41 @@ need to set it yourself if you point the app at an external Postgres.
 Migrations run at boot from the app's `instrumentation.ts` — there is no
 separate migrate step.
 
+## Coolify
+
+[Coolify](https://coolify.io) deploys straight from this repository: **New
+Resource → Docker Compose**, point it at the repo and set the compose path to
+`docker-compose.coolify.yml`. That file is written for Coolify rather than for a
+plain `docker compose up` — it publishes no HTTP port, because Coolify's proxy
+handles routing and TLS.
+
+Coolify fills three values itself, using its magic `SERVICE_*` variables:
+
+| Variable                    | What Coolify does                                            |
+| --------------------------- | ------------------------------------------------------------ |
+| `SERVICE_FQDN_APP_3000`     | Assigns a domain and routes it to the container's port 3000. |
+| `SERVICE_URL_APP_3000`      | The public URL, which becomes `APP_URL`.                     |
+| `SERVICE_HEX_64_APPSECRET`  | Generates `APP_SECRET` once and stores it.                   |
+| `SERVICE_PASSWORD_POSTGRES` | Generates the Postgres password, shared by both services.    |
+
+Everything else — `SIGNUP_MODE`, the OAuth pairs, `AWS_DEFAULT_REGION` — appears
+as an editable field in Coolify's environment tab, prefilled with the default.
+
+Two things to know before you deploy:
+
+- **The domain must be https.** Coolify issues a certificate automatically for a
+  real domain, and `APP_URL` follows it. On a plain-http domain the one-click AWS
+  setup refuses to start, because the redirect to https would drop the callback
+  `POST` body.
+- **`APP_SECRET` is generated once and must then stay put.** Every AWS and
+  Cloudflare credential in the database is encrypted with a key derived from it,
+  so changing it later makes those unreadable.
+
+The SMTP relay is off in that file. It speaks raw TCP, which cannot go through
+an HTTP proxy, so turning it on means setting `SMTP_ENABLED=true` _and_
+uncommenting the `ports:` block to publish `587` on the host — check nothing else
+on the server already holds it.
+
 ## Environment
 
 Everything is parsed and validated at boot (`src/env.schema.ts`); a bad value

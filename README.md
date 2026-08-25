@@ -19,6 +19,11 @@ owner; after that, sign-ups are invite-only unless you change `SIGNUP_MODE`.
 Manual alternative: copy `.env.example` to `.env`, set `APP_URL`, `APP_SECRET`
 (≥ 32 random chars) and `POSTGRES_PASSWORD`, then `docker compose up -d`.
 
+On [Coolify](https://coolify.io): **New Resource → Docker Compose**, point it at
+this repository and set the compose path to `docker-compose.coolify.yml`. Coolify
+assigns the domain, terminates TLS and generates `APP_SECRET` and the Postgres
+password itself. See [the docs](https://sendsprite.com/docs/self-hosting#coolify).
+
 ## Send your first email
 
 Verify a domain (Domains → Add domain, then add the DNS records it lists) and

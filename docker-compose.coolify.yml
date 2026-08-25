@@ -1,0 +1,77 @@
+# Sendsprite on Coolify.
+#
+#   New Resource -> Docker Compose -> point it at this repository and set the
+#   compose path to `docker-compose.coolify.yml`.
+#
+# Coolify assigns the domain, terminates TLS, and generates `APP_SECRET` and the
+# Postgres password itself (the `SERVICE_*` names below are its magic variables,
+# not values you fill in). Everything else is an ordinary field in Coolify's
+# environment tab, prefilled with the defaults shown here.
+#
+# Use `docker-compose.yml` instead for a plain `docker compose up` on your own
+# box; that file publishes its own ports and reads secrets from `.env`.
+
+services:
+  app:
+    image: ghcr.io/defy-works/sendsprite:latest
+    environment:
+      # Assigns a domain routed to port 3000, and hands the app its own public
+      # URL. It must end up https:// — the one-click AWS setup refuses to start
+      # otherwise, because the HTTP->HTTPS redirect would drop the callback POST
+      # body. Coolify issues a certificate automatically for a real domain.
+      - SERVICE_FQDN_APP_3000
+      - APP_URL=${SERVICE_URL_APP_3000}
+      # Generated once, then stored by Coolify. Every AWS and Cloudflare
+      # credential in the database is encrypted with a key derived from it, so
+      # changing it later makes those unreadable — rotate it only deliberately.
+      - APP_SECRET=${SERVICE_HEX_64_APPSECRET}
+      - DATABASE_URL=postgres://sendsprite:${SERVICE_PASSWORD_POSTGRES}@db:5432/sendsprite
+      # Background jobs (sending, domain verification, webhook retries) run in
+      # this container. See the note at the bottom about running them separately.
+      - WORKER_MODE=${WORKER_MODE:-inline}
+      # `auto` makes the first account the instance owner and everyone after
+      # that invite-only. Other values: open, invite, closed.
+      - SIGNUP_MODE=${SIGNUP_MODE:-auto}
+      - EMAIL_PASSWORD_ENABLED=${EMAIL_PASSWORD_ENABLED:-true}
+      - LANDING_ENABLED=${LANDING_ENABLED:-true}
+      # The SMTP relay is off here: it speaks raw TCP, which cannot go through
+      # Coolify's HTTP proxy, so it needs a published host port (see below).
+      - SMTP_ENABLED=${SMTP_ENABLED:-false}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+      # Optional OAuth sign-in; leave empty to offer email + password only.
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
+    # To accept SMTP, set SMTP_ENABLED=true and uncomment this. The port is
+    # published straight on the host — check nothing else on the server already
+    # holds 587, and open it in the firewall.
+    # ports:
+    #   - "${SMTP_PORT:-587}:${SMTP_PORT:-587}"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=sendsprite
+      - POSTGRES_PASSWORD=${SERVICE_PASSWORD_POSTGRES}
+      - POSTGRES_DB=sendsprite
+    volumes:
+      - sendsprite-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sendsprite -d sendsprite"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  sendsprite-pgdata:
+# Scaling the worker out: set WORKER_MODE=separate above and add a second
+# service with the same image, the same DATABASE_URL and APP_SECRET,
+# WORKER_MODE=inline, SMTP_ENABLED=false and no domain. Migrations run at boot
+# in whichever container starts first, guarded by an advisory lock.
