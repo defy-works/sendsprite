@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isPublicHttpUrl } from "@/lib/url-safety";
+import { isPublicHttpUrl, isPublicIp } from "@/lib/url-safety";
 
 describe("isPublicHttpUrl", () => {
   it("accepts public http(s) hosts and IPs", () => {
@@ -77,5 +77,26 @@ describe("isPublicHttpUrl", () => {
     ])
       expect(isPublicHttpUrl(`https://[${ip}]/`), ip).toBe(false);
     expect(isPublicHttpUrl("https://[fec0::1]/")).toBe(true); // not fe80::/10
+  });
+});
+
+describe("isPublicIp", () => {
+  it("vets bare resolved addresses the way the URL check vets literals", () => {
+    for (const ip of ["8.8.8.8", "93.184.216.34", "2606:4700::1111", "fec0::1"])
+      expect(isPublicIp(ip), ip).toBe(true);
+    for (const ip of [
+      "127.0.0.1",
+      "10.0.0.1",
+      "169.254.169.254",
+      "100.64.0.1",
+      "::1",
+      "fd00::1",
+      "fe80::1",
+      "::ffff:127.0.0.1",
+      "::ffff:7f00:1",
+      "not-an-ip",
+      "",
+    ])
+      expect(isPublicIp(ip), ip).toBe(false);
   });
 });

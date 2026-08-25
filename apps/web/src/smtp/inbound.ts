@@ -11,6 +11,7 @@ export interface SmtpUser {
   teamId: string;
   apiKeyId: string;
   keyDomainId: string | null;
+  permission: "full" | "sending_only";
 }
 declare module "smtp-server" {
   interface SMTPServerSession {
@@ -146,6 +147,7 @@ export async function handleInbound(
       apiKeyId: user.apiKeyId,
       actorUserId: null,
       keyDomainId: user.keyDomainId,
+      permission: user.permission,
     },
     {
       from: formatAddress({ name: from.name || null, email: from.address }),

@@ -77,9 +77,12 @@ are rejected, redirects are not followed and replies are read up to 500 bytes.
 Failed deliveries retry after 1 m, 5 m, 30 m, 2 h and 8 h; a once-a-minute
 sweep enqueues the ones that are due, so a `nextRetryAt` is a floor rather
 than an exact time.
-The check is syntactic: a public name that resolves to a private address
-(DNS rebinding) is not caught, so run the worker in a network segment that
-cannot reach internal services.
+Before each attempt the worker resolves the host and vets every answer
+against the same ranges; a name that resolves to a private address (DNS
+rebinding) is not fetched — the delivery is marked exhausted with "target
+resolves to a private address" — and the connection is pinned to the vetted
+addresses. Defence in depth still applies: run the worker in a network
+segment that cannot reach internal services.
 
 **Sandbox.** New SES accounts start in the sandbox: you can only send to
 verified addresses and at a low quota. The wizard's production step submits
@@ -211,7 +214,7 @@ that does not speak PROXY protocol every client shares one counter, so expose
   complaint is a retraction and does not suppress); `manual`/`unsubscribe`
   entries are yours. Sends to a suppressed address fail with
   `422 suppressed_recipient`; `manual` entries can be bypassed per request
-  with `overrideSuppression: true`.
+  with `overrideSuppression: true` (ignored for `sending_only` keys).
 - **Limits:** one instance-wide token bucket at SES `MaxSendRate` (a throttled
   job re-queues itself, nothing is dropped) plus optional per-team daily and
   monthly caps (`team_settings.daily_limit` / `monthly_limit`, unset by

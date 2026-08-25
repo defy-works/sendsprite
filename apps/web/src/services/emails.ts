@@ -31,6 +31,11 @@ export interface SendContext {
   actorUserId: string | null;
   /** A key restricted to one sending domain (`api_keys.domain_id`). */
   keyDomainId?: string | null;
+  /**
+   * The API key's permission; absent for dashboard sends (treated as
+   * `full`). A `sending_only` key cannot override suppressions.
+   */
+  permission?: "full" | "sending_only";
 }
 export type EmailRow = typeof emails.$inferSelect;
 export type SendFailure = {
@@ -192,9 +197,10 @@ export async function createEmail(
     return fail("forbidden", "This API key is restricted to another domain.");
 
   const sup = await isSuppressed(ctx.teamId, [...to, ...cc, ...bcc]);
-  const blocking = sup.filter(
-    (s) => !(input.overrideSuppression && s.reason === "manual"),
-  );
+  // Only `manual` entries can be overridden, and not by a sending-only key.
+  const override =
+    input.overrideSuppression === true && ctx.permission !== "sending_only";
+  const blocking = sup.filter((s) => !(override && s.reason === "manual"));
   if (blocking.length)
     return fail(
       "suppressed_recipient",

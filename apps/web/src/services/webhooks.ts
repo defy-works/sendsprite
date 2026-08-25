@@ -1,5 +1,7 @@
 import { randomBytes } from "node:crypto";
+import dns from "node:dns";
 import { and, desc, eq, lte } from "drizzle-orm";
+import { Agent, fetch as undiciFetch } from "undici";
 import { z } from "zod";
 import {
   can,
@@ -16,7 +18,7 @@ import { webhookDeliveries, webhooks } from "@/db/schema";
 import { getCipher } from "@/lib/crypto";
 import { recordAudit } from "@/lib/audit";
 import { notifyTeam } from "@/lib/notify";
-import { isPublicHttpUrl } from "@/lib/url-safety";
+import { isPublicHttpUrl, isPublicIp } from "@/lib/url-safety";
 import type { Result } from "@/lib/result";
 import type { FetchLike } from "@/lib/cloudflare/client";
 import type { TeamActor } from "./team";
@@ -31,6 +33,8 @@ export const RETRY_SCHEDULE_S = [60, 300, 1800, 7200, 28800] as const;
 export const DISABLE_AFTER_MS = 24 * 3600 * 1000;
 export const DISABLED_REASON = "Disabled after 24 hours of failed deliveries.";
 const TIMEOUT_MS = 10_000;
+/** Excerpt (and terminal verdict) for a target whose DNS answer is private. */
+export const PRIVATE_TARGET = "target resolves to a private address";
 /** Bytes of the response body kept as `responseExcerpt` (and read at all). */
 export const EXCERPT_LEN = 500;
 /** Event type of the synthetic delivery `sendTestEvent` produces. */
@@ -327,21 +331,72 @@ async function readExcerpt(res: Response): Promise<string> {
     .slice(0, EXCERPT_LEN);
 }
 
+type Resolved = { address: string; family: number }[];
+
+/**
+ * Resolves the target host and vets every answer with `isPublicIp`. The
+ * URL check at create time is syntactic; a public name can resolve to a
+ * private address (DNS rebinding, a hijacked CNAME), so the addresses are
+ * checked right before connecting and the connection is pinned to them.
+ */
+async function resolveTarget(
+  hostname: string,
+): Promise<{ ok: true; addrs: Resolved } | { ok: false; error: string }> {
+  // A bracketed IPv6 literal comes from `URL.hostname` with the brackets.
+  const host = hostname.replace(/^\[(.*)\]$/, "$1");
+  let addrs: Resolved;
+  try {
+    addrs = await dns.promises.lookup(host, { all: true });
+  } catch (e) {
+    return { ok: false, error: `dns: ${(e as Error).message}` };
+  }
+  if (addrs.length === 0) return { ok: false, error: "dns: no address" };
+  if (!addrs.every((a) => isPublicIp(a.address)))
+    return { ok: false, error: PRIVATE_TARGET };
+  return { ok: true, addrs };
+}
+
+/**
+ * A fetch whose connections go only to `addrs` (the vetted answers) while
+ * TLS still verifies the hostname: undici's `connect.lookup` replaces the
+ * resolver, not the host. undici's own `fetch` is used because Bun's global
+ * fetch ignores `dispatcher`.
+ */
+function pinnedFetch(addrs: Resolved): FetchLike {
+  const dispatcher = new Agent({
+    connect: {
+      lookup: (_host, opts, cb) => {
+        const first = addrs[0]!;
+        if (opts.all) cb(null, addrs);
+        else cb(null, first.address, first.family);
+      },
+    },
+  });
+  return (url, init) =>
+    undiciFetch(url, {
+      ...(init as Parameters<typeof undiciFetch>[1]),
+      dispatcher,
+    }).finally(() => void dispatcher.close()) as unknown as Promise<Response>;
+}
+
 /**
  * One delivery attempt. Never throws on the HTTP side: a non-2xx (redirects
  * are not followed and count as failures), a timeout (10 s) or a network
  * error sets `nextRetryAt` per RETRY_SCHEDULE_S (the once-a-minute sweep
  * enqueues it when due), and the sixth failure marks the delivery
- * `exhausted`. A webhook failing continuously for 24 h is disabled.
- * Returns the delivery row after the attempt, or null when the delivery is
- * gone or its webhook is disabled.
+ * `exhausted`. Before connecting the host is resolved and every address
+ * vetted (`resolveTarget`); a private answer is terminal — the attempt is
+ * recorded with `PRIVATE_TARGET` and the delivery marked `exhausted` with
+ * no retry — and the connection is pinned to the vetted addresses. A
+ * webhook failing continuously for 24 h is disabled. Returns the delivery
+ * row after the attempt, or null when the delivery is gone or its webhook
+ * is disabled.
  */
 export async function deliver(
   deliveryId: string,
   deps: { fetch?: FetchLike; enqueue: Enqueue; now?: Date },
 ): Promise<WebhookDelivery | null> {
   const now = deps.now ?? new Date();
-  const f = deps.fetch ?? fetch;
   const [d] = await db()
     .select()
     .from(webhookDeliveries)
@@ -367,33 +422,41 @@ export async function deliver(
   const attempt = d.attempt + 1;
   let statusCode: number | null = null;
   let excerpt = "";
-  try {
-    const res = await f(w.url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "user-agent": "Sendsprite-Webhooks/1",
-        [SIGNATURE_HEADER]: signWebhook(
-          body,
-          secret,
-          Math.floor(now.getTime() / 1000),
-        ),
-        [EVENT_ID_HEADER]: d.eventId,
-      },
-      body,
-      // A redirect could re-point the signed POST at a host that never
-      // passed URL validation; the customer can update the endpoint instead.
-      redirect: "manual",
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
-    statusCode = res.status;
-    excerpt =
-      res.status >= 300 && res.status < 400
-        ? "redirect not followed"
-        : await readExcerpt(res);
-  } catch (e) {
-    excerpt = (e as Error).message.slice(0, EXCERPT_LEN);
+  let terminal = false;
+  const target = await resolveTarget(new URL(w.url).hostname);
+  if (!target.ok) {
+    excerpt = target.error;
+    terminal = target.error === PRIVATE_TARGET;
   }
+  const f = deps.fetch ?? (target.ok ? pinnedFetch(target.addrs) : null);
+  if (target.ok && f)
+    try {
+      const res = await f(w.url, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "user-agent": "Sendsprite-Webhooks/1",
+          [SIGNATURE_HEADER]: signWebhook(
+            body,
+            secret,
+            Math.floor(now.getTime() / 1000),
+          ),
+          [EVENT_ID_HEADER]: d.eventId,
+        },
+        body,
+        // A redirect could re-point the signed POST at a host that never
+        // passed URL validation; the customer can update the endpoint instead.
+        redirect: "manual",
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      });
+      statusCode = res.status;
+      excerpt =
+        res.status >= 300 && res.status < 400
+          ? "redirect not followed"
+          : await readExcerpt(res);
+    } catch (e) {
+      excerpt = (e as Error).message.slice(0, EXCERPT_LEN);
+    }
   const okResp = statusCode !== null && statusCode >= 200 && statusCode < 300;
   if (okResp) {
     await db()
@@ -413,7 +476,7 @@ export async function deliver(
         .set({ failingSince: null })
         .where(eq(webhooks.id, w.id));
   } else {
-    const delay = RETRY_SCHEDULE_S[attempt - 1];
+    const delay = terminal ? undefined : RETRY_SCHEDULE_S[attempt - 1];
     const failingSince = w.failingSince ?? now;
     if (!w.failingSince)
       await db()

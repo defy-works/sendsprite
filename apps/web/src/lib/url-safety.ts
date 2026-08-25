@@ -6,8 +6,8 @@
  * "this network", multicast/reserved, IPv6 loopback/unspecified, ULA and
  * link-local ranges, plus IPv4-mapped IPv6 forms of those.
  *
- * It does not resolve DNS, so a public name that resolves to a private
- * address (DNS rebinding) is not caught; see the README's webhook note.
+ * It does not resolve DNS; `isPublicIp` is the check to run on the
+ * resolved addresses before connecting (webhook delivery does).
  */
 export function isPublicHttpUrl(
   raw: string,
@@ -31,6 +31,18 @@ export function isPublicHttpUrl(
   if (/\.(localhost|local|internal)$/.test(host)) return false;
   if (!host.includes(".")) return false;
   return true;
+}
+
+/**
+ * Is `ip` (a bare IPv4/IPv6 literal, as `dns.lookup` returns it) outside
+ * every private, loopback, link-local, CGNAT and reserved range above?
+ * Anything unparseable is not public.
+ */
+export function isPublicIp(ip: string): boolean {
+  const v4 = parseIpv4(ip);
+  if (v4) return isPublicIpv4(v4);
+  if (ip.includes(":")) return isPublicIpv6(ip.toLowerCase());
+  return false;
 }
 
 function parseIpv4(host: string): number[] | null {

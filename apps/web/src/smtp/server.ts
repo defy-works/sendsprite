@@ -96,6 +96,7 @@ export async function startSmtp(opts: SmtpOptions): Promise<void> {
             teamId: a.team.id,
             apiKeyId: a.key.id,
             keyDomainId: a.key.domainId,
+            permission: a.key.permission,
           };
           cb(null, { user: a.key.id });
         },

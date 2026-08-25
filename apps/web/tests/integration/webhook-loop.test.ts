@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import dns from "node:dns";
 import { eq } from "drizzle-orm";
 import { webhookDeliveries } from "@/db/schema";
 import { startPg, type TestPg } from "./_pg";
@@ -13,6 +14,19 @@ import { startPg, type TestPg } from "./_pg";
 let pg: TestPg;
 let status = 500;
 const calls: string[] = [];
+// The handler calls deliver() without a fetch seam: the target is resolved
+// (stubbed public) and fetched through undici's `fetch` (Bun's global fetch
+// ignores undici's dispatcher, so the service uses undici's), stubbed here.
+vi.mock("undici", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("undici")>();
+  return {
+    ...mod,
+    fetch: async (url: unknown) => {
+      calls.push(String(url));
+      return new mod.Response("resp", { status });
+    },
+  };
+});
 const actor = {
   userId: "u1",
   teamId: "org_1",
@@ -50,14 +64,12 @@ beforeAll(async () => {
   await pg.db.execute(
     `insert into "organization"(id,name,slug,created_at) values ('org_1','Acme','acme',now())`,
   );
-  // The handler calls deliver() without a fetch seam, so it uses the global.
-  vi.stubGlobal("fetch", async (url: string) => {
-    calls.push(String(url));
-    return new Response("resp", { status });
-  });
+  vi.spyOn(dns.promises, "lookup").mockImplementation(
+    async () => [{ address: "93.184.216.34", family: 4 }] as never,
+  );
 });
 afterAll(async () => {
-  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   const { stopWorker } = await import("@/jobs/boss");
   await stopWorker();
   await pg.stop();

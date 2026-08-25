@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import dns from "node:dns";
 import { eq } from "drizzle-orm";
 import { startPg } from "./_pg";
 import { webhookDeliveries, webhooks } from "@/db/schema";
@@ -11,14 +12,21 @@ const { bossEnqueue } = vi.hoisted(() => ({
 vi.mock("@/jobs/enqueue", () => ({ enqueue: bossEnqueue }));
 
 let pg: Awaited<ReturnType<typeof startPg>>;
+/** `deliver()` resolves the target before connecting; the fixtures' hosts do not exist. */
+const PUBLIC = [{ address: "93.184.216.34", family: 4 }];
+let lookup: ReturnType<typeof vi.spyOn>;
 beforeAll(async () => {
   pg = await startPg();
+  lookup = vi
+    .spyOn(dns.promises, "lookup")
+    .mockImplementation(async () => PUBLIC as never);
   process.env.APP_SECRET = "x".repeat(40);
   await pg.db.execute(
     `insert into "organization"(id,name,slug,created_at) values ('org_1','Acme','acme',now())`,
   );
 });
 afterAll(async () => {
+  lookup.mockRestore();
   await pg.stop();
 });
 
@@ -411,6 +419,73 @@ describe("webhooks", () => {
     expect((await deleteWebhook(other, w.data.id)).ok).toBe(false);
     expect((await deleteWebhook(actor, w.data.id)).ok).toBe(true);
     expect(await listDeliveries("org_1", w.data.id)).toHaveLength(0); // cascade
+  });
+
+  it("a target resolving to a private address is never fetched: the delivery is exhausted at once", async () => {
+    const { createWebhook, fanOutEvent, deliver, PRIVATE_TARGET } = await svc();
+    const w = await createWebhook(actor, {
+      url: "https://rebind.acme.com/x",
+      events: ["email.opened"],
+    });
+    if (!w.ok) throw new Error(w.error);
+    const enqueue = vi.fn(async () => "");
+    const [id] = await fanOutEvent(
+      "org_1",
+      "email.opened",
+      "evt_p",
+      {},
+      {
+        enqueue,
+      },
+    );
+    // One public answer among private ones is not enough.
+    lookup.mockResolvedValueOnce([
+      { address: "93.184.216.34", family: 4 },
+      { address: "127.0.0.1", family: 4 },
+    ] as never);
+    const f = fetchWith(200);
+    const now = new Date("2026-08-25T14:00:00Z");
+    expect(await deliver(id!, { fetch: f, enqueue, now })).toMatchObject({
+      status: "exhausted",
+      attempt: 1,
+      statusCode: null,
+      responseExcerpt: PRIVATE_TARGET,
+      nextRetryAt: null,
+    });
+    expect(f.calls).toHaveLength(0);
+    expect(lookup).toHaveBeenLastCalledWith("rebind.acme.com", { all: true });
+    expect((await hook(w.data.id)).failingSince).toEqual(now);
+    // A public answer: the request goes out as before.
+    const [ok] = await fanOutEvent(
+      "org_1",
+      "email.opened",
+      "evt_q",
+      {},
+      {
+        enqueue,
+      },
+    );
+    expect(await deliver(ok!, { fetch: f, enqueue })).toMatchObject({
+      status: "delivered",
+    });
+    expect(f.calls).toHaveLength(1);
+    // A resolver error is an ordinary (retried) failure.
+    const [nx] = await fanOutEvent(
+      "org_1",
+      "email.opened",
+      "evt_r",
+      {},
+      {
+        enqueue,
+      },
+    );
+    lookup.mockRejectedValueOnce(new Error("getaddrinfo ENOTFOUND"));
+    expect(await deliver(nx!, { fetch: f, enqueue })).toMatchObject({
+      status: "pending",
+      attempt: 1,
+      responseExcerpt: "dns: getaddrinfo ENOTFOUND",
+    });
+    expect(f.calls).toHaveLength(1);
   });
 
   it("a pending delivery whose first job was lost is due at once and picked up by the sweep", async () => {

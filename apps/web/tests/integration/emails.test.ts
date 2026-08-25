@@ -145,9 +145,26 @@ describe("createEmail", () => {
         )
       ).ok,
     ).toBe(true);
-    // Team caps: daily limit 1 with one active email already created above.
+    // A sending-only key cannot override even a manual suppression.
+    expect(
+      await createEmail(
+        { ...ctx, permission: "sending_only" },
+        { ...base, to: ["manual@x.io"], overrideSuppression: true },
+        { enqueue },
+      ),
+    ).toMatchObject({ ok: false, code: "suppressed_recipient" });
+    expect(
+      (
+        await createEmail(
+          { ...ctx, permission: "full" },
+          { ...base, to: ["manual@x.io"], overrideSuppression: true },
+          { enqueue },
+        )
+      ).ok,
+    ).toBe(true);
+    // Team caps: daily limit 2 with two active emails already created above.
     const { teamSettings } = await import("@/db/schema");
-    await pg.db.insert(teamSettings).values({ teamId: "org_1", dailyLimit: 1 });
+    await pg.db.insert(teamSettings).values({ teamId: "org_1", dailyLimit: 2 });
     expect(await createEmail(ctx, base, { enqueue })).toMatchObject({
       ok: false,
       code: "daily_quota_exceeded",

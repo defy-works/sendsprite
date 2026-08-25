@@ -8,6 +8,7 @@ export const sendContext = (auth: ApiAuthOk): SendContext => ({
   apiKeyId: auth.key.id,
   actorUserId: null,
   keyDomainId: auth.key.domainId,
+  permission: auth.key.permission,
 });
 
 /** A typed service refusal → the error envelope (status from the code). */
