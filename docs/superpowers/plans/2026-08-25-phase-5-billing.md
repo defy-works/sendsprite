@@ -2141,6 +2141,15 @@ window in `entitlementFrom`, and carry it into `teamBillingState` so the dashboa
 a deadline. `isEntitledStatus("past_due")` stays `true` — the grace clock lives with the
 entitlement, not the status.
 
+**B-bis (refinement, supersedes the literal reading of B).** The refusal applies to _plan
+resolution_, not to _status_. A subscription's status — `canceled`, `revoked`, `unpaid`,
+`past_due` — does not depend on product metadata being well-formed, and dropping such an event
+means a churned customer keeps paid caps indefinitely until someone notices the dashboard typo.
+So on malformed-but-claiming metadata: **apply the status and period as normal, and withhold
+only the plan fields** (`plan`, `includedEmails`, `overagePer1kCents`), keeping the previous
+values. Log just as loudly. Only a payload that is structurally unusable (no subscription id,
+empty status, non-finite dates) is skipped outright.
+
 **B. Refuse to downgrade on malformed metadata.** Task 1 exports `claimsPlanMetadata()`.
 Where `applySubscription` currently writes `FREE_PLAN_METADATA` whenever
 `planFromProductMetadata()` returns `null`, split the two cases: if the product does not
