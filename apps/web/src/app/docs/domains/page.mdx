@@ -1,0 +1,110 @@
+export const metadata = {
+  title: "Domains",
+  description:
+    "Add a sending domain, understand the DKIM, MAIL FROM and DMARC records, and follow verification.",
+};
+
+# Domains
+
+You can only send from a domain this instance has verified with SES. Adding
+one creates the SES identity, computes the DNS it needs, writes the records
+for you when Cloudflare is connected, and then polls until SES agrees.
+
+## Add a domain
+
+Dashboard → **Domains → Add**, or:
+
+```bash
+curl https://mail.example.com/api/v1/domains \
+  -H "Authorization: Bearer ss_live_..." \
+  -H "Content-Type: application/json" \
+  -d '{ "name": "mail.example.com" }'
+```
+
+The name is lowercased, a trailing dot is stripped, and it must be a valid
+hostname with at least two labels. A domain can only exist once per instance
+(`conflict` on a duplicate), and AWS has to be connected first
+(`not_configured` otherwise). A subdomain such as `mail.example.com` is the
+usual choice: it keeps your transactional reputation away from whatever else
+`example.com` sends.
+
+`dnsMode` is not something you pass. Sendsprite picks it: `auto` when a
+connected Cloudflare zone covers the name, `manual` otherwise.
+
+## The records
+
+Provisioning creates the SES identity, sets the custom MAIL FROM domain to
+`bounce.<your domain>`, and stores the exact records it expects. For
+`mail.example.com` in `us-east-1` that is six records:
+
+| Kind            | Type             | Name                                  | Value                                   |
+| --------------- | ---------------- | ------------------------------------- | --------------------------------------- |
+| `DKIM` ×3       | CNAME            | `<token>._domainkey.mail.example.com` | `<token>.dkim.amazonses.com`            |
+| `MAIL_FROM_MX`  | MX (priority 10) | `bounce.mail.example.com`             | `feedback-smtp.us-east-1.amazonses.com` |
+| `MAIL_FROM_SPF` | TXT              | `bounce.mail.example.com`             | `v=spf1 include:amazonses.com ~all`     |
+| `DMARC`         | TXT              | `_dmarc.mail.example.com`             | `v=DMARC1; p=none`                      |
+
+What each one does:
+
+- **DKIM** — three CNAMEs pointing at SES-hosted keys, so SES can sign
+  outgoing mail with your domain. Without them nothing sends.
+- **MAIL FROM MX** — routes bounce and complaint reports for the custom MAIL
+  FROM subdomain back to SES. The identity is configured with
+  `USE_DEFAULT_VALUE` on MX failure, so SES falls back to its own MAIL FROM
+  rather than refusing to send.
+- **MAIL FROM SPF** — authorises SES for that subdomain, which is what makes
+  SPF align with the visible `From:`.
+- **DMARC** — published at `p=none`, i.e. monitor only. Tighten it to
+  `quarantine` or `reject` yourself once you are confident nothing else sends
+  as this domain.
+
+DKIM and MAIL FROM are what SES gates sending on. SPF and DMARC are checked
+too, but they are advisory: they show up per record in the dashboard and do
+not block verification.
+
+## Cloudflare (auto mode)
+
+In `auto` mode each record is upserted into the matching zone as soon as the
+identity exists, and the Cloudflare record id is stored alongside it — so a
+retry patches instead of duplicating, and deleting the domain removes what it
+created. If the Cloudflare token has been removed in the meantime, the domain
+quietly degrades to `manual`: the records are still computed, you just add
+them yourself.
+
+## Verification timing
+
+- The first check runs **30 seconds** after provisioning finishes.
+- A pending domain is re-checked by a sweep every **2 minutes** (rows checked
+  within the last 100 seconds are skipped so two ticks never duplicate work).
+- A domain that has not verified within **72 hours** is marked `failed` with
+  "Verification timed out after 72 hours."
+- A verified domain is re-checked once a day. It stays verified while SES
+  still reports success, and is demoted to `pending` only if SES reports DKIM
+  or MAIL FROM as `FAILED`/`NOT_STARTED`, or the identity is gone. A
+  transient SES state (`PENDING`, `TEMPORARY_FAILURE`) keeps it verified —
+  sending carries on — with a note on the domain. A demotion opens a fresh
+  72-hour window.
+
+**Re-verify** in the dashboard (or `POST /api/v1/domains/:id/verify`) resets
+the window and runs one check inline, so the click answers immediately.
+
+Status transitions fan out as webhooks: `domain.verified` when a domain
+becomes verified, `domain.failed` when a verified domain is demoted or a
+check fails it for good.
+
+## Troubleshooting
+
+- **Stuck `pending`.** Compare each record in the dashboard against what your
+  resolver returns; the per-record ✓/✗ says which one SES or DNS is still
+  unhappy about. TXT records split across strings and CNAMEs flattened by a
+  proxy are the usual culprits — DKIM CNAMEs must not be proxied.
+- **`Provisioning hasn't finished yet`** on Re-verify means the SES identity
+  does not exist yet, so there are no DKIM tokens to check. Wait for
+  provisioning, or use **Retry provisioning** if it never ran.
+- **`SES identity was removed`** means someone deleted the identity in the
+  AWS console. Delete the domain here and add it again.
+- **`Cloudflare is not connected; add the records manually`** — reconnect the
+  token or add the four record kinds by hand.
+- **Deleting a domain** removes the SES identity and the Cloudflare records
+  it created; anything it could not remove is reported back as
+  `leftoverDnsRecords` for you to clean up.

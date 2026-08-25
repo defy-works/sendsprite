@@ -1,0 +1,73 @@
+export const metadata = {
+  title: "MCP server",
+  description:
+    "@sendsprite/mcp — send email, check delivery and read stats from an AI agent over the Model Context Protocol.",
+};
+
+# MCP server
+
+> **Coming in the next release.** `@sendsprite/mcp` is not published yet.
+> This page describes the server as designed; nothing here works against an
+> instance today. Use the [SDK](/docs/sdk) or the
+> [REST API](/docs/api) in the meantime.
+
+`@sendsprite/mcp` exposes your instance to an MCP client — Claude Desktop,
+Claude Code, or anything else that speaks the Model Context Protocol — so an
+agent can send a test email, look up why a message bounced, or read your
+delivery stats. It talks to the same REST API with the same API key, so an
+agent can never do more than the key you gave it.
+
+Point it at a `sending_only` key unless the agent genuinely needs to manage
+domains and webhooks.
+
+## Claude Desktop / Claude Code (stdio)
+
+```json
+{
+  "mcpServers": {
+    "sendsprite": {
+      "command": "npx",
+      "args": ["-y", "@sendsprite/mcp"],
+      "env": {
+        "SENDSPRITE_URL": "https://mail.example.com",
+        "SENDSPRITE_API_KEY": "ss_live_..."
+      }
+    }
+  }
+}
+```
+
+Both environment variables are required. The server logs to stderr only, so
+it never corrupts the stdio protocol stream.
+
+## HTTP mode
+
+```bash
+SENDSPRITE_URL=https://mail.example.com \
+SENDSPRITE_API_KEY=ss_live_... \
+npx @sendsprite/mcp --http 8787
+```
+
+Serves the streamable HTTP transport at `POST /mcp`, stateless — a new
+transport per request, so it scales behind a load balancer. Put your own
+authentication in front of it: the process holds an API key and does not
+authenticate its callers.
+
+## Tools
+
+| Tool               | What it does                                                                                         |
+| ------------------ | ---------------------------------------------------------------------------------------------------- |
+| `send_email`       | Send a transactional email; `from` must be on a verified domain. Returns the email id.               |
+| `get_email_status` | Status, recipients, subject and the most recent timeline events for one email id.                    |
+| `list_emails`      | Recent emails, newest first, with `limit`, `cursor` and `status`.                                    |
+| `search_emails`    | The same list filtered by recipient, status, tag or domain.                                          |
+| `list_domains`     | Sending domains and their verification status.                                                       |
+| `get_send_stats`   | Sends today / 7 days / 30 days, delivery, bounce and complaint rates, and any account-health alerts. |
+
+Input is validated against the same schemas the REST API uses, so a bad
+argument comes back as a tool error rather than a failed send. API failures
+are returned as tool errors carrying the API error `code`, `message` and
+HTTP status — the agent sees `domain_not_verified` rather than a stack
+trace.
+
+Template rendering and contacts tools are planned for a later release.

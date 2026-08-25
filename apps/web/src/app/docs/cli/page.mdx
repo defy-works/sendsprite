@@ -1,0 +1,103 @@
+export const metadata = {
+  title: "CLI",
+  description:
+    "npx sendsprite — login, whoami, domains list, emails send and emails tail.",
+};
+
+# CLI
+
+> **Coming in the next release.** The CLI ships inside the `sendsprite`
+> package as its `bin`, and is not part of the published package yet. This
+> page documents the interface it will have; the [SDK](/docs/sdk) covers
+> everything that works today.
+
+`npx sendsprite` is the `sendsprite` npm package's binary — no separate
+install, and the same client underneath.
+
+## login
+
+```bash
+npx sendsprite login \
+  --url https://mail.example.com \
+  --api-key ss_live_...
+```
+
+```
+Logged in to Acme as ci (ss_live_ab…)
+```
+
+Missing values are prompted for on an interactive terminal and are an error
+otherwise. The credentials are verified with a `/me` call before anything is
+written, then saved to `config.json` with mode `600` in
+`$SENDSPRITE_CONFIG_DIR`, `$XDG_CONFIG_HOME/sendsprite`,
+`~/.config/sendsprite` or `%APPDATA%\sendsprite`.
+
+`SENDSPRITE_URL` and `SENDSPRITE_API_KEY` work instead of logging in — handy
+in CI. Any command other than `login` fails with a message pointing at
+`sendsprite login` when neither is available.
+
+## whoami
+
+```bash
+npx sendsprite whoami
+```
+
+```
+Team  Acme (team_2n8…)
+Key   ci (ss_live_ab…) · full
+```
+
+## domains list
+
+```bash
+npx sendsprite domains list
+```
+
+```
+NAME              STATUS    MODE        REGION     ID
+mail.example.com  verified  cloudflare  us-east-1  dom_7q2…
+```
+
+`--json` prints the raw array instead of the table.
+
+## emails send
+
+```bash
+npx sendsprite emails send \
+  --from "Acme <hello@mail.example.com>" \
+  --to ada@example.com \
+  --to grace@example.com \
+  --subject "Hello" \
+  --text "It works." \
+  --tag env=ci
+```
+
+```
+Queued em_4f9…
+```
+
+| Flag                                     | Notes                                               |
+| ---------------------------------------- | --------------------------------------------------- |
+| `--from`                                 | Required.                                           |
+| `--to`, `--cc`, `--bcc`, `--reply-to`    | Repeatable.                                         |
+| `--subject`                              | Required.                                           |
+| `--text`, `--html`, `--html-file <path>` | At least one body.                                  |
+| `--tag k=v`                              | Repeatable.                                         |
+| `--schedule <iso>`                       | Maps to `scheduledAt`.                              |
+| `--idempotency-key`                      | Makes the send safely retryable.                    |
+| `--json`                                 | Print the API response instead of the summary line. |
+
+## emails tail
+
+```bash
+npx sendsprite emails tail
+```
+
+```
+em_4f9…  delivered  ada@example.com   Hello
+em_5a1…  bounced    grace@example.com Hello
+```
+
+Subscribes to the instance's change stream and prints each email as it moves.
+Needs a `full` key. `--json` prints the raw objects; Ctrl-C closes the
+stream.

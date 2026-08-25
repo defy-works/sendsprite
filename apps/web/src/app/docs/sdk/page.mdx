@@ -1,0 +1,214 @@
+export const metadata = {
+  title: "SDK",
+  description:
+    "The sendsprite npm package: typed client, React email templates, Next.js webhook handler and the live change stream.",
+};
+
+# SDK
+
+`sendsprite` is the official TypeScript client. One package, four entry
+points: the client, `sendsprite/react`, `sendsprite/next` and the
+`npx sendsprite` [CLI](/docs/cli).
+
+```bash
+npm install sendsprite
+```
+
+ESM and CJS builds ship side by side, Node 20+.
+
+## Construct
+
+```ts
+import { Sendsprite } from "sendsprite";
+
+const sendsprite = new Sendsprite({
+  baseUrl: "https://mail.acme.com",
+  apiKey: process.env.SENDSPRITE_API_KEY,
+});
+```
+
+| Option       | Default              | Meaning                                              |
+| ------------ | -------------------- | ---------------------------------------------------- |
+| `apiKey`     | `SENDSPRITE_API_KEY` | The `ss_live_…` secret.                              |
+| `baseUrl`    | `SENDSPRITE_URL`     | Your instance origin; `/api/v1` is appended for you. |
+| `maxRetries` | `2`                  | Retries on 429, 5xx and network errors.              |
+| `timeoutMs`  | `30000`              | Per-request timeout.                                 |
+| `fetch`      | `globalThis.fetch`   | Custom fetch implementation.                         |
+
+Both credentials fall back to the environment, so `new Sendsprite()` is
+usually enough. A missing one throws immediately rather than at the first
+call.
+
+## emails
+
+```ts
+const { id } = await sendsprite.emails.send({
+  from: "Acme <hello@mail.acme.com>",
+  to: "ada@example.com",
+  subject: "Welcome",
+  html: "<p>Hi Ada</p>",
+  idempotencyKey: "welcome-ada-1",
+});
+
+await sendsprite.emails.batch([input1, input2]);
+const email = await sendsprite.emails.get(id); // includes `events`
+const page = await sendsprite.emails.list({ status: "delivered", limit: 50 });
+await sendsprite.emails.cancel(id);
+await sendsprite.emails.reschedule(id, { scheduledAt: "2026-09-01T09:00:00Z" });
+```
+
+`list` filters on `status`, `to`, `domainId` and `tag` and pages with
+`limit`/`cursor`.
+
+## domains, apiKeys, webhooks, suppressions
+
+```ts
+await sendsprite.domains.create({ name: "mail.acme.com" });
+await sendsprite.domains.list();
+await sendsprite.domains.get("dom_...");
+await sendsprite.domains.verify("dom_..."); // re-check DNS now
+await sendsprite.domains.delete("dom_..."); // → { leftoverDnsRecords } or void
+
+const key = await sendsprite.apiKeys.create({ name: "ci" }); // key.secret, once
+await sendsprite.apiKeys.list();
+await sendsprite.apiKeys.revoke("key_...");
+
+const hook = await sendsprite.webhooks.create({
+  url: "https://acme.com/hooks",
+  events: ["email.delivered"],
+}); // hook.secret, once
+await sendsprite.webhooks.update("wh_...", { enabled: false });
+await sendsprite.webhooks.test("wh_...");
+await sendsprite.webhooks.delete("wh_...");
+
+await sendsprite.suppressions.add({ email: "bounce@example.com" });
+await sendsprite.suppressions.list();
+await sendsprite.suppressions.remove("bounce@example.com");
+```
+
+Plus two top-level calls: `sendsprite.stats()` for send counts and 30-day
+rates, and `sendsprite.me()` for the team and key behind the current
+credentials.
+
+`request(method, path, { body, query, retry, signal })` is the escape hatch
+for anything without a helper; `path` is relative to `/api/v1`.
+
+## Pagination
+
+Every `list()` returns `{ data, nextCursor }` and takes `{ limit, cursor }`.
+For emails there is an iterator that walks every page for you:
+
+```ts
+for await (const email of sendsprite.emails.iterate({ status: "bounced" })) {
+  console.log(email.id, email.to);
+}
+```
+
+For the other resources, loop on `nextCursor` yourself:
+
+```ts
+let cursor: string | undefined;
+do {
+  const page = await sendsprite.domains.list({ cursor });
+  for (const d of page.data) console.log(d.name, d.status);
+  cursor = page.nextCursor ?? undefined;
+} while (cursor);
+```
+
+## Live changes
+
+```ts
+const stream = sendsprite.stream({
+  onChange: ({ type, id }) => console.log(type, id), // "email" | "webhook"
+  onError: (err) => console.warn("reconnecting after", err.code),
+});
+
+// later
+stream.close();
+await stream.done;
+```
+
+`stream()` opens `GET /api/v1/stream` (server-sent events) and needs a `full`
+key. Dropped connections are re-established with exponential backoff up to 30
+seconds unless you pass `reconnect: false`; pass a `signal` to close it from
+an `AbortController`. `done` resolves on a clean close and rejects on a
+non-retryable error (401/403) or on anything your `onChange` throws.
+
+The events carry only `{ type, id }` — fetch the object itself when you need
+its contents.
+
+## React email
+
+`sendsprite/react` re-exports the React Email primitives and adds
+`renderEmail`. `@react-email/components` and `@react-email/render` are
+optional peers — install them if you use this entry point.
+
+```tsx
+import { Sendsprite } from "sendsprite";
+import { Body, Button, Html, Text } from "sendsprite/react";
+
+function Welcome({ name }: { name: string }) {
+  return (
+    <Html>
+      <Body>
+        <Text>Welcome aboard, {name}.</Text>
+        <Button href="https://acme.com/start">Get started</Button>
+      </Body>
+    </Html>
+  );
+}
+
+await sendsprite.emails.send({
+  from: "Acme <hello@mail.acme.com>",
+  to: "ada@example.com",
+  subject: "Welcome",
+  react: <Welcome name="Ada" />,
+});
+```
+
+`react` is rendered to `html` and `text` before the request goes out, and an
+explicit `html` or `text` on the same call wins. Render it yourself with
+`renderEmail(element)` → `{ html, text }` if you want to inspect or cache the
+output. This is server-side rendering with no hooks: call it from a route
+handler, a server action or a job.
+
+## Next.js webhooks
+
+`sendsprite/next` exports `createWebhookHandler` and `verifyWebhook` — see
+[Webhooks](/docs/webhooks) for the full example.
+
+## Errors
+
+Every failed call throws a `SendspriteError`:
+
+| Property    | Meaning                                                          |
+| ----------- | ---------------------------------------------------------------- |
+| `code`      | The API error code, or `network_error` when no response arrived. |
+| `message`   | Human-readable message from the error envelope.                  |
+| `status`    | HTTP status, or `null` for a network error.                      |
+| `details`   | Extra context — validation issues, the failing batch index.      |
+| `requestId` | The response's `x-request-id`, for support.                      |
+| `retryable` | True for network errors, 429 and 5xx (except 501 and 505).       |
+
+```ts
+import { SendspriteError } from "sendsprite";
+
+try {
+  await sendsprite.emails.send(input);
+} catch (err) {
+  if (err instanceof SendspriteError && err.code === "suppressed_recipient") {
+    // err.details lists the suppressed addresses
+  }
+}
+```
+
+## Retries
+
+Failed requests are retried with exponential backoff (500 ms · 2ⁿ ± 20 %,
+capped at 8 s) and honour `retry-after` (seconds or HTTP-date, capped at 60
+s).
+
+`POST` is **not** retried by default, because a repeat could send twice. The
+resource helpers opt in where it is safe: `cancel`, `verify` and `test`
+always, and `emails.send`/`emails.batch` only when every item carries an
+`idempotencyKey`. Pass `retry: true` to `request()` for your own safe POSTs.

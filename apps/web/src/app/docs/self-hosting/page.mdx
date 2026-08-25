@@ -1,0 +1,168 @@
+export const metadata = {
+  title: "Self-hosting",
+  description:
+    "Install Sendsprite with Docker Compose, connect AWS and Cloudflare, and keep it upgraded.",
+};
+
+# Self-hosting
+
+Sendsprite ships as one container plus Postgres. The web tier serves the
+dashboard, the REST API, the SMTP relay and — unless you split it out — the
+background worker.
+
+## Install
+
+```bash
+curl -fsSL https://sendsprite.com/install.sh | sh
+```
+
+The script needs `docker` and Docker Compose v2. It creates
+`~/sendsprite` (override with `SENDSPRITE_DIR`), downloads
+`docker-compose.yml` from `SENDSPRITE_BASE_URL` (default
+`https://sendsprite.com`, itself a Sendsprite instance — point it at your own
+instance or a raw GitHub URL to install a fork), prompts for the public URL
+of the instance, and writes
+a `.env` with mode `600` containing a generated `APP_SECRET` and
+`POSTGRES_PASSWORD`. Then it runs `docker compose pull && docker compose up -d`
+and prints the `/signup` URL for the first account.
+
+Every Sendsprite instance serves both files itself, at `/install.sh` and
+`/docker-compose.yml`. So a fork or a private mirror only needs
+`SENDSPRITE_BASE_URL` pointed at it:
+
+```bash
+curl -fsSL https://mail.example.com/install.sh | SENDSPRITE_BASE_URL=https://mail.example.com sh
+```
+
+`APP_SECRET` encrypts your stored AWS and Cloudflare credentials. Back it up
+with the database; losing it means reconnecting both.
+
+## docker-compose.yml
+
+Two services by default:
+
+| Service | Image                                  | Notes                                                                                   |
+| ------- | -------------------------------------- | --------------------------------------------------------------------------------------- |
+| `app`   | `ghcr.io/defy-works/sendsprite:latest` | Publishes `${APP_PORT:-3000}:3000` and `${SMTP_PORT:-587}` for the relay. Reads `.env`. |
+| `db`    | `postgres:16-alpine`                   | User/database `sendsprite`, data in the `pgdata` volume, `pg_isready` healthcheck.      |
+
+`DATABASE_URL` is set by Compose to
+`postgres://sendsprite:${POSTGRES_PASSWORD}@db:5432/sendsprite`; you only
+need to set it yourself if you point the app at an external Postgres.
+Migrations run at boot from the app's `instrumentation.ts` — there is no
+separate migrate step.
+
+## Environment
+
+Everything is parsed and validated at boot (`src/env.schema.ts`); a bad value
+stops the container with a message naming the variable.
+
+| Variable                                    | Default              | Meaning                                                                                                                                                   |
+| ------------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `APP_URL`                                   | — (required)         | Full public URL incl. protocol. SNS subscriptions and the CloudFormation callback both require `https://`.                                                |
+| `APP_SECRET`                                | — (required)         | ≥ 32 characters, not starting with `change-me`. Encrypts stored credentials and signs tracking links.                                                     |
+| `DATABASE_URL`                              | — (required)         | Postgres connection string.                                                                                                                               |
+| `WORKER_MODE`                               | `inline`             | `inline` runs jobs in the web process, `separate` leaves them to the worker container, `none` disables them.                                              |
+| `SMTP_ENABLED`                              | `true`               | Whether the submission relay listens.                                                                                                                     |
+| `SMTP_PORT`                                 | `587`                | Relay port.                                                                                                                                               |
+| `SMTP_ALLOW_INSECURE_AUTH`                  | `false`              | Accept `AUTH` before STARTTLS. Development only — the API key travels in clear.                                                                           |
+| `SMTP_TLS_CERT` / `SMTP_TLS_KEY`            | unset                | PEM paths, both or neither. Without them a self-signed pair is generated.                                                                                 |
+| `SMTP_MAX_SIZE`                             | `10485760`           | Largest message the relay accepts.                                                                                                                        |
+| `LANDING_ENABLED`                           | `true`               | Serve the marketing page at `/`; when off, `/` redirects to `/app`.                                                                                       |
+| `SIGNUP_MODE`                               | `auto`               | `open`, `invite` or `closed`. `auto` opens signup only until the first user exists, then switches to invite-only (a dashboard override wins over `auto`). |
+| `EMAIL_PASSWORD_ENABLED`                    | `false`              | Email + password sign-in.                                                                                                                                 |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | unset                | Enables Google sign-in when both are set.                                                                                                                 |
+| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | unset                | Enables GitHub sign-in when both are set.                                                                                                                 |
+| `AWS_DEFAULT_REGION`                        | `us-east-1`          | Region pre-selected in the connect flow (must be an SES region).                                                                                          |
+| `CFN_TEMPLATE_URL`                          | the published S3 URL | CloudFormation template behind the one-click connect. Must be an S3 URL.                                                                                  |
+
+Enable at least one sign-in method or nobody can reach the dashboard; the
+installer turns on `EMAIL_PASSWORD_ENABLED`.
+
+## Connect AWS
+
+Sendsprite never holds your account — it holds one least-privilege IAM user
+(or an instance role). Three paths, all converging on the same state:
+
+**One-click (CloudFormation).** The setup wizard builds a quick-create link
+prefilled with the template URL, a `CallbackUrl` of
+`<APP_URL>/api/setup/aws/callback` and a single-use `CallbackToken` that
+expires in 15 minutes. You review the resources and click _Create stack_. The
+stack creates an IAM user `sendsprite-<stack name>` with SES identity,
+configuration-set and `SendEmail` permissions plus SNS rights scoped to
+`arn:aws:sns:*:<account>:sendsprite-*`, then a Lambda mints an access key
+**inside the stack** and POSTs it once to your instance. The secret never
+enters CloudFormation parameters, state or events. `APP_URL` must be
+`https://` — the template rejects anything else, because an HTTP→HTTPS
+redirect would drop the POST body.
+
+**Manual keys.** Paste an access key, secret and SES region. Same checks, no
+stack.
+
+**Instance role.** On EC2/ECS with a role attached, Sendsprite picks the
+credentials up from the default provider chain.
+
+Whichever path you take, Sendsprite then creates the configuration set
+`sendsprite`, the SNS topic `sendsprite-events`, and an event destination
+covering send, reject, bounce, complaint, delivery, open, click, rendering
+failure, delivery delay and subscription events — and subscribes
+`<APP_URL>/api/webhooks/ses` to the topic. SNS only accepts https endpoints,
+so on a plain-http instance no subscription is made and SES events never
+arrive.
+
+To revoke: delete the stack (its Lambda removes the access keys on the way
+out), or use **Disconnect** in Settings → Instance.
+
+If you would rather not trust a template served from our bucket, copy
+`infra/aws/sendsprite-connect.yaml` to your own S3 bucket and point
+`CFN_TEMPLATE_URL` at it.
+
+## Leave the SES sandbox
+
+A fresh SES account is in the sandbox: you can only send to verified
+addresses, and the daily quota is small. Request production access from the
+SES console for the same region you connected. Sendsprite reads your account
+status, review status, daily quota and max send rate and shows them in
+Settings → Instance; the send pipeline paces itself against `MaxSendRate`
+with a token bucket, so raising the limit in AWS is picked up here.
+
+## Cloudflare (optional)
+
+Paste a Cloudflare API token in Settings → Instance and domains whose zone
+the token can see are provisioned in `auto` mode: DKIM, MAIL FROM and DMARC
+records are written for you. The token needs **Zone:Read** on the zones you
+want plus DNS edit rights on them; a token that lists no zones is accepted
+but warns. Without Cloudflare every domain falls back to `manual` and you copy
+the records over by hand.
+
+## Separate worker
+
+Jobs (sending, domain verification, webhook delivery, sweeps) run in the web
+process by default. To move them out:
+
+```bash
+# .env
+WORKER_MODE=separate
+```
+
+```bash
+docker compose --profile worker up -d
+```
+
+The `worker` service is the same image with `WORKER_MODE=inline` forced on
+and `SMTP_ENABLED=false`, and publishes no ports — the relay belongs to the
+web tier.
+
+## Upgrades and backups
+
+```bash
+cd ~/sendsprite
+docker compose pull
+docker compose up -d
+```
+
+Migrations run automatically on the new container's first boot.
+
+Back up the Postgres volume (`pgdata`) and the `.env` file. `pg_dump` against
+the `db` service is enough for the data; without `APP_SECRET` from `.env` the
+encrypted AWS and Cloudflare credentials in that dump cannot be read.

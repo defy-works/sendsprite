@@ -1,0 +1,166 @@
+export const metadata = {
+  title: "Sending",
+  description:
+    "Every field of a Sendsprite send: recipients, bodies, attachments, tags, scheduling, idempotency, tracking, suppressions and SMTP.",
+};
+
+# Sending
+
+`POST /api/v1/emails` takes one message and answers `201 { "id": "em_…" }`
+once it is accepted. Delivery itself is asynchronous: the row is written, a
+job is queued, and the timeline fills in as SES reports back.
+
+## Fields
+
+| Field                       | Type                 | Notes                                                                                |
+| --------------------------- | -------------------- | ------------------------------------------------------------------------------------ |
+| `from`                      | string               | Required. `a@b.com` or `Name <a@b.com>`. Must be on a verified domain of this team.  |
+| `to`                        | string or string[]   | Required, at least one address.                                                      |
+| `cc`, `bcc`, `replyTo`      | string or string[]   | Optional; a bare string is accepted and wrapped.                                     |
+| `subject`                   | string               | Required, 1–998 characters, no line breaks.                                          |
+| `html`                      | string               | Up to 5 MB.                                                                          |
+| `text`                      | string               | Up to 5 MB.                                                                          |
+| `headers`                   | object               | Custom headers, `[A-Za-z0-9-]{1,80}` names, values ≤ 1000 chars without line breaks. |
+| `attachments`               | object[]             | Up to 20; see below.                                                                 |
+| `tags`                      | object               | Up to 20 key/value pairs.                                                            |
+| `scheduledAt`               | ISO 8601 with offset | Send later.                                                                          |
+| `idempotencyKey`            | string               | 1–256 characters.                                                                    |
+| `trackOpens`, `trackClicks` | boolean              | Override the team defaults for this message.                                         |
+| `overrideSuppression`       | boolean              | Ignore _manual_ suppression entries.                                                 |
+
+At least one of `html`, `text` or `template` must be present — but
+`template` is reserved and currently rejected, so in practice: `html`,
+`text` or both.
+
+`to`, `cc` and `bcc` together may not exceed **50** recipients.
+
+Headers that Sendsprite or SES set themselves are rejected: `to`, `cc`,
+`bcc`, `from`, `subject`, `reply-to`, `content-type`, `mime-version`, `date`,
+`message-id`, `return-path`, `sender`, `dkim-signature`, `received`,
+`content-transfer-encoding` and `authentication-results`.
+`list-unsubscribe` is deliberately allowed.
+
+Batch: `POST /api/v1/emails/batch` takes an array of up to **100** of the
+same objects. There is no outer transaction — the items are created in order
+and the first failure stops the batch, reporting the index it stopped at;
+everything before it is already queued.
+
+## Attachments
+
+```json
+{
+  "filename": "invoice.pdf",
+  "content": "<base64>",
+  "contentType": "application/pdf"
+}
+```
+
+`filename` is 1–255 characters with no path separators and no line breaks.
+`content` is base64 (whitespace is stripped before validation).
+`contentType` defaults to `application/octet-stream`. At most 20 attachments
+and **10 MB** of decoded bytes across all of them. The request body as a
+whole is capped at 25 MB.
+
+## Tags
+
+Up to **20** tags. Keys are 1–64 characters of `[A-Za-z0-9_-]`; values are up
+to 256 characters without line breaks. Tags are stored with the email and are
+filterable: `GET /api/v1/emails?tag=env:production` matches one `key:value`
+pair (the value may itself contain `:`).
+
+## Scheduling
+
+Pass `scheduledAt` as an ISO 8601 timestamp with an offset. Anything more
+than 5 seconds in the future gets status `scheduled` and a delayed job;
+anything closer is treated as an immediate `queued` send.
+
+- `POST /api/v1/emails/:id/cancel` cancels a `queued` or `scheduled` email.
+- `PATCH /api/v1/emails/:id` with `{ "scheduledAt": … }` moves a `scheduled`
+  email to a new — still future — time.
+
+## Idempotency
+
+Set `idempotencyKey` and a repeat of the same send returns the original email
+instead of creating a second one (`200` rather than `201`, same `id`).
+
+The key is scoped to your team. A replay is compared on subject, the
+recipient set (order-insensitive) and hashes of the html and text bodies;
+`cc`/`bcc` and the tracking flags are deliberately not part of that
+fingerprint. If the key comes back with a _different_ payload the call fails
+with `idempotency_conflict` (409).
+
+The SDK uses this to decide whether a send may be retried automatically —
+without a key, a failed `POST` is never repeated.
+
+## Tracking
+
+`trackOpens` and `trackClicks` default to the team's settings (both on out of
+the box) and can be overridden per message. When on, links in the html are
+rewritten through your instance and a 1×1 pixel is appended. Both are keyed
+by the email id and signed with `APP_SECRET`.
+
+Opens and clicks are recorded once per `(user agent[, url])` per UTC day, so
+a mail client fetching the pixel repeatedly counts once. SES's own open and
+click events are ignored — your instance is the single source for those.
+
+## Suppressions
+
+Hard bounces and complaints add the recipient to the team's suppression list
+automatically, and a send to a suppressed address is refused with
+`suppressed_recipient` (422) before anything is queued.
+
+```bash
+# add
+curl https://mail.example.com/api/v1/suppressions -X POST \
+  -H "Authorization: Bearer ss_live_..." \
+  -H "Content-Type: application/json" \
+  -d '{ "email": "ada@example.com", "reason": "unsubscribe", "note": "footer link" }'
+
+# remove
+curl https://mail.example.com/api/v1/suppressions/ada%40example.com -X DELETE \
+  -H "Authorization: Bearer ss_live_..."
+```
+
+Reasons are `bounce`, `complaint`, `manual` and `unsubscribe`; the API can
+only add `manual` and `unsubscribe` — the other two come from SES events.
+`overrideSuppression: true` bypasses `manual` entries only, and a
+`sending_only` key cannot use it at all.
+
+## Limits and rate headers
+
+Sends are paced against your SES account's `MaxSendRate` with a token bucket
+shared across workers, and checked against the team's daily/monthly caps and
+the instance quota before the row is written. Refusals are typed:
+`daily_quota_exceeded`, `monthly_quota_exceeded` and `rate_limited` all map
+to 429.
+
+Every response from the emails endpoints carries `x-ratelimit-limit` and
+`x-ratelimit-remaining`. With a team daily cap they also carry
+`x-ratelimit-reset` (next UTC midnight, epoch seconds); against the SES
+24-hour quota there is no fixed reset, so the header is omitted, and with no
+cap at all both values read `unlimited`.
+
+## SMTP relay
+
+Legacy apps that only speak SMTP go through the same pipeline — same
+validation, same suppression list, same event log.
+
+| Setting    | Value                      |
+| ---------- | -------------------------- |
+| Host       | your instance              |
+| Port       | `SMTP_PORT`, default `587` |
+| Encryption | STARTTLS                   |
+| Username   | anything (ignored)         |
+| Password   | an API key (`ss_live_…`)   |
+
+`AUTH PLAIN` and `AUTH LOGIN` are offered, and only after STARTTLS unless
+`SMTP_ALLOW_INSECURE_AUTH` is on (development only). Five bad passwords from
+one address within 10 minutes lock that address out for 10 minutes.
+
+The envelope (`RCPT TO`) decides who is delivered to; the `To:` and `Cc:`
+headers only decide which of those recipients are _visible_ as To/Cc — the
+rest become Bcc. Only `X-*` headers are forwarded; the standard ones are
+carried by the parsed fields. Messages need a `From:` header and an html or
+text body. Refusals map onto SMTP codes: unverified domain, suppressed
+recipient and forbidden are `550`, validation problems `501`, quota and rate
+limits `452`, a bad key `535`, and a message over `SMTP_MAX_SIZE` is `552`.

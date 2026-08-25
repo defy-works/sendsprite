@@ -1,0 +1,89 @@
+export const metadata = {
+  title: "Getting started",
+  description:
+    "Create an API key and send your first email through a Sendsprite instance.",
+};
+
+# Getting started
+
+Sendsprite is a self-hosted email API on top of Amazon SES. You run the
+container, you connect your own AWS account, and your app talks to
+`https://<your-instance>/api/v1` — over REST, the `sendsprite` SDK, the CLI,
+or plain SMTP.
+
+Everything below assumes an instance that is already running with AWS
+connected and one verified sending domain. If you have neither yet, start at
+[Self-hosting](/docs/self-hosting), then [Domains](/docs/domains).
+
+## 1. Create an API key
+
+Open **Dashboard → API keys** (`/app/api-keys`) and create a key. The secret
+looks like `ss_live_…` and is shown **once** — only its SHA-256 hash is
+stored, so copy it straight into your secret manager.
+
+A key is either `full` (everything) or `sending_only` (send and read your own
+`/me`), and can be pinned to a single sending domain. See
+[API keys](/docs/api-keys).
+
+## 2. Send an email
+
+Authenticate with `Authorization: Bearer <key>`.
+
+```bash
+curl https://mail.example.com/api/v1/emails \
+  -H "Authorization: Bearer ss_live_..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "from": "Acme <hello@mail.example.com>",
+    "to": ["ada@example.com"],
+    "subject": "Hello from Sendsprite",
+    "html": "<p>It works.</p>"
+  }'
+```
+
+A successful send answers `201 { "id": "em_…" }`. The `from` address must sit
+on a domain this team has verified, otherwise the call fails with
+`domain_not_verified` (422).
+
+The same call with the SDK:
+
+```ts
+import { Sendsprite } from "sendsprite";
+
+const sendsprite = new Sendsprite({
+  baseUrl: "https://mail.example.com",
+  apiKey: process.env.SENDSPRITE_API_KEY,
+});
+
+const { id } = await sendsprite.emails.send({
+  from: "Acme <hello@mail.example.com>",
+  to: "ada@example.com",
+  subject: "Hello from Sendsprite",
+  html: "<p>It works.</p>",
+});
+```
+
+`baseUrl` and `apiKey` fall back to `SENDSPRITE_URL` and
+`SENDSPRITE_API_KEY`, so in most apps the constructor takes no arguments at
+all.
+
+## 3. Watch it land
+
+Open **Dashboard → Emails** (`/app/emails`). Every message has a timeline
+built from the SES events your instance ingests: `queued`, `sent`,
+`delivered`, `bounced`, `complained`, `opened`, `clicked`, `failed`. The same
+timeline is available over the API:
+
+```bash
+curl https://mail.example.com/api/v1/emails/em_... \
+  -H "Authorization: Bearer ss_live_..."
+```
+
+## Where to go next
+
+- [Sending](/docs/sending) — every field of a send, attachments, tags,
+  scheduling, idempotency, tracking, suppressions and the SMTP relay.
+- [Webhooks](/docs/webhooks) — get the events pushed to your app, signed.
+- [SDK](/docs/sdk) — the `sendsprite` package, React email templates and the
+  live change stream.
+- [API reference](/docs/api) — the full OpenAPI 3.1 document, rendered.
