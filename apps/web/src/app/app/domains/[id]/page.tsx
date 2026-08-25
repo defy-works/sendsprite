@@ -68,6 +68,7 @@ export default async function DomainPage({
               name={d.name}
               status={d.status}
               provisioned={d.dkimTokens.length > 0}
+              retryable={d.dkimTokens.length === 0 && !!d.lastError}
             />
           </CardBody>
         </Card>

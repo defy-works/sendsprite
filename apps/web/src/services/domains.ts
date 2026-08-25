@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   CreateEmailIdentityCommand,
@@ -28,6 +28,7 @@ export type Domain = typeof domains.$inferSelect;
  * `singletonKey` dedups on a queue with a policy that enforces it: the
  * `domain.verify` queue is `exclusive`, so one verify job per domain can be
  * created/retry/active at a time and a duplicate send is dropped (null).
+ * Resolves to the job id, or null when deduped.
  */
 export type Enqueue = (
   queue: string,
@@ -42,8 +43,13 @@ interface Deps {
   resolver?: Resolver;
 }
 
-/** How often a pending domain is re-checked, and for how long before it fails. */
-const VERIFY_EVERY_S = 120;
+/**
+ * A pending domain is re-checked by the `domain.verify-sweep` cron (every
+ * 2 minutes; see jobs/handlers/domain-verify.ts) for 72 hours before it
+ * fails. The sweep skips rows checked within SWEEP_STALE_S so a tick never
+ * re-runs a check the previous tick just finished.
+ */
+const SWEEP_STALE_S = 100;
 const FIRST_VERIFY_AFTER_S = 30;
 const VERIFY_WINDOW_MS = 72 * 3600 * 1000;
 const DOMAIN_RE =
@@ -168,8 +174,64 @@ export async function createDomain(
     diff: { name: { to: name }, dnsMode: { to: row.dnsMode } },
     ...actor.meta,
   });
-  await deps.enqueue("domain.provision", { domainId: id });
+  // The queue can be unreachable (pg-boss down, schema missing) while the
+  // row is already there; keep the domain and surface the problem on it so
+  // "Retry provisioning" can re-send instead of the user re-adding.
+  try {
+    await deps.enqueue("domain.provision", { domainId: id });
+  } catch (e) {
+    const lastError = `Could not queue provisioning: ${errMsg(e)}`;
+    [row] = await db()
+      .update(domains)
+      .set({ lastError })
+      .where(eq(domains.id, id))
+      .returning();
+    if (!row) throw new Error("domains update returned no row");
+    console.error(`[domains] ${lastError}`);
+  }
   return { ok: true, data: row };
+}
+
+/**
+ * Re-send `domain.provision` for a domain whose provisioning never ran
+ * (queue failure at create time) or failed terminally. Refused once the
+ * identity exists (tokens stored): Re-verify covers that case.
+ */
+export async function retryProvisioning(
+  actor: TeamActor,
+  id: string,
+  deps: Pick<Deps, "enqueue">,
+): Promise<Result> {
+  if (!can(actor.role, "domains.manage")) return DENIED;
+  const d = await getDomain(actor.teamId, id);
+  if (!d) return { ok: false, error: "Domain not found." };
+  if (d.dkimTokens.length > 0)
+    return { ok: false, error: "This domain is already provisioned." };
+  await db()
+    .update(domains)
+    .set({
+      status: "pending",
+      lastError: null,
+      verifyUntil: new Date(Date.now() + VERIFY_WINDOW_MS),
+    })
+    .where(eq(domains.id, id));
+  await recordAudit({
+    teamId: actor.teamId,
+    actorUserId: actor.userId,
+    action: "domains.retry_provisioning",
+    targetType: "domain",
+    targetId: id,
+    diff: { status: { from: d.status, to: "pending" } },
+    ...actor.meta,
+  });
+  try {
+    await deps.enqueue("domain.provision", { domainId: id });
+  } catch (e) {
+    const lastError = `Could not queue provisioning: ${errMsg(e)}`;
+    await db().update(domains).set({ lastError }).where(eq(domains.id, id));
+    return { ok: false, error: lastError };
+  }
+  return { ok: true, data: undefined };
 }
 
 /**
@@ -178,11 +240,13 @@ export async function createDomain(
  * read back for its tokens and Cloudflare upserts by (type, name[, content]).
  * Auto mode with Cloudflare disconnected degrades to manual (records are
  * still computed for the user to add by hand). Throws after recording
- * `lastError` so pg-boss retries.
+ * `lastError` so pg-boss retries; on the handler's `finalAttempt` the
+ * domain is also marked `failed` (no more retries are coming).
  */
 export async function provisionDomain(
   domainId: string,
   deps: Deps,
+  { finalAttempt = false }: { finalAttempt?: boolean } = {},
 ): Promise<void> {
   const d = await loadById(domainId);
   if (!d) return;
@@ -253,7 +317,10 @@ export async function provisionDomain(
   } catch (e) {
     await db()
       .update(domains)
-      .set({ lastError: errMsg(e) })
+      .set({
+        lastError: errMsg(e),
+        ...(finalAttempt && { status: "failed" as const }),
+      })
       .where(eq(domains.id, d.id));
     throw e;
   }
@@ -267,15 +334,18 @@ async function setError(id: string, lastError: string) {
 }
 
 /**
- * Job: poll SES + DNS. Verified → stop; pending → re-enqueue; past the
- * window → failed. Two paths stop the loop without throwing: AWS
- * disconnected (lastError set, status untouched; Re-verify restarts it) and
- * the SES identity gone (`failed`; the user deletes and re-adds). Any other
- * SES error records `lastError` and rethrows so pg-boss retries.
+ * Job: poll SES + DNS once. Verified → done; pending → left for the next
+ * sweep; past the window → failed. It never re-enqueues itself: the
+ * `domain.verify-sweep` cron picks pending rows by `lastCheckedAt`, which
+ * every outcome below bumps. AWS disconnected sets `lastError` and leaves
+ * the status (the sweep keeps trying once per tick until reconnect or
+ * Re-verify); the SES identity gone is `failed` (the user deletes and
+ * re-adds). Any other SES error records `lastError` and rethrows so
+ * pg-boss retries.
  */
 export async function verifyDomain(
   domainId: string,
-  deps: Pick<Deps, "enqueue" | "resolver">,
+  deps: Pick<Deps, "resolver"> = {},
 ): Promise<void> {
   const d = await loadById(domainId);
   if (!d || d.status === "verified") return;
@@ -332,19 +402,43 @@ export async function verifyDomain(
         : null,
     })
     .where(eq(domains.id, d.id));
-  if (!verified && !expired)
-    await enqueueVerify(deps.enqueue, d.id, VERIFY_EVERY_S);
+}
+
+/**
+ * Domains the verification sweep should enqueue: pending, provisioned
+ * (tokens stored), and not checked within the last SWEEP_STALE_S. Rows past
+ * `verifyUntil` are included on purpose: the next check marks them `failed`.
+ */
+export async function selectSweepCandidates(): Promise<string[]> {
+  const rows = await db()
+    .select({ id: domains.id })
+    .from(domains)
+    .where(
+      and(
+        eq(domains.status, "pending"),
+        sql`${domains.dkimTokens} != '[]'::jsonb`,
+        or(
+          isNull(domains.lastCheckedAt),
+          lt(
+            domains.lastCheckedAt,
+            sql`now() - make_interval(secs => ${SWEEP_STALE_S})`,
+          ),
+        ),
+      ),
+    )
+    .orderBy(domains.createdAt);
+  return rows.map((r) => r.id);
 }
 
 /**
  * Manual "Re-verify": resets the window and runs one check inline so the
- * click answers right away; the check re-enqueues the loop itself if the
- * domain is still pending (the singleton key keeps it to one loop).
+ * click answers right away; while the domain stays pending the sweep keeps
+ * checking it.
  */
 export async function reverifyDomain(
   actor: TeamActor,
   id: string,
-  deps: Pick<Deps, "enqueue" | "resolver">,
+  deps: Pick<Deps, "resolver"> = {},
 ): Promise<Result> {
   if (!can(actor.role, "domains.manage")) return DENIED;
   const d = await getDomain(actor.teamId, id);

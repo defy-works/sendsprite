@@ -3,7 +3,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/app/setup/steps/shared";
-import { deleteDomain, reverifyDomain } from "./actions";
+import { deleteDomain, retryProvisioning, reverifyDomain } from "./actions";
 
 const REFRESH_MS = 15_000;
 
@@ -12,17 +12,22 @@ export function DomainActions({
   name,
   status,
   provisioned,
+  retryable,
 }: {
   id: string;
   name: string;
   status: "pending" | "verified" | "failed";
   /** False until the provision job has stored the DKIM tokens. */
   provisioned: boolean;
+  /** Provisioning never ran or failed for good: offer to re-send the job. */
+  retryable: boolean;
 }) {
   const router = useRouter();
   const [verifying, startVerify] = useTransition();
+  const [retrying, startRetry] = useTransition();
   const [deleting, startDelete] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const busy = verifying || retrying || deleting;
 
   // Until SSE lands (Phase 3) a pending domain re-renders from the server.
   useEffect(() => {
@@ -39,7 +44,7 @@ export function DomainActions({
       <div className="flex items-center gap-3">
         <Button
           variant="secondary"
-          disabled={!provisioned || verifying || deleting}
+          disabled={!provisioned || busy}
           title={provisioned ? undefined : "Waiting for provisioning…"}
           onClick={() =>
             startVerify(async () => {
@@ -52,9 +57,25 @@ export function DomainActions({
         >
           {verifying ? "Checking…" : "Re-verify"}
         </Button>
+        {retryable && (
+          <Button
+            variant="secondary"
+            disabled={busy}
+            onClick={() =>
+              startRetry(async () => {
+                setError(null);
+                const res = await retryProvisioning(id);
+                if (!res.ok) setError(res.error);
+                else router.refresh();
+              })
+            }
+          >
+            {retrying ? "Queuing…" : "Retry provisioning"}
+          </Button>
+        )}
         <Button
           variant="ghost"
-          disabled={verifying || deleting}
+          disabled={busy}
           onClick={() => {
             if (
               !window.confirm(

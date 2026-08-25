@@ -16,11 +16,11 @@
 - `PutAccountDetails` requires `MailType` (`TRANSACTIONAL|MARKETING`) and `WebsiteURL`; `UseCaseDescription` is deprecated but still accepted — we send it. `ContactLanguage` `EN`.
 - REST `/api/v1/domains` is deferred to Phase 3 (it needs API keys). Phase 2 ships the dashboard + services; Phase 3 wraps them.
 - Phase 2 SNS endpoint only confirms the subscription and acknowledges notifications; Phase 3 processes events.
-- Domain verification is a per-domain re-enqueued job (pg-boss `startAfter`), not a global cron, so each domain polls on its own schedule and stops when verified or after 72 h.
+- Domain verification is a per-domain `domain.verify` job (exclusive policy, keyed on the domain id) driven by a 2-minute `domain.verify-sweep` cron that enqueues every pending, provisioned domain whose last check is ≥ 100 s old; a domain leaves the set once verified or failed (72 h window). _Originally the job re-enqueued itself with `startAfter`; the integration review found that pg-boss's exclusive index drops a self-send while the job is still `active`, so the loop died after one iteration (see "Integration review fixes")._
 
 ---
 
-## Phase 2 status: COMPLETE (2026-08-25, HEAD after `06eed28` + docs commit)
+## Phase 2 status: COMPLETE (2026-08-25, HEAD after `06eed28` + docs commit + integration review fixes)
 
 Tasks 1–17 shipped; every task's "Review follow-ups" block above records what changed after review. Docs (`README.md`, `infra/aws/README.md`, spec §6/§7) describe the shipped behaviour, not the original plan text. Open these as the **first tasks of the Phase 3 plan** (extension points, not Phase 2 defects):
 
@@ -33,6 +33,14 @@ Tasks 1–17 shipped; every task's "Review follow-ups" block above records what 
 7. **REST `/api/v1/domains`** wrapping `services/domains.ts` once API keys exist (spec §7).
 8. **`queue: { policy }` guard.** `registerQueue`'s `QueueOptions.policy` is create-time only in pg-boss 12: changing it for an existing queue is silently ignored. Either assert the stored policy on start (`getQueue(name).policy`) and fail loudly, or document that a policy change needs `deleteQueue` + recreate.
 9. **E2E ordering dependency.** `playwright.config.ts` has a `setup` project that `app` depends on, because the smoke spec needs a completed wizard. New specs must go in `app` (or a new project with the same dependency); a spec that runs before `setup` on a fresh database is redirected to `/setup`.
+
+### Integration review fixes (after the Phase 2 docs commit)
+
+Blocking findings from the Phase 2 integration review, fixed in three commits. The Task 13 code blocks below were re-synced from the files.
+
+**C1 — verify loop died after one iteration.** `domain.verify` is `policy: "exclusive"` and `verifyDomain` re-enqueued itself with `singletonKey: domainId` while its own job was still `active`; pg-boss's `job_i6` unique index (`state <= 'active'`) turned that insert into `ON CONFLICT DO NOTHING`, so no second check ever ran. Replaced by a sweeper: `domain.verify-sweep` (`Q.domainVerifySweep`, cron `*/2 * * * *`, `retryLimit: 0`, in `jobs/handlers/domain-verify.ts`, exported as `sweepDomainVerification()`) calls `selectSweepCandidates()` (`services/domains.ts`: `status = 'pending' AND dkim_tokens != '[]' AND (last_checked_at IS NULL OR last_checked_at < now() - 100 s)`) and sends one keyed `domain.verify` per row. Exclusive dedup now works because the sweep never runs inside an active verify job. Expired rows are included on purpose (simpler than a second query): `verifyDomain` already marks a row past `verify_until` as `failed`, which removes it from the set. `verifyDomain`/`reverifyDomain` no longer take `enqueue`; `provisionDomain` keeps its initial `startAfter: 30` send. Every `verifyDomain` outcome (including "AWS is not connected") bumps `lastCheckedAt`, so a disconnected instance costs one cheap attempt per tick per pending domain. This closes the verify half of opener #3 above (a lost provision job is still only visible as empty `dkim_tokens`; "Retry provisioning" below is the manual recovery). `tests/integration/domain-loop.test.ts` runs the loop through a real pg-boss worker: create → provision job → first verify → two sweep-driven verifies, asserting `lastCheckedAt` advances each time.
+
+**C2 — queues did not exist in the web process.** With `WORKER_MODE=separate`/`none` the web process never called `createQueue`, so `enqueue("domain.provision")` from the server action threw. `getBoss()` now imports `./handlers` (registration side effects only) after `start()` and runs `ensureQueue()` (createQueue + updateQueue, shared with `attach`) for every registration, without `work()`. Non-worker processes construct `new PgBoss({ supervise: false, schedule: false })` (pg-boss `MaintenanceOptions.supervise` / `SchedulingOptions.schedule`; only the worker supervises and schedules); `startWorker()` replaces a send-only instance with a supervising one. `createDomain` wraps the enqueue in try/catch: on failure the row is kept with `lastError: "Could not queue provisioning: <msg>"` and `ok:true` is returned; `retryProvisioning(actor, id, { enqueue })` (audit `domains.retry_provisioning`, refused once tokens exist) plus a "Retry provisioning" button in `DomainActions` (shown when `dkimTokens.length === 0 && lastError`) re-sends the job. Terminal provisioning failure (I3): `domain.provision` is registered with `includeMetadata: true` (new `registerQueue` option → `JobWithMetadata` handler), and on the attempt where `job.retryCount >= job.retryLimit` (pg-boss bumps `retry_count` on every re-fetch) the handler passes `{ finalAttempt: true }` so `provisionDomain` also sets `status: "failed"`; Re-verify stays disabled for such rows and "Retry provisioning" is the way out.
 
 ---
 
@@ -3800,6 +3808,75 @@ describe("domains", () => {
     expect(res).toMatchObject({ ok: false, error: /Connect AWS/ });
     expect(await pg.db.select().from(domains)).toHaveLength(1);
   });
+  it("createDomain keeps the row when the queue is down; retryProvisioning re-sends", async () => {
+    const { createDomain, retryProvisioning } =
+      await import("@/services/domains");
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    let res;
+    try {
+      res = await createDomain(
+        actor,
+        { name: "queued.acme.com" },
+        {
+          enqueue: async () => {
+            throw new Error("pg-boss is not started");
+          },
+          fetch: cfFetch,
+        },
+      );
+    } finally {
+      err.mockRestore();
+    }
+    expect(res).toMatchObject({
+      ok: true,
+      data: {
+        status: "pending",
+        dkimTokens: [],
+        lastError: "Could not queue provisioning: pg-boss is not started",
+      },
+    });
+    if (!res.ok) return;
+    const id = res.data.id;
+    // Never provisioned, so the sweep must not pick it up.
+    const { selectSweepCandidates } = await import("@/services/domains");
+    expect(await selectSweepCandidates()).not.toContain(id);
+    const enqueue = vi.fn(async () => "job");
+    expect(
+      (await retryProvisioning({ ...actor, role: "member" }, id, { enqueue }))
+        .ok,
+    ).toBe(false);
+    expect(await retryProvisioning(actor, id, { enqueue })).toEqual({
+      ok: true,
+      data: undefined,
+    });
+    expect(enqueue).toHaveBeenCalledWith("domain.provision", { domainId: id });
+    expect(await byName("queued.acme.com")).toMatchObject({
+      status: "pending",
+      lastError: null,
+    });
+    expect(
+      await pg.db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.action, "domains.retry_provisioning")),
+    ).toHaveLength(1);
+    // The queue failing again is reported and recorded.
+    expect(
+      await retryProvisioning(actor, id, {
+        enqueue: async () => {
+          throw new Error("still down");
+        },
+      }),
+    ).toEqual({ ok: false, error: "Could not queue provisioning: still down" });
+    expect((await byName("queued.acme.com")).lastError).toMatch(/still down/);
+    // Once provisioned, Re-verify is the tool, not a second provision.
+    await pg.db
+      .update(domains)
+      .set({ dkimTokens: ["t1"] })
+      .where(eq(domains.id, id));
+    expect((await retryProvisioning(actor, id, { enqueue })).ok).toBe(false);
+    await pg.db.delete(domains).where(eq(domains.id, id));
+  });
   it("provisionDomain creates the identity, MAIL FROM, writes records to Cloudflare", async () => {
     happyProvision();
     const { provisionDomain } = await import("@/services/domains");
@@ -3875,6 +3952,23 @@ describe("domains", () => {
     ).rejects.toThrow(/Rate exceeded/);
     expect((await byName("mail.acme.com")).lastError).toMatch(/Rate exceeded/);
     expect(enqueue).not.toHaveBeenCalled();
+    expect((await byName("mail.acme.com")).status).toBe("pending");
+    // The handler's final attempt is terminal: the domain is marked failed.
+    await expect(
+      provisionDomain(
+        d.id,
+        { enqueue, fetch: cfFetch },
+        { finalAttempt: true },
+      ),
+    ).rejects.toThrow(/Rate exceeded/);
+    expect(await byName("mail.acme.com")).toMatchObject({
+      status: "failed",
+      lastError: /Rate exceeded/,
+    });
+    await pg.db
+      .update(domains)
+      .set({ status: "pending" })
+      .where(eq(domains.id, d.id));
   });
   it("auto mode degrades to manual when Cloudflare is disconnected mid-flight", async () => {
     const { createDomain, provisionDomain, deleteDomain } =
@@ -3897,7 +3991,7 @@ describe("domains", () => {
     ses.on(DeleteEmailIdentityCommand).resolves({});
     expect((await deleteDomain(actor, res.data.id, noop)).ok).toBe(true);
   });
-  it("verifyDomain flips to verified when SES + DNS agree, else re-enqueues", async () => {
+  it("verifyDomain flips to verified when SES + DNS agree", async () => {
     ses.on(GetEmailIdentityCommand).resolves({
       DkimAttributes: { Status: "SUCCESS", Tokens: ["t1", "t2", "t3"] },
       MailFromAttributes: {
@@ -3919,8 +4013,7 @@ describe("domains", () => {
     };
     const { verifyDomain } = await import("@/services/domains");
     const d = await byName("mail.acme.com");
-    const enqueue = vi.fn(async () => "job");
-    await verifyDomain(d.id, { enqueue, resolver });
+    await verifyDomain(d.id, { resolver });
     const after = await byName("mail.acme.com");
     expect(after).toMatchObject({
       status: "verified",
@@ -3932,46 +4025,58 @@ describe("domains", () => {
     });
     expect(after.verifiedAt).toBeInstanceOf(Date);
     expect(after.lastCheckedAt).toBeInstanceOf(Date);
-    expect(enqueue).not.toHaveBeenCalled();
     // Already verified: a stray re-run is a no-op.
     ses.reset();
-    await verifyDomain(d.id, { enqueue, resolver });
+    await verifyDomain(d.id, { resolver });
     expect(ses.commandCalls(GetEmailIdentityCommand)).toHaveLength(0);
   });
-  it("verifyDomain re-enqueues one keyed job while pending and fails after verifyUntil", async () => {
+  it("verifyDomain leaves a pending domain to the sweep and fails it after verifyUntil", async () => {
     ses.on(GetEmailIdentityCommand).resolves(pendingIdentity);
-    const { verifyDomain, createDomain } = await import("@/services/domains");
+    const { verifyDomain, createDomain, selectSweepCandidates } =
+      await import("@/services/domains");
     const created = await createDomain(actor, { name: "slow.acme.com" }, noop);
     if (!created.ok) throw new Error(created.error);
     const id = created.data.id;
-    const enqueue = vi.fn(async () => "job");
-    await verifyDomain(id, { enqueue, resolver: emptyDns });
-    await verifyDomain(id, { enqueue, resolver: emptyDns });
-    expect(enqueue).toHaveBeenCalledTimes(2);
-    for (const call of enqueue.mock.calls)
-      expect(call).toEqual([
-        "domain.verify",
-        { domainId: id },
-        { startAfter: 120, singletonKey: id },
-      ]);
+    // Not provisioned yet (no tokens): the sweep ignores it.
+    expect(await selectSweepCandidates()).toEqual([]);
+    await pg.db
+      .update(domains)
+      .set({ dkimTokens: ["t1", "t2", "t3"] })
+      .where(eq(domains.id, id));
+    // Never checked: due. (mail.acme.com is verified, so it stays out.)
+    expect(await selectSweepCandidates()).toEqual([id]);
+    await verifyDomain(id, { resolver: emptyDns });
+    await verifyDomain(id, { resolver: emptyDns });
     expect((await byName("slow.acme.com")).status).toBe("pending");
+    // Just checked: not due until the check is ~100 s old.
+    expect(await selectSweepCandidates()).toEqual([]);
+    await pg.db
+      .update(domains)
+      .set({ lastCheckedAt: new Date(Date.now() - 101_000) })
+      .where(eq(domains.id, id));
+    expect(await selectSweepCandidates()).toEqual([id]);
+    // Past the window it is still due, and the check fails it for good.
     await pg.db
       .update(domains)
       .set({ verifyUntil: new Date(Date.now() - 1000) })
       .where(eq(domains.id, id));
-    enqueue.mockClear();
-    await verifyDomain(id, { enqueue, resolver: emptyDns });
+    expect(await selectSweepCandidates()).toEqual([id]);
+    await verifyDomain(id, { resolver: emptyDns });
     const after = await byName("slow.acme.com");
     expect(after.status).toBe("failed");
     expect(after.lastError).toMatch(/timed out/);
-    expect(enqueue).not.toHaveBeenCalled();
+    expect(await selectSweepCandidates()).toEqual([]);
   });
   it("reverifyDomain resets the window, audits, and checks inline", async () => {
     ses.on(GetEmailIdentityCommand).resolves(pendingIdentity);
     const { reverifyDomain } = await import("@/services/domains");
+    // Re-verify needs a provisioned identity; the fixture skipped the job.
+    await pg.db
+      .update(domains)
+      .set({ dkimTokens: ["t1", "t2", "t3"] })
+      .where(eq(domains.name, "slow.acme.com"));
     const d = await byName("slow.acme.com");
-    const enqueue = vi.fn(async () => "job");
-    const deps = { enqueue, resolver: emptyDns };
+    const deps = { resolver: emptyDns };
     expect(
       (await reverifyDomain({ ...actor, role: "member" }, d.id, deps)).ok,
     ).toBe(false);
@@ -3986,11 +4091,6 @@ describe("domains", () => {
     expect(after.verifyUntil!.getTime()).toBeGreaterThan(Date.now());
     expect(after.lastCheckedAt!.getTime()).toBeGreaterThan(
       d.lastCheckedAt!.getTime(),
-    );
-    expect(enqueue).toHaveBeenCalledWith(
-      "domain.verify",
-      { domainId: d.id },
-      { startAfter: 120, singletonKey: d.id },
     );
     expect(
       await pg.db
@@ -4008,7 +4108,26 @@ describe("domains", () => {
       error: /Rate exceeded/,
     });
   });
-  it("verifyDomain stops polling (no throw, no re-enqueue) when AWS is disconnected", async () => {
+  it("reverifyDomain refuses a domain that has not been provisioned", async () => {
+    const { createDomain, reverifyDomain } = await import("@/services/domains");
+    const enqueue = vi.fn(async () => "job");
+    const res = await createDomain(
+      actor,
+      { name: "unprovisioned.acme.com" },
+      { enqueue, fetch: cfFetch },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    ses.reset();
+    expect(await reverifyDomain(actor, res.data.id)).toEqual({
+      ok: false,
+      error: "Provisioning hasn't finished yet.",
+    });
+    expect(ses.commandCalls(GetEmailIdentityCommand)).toHaveLength(0);
+    // Later assertions list the team's domains; leave only the fixture.
+    await pg.db.delete(domains).where(eq(domains.id, res.data.id));
+  });
+  it("verifyDomain records the error without throwing when AWS is disconnected", async () => {
     const { updateInstanceSettings } =
       await import("@/services/instance-settings");
     await updateInstanceSettings({ awsMode: "none" }, undefined, {
@@ -4016,12 +4135,13 @@ describe("domains", () => {
     });
     const { verifyDomain } = await import("@/services/domains");
     const d = await byName("slow.acme.com");
-    const enqueue = vi.fn(async () => "job");
-    await verifyDomain(d.id, { enqueue, resolver: emptyDns });
+    await verifyDomain(d.id, { resolver: emptyDns });
     const after = await byName("slow.acme.com");
     expect(after.status).toBe("pending");
     expect(after.lastError).toMatch(/AWS is not connected/);
-    expect(enqueue).not.toHaveBeenCalled();
+    expect(after.lastCheckedAt!.getTime()).toBeGreaterThan(
+      d.lastCheckedAt!.getTime(),
+    );
     expect(ses.commandCalls(GetEmailIdentityCommand)).toHaveLength(0);
   });
   it("verifyDomain records other SES errors and rethrows for retry", async () => {
@@ -4030,14 +4150,12 @@ describe("domains", () => {
       .rejects(awsErr("TooManyRequestsException", "Rate exceeded"));
     const { verifyDomain } = await import("@/services/domains");
     const d = await byName("slow.acme.com");
-    const enqueue = vi.fn(async () => "job");
-    await expect(
-      verifyDomain(d.id, { enqueue, resolver: emptyDns }),
-    ).rejects.toThrow(/Rate exceeded/);
+    await expect(verifyDomain(d.id, { resolver: emptyDns })).rejects.toThrow(
+      /Rate exceeded/,
+    );
     const after = await byName("slow.acme.com");
     expect(after.status).toBe("pending");
     expect(after.lastError).toMatch(/Rate exceeded/);
-    expect(enqueue).not.toHaveBeenCalled();
   });
   it("verifyDomain fails the domain when the SES identity has vanished", async () => {
     ses
@@ -4045,12 +4163,10 @@ describe("domains", () => {
       .rejects(awsErr("NotFoundException", "identity not found"));
     const { verifyDomain } = await import("@/services/domains");
     const d = await byName("slow.acme.com");
-    const enqueue = vi.fn(async () => "job");
-    await verifyDomain(d.id, { enqueue, resolver: emptyDns });
+    await verifyDomain(d.id, { resolver: emptyDns });
     const after = await byName("slow.acme.com");
     expect(after.status).toBe("failed");
     expect(after.lastError).toMatch(/identity was removed/);
-    expect(enqueue).not.toHaveBeenCalled();
   });
   it("deleteDomain removes the identity and the Cloudflare records it created", async () => {
     ses.on(DeleteEmailIdentityCommand).resolves({});
@@ -4147,7 +4263,7 @@ Run: `cd apps/web && bun run test:integration -- domains` → FAIL.
 `apps/web/src/services/domains.ts`:
 
 ```ts
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   CreateEmailIdentityCommand,
@@ -4177,6 +4293,7 @@ export type Domain = typeof domains.$inferSelect;
  * `singletonKey` dedups on a queue with a policy that enforces it: the
  * `domain.verify` queue is `exclusive`, so one verify job per domain can be
  * created/retry/active at a time and a duplicate send is dropped (null).
+ * Resolves to the job id, or null when deduped.
  */
 export type Enqueue = (
   queue: string,
@@ -4191,8 +4308,13 @@ interface Deps {
   resolver?: Resolver;
 }
 
-/** How often a pending domain is re-checked, and for how long before it fails. */
-const VERIFY_EVERY_S = 120;
+/**
+ * A pending domain is re-checked by the `domain.verify-sweep` cron (every
+ * 2 minutes; see jobs/handlers/domain-verify.ts) for 72 hours before it
+ * fails. The sweep skips rows checked within SWEEP_STALE_S so a tick never
+ * re-runs a check the previous tick just finished.
+ */
+const SWEEP_STALE_S = 100;
 const FIRST_VERIFY_AFTER_S = 30;
 const VERIFY_WINDOW_MS = 72 * 3600 * 1000;
 const DOMAIN_RE =
@@ -4317,8 +4439,64 @@ export async function createDomain(
     diff: { name: { to: name }, dnsMode: { to: row.dnsMode } },
     ...actor.meta,
   });
-  await deps.enqueue("domain.provision", { domainId: id });
+  // The queue can be unreachable (pg-boss down, schema missing) while the
+  // row is already there; keep the domain and surface the problem on it so
+  // "Retry provisioning" can re-send instead of the user re-adding.
+  try {
+    await deps.enqueue("domain.provision", { domainId: id });
+  } catch (e) {
+    const lastError = `Could not queue provisioning: ${errMsg(e)}`;
+    [row] = await db()
+      .update(domains)
+      .set({ lastError })
+      .where(eq(domains.id, id))
+      .returning();
+    if (!row) throw new Error("domains update returned no row");
+    console.error(`[domains] ${lastError}`);
+  }
   return { ok: true, data: row };
+}
+
+/**
+ * Re-send `domain.provision` for a domain whose provisioning never ran
+ * (queue failure at create time) or failed terminally. Refused once the
+ * identity exists (tokens stored): Re-verify covers that case.
+ */
+export async function retryProvisioning(
+  actor: TeamActor,
+  id: string,
+  deps: Pick<Deps, "enqueue">,
+): Promise<Result> {
+  if (!can(actor.role, "domains.manage")) return DENIED;
+  const d = await getDomain(actor.teamId, id);
+  if (!d) return { ok: false, error: "Domain not found." };
+  if (d.dkimTokens.length > 0)
+    return { ok: false, error: "This domain is already provisioned." };
+  await db()
+    .update(domains)
+    .set({
+      status: "pending",
+      lastError: null,
+      verifyUntil: new Date(Date.now() + VERIFY_WINDOW_MS),
+    })
+    .where(eq(domains.id, id));
+  await recordAudit({
+    teamId: actor.teamId,
+    actorUserId: actor.userId,
+    action: "domains.retry_provisioning",
+    targetType: "domain",
+    targetId: id,
+    diff: { status: { from: d.status, to: "pending" } },
+    ...actor.meta,
+  });
+  try {
+    await deps.enqueue("domain.provision", { domainId: id });
+  } catch (e) {
+    const lastError = `Could not queue provisioning: ${errMsg(e)}`;
+    await db().update(domains).set({ lastError }).where(eq(domains.id, id));
+    return { ok: false, error: lastError };
+  }
+  return { ok: true, data: undefined };
 }
 
 /**
@@ -4327,11 +4505,13 @@ export async function createDomain(
  * read back for its tokens and Cloudflare upserts by (type, name[, content]).
  * Auto mode with Cloudflare disconnected degrades to manual (records are
  * still computed for the user to add by hand). Throws after recording
- * `lastError` so pg-boss retries.
+ * `lastError` so pg-boss retries; on the handler's `finalAttempt` the
+ * domain is also marked `failed` (no more retries are coming).
  */
 export async function provisionDomain(
   domainId: string,
   deps: Deps,
+  { finalAttempt = false }: { finalAttempt?: boolean } = {},
 ): Promise<void> {
   const d = await loadById(domainId);
   if (!d) return;
@@ -4402,7 +4582,10 @@ export async function provisionDomain(
   } catch (e) {
     await db()
       .update(domains)
-      .set({ lastError: errMsg(e) })
+      .set({
+        lastError: errMsg(e),
+        ...(finalAttempt && { status: "failed" as const }),
+      })
       .where(eq(domains.id, d.id));
     throw e;
   }
@@ -4416,15 +4599,18 @@ async function setError(id: string, lastError: string) {
 }
 
 /**
- * Job: poll SES + DNS. Verified → stop; pending → re-enqueue; past the
- * window → failed. Two paths stop the loop without throwing: AWS
- * disconnected (lastError set, status untouched; Re-verify restarts it) and
- * the SES identity gone (`failed`; the user deletes and re-adds). Any other
- * SES error records `lastError` and rethrows so pg-boss retries.
+ * Job: poll SES + DNS once. Verified → done; pending → left for the next
+ * sweep; past the window → failed. It never re-enqueues itself: the
+ * `domain.verify-sweep` cron picks pending rows by `lastCheckedAt`, which
+ * every outcome below bumps. AWS disconnected sets `lastError` and leaves
+ * the status (the sweep keeps trying once per tick until reconnect or
+ * Re-verify); the SES identity gone is `failed` (the user deletes and
+ * re-adds). Any other SES error records `lastError` and rethrows so
+ * pg-boss retries.
  */
 export async function verifyDomain(
   domainId: string,
-  deps: Pick<Deps, "enqueue" | "resolver">,
+  deps: Pick<Deps, "resolver"> = {},
 ): Promise<void> {
   const d = await loadById(domainId);
   if (!d || d.status === "verified") return;
@@ -4481,23 +4667,50 @@ export async function verifyDomain(
         : null,
     })
     .where(eq(domains.id, d.id));
-  if (!verified && !expired)
-    await enqueueVerify(deps.enqueue, d.id, VERIFY_EVERY_S);
+}
+
+/**
+ * Domains the verification sweep should enqueue: pending, provisioned
+ * (tokens stored), and not checked within the last SWEEP_STALE_S. Rows past
+ * `verifyUntil` are included on purpose: the next check marks them `failed`.
+ */
+export async function selectSweepCandidates(): Promise<string[]> {
+  const rows = await db()
+    .select({ id: domains.id })
+    .from(domains)
+    .where(
+      and(
+        eq(domains.status, "pending"),
+        sql`${domains.dkimTokens} != '[]'::jsonb`,
+        or(
+          isNull(domains.lastCheckedAt),
+          lt(
+            domains.lastCheckedAt,
+            sql`now() - make_interval(secs => ${SWEEP_STALE_S})`,
+          ),
+        ),
+      ),
+    )
+    .orderBy(domains.createdAt);
+  return rows.map((r) => r.id);
 }
 
 /**
  * Manual "Re-verify": resets the window and runs one check inline so the
- * click answers right away; the check re-enqueues the loop itself if the
- * domain is still pending (the singleton key keeps it to one loop).
+ * click answers right away; while the domain stays pending the sweep keeps
+ * checking it.
  */
 export async function reverifyDomain(
   actor: TeamActor,
   id: string,
-  deps: Pick<Deps, "enqueue" | "resolver">,
+  deps: Pick<Deps, "resolver"> = {},
 ): Promise<Result> {
   if (!can(actor.role, "domains.manage")) return DENIED;
   const d = await getDomain(actor.teamId, id);
   if (!d) return { ok: false, error: "Domain not found." };
+  // Before provisioning there is no identity to check; the job will verify.
+  if (d.dkimTokens.length === 0)
+    return { ok: false, error: "Provisioning hasn't finished yet." };
   await db()
     .update(domains)
     .set({
@@ -4621,9 +4834,17 @@ registerQueue<{ domainId: string }>(
   Q.domainProvision,
   async (jobs) => {
     for (const job of jobs)
-      await provisionDomain(job.data.domainId, { enqueue });
+      await provisionDomain(
+        job.data.domainId,
+        { enqueue },
+        // pg-boss bumps retryCount on each re-fetch, so the final attempt is
+        // the one where it has reached retryLimit; that attempt's failure is
+        // terminal and marks the domain `failed` (Retry provisioning re-sends).
+        { finalAttempt: job.retryCount >= job.retryLimit },
+      );
   },
   {
+    includeMetadata: true,
     queue: {
       retryLimit: 5,
       retryDelay: 30,
@@ -4640,19 +4861,24 @@ registerQueue<{ domainId: string }>(
 import { registerQueue } from "../boss";
 import { enqueue } from "../enqueue";
 import { Q } from "../queues";
-import { verifyDomain } from "@/services/domains";
+import { selectSweepCandidates, verifyDomain } from "@/services/domains";
 
 registerQueue<{ domainId: string }>(
   Q.domainVerify,
   async (jobs) => {
-    for (const job of jobs) await verifyDomain(job.data.domainId, { enqueue });
+    for (const job of jobs) await verifyDomain(job.data.domainId);
   },
   {
     // `exclusive`: pg-boss 12 keeps one job per (queue, singletonKey) across
     // created/retry/active (unique index job_i6, `state <= 'active'`); a
     // duplicate `send` returns null. On the default `standard` policy a bare
     // singletonKey dedups nothing. Every verify send keys on the domain id,
-    // so Re-verify plus the running loop never fan out into two loops.
+    // so the sweep plus a still-queued job never fan out into two runs.
+    //
+    // That same index is why a verify job must not re-enqueue itself: while
+    // it is `active` its own key is taken and the insert is dropped, so the
+    // loop would end after one iteration. The sweep below drives the loop
+    // from outside any verify job instead.
     queue: {
       policy: "exclusive",
       retryLimit: 3,
@@ -4661,6 +4887,34 @@ registerQueue<{ domainId: string }>(
     },
   },
 );
+
+/**
+ * Cron: enqueue one `domain.verify` per pending, provisioned domain whose
+ * last check is older than ~100 s (so a 2-minute cron re-checks every
+ * tick, and a job still queued/active is deduped by the exclusive key).
+ * Expired rows stay in the set: `verifyDomain` marks them `failed` on the
+ * next run, which removes them. Exported so tests can drive it directly.
+ * Returns the number of domains enqueued.
+ */
+export async function sweepDomainVerification(): Promise<number> {
+  const ids = await selectSweepCandidates();
+  let sent = 0;
+  for (const domainId of ids) {
+    const job = await enqueue(
+      Q.domainVerify,
+      { domainId },
+      { singletonKey: domainId },
+    );
+    if (job) sent++;
+  }
+  return sent;
+}
+
+registerQueue(Q.domainVerifySweep, () => sweepDomainVerification(), {
+  cron: "*/2 * * * *",
+  // retryLimit 0: a failed sweep is simply retried by the next tick.
+  queue: { retryLimit: 0 },
+});
 ```
 
 `handlers/index.ts`: import both. pg-boss 12 `startAfter?: number | string | Date`: a number is stringified and cast to a Postgres interval, i.e. seconds — no conversion.

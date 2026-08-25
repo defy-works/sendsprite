@@ -244,6 +244,75 @@ describe("domains", () => {
     expect(res).toMatchObject({ ok: false, error: /Connect AWS/ });
     expect(await pg.db.select().from(domains)).toHaveLength(1);
   });
+  it("createDomain keeps the row when the queue is down; retryProvisioning re-sends", async () => {
+    const { createDomain, retryProvisioning } =
+      await import("@/services/domains");
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    let res;
+    try {
+      res = await createDomain(
+        actor,
+        { name: "queued.acme.com" },
+        {
+          enqueue: async () => {
+            throw new Error("pg-boss is not started");
+          },
+          fetch: cfFetch,
+        },
+      );
+    } finally {
+      err.mockRestore();
+    }
+    expect(res).toMatchObject({
+      ok: true,
+      data: {
+        status: "pending",
+        dkimTokens: [],
+        lastError: "Could not queue provisioning: pg-boss is not started",
+      },
+    });
+    if (!res.ok) return;
+    const id = res.data.id;
+    // Never provisioned, so the sweep must not pick it up.
+    const { selectSweepCandidates } = await import("@/services/domains");
+    expect(await selectSweepCandidates()).not.toContain(id);
+    const enqueue = vi.fn(async () => "job");
+    expect(
+      (await retryProvisioning({ ...actor, role: "member" }, id, { enqueue }))
+        .ok,
+    ).toBe(false);
+    expect(await retryProvisioning(actor, id, { enqueue })).toEqual({
+      ok: true,
+      data: undefined,
+    });
+    expect(enqueue).toHaveBeenCalledWith("domain.provision", { domainId: id });
+    expect(await byName("queued.acme.com")).toMatchObject({
+      status: "pending",
+      lastError: null,
+    });
+    expect(
+      await pg.db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.action, "domains.retry_provisioning")),
+    ).toHaveLength(1);
+    // The queue failing again is reported and recorded.
+    expect(
+      await retryProvisioning(actor, id, {
+        enqueue: async () => {
+          throw new Error("still down");
+        },
+      }),
+    ).toEqual({ ok: false, error: "Could not queue provisioning: still down" });
+    expect((await byName("queued.acme.com")).lastError).toMatch(/still down/);
+    // Once provisioned, Re-verify is the tool, not a second provision.
+    await pg.db
+      .update(domains)
+      .set({ dkimTokens: ["t1"] })
+      .where(eq(domains.id, id));
+    expect((await retryProvisioning(actor, id, { enqueue })).ok).toBe(false);
+    await pg.db.delete(domains).where(eq(domains.id, id));
+  });
   it("provisionDomain creates the identity, MAIL FROM, writes records to Cloudflare", async () => {
     happyProvision();
     const { provisionDomain } = await import("@/services/domains");
@@ -319,6 +388,23 @@ describe("domains", () => {
     ).rejects.toThrow(/Rate exceeded/);
     expect((await byName("mail.acme.com")).lastError).toMatch(/Rate exceeded/);
     expect(enqueue).not.toHaveBeenCalled();
+    expect((await byName("mail.acme.com")).status).toBe("pending");
+    // The handler's final attempt is terminal: the domain is marked failed.
+    await expect(
+      provisionDomain(
+        d.id,
+        { enqueue, fetch: cfFetch },
+        { finalAttempt: true },
+      ),
+    ).rejects.toThrow(/Rate exceeded/);
+    expect(await byName("mail.acme.com")).toMatchObject({
+      status: "failed",
+      lastError: /Rate exceeded/,
+    });
+    await pg.db
+      .update(domains)
+      .set({ status: "pending" })
+      .where(eq(domains.id, d.id));
   });
   it("auto mode degrades to manual when Cloudflare is disconnected mid-flight", async () => {
     const { createDomain, provisionDomain, deleteDomain } =
@@ -341,7 +427,7 @@ describe("domains", () => {
     ses.on(DeleteEmailIdentityCommand).resolves({});
     expect((await deleteDomain(actor, res.data.id, noop)).ok).toBe(true);
   });
-  it("verifyDomain flips to verified when SES + DNS agree, else re-enqueues", async () => {
+  it("verifyDomain flips to verified when SES + DNS agree", async () => {
     ses.on(GetEmailIdentityCommand).resolves({
       DkimAttributes: { Status: "SUCCESS", Tokens: ["t1", "t2", "t3"] },
       MailFromAttributes: {
@@ -363,8 +449,7 @@ describe("domains", () => {
     };
     const { verifyDomain } = await import("@/services/domains");
     const d = await byName("mail.acme.com");
-    const enqueue = vi.fn(async () => "job");
-    await verifyDomain(d.id, { enqueue, resolver });
+    await verifyDomain(d.id, { resolver });
     const after = await byName("mail.acme.com");
     expect(after).toMatchObject({
       status: "verified",
@@ -376,39 +461,47 @@ describe("domains", () => {
     });
     expect(after.verifiedAt).toBeInstanceOf(Date);
     expect(after.lastCheckedAt).toBeInstanceOf(Date);
-    expect(enqueue).not.toHaveBeenCalled();
     // Already verified: a stray re-run is a no-op.
     ses.reset();
-    await verifyDomain(d.id, { enqueue, resolver });
+    await verifyDomain(d.id, { resolver });
     expect(ses.commandCalls(GetEmailIdentityCommand)).toHaveLength(0);
   });
-  it("verifyDomain re-enqueues one keyed job while pending and fails after verifyUntil", async () => {
+  it("verifyDomain leaves a pending domain to the sweep and fails it after verifyUntil", async () => {
     ses.on(GetEmailIdentityCommand).resolves(pendingIdentity);
-    const { verifyDomain, createDomain } = await import("@/services/domains");
+    const { verifyDomain, createDomain, selectSweepCandidates } =
+      await import("@/services/domains");
     const created = await createDomain(actor, { name: "slow.acme.com" }, noop);
     if (!created.ok) throw new Error(created.error);
     const id = created.data.id;
-    const enqueue = vi.fn(async () => "job");
-    await verifyDomain(id, { enqueue, resolver: emptyDns });
-    await verifyDomain(id, { enqueue, resolver: emptyDns });
-    expect(enqueue).toHaveBeenCalledTimes(2);
-    for (const call of enqueue.mock.calls)
-      expect(call).toEqual([
-        "domain.verify",
-        { domainId: id },
-        { startAfter: 120, singletonKey: id },
-      ]);
+    // Not provisioned yet (no tokens): the sweep ignores it.
+    expect(await selectSweepCandidates()).toEqual([]);
+    await pg.db
+      .update(domains)
+      .set({ dkimTokens: ["t1", "t2", "t3"] })
+      .where(eq(domains.id, id));
+    // Never checked: due. (mail.acme.com is verified, so it stays out.)
+    expect(await selectSweepCandidates()).toEqual([id]);
+    await verifyDomain(id, { resolver: emptyDns });
+    await verifyDomain(id, { resolver: emptyDns });
     expect((await byName("slow.acme.com")).status).toBe("pending");
+    // Just checked: not due until the check is ~100 s old.
+    expect(await selectSweepCandidates()).toEqual([]);
+    await pg.db
+      .update(domains)
+      .set({ lastCheckedAt: new Date(Date.now() - 101_000) })
+      .where(eq(domains.id, id));
+    expect(await selectSweepCandidates()).toEqual([id]);
+    // Past the window it is still due, and the check fails it for good.
     await pg.db
       .update(domains)
       .set({ verifyUntil: new Date(Date.now() - 1000) })
       .where(eq(domains.id, id));
-    enqueue.mockClear();
-    await verifyDomain(id, { enqueue, resolver: emptyDns });
+    expect(await selectSweepCandidates()).toEqual([id]);
+    await verifyDomain(id, { resolver: emptyDns });
     const after = await byName("slow.acme.com");
     expect(after.status).toBe("failed");
     expect(after.lastError).toMatch(/timed out/);
-    expect(enqueue).not.toHaveBeenCalled();
+    expect(await selectSweepCandidates()).toEqual([]);
   });
   it("reverifyDomain resets the window, audits, and checks inline", async () => {
     ses.on(GetEmailIdentityCommand).resolves(pendingIdentity);
@@ -419,8 +512,7 @@ describe("domains", () => {
       .set({ dkimTokens: ["t1", "t2", "t3"] })
       .where(eq(domains.name, "slow.acme.com"));
     const d = await byName("slow.acme.com");
-    const enqueue = vi.fn(async () => "job");
-    const deps = { enqueue, resolver: emptyDns };
+    const deps = { resolver: emptyDns };
     expect(
       (await reverifyDomain({ ...actor, role: "member" }, d.id, deps)).ok,
     ).toBe(false);
@@ -435,11 +527,6 @@ describe("domains", () => {
     expect(after.verifyUntil!.getTime()).toBeGreaterThan(Date.now());
     expect(after.lastCheckedAt!.getTime()).toBeGreaterThan(
       d.lastCheckedAt!.getTime(),
-    );
-    expect(enqueue).toHaveBeenCalledWith(
-      "domain.verify",
-      { domainId: d.id },
-      { startAfter: 120, singletonKey: d.id },
     );
     expect(
       await pg.db
@@ -468,7 +555,7 @@ describe("domains", () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     ses.reset();
-    expect(await reverifyDomain(actor, res.data.id, { enqueue })).toEqual({
+    expect(await reverifyDomain(actor, res.data.id)).toEqual({
       ok: false,
       error: "Provisioning hasn't finished yet.",
     });
@@ -476,7 +563,7 @@ describe("domains", () => {
     // Later assertions list the team's domains; leave only the fixture.
     await pg.db.delete(domains).where(eq(domains.id, res.data.id));
   });
-  it("verifyDomain stops polling (no throw, no re-enqueue) when AWS is disconnected", async () => {
+  it("verifyDomain records the error without throwing when AWS is disconnected", async () => {
     const { updateInstanceSettings } =
       await import("@/services/instance-settings");
     await updateInstanceSettings({ awsMode: "none" }, undefined, {
@@ -484,12 +571,13 @@ describe("domains", () => {
     });
     const { verifyDomain } = await import("@/services/domains");
     const d = await byName("slow.acme.com");
-    const enqueue = vi.fn(async () => "job");
-    await verifyDomain(d.id, { enqueue, resolver: emptyDns });
+    await verifyDomain(d.id, { resolver: emptyDns });
     const after = await byName("slow.acme.com");
     expect(after.status).toBe("pending");
     expect(after.lastError).toMatch(/AWS is not connected/);
-    expect(enqueue).not.toHaveBeenCalled();
+    expect(after.lastCheckedAt!.getTime()).toBeGreaterThan(
+      d.lastCheckedAt!.getTime(),
+    );
     expect(ses.commandCalls(GetEmailIdentityCommand)).toHaveLength(0);
   });
   it("verifyDomain records other SES errors and rethrows for retry", async () => {
@@ -498,14 +586,12 @@ describe("domains", () => {
       .rejects(awsErr("TooManyRequestsException", "Rate exceeded"));
     const { verifyDomain } = await import("@/services/domains");
     const d = await byName("slow.acme.com");
-    const enqueue = vi.fn(async () => "job");
-    await expect(
-      verifyDomain(d.id, { enqueue, resolver: emptyDns }),
-    ).rejects.toThrow(/Rate exceeded/);
+    await expect(verifyDomain(d.id, { resolver: emptyDns })).rejects.toThrow(
+      /Rate exceeded/,
+    );
     const after = await byName("slow.acme.com");
     expect(after.status).toBe("pending");
     expect(after.lastError).toMatch(/Rate exceeded/);
-    expect(enqueue).not.toHaveBeenCalled();
   });
   it("verifyDomain fails the domain when the SES identity has vanished", async () => {
     ses
@@ -513,12 +599,10 @@ describe("domains", () => {
       .rejects(awsErr("NotFoundException", "identity not found"));
     const { verifyDomain } = await import("@/services/domains");
     const d = await byName("slow.acme.com");
-    const enqueue = vi.fn(async () => "job");
-    await verifyDomain(d.id, { enqueue, resolver: emptyDns });
+    await verifyDomain(d.id, { resolver: emptyDns });
     const after = await byName("slow.acme.com");
     expect(after.status).toBe("failed");
     expect(after.lastError).toMatch(/identity was removed/);
-    expect(enqueue).not.toHaveBeenCalled();
   });
   it("deleteDomain removes the identity and the Cloudflare records it created", async () => {
     ses.on(DeleteEmailIdentityCommand).resolves({});

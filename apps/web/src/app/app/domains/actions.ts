@@ -31,7 +31,13 @@ export async function createDomain(fd: FormData) {
 }
 
 export async function reverifyDomain(id: string) {
-  const res = await domains.reverifyDomain(await actor(), id, { enqueue });
+  const res = await domains.reverifyDomain(await actor(), id);
+  revalidatePath(`/app/domains/${id}`);
+  return res;
+}
+
+export async function retryProvisioning(id: string) {
+  const res = await domains.retryProvisioning(await actor(), id, { enqueue });
   revalidatePath(`/app/domains/${id}`);
   return res;
 }
