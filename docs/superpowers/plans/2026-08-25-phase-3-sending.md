@@ -1256,7 +1256,7 @@ Run: `cd apps/web && bun run test` → PASS. Commit `feat(web): address parsing,
 - Create: `apps/web/src/services/api-keys.ts`, `apps/web/src/lib/api-auth.ts`, `apps/web/src/lib/api-response.ts`, `apps/web/src/app/api/v1/api-keys/route.ts`, `apps/web/src/app/api/v1/api-keys/[id]/route.ts`, `apps/web/src/app/app/api-keys/{page.tsx,actions.ts,ApiKeysPanel.tsx}`
 - Test: `apps/web/tests/integration/api-keys.test.ts`
 
-- [ ] **Step 1: Failing test**
+- [x] **Step 1: Failing test**
 
 ```ts
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -1328,7 +1328,7 @@ describe("api keys", () => {
 
 Run → FAIL.
 
-- [ ] **Step 2: Service**
+- [x] **Step 2: Service**
 
 `services/api-keys.ts`:
 
@@ -1537,13 +1537,13 @@ export function withApiKey(
 }
 ```
 
-- [ ] **Step 3: REST + UI**
+- [x] **Step 3: REST + UI**
 
 `api/v1/api-keys/route.ts`: `GET` (full keys only) → `{ data: [{ id, name, permission, keyPrefix, lastUsedAt, createdAt }] }`; `POST` → `createApiKey` with a synthetic `TeamActor { userId: "api:"+key.id, teamId, teamName, role: "admin" }` → 201 `{ id, secret }`. `[id]/route.ts`: `DELETE` → revoke. Both use `withApiKey` + `requireFullPermission`.
 
 UI `/app/api-keys`: list (name, prefix `ss_live_ab12…`, permission Badge, last used, created, Revoke w/ confirm), "Create key" form (name, permission select, optional domain select) → shows the secret **once** in a `CopyField` with "Copy it now — we won't show it again". Actions gated by `can(role, "apiKeys.create"|"apiKeys.revoke")`. Add nav item already exists in `AppShell`.
 
-- [ ] **Step 4: Run, commit**
+- [x] **Step 4: Run, commit**
 
 `bun run test:integration -- api-keys` → PASS; typecheck. Commit `feat(web): API keys — service, bearer auth, REST, dashboard`.
 
