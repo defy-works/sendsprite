@@ -10,41 +10,55 @@ const bool = z
       : !["false", "0", "no", "off", ""].includes(v.toLowerCase()),
   );
 
-export const schema = z.object({
-  NODE_ENV: z
-    .enum(["development", "test", "production"])
-    .default("development"),
-  APP_URL: z.url({ error: "APP_URL must be a full URL incl. protocol" }),
-  APP_SECRET: z
-    .string()
-    .min(32, "APP_SECRET must be at least 32 characters")
-    .refine(
-      (s) => !/^change-me/i.test(s),
-      "APP_SECRET is still the placeholder",
-    ),
-  DATABASE_URL: z.string().min(1),
-  WORKER_MODE: z.enum(["inline", "separate", "none"]).default("inline"),
-  SMTP_ENABLED: bool.default(true),
-  LANDING_ENABLED: bool.default(true),
-  SIGNUP_MODE: z.enum(["auto", "open", "invite", "closed"]).default("auto"),
-  EMAIL_RETENTION_DAYS: z.coerce.number().int().min(1).default(90),
-  EMAIL_PASSWORD_ENABLED: bool.default(false),
-  GOOGLE_CLIENT_ID: z.string().optional(),
-  GOOGLE_CLIENT_SECRET: z.string().optional(),
-  GITHUB_CLIENT_ID: z.string().optional(),
-  GITHUB_CLIENT_SECRET: z.string().optional(),
-  // CloudFormation quick-create only accepts S3 template URLs.
-  CFN_TEMPLATE_URL: z
-    .url()
-    .refine(
-      isS3TemplateUrl,
-      "CFN_TEMPLATE_URL must be an S3 URL (CloudFormation quick-create only accepts S3)",
-    )
-    .default(
-      "https://sendsprite-cfn.s3.us-east-1.amazonaws.com/latest/sendsprite-connect.yaml",
-    ),
-  AWS_DEFAULT_REGION: z.enum(SES_REGIONS).default("us-east-1"),
-});
+export const schema = z
+  .object({
+    NODE_ENV: z
+      .enum(["development", "test", "production"])
+      .default("development"),
+    APP_URL: z.url({ error: "APP_URL must be a full URL incl. protocol" }),
+    APP_SECRET: z
+      .string()
+      .min(32, "APP_SECRET must be at least 32 characters")
+      .refine(
+        (s) => !/^change-me/i.test(s),
+        "APP_SECRET is still the placeholder",
+      ),
+    DATABASE_URL: z.string().min(1),
+    WORKER_MODE: z.enum(["inline", "separate", "none"]).default("inline"),
+    SMTP_ENABLED: bool.default(true),
+    SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(587),
+    // PEM file paths; both or neither (a self-signed cert is generated otherwise).
+    SMTP_TLS_CERT: z.string().min(1).optional(),
+    SMTP_TLS_KEY: z.string().min(1).optional(),
+    SMTP_MAX_SIZE: z.coerce
+      .number()
+      .int()
+      .min(1024)
+      .default(10 * 1024 * 1024),
+    LANDING_ENABLED: bool.default(true),
+    SIGNUP_MODE: z.enum(["auto", "open", "invite", "closed"]).default("auto"),
+    EMAIL_RETENTION_DAYS: z.coerce.number().int().min(1).default(90),
+    EMAIL_PASSWORD_ENABLED: bool.default(false),
+    GOOGLE_CLIENT_ID: z.string().optional(),
+    GOOGLE_CLIENT_SECRET: z.string().optional(),
+    GITHUB_CLIENT_ID: z.string().optional(),
+    GITHUB_CLIENT_SECRET: z.string().optional(),
+    // CloudFormation quick-create only accepts S3 template URLs.
+    CFN_TEMPLATE_URL: z
+      .url()
+      .refine(
+        isS3TemplateUrl,
+        "CFN_TEMPLATE_URL must be an S3 URL (CloudFormation quick-create only accepts S3)",
+      )
+      .default(
+        "https://sendsprite-cfn.s3.us-east-1.amazonaws.com/latest/sendsprite-connect.yaml",
+      ),
+    AWS_DEFAULT_REGION: z.enum(SES_REGIONS).default("us-east-1"),
+  })
+  .refine((e) => Boolean(e.SMTP_TLS_CERT) === Boolean(e.SMTP_TLS_KEY), {
+    message: "SMTP_TLS_CERT and SMTP_TLS_KEY must be set together",
+    path: ["SMTP_TLS_CERT"],
+  });
 
 export type Env = z.infer<typeof schema> & {
   providers: {

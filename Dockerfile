@@ -42,8 +42,8 @@ COPY --from=build --chown=bun:bun /app/apps/web/.next/static ./apps/web/.next/st
 COPY --from=build --chown=bun:bun /app/apps/web/public ./apps/web/public
 USER bun
 WORKDIR /app/apps/web
-# SMTP relay (587) arrives in Phase 3.
-EXPOSE 3000
+# 587 is the SMTP relay; unprivileged, so the non-root `bun` user can bind it.
+EXPOSE 3000 587
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
   CMD bun -e "fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["bun", "server.js"]

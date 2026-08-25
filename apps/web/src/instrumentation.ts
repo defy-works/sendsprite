@@ -5,6 +5,8 @@
  *    the worker (if any) is stopped gracefully first, then the process exits.
  * 2. Apply DB migrations (safe/idempotent, advisory-locked).
  * 3. Start the in-process job worker unless WORKER_MODE says otherwise.
+ * 4. Start the SMTP relay when SMTP_ENABLED: it is part of the web tier, so
+ *    it runs in every WORKER_MODE. A busy port is logged, not fatal.
  */
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
@@ -19,8 +21,24 @@ export async function register() {
   const env = loadEnv();
   await runMigrations(env.DATABASE_URL);
   console.info("[boot] migrations applied");
-  if (env.WORKER_MODE !== "inline") return;
-
-  const { startWorker } = await import("@/jobs/boss");
-  await startWorker();
+  if (env.WORKER_MODE === "inline") {
+    const { startWorker } = await import("@/jobs/boss");
+    await startWorker();
+  }
+  if (env.SMTP_ENABLED) {
+    const { startSmtp } = await import("@/smtp/server");
+    const { loadOrGenerateCert } = await import("@/smtp/tls");
+    try {
+      await startSmtp({
+        port: env.SMTP_PORT,
+        maxSize: env.SMTP_MAX_SIZE,
+        tls: await loadOrGenerateCert({
+          cert: env.SMTP_TLS_CERT,
+          key: env.SMTP_TLS_KEY,
+        }),
+      });
+    } catch (e) {
+      console.error(`[smtp] not started on ${env.SMTP_PORT}:`, e);
+    }
+  }
 }

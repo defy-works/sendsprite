@@ -129,22 +129,25 @@ does the same locally.
 
 ## Environment reference
 
-| Variable                                             | Default       | Notes                                                                      |
-| ---------------------------------------------------- | ------------- | -------------------------------------------------------------------------- |
-| `APP_URL`                                            | —             | Public URL, with protocol                                                  |
-| `APP_SECRET`                                         | —             | ≥ 32 chars; encrypts stored credentials                                    |
-| `DATABASE_URL`                                       | —             | Postgres connection string                                                 |
-| `POSTGRES_PASSWORD`                                  | —             | Compose only; alphanumeric recommended (interpolated unencoded into URL)   |
-| `SIGNUP_MODE`                                        | `auto`        | `auto` → open until first user, then invite; or `open`/`invite`/`closed`   |
-| `EMAIL_PASSWORD_ENABLED`                             | `false`       | Email + password sign-in                                                   |
-| `GOOGLE_CLIENT_ID/SECRET`, `GITHUB_CLIENT_ID/SECRET` | —             | OAuth providers                                                            |
-| `WORKER_MODE`                                        | `inline`      | `inline` / `separate` / `none`                                             |
-| `SMTP_ENABLED`                                       | `true`        | SMTP relay on 587 (Phase 3)                                                |
-| `LANDING_ENABLED`                                    | `true`        | `false` sends `/` to `/app`                                                |
-| `EMAIL_RETENTION_DAYS`                               | `90`          | Body/attachment purge window                                               |
-| `AWS_DEFAULT_REGION`                                 | `us-east-1`   | Region preselected in the AWS connect wizard                               |
-| `CFN_TEMPLATE_URL`                                   | Sendsprite S3 | S3 URL of the one-click CloudFormation template (must be S3)               |
-| `AWS_E2E_MOCK`                                       | —             | `1` swaps AWS clients for an in-memory fake; ignored in production (tests) |
+| Variable                                             | Default       | Notes                                                                       |
+| ---------------------------------------------------- | ------------- | --------------------------------------------------------------------------- |
+| `APP_URL`                                            | —             | Public URL, with protocol                                                   |
+| `APP_SECRET`                                         | —             | ≥ 32 chars; encrypts stored credentials                                     |
+| `DATABASE_URL`                                       | —             | Postgres connection string                                                  |
+| `POSTGRES_PASSWORD`                                  | —             | Compose only; alphanumeric recommended (interpolated unencoded into URL)    |
+| `SIGNUP_MODE`                                        | `auto`        | `auto` → open until first user, then invite; or `open`/`invite`/`closed`    |
+| `EMAIL_PASSWORD_ENABLED`                             | `false`       | Email + password sign-in                                                    |
+| `GOOGLE_CLIENT_ID/SECRET`, `GITHUB_CLIENT_ID/SECRET` | —             | OAuth providers                                                             |
+| `WORKER_MODE`                                        | `inline`      | `inline` / `separate` / `none`                                              |
+| `SMTP_ENABLED`                                       | `true`        | SMTP relay (username anything, password = API key)                          |
+| `SMTP_PORT`                                          | `587`         | Relay port inside the container; compose maps it to the same host port      |
+| `SMTP_TLS_CERT`, `SMTP_TLS_KEY`                      | —             | PEM paths for STARTTLS; unset → self-signed cert (clients must skip verify) |
+| `SMTP_MAX_SIZE`                                      | `10485760`    | Max message size in bytes (552 above it)                                    |
+| `LANDING_ENABLED`                                    | `true`        | `false` sends `/` to `/app`                                                 |
+| `EMAIL_RETENTION_DAYS`                               | `90`          | Body/attachment purge window                                                |
+| `AWS_DEFAULT_REGION`                                 | `us-east-1`   | Region preselected in the AWS connect wizard                                |
+| `CFN_TEMPLATE_URL`                                   | Sendsprite S3 | S3 URL of the one-click CloudFormation template (must be S3)                |
+| `AWS_E2E_MOCK`                                       | —             | `1` swaps AWS clients for an in-memory fake; ignored in production (tests)  |
 
 Settings → Instance can override two of these: `SIGNUP_MODE=auto` defers to the
 signup mode saved there (an explicit env value wins), and `LANDING_ENABLED` is

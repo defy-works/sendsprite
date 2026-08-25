@@ -14,6 +14,9 @@ const nextConfig: NextConfig = {
     "@aws-sdk/client-sesv2",
     "@aws-sdk/client-sns",
     "@aws-sdk/client-sts",
+    "smtp-server",
+    "mailparser",
+    "selfsigned",
   ],
 };
 

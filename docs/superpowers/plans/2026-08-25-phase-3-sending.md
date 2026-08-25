@@ -3415,7 +3415,7 @@ Common: `withApiKey`; body via `await req.json().catch(() => null)`; `fail("vali
 - Modify: `apps/web/src/instrumentation.ts`, `apps/web/src/jobs/shutdown.ts` (stop SMTP), `apps/web/src/env.schema.ts` (`SMTP_PORT` default 587, `SMTP_TLS_CERT`/`SMTP_TLS_KEY` optional paths, `SMTP_MAX_SIZE` default 10 MB), `Dockerfile` (`EXPOSE 3000 587`), `docker-compose.yml` (port 587), `apps/web/next.config.ts` (`serverExternalPackages` += `smtp-server`, `mailparser`, `selfsigned`)
 - Test: `apps/web/tests/integration/smtp.test.ts` (uses `nodemailer` as a client)
 
-- [ ] **Step 1: Failing test**
+- [x] **Step 1: Failing test**
 
 ```ts
 import nodemailer from "nodemailer";
@@ -3470,7 +3470,7 @@ describe("SMTP relay", () => {
 
 Run → FAIL.
 
-- [ ] **Step 2: Implement**
+- [x] **Step 2: Implement**
 
 `smtp/tls.ts`: `loadOrGenerateCert(): { key: string; cert: string }` — reads `SMTP_TLS_CERT/KEY` files if set, else `selfsigned.generate([{ name: "commonName", value: hostname }], { days: 3650, keySize: 2048 })` cached in memory (comment: self-signed → clients must disable verification; production should mount real certs).
 
@@ -3542,7 +3542,9 @@ export async function stopSmtp() {
 
 `smtp/inbound.ts`: `simpleParser(stream)` → `createEmail({ teamId, source: "smtp", apiKeyId, actorUserId: null, keyDomainId }, { from: parsed.from.text, to: parsed.to addresses (fallback to envelope rcptTo), cc, replyTo, subject, html: parsed.html || undefined, text: parsed.text, headers: filtered custom X-* headers, attachments: parsed.attachments.map(base64) }, { enqueue })`; map `SendFailure` codes to SMTP responses: `domain_not_verified` → 550, `suppressed_recipient` → 550, `validation_error` → 501, `daily_quota_exceeded`/`rate_limited` → 452, else 451; `stream.sizeExceeded` → 552. `instrumentation.ts`: after worker start, if `env.SMTP_ENABLED` and `NEXT_RUNTIME==="nodejs"`, `startSmtp({ port: env.SMTP_PORT, tls: cert files or "selfsigned" })`; `shutdown.ts` calls `stopSmtp()`. Dockerfile `EXPOSE 3000 587`; compose `- "${SMTP_PORT:-587}:587"` (remove the Phase-2 comment). Note the container runs as non-root `bun`; 587 is unprivileged, fine.
 
-- [ ] **Step 3: Run, commit** → `feat(web): SMTP relay on 587 (API key auth, STARTTLS, mailparser → send pipeline)`.
+- [x] **Step 3: Run, commit** → `feat(web): SMTP relay on 587 (API key auth, STARTTLS, mailparser → send pipeline)`.
+
+As shipped: `loadOrGenerateCert` is async (selfsigned 5 is promise-only, `notAfterDate` instead of `days`); `server.ts` adds a per-process login throttle (5 failures / 10 min per remote address → 535 "Too many failed logins" for 10 min); `monthly_quota_exceeded` → 452 and `forbidden` → 550 join the mapping; body-less MIME → 501; compose maps `${SMTP_PORT:-587}` on both sides because `.env` is passed through to the container; `instrumentation.ts` starts the relay in every `WORKER_MODE` and only logs on a listen error (e.g. EADDRINUSE).
 
 ---
 

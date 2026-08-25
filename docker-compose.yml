@@ -4,7 +4,8 @@ services:
     build: .
     ports:
       - "${APP_PORT:-3000}:3000"
-      # SMTP relay (587) arrives in Phase 3.
+      # .env is passed through, so the relay listens on SMTP_PORT inside too.
+      - "${SMTP_PORT:-587}:${SMTP_PORT:-587}"
     env_file: .env
     environment:
       DATABASE_URL: postgres://sendsprite:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/sendsprite
