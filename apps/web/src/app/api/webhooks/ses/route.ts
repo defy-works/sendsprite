@@ -3,6 +3,8 @@ import { ConfirmSubscriptionCommand } from "@aws-sdk/client-sns";
 import { makeSns } from "@/lib/aws/clients";
 import { resolveAwsContext } from "@/lib/aws/credentials";
 import { verifySnsMessage } from "@/lib/sns-message";
+import { enqueue } from "@/jobs/enqueue";
+import { ingestSesEvent } from "@/services/ingest";
 import {
   getInstanceSettings,
   updateInstanceSettings,
@@ -65,8 +67,9 @@ async function confirmSubscription(msg: {
 }
 
 /**
- * SNS → Sendsprite. Phase 2: verify signature, confirm subscription, ack.
- * Phase 3 replaces the Notification branch with event ingestion.
+ * SNS → Sendsprite: verify signature, confirm subscription, ingest events.
+ * Notifications are always acknowledged (200): SNS would otherwise retry a
+ * message we can never process, so non-ok outcomes are logged instead.
  */
 export async function POST(req: Request) {
   if (Number(req.headers.get("content-length") ?? 0) > MAX_BODY_BYTES)
@@ -108,6 +111,15 @@ export async function POST(req: Request) {
     });
     return NextResponse.json({ ok: true });
   }
-  console.info("[ses] notification", msg.MessageId); // Phase 3: enqueue ses.ingest
+  let event: unknown;
+  try {
+    event = JSON.parse(msg.Message);
+  } catch {
+    console.warn("[ses] notification is not JSON", msg.MessageId);
+    return NextResponse.json({ ok: true });
+  }
+  const r = await ingestSesEvent(event, msg.MessageId, { enqueue });
+  if (!r.ok)
+    console.warn("[ses] notification ignored", msg.MessageId, r.reason);
   return NextResponse.json({ ok: true });
 }

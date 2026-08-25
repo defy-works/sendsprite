@@ -2792,7 +2792,7 @@ On the final failed attempt (I3 pattern from Phase 2: `includeMetadata`), mark t
 - Modify: `apps/web/src/app/api/webhooks/ses/route.ts` (Notification branch), `apps/web/src/jobs/queues.ts`
 - Test: `apps/web/tests/integration/ses-ingest.test.ts`
 
-- [ ] **Step 1: Failing test**
+- [x] **Step 1: Failing test**
 
 ```ts
 describe("ingestSesEvent", () => {
@@ -2833,7 +2833,7 @@ describe("ingestSesEvent", () => {
 
 Run → FAIL.
 
-- [ ] **Step 2: Implement**
+- [x] **Step 2: Implement**
 
 `services/ingest.ts`:
 
@@ -2924,7 +2924,7 @@ export const publicEmail = (e: typeof emails.$inferSelect) => ({
 
 `fanOutEvent` is defined in Task 10 — implement Task 10's `services/webhooks.ts` `fanOutEvent` stub first if working strictly in order (a no-op returning `[]` is acceptable until Task 10 fills it in; the test above asserts fan-out, so do Task 10's service before finishing this test, or write the stub + test expecting the stub and update in Task 10). Route change: in `api/webhooks/ses/route.ts` Notification branch, `JSON.parse(msg.Message)` → `ingestSesEvent(parsed, msg.MessageId, { enqueue })`; always 200 (log non-ok reasons). Also `sent` from local send and `Send` from SES both exist — the SNS one dedupes by `sns:` key and `recordEvent` rank logic keeps status `sent`.
 
-- [ ] **Step 3: Run, commit** → `feat(web): SES event ingestion — attribution, idempotent events, suppressions, fan-out`.
+- [x] **Step 3: Run, commit** → `feat(web): SES event ingestion — attribution, idempotent events, suppressions, fan-out`.
 
 ---
 

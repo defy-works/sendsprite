@@ -206,7 +206,7 @@ describe("POST /api/webhooks/ses", () => {
     expect(actual.status).toBe(413);
   });
 
-  it("acknowledges notifications (processing lands in Phase 3)", async () => {
+  it("acknowledges notifications it cannot ingest", async () => {
     const res = await post({
       Type: "Notification",
       TopicArn: TOPIC,
