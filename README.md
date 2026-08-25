@@ -139,7 +139,8 @@ does the same locally.
 | `EMAIL_PASSWORD_ENABLED`                             | `false`       | Email + password sign-in                                                    |
 | `GOOGLE_CLIENT_ID/SECRET`, `GITHUB_CLIENT_ID/SECRET` | —             | OAuth providers                                                             |
 | `WORKER_MODE`                                        | `inline`      | `inline` / `separate` / `none`                                              |
-| `SMTP_ENABLED`                                       | `true`        | SMTP relay (username anything, password = API key)                          |
+| `SMTP_ENABLED`                                       | `true`        | SMTP relay (username anything, password = API key); AUTH requires STARTTLS  |
+| `SMTP_ALLOW_INSECURE_AUTH`                           | `false`       | Dev only: accept AUTH on a plain connection (the API key travels in clear)  |
 | `SMTP_PORT`                                          | `587`         | Relay port inside the container; compose maps it to the same host port      |
 | `SMTP_TLS_CERT`, `SMTP_TLS_KEY`                      | —             | PEM paths for STARTTLS; unset → self-signed cert (clients must skip verify) |
 | `SMTP_MAX_SIZE`                                      | `10485760`    | Max message size in bytes (552 above it)                                    |
@@ -148,6 +149,11 @@ does the same locally.
 | `AWS_DEFAULT_REGION`                                 | `us-east-1`   | Region preselected in the AWS connect wizard                                |
 | `CFN_TEMPLATE_URL`                                   | Sendsprite S3 | S3 URL of the one-click CloudFormation template (must be S3)                |
 | `AWS_E2E_MOCK`                                       | —             | `1` swaps AWS clients for an in-memory fake; ignored in production (tests)  |
+
+SMTP login throttling is per remote IP (5 failed logins → 10 minute lockout)
+and per process. Behind a proxy or load balancer that does not speak PROXY
+protocol, every client arrives from the proxy's address and shares one
+counter, so expose 587 directly or terminate it on the app container.
 
 Settings → Instance can override two of these: `SIGNUP_MODE=auto` defers to the
 signup mode saved there (an explicit env value wins), and `LANDING_ENABLED` is

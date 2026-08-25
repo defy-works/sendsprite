@@ -1,15 +1,21 @@
+import { PassThrough } from "node:stream";
 import { simpleParser, type AddressObject } from "mailparser";
 import type { SMTPServerDataStream, SMTPServerSession } from "smtp-server";
 import type { ErrorCode } from "@sendsprite/shared";
-import { formatAddress } from "@/lib/email-address";
+import { formatAddress, normaliseEmail } from "@/lib/email-address";
 import { enqueue } from "@/jobs/enqueue";
 import { createEmail } from "@/services/emails";
 
-/** Stored on the session by `onAuth`; smtp-server types `user` as a string. */
+/** Set on the session by `onAuth` (smtp-server's own `user` is a string). */
 export interface SmtpUser {
   teamId: string;
   apiKeyId: string;
   keyDomainId: string | null;
+}
+declare module "smtp-server" {
+  interface SMTPServerSession {
+    smtpUser?: SmtpUser;
+  }
 }
 
 export class SmtpError extends Error {
@@ -49,6 +55,41 @@ const addresses = (a: AddressObject | AddressObject[] | undefined) =>
     .filter((x): x is string => Boolean(x));
 
 /**
+ * Bounded copy of the DATA stream for the parser. smtp-server flags
+ * `sizeExceeded` as bytes arrive; from that chunk on nothing more is handed
+ * to the parser, the input is drained (`resume`) so the client's DATA ends
+ * and the 552 can be sent, and `body` is destroyed so the parser stops. The
+ * parser therefore never holds more than the size limit.
+ */
+export function boundedBody(stream: SMTPServerDataStream): {
+  body: PassThrough;
+  exceeded: Promise<never>;
+} {
+  const body = new PassThrough();
+  let rejectExceeded!: (e: Error) => void;
+  const exceeded = new Promise<never>((_, rej) => (rejectExceeded = rej));
+  exceeded.catch(() => undefined);
+  const onChunk = (chunk: Buffer) => {
+    if (stream.sizeExceeded) {
+      stream.off("data", onChunk);
+      const err = new SmtpError("Message too large", 552);
+      body.destroy(err);
+      rejectExceeded(err);
+      stream.resume();
+      return;
+    }
+    if (!body.write(chunk)) {
+      stream.pause();
+      body.once("drain", () => stream.resume());
+    }
+  };
+  stream.on("data", onChunk);
+  stream.once("end", () => body.end());
+  stream.once("error", (e) => body.destroy(e));
+  return { body, exceeded };
+}
+
+/**
  * DATA → `createEmail` with `source: "smtp"`. Message headers become the
  * request fields the REST API takes, so every limit and refusal is shared:
  * a `SendFailure` is mapped to an SMTP reply and thrown as `SmtpError`.
@@ -57,17 +98,25 @@ export async function handleInbound(
   stream: SMTPServerDataStream,
   session: SMTPServerSession,
 ): Promise<void> {
-  const user = session.user as unknown as SmtpUser | undefined;
+  const user = session.smtpUser;
   if (!user) throw new SmtpError("Authentication required", 530);
-  const parsed = await simpleParser(stream);
-  // Set only once the stream has been consumed.
-  if (stream.sizeExceeded) throw new SmtpError("Message too large", 552);
+  const { body, exceeded } = boundedBody(stream);
+  const parsed = await Promise.race([simpleParser(body), exceeded]);
 
   const from = parsed.from?.value[0];
   if (!from?.address) throw new SmtpError("From header required", 501);
   if (!parsed.html && !parsed.text)
     throw new SmtpError("html or text body required", 501);
-  const to = addresses(parsed.to);
+  const headerTo = addresses(parsed.to);
+  const envelope = session.envelope.rcptTo.map((r) => r.address);
+  // Header recipients when present, else the envelope (Bcc-only sends).
+  const to = headerTo.length ? headerTo : envelope;
+  const cc = addresses(parsed.cc);
+  // Bcc never appears in the headers: it is what the envelope adds.
+  const visible = new Set([...to, ...cc].map(normaliseEmail));
+  const bcc = [
+    ...new Set(envelope.map(normaliseEmail).filter((e) => !visible.has(e))),
+  ];
   const headers: Record<string, string> = {};
   for (const { key, line } of parsed.headerLines) {
     if (!isCustomHeader(key)) continue;
@@ -94,11 +143,11 @@ export async function handleInbound(
     },
     {
       from: formatAddress({ name: from.name || null, email: from.address }),
-      // Header recipients when present, else the envelope (Bcc-only sends).
-      to: to.length ? to : session.envelope.rcptTo.map((r) => r.address),
-      cc: addresses(parsed.cc),
+      to,
+      cc,
+      bcc,
       replyTo: addresses(parsed.replyTo),
-      subject: parsed.subject ?? "",
+      subject: parsed.subject || "(no subject)",
       html: parsed.html || undefined,
       text: parsed.text || undefined,
       headers,

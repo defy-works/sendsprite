@@ -26,6 +26,8 @@ export const schema = z
     DATABASE_URL: z.string().min(1),
     WORKER_MODE: z.enum(["inline", "separate", "none"]).default("inline"),
     SMTP_ENABLED: bool.default(true),
+    // AUTH on a plain (pre-STARTTLS) connection. Dev only: the API key travels in clear.
+    SMTP_ALLOW_INSECURE_AUTH: bool.default(false),
     SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(587),
     // PEM file paths; both or neither (a self-signed cert is generated otherwise).
     SMTP_TLS_CERT: z.string().min(1).optional(),

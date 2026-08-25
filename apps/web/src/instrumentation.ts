@@ -6,7 +6,8 @@
  * 2. Apply DB migrations (safe/idempotent, advisory-locked).
  * 3. Start the in-process job worker unless WORKER_MODE says otherwise.
  * 4. Start the SMTP relay when SMTP_ENABLED: it is part of the web tier, so
- *    it runs in every WORKER_MODE. A busy port is logged, not fatal.
+ *    it runs in every WORKER_MODE. A busy port is logged, not fatal; a bad
+ *    SMTP_TLS_CERT/KEY path is a configuration error and aborts boot.
  */
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
@@ -28,17 +29,22 @@ export async function register() {
   if (env.SMTP_ENABLED) {
     const { startSmtp } = await import("@/smtp/server");
     const { loadOrGenerateCert } = await import("@/smtp/tls");
+    const tls = await loadOrGenerateCert({
+      cert: env.SMTP_TLS_CERT,
+      key: env.SMTP_TLS_KEY,
+    });
     try {
       await startSmtp({
         port: env.SMTP_PORT,
         maxSize: env.SMTP_MAX_SIZE,
-        tls: await loadOrGenerateCert({
-          cert: env.SMTP_TLS_CERT,
-          key: env.SMTP_TLS_KEY,
-        }),
+        allowInsecureAuth: env.SMTP_ALLOW_INSECURE_AUTH,
+        tls,
       });
     } catch (e) {
-      console.error(`[smtp] not started on ${env.SMTP_PORT}:`, e);
+      if ((e as { code?: string })?.code !== "EADDRINUSE") throw e;
+      console.error(
+        `[smtp] port ${env.SMTP_PORT} is in use; relay not started`,
+      );
     }
   }
 }

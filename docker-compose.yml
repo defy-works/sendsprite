@@ -41,6 +41,8 @@ services:
     environment:
       DATABASE_URL: postgres://sendsprite:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/sendsprite
       WORKER_MODE: inline
+      # The relay belongs to the web tier; `app` already publishes it.
+      SMTP_ENABLED: "false"
     depends_on:
       db:
         condition: service_healthy

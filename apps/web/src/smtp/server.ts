@@ -1,18 +1,22 @@
 import { SMTPServer } from "smtp-server";
 import { authenticateSecret } from "@/lib/api-auth";
-import { handleInbound, SmtpError, type SmtpUser } from "./inbound";
+import { handleInbound, SmtpError } from "./inbound";
 import { loadOrGenerateCert, type TlsPem } from "./tls";
 
 let server: SMTPServer | undefined;
 
 /**
- * Login throttle: after MAX_FAILURES bad passwords from one address within
- * WINDOW_MS, AUTH from that address is refused for LOCK_MS. The map is per
- * process (not shared across replicas) and entries are pruned on lookup.
+ * Login throttle: after MAX_FAILURES bad passwords from one remote address
+ * within WINDOW_MS, AUTH from that address is refused for LOCK_MS. Per
+ * process (not shared across replicas); keyed by the socket's peer address,
+ * so behind a proxy/LB without PROXY protocol every client shares one
+ * entry. Expired entries are pruned on lookup and the map is capped at
+ * MAX_ENTRIES (oldest evicted) so a scan cannot grow it without bound.
  */
 const MAX_FAILURES = 5;
 const WINDOW_MS = 10 * 60_000;
 const LOCK_MS = 10 * 60_000;
+const MAX_ENTRIES = 10_000;
 const failures = new Map<string, { count: number; until: number }>();
 
 function lockedOut(ip: string, now = Date.now()) {
@@ -23,6 +27,9 @@ function lockedOut(ip: string, now = Date.now()) {
 function recordFailure(ip: string, now = Date.now()) {
   const f = failures.get(ip);
   const count = f && f.until > now ? f.count + 1 : 1;
+  failures.delete(ip); // re-insert so insertion order tracks recency
+  while (failures.size >= MAX_ENTRIES)
+    failures.delete(failures.keys().next().value!);
   failures.set(ip, {
     count,
     until: now + (count >= MAX_FAILURES ? LOCK_MS : WINDOW_MS),
@@ -46,12 +53,15 @@ export interface SmtpOptions {
   /** PEM material, or generate a self-signed pair (default). */
   tls?: "selfsigned" | TlsPem;
   maxSize?: number;
+  /** Accept AUTH on a plain connection (dev only; default false). */
+  allowInsecureAuth?: boolean;
 }
 
 /**
  * Submission relay: plain on `port` with STARTTLS offered; AUTH PLAIN/LOGIN
- * where the password is an API key (username ignored). Accepted messages go
- * through `createEmail` like a REST send. Rejects on the listen error (e.g.
+ * where the password is an API key (username ignored), accepted only after
+ * STARTTLS unless `allowInsecureAuth`. Accepted messages go through
+ * `createEmail` like a REST send. Rejects on the listen error (e.g.
  * EADDRINUSE); the caller decides whether that is fatal.
  */
 export async function startSmtp(opts: SmtpOptions): Promise<void> {
@@ -63,11 +73,14 @@ export async function startSmtp(opts: SmtpOptions): Promise<void> {
   const s = new SMTPServer({
     banner: "Sendsprite SMTP relay",
     size: opts.maxSize ?? 10 * 1024 * 1024,
+    maxClients: 50,
+    // `close()` ends idle connections at once and gives busy ones 5 s, so
+    // shutdown stays well inside Docker's 10 s SIGTERM grace.
+    closeTimeout: 5000,
     secure: false,
     key: tls.key,
     cert: tls.cert,
-    // AUTH before STARTTLS stays allowed: local/dev clients often skip TLS.
-    allowInsecureAuth: true,
+    allowInsecureAuth: opts.allowInsecureAuth ?? false,
     authMethods: ["PLAIN", "LOGIN"],
     disableReverseLookup: true,
     onAuth(auth, session, cb) {
@@ -79,12 +92,12 @@ export async function startSmtp(opts: SmtpOptions): Promise<void> {
             recordFailure(ip);
             return cb(reply("Invalid API key", 535));
           }
-          const user: SmtpUser = {
+          session.smtpUser = {
             teamId: a.team.id,
             apiKeyId: a.key.id,
             keyDomainId: a.key.domainId,
           };
-          cb(null, { user: user as unknown as string });
+          cb(null, { user: a.key.id });
         },
         (e: unknown) => {
           console.error("[smtp] auth", e);
