@@ -5,7 +5,9 @@ import {
 } from "@sendsprite/shared";
 import {
   isSubscriptionType,
+  subscriptionDefect,
   SUBSCRIPTION_TYPES,
+  WEBHOOK_TOLERANCE_SECONDS,
   type BillingProvider,
   type PlanProduct,
   type ProviderSubscription,
@@ -135,30 +137,69 @@ export interface FakeSubscriptionInput {
 }
 
 export interface FakeProvider extends BillingProvider {
-  /** Units ingested per external customer, summed. */
+  /** Units ingested per external customer, summed — i.e. units *consumed*. */
   readonly ingested: Map<string, number>;
   /** Every `externalId` seen, in order. */
   readonly ingestedIds: string[];
+  /** Whether `ready()` has been awaited. Asserts the factory warms it. */
+  readonly readied: boolean;
   /** Build a signed payload the way the real provider would. */
   signSubscriptionEvent(type: string, sub: FakeSubscriptionInput): SignedEvent;
   signOrderPaidEvent(input: {
     subscriptionId: string | null;
     externalCustomerId: string | null;
+    /**
+     * When the order was paid; defaults to now. A *past* value is what stages
+     * the replay the past-due grace guard has to refuse — without it that
+     * branch can only be reached by hand-building a verified event.
+     */
+    paidAt?: Date;
     deliveryId?: string;
   }): SignedEvent;
   /** Sign an arbitrary body — for malformed-payload and unknown-type tests. */
   signRaw(body: string, deliveryId?: string): SignedEvent;
-  /** Make exactly the next provider call reject (outage tests). */
+  /**
+   * Grant metered credits to a customer, the way a plan's benefit does at the
+   * start of a cycle. `meterBalance` reports these minus units ingested.
+   */
+  credit(externalCustomerId: string, units: number): void;
+  /**
+   * Model `POLAR_METER_ID` being unset: `meterBalance` then reports nothing at
+   * all, for any customer.
+   */
+  setMeterConfigured(configured: boolean): void;
+  /**
+   * Make exactly the next provider call reject (outage tests). `meterBalance`
+   * is the exception — it consumes the failure and reports `null`, because the
+   * real provider swallows its own errors rather than break the billing page.
+   */
   failNext(message: string): void;
 }
 
 const MONTH_MS = 30 * 24 * 3600 * 1000;
 
+/** A payload's `paidAt`, falling back to now when absent or unreadable. */
+const paidAtOf = (value: unknown): Date => {
+  if (typeof value !== "string") return new Date();
+  const at = new Date(value);
+  return Number.isNaN(at.getTime()) ? new Date() : at;
+};
+
 export function createFakeProvider(): FakeProvider {
   const ingested = new Map<string, number>();
+  const credited = new Map<string, number>();
   const ingestedIds: string[] = [];
   const seen = new Set<string>();
   let failure: string | null = null;
+  let meterConfigured = true;
+  let readied = false;
+
+  /** Consume a pending failure without throwing. */
+  const swallow = () => {
+    const pending = failure !== null;
+    failure = null;
+    return pending;
+  };
 
   const boom = () => {
     if (failure === null) return;
@@ -190,6 +231,18 @@ export function createFakeProvider(): FakeProvider {
     id: "fake",
     ingested,
     ingestedIds,
+    get readied() {
+      return readied;
+    },
+
+    /**
+     * A no-op, but a real one: the factory must await `ready?.()` on every
+     * provider it builds, and this is what lets that be asserted instead of
+     * spied on.
+     */
+    async ready() {
+      readied = true;
+    },
 
     async listPlanProducts() {
       boom();
@@ -216,6 +269,20 @@ export function createFakeProvider(): FakeProvider {
       const sig = headers.get("webhook-signature");
       if (!id || !timestamp || !sig)
         return { ok: false, reason: "missing signature headers" };
+
+      // Standard Webhooks verifies the timestamp *before* the signature, and
+      // refuses anything outside the tolerance in either direction. Without
+      // this the fake accepts replays the real provider rejects, and the
+      // Polar-side replay-window test has no counterpart.
+      const sentAt = Number.parseInt(timestamp, 10);
+      if (Number.isNaN(sentAt))
+        return { ok: false, reason: "invalid signature headers" };
+      const skew = Math.floor(Date.now() / 1000) - sentAt;
+      if (skew > WEBHOOK_TOLERANCE_SECONDS)
+        return { ok: false, reason: "message timestamp too old" };
+      if (skew < -WEBHOOK_TOLERANCE_SECONDS)
+        return { ok: false, reason: "message timestamp too new" };
+
       const expected = Buffer.from(sign(id, timestamp, body));
       const given = Buffer.from(sig);
       if (expected.length !== given.length || !timingSafeEqual(expected, given))
@@ -272,6 +339,16 @@ export function createFakeProvider(): FakeProvider {
           plan: planFromProductMetadata(metadata),
           claimsPlan: claimsPlanMetadata(metadata),
         };
+        // The real provider's SDK refuses a payload missing any of these, so
+        // the fake must too: handing back `subscriptionId: undefined` and
+        // three `Invalid Date`s is exactly the delivery Polar rejects, and a
+        // caller tested only against the fake would never see the refusal.
+        const defect = subscriptionDefect(subscription);
+        if (defect)
+          return {
+            ok: false,
+            reason: `unparseable subscription payload: ${defect}`,
+          };
         return {
           ok: true,
           event: { kind: "subscription", deliveryId: id, type, subscription },
@@ -286,7 +363,10 @@ export function createFakeProvider(): FakeProvider {
             type,
             subscriptionId: (data.subscriptionId as string) ?? null,
             externalCustomerId: (data.externalCustomerId as string) ?? null,
-            paidAt: new Date(),
+            // A payload may carry when it was paid, the way a real one does,
+            // so a test can replay an *older* order and drive the past-due
+            // grace guard into its refusing branch.
+            paidAt: paidAtOf(data.paidAt),
           },
         };
       // A subscription-shaped type nobody models is refused rather than
@@ -317,8 +397,35 @@ export function createFakeProvider(): FakeProvider {
       return { inserted, duplicates };
     },
 
+    /**
+     * Credited minus consumed, counting *down* — the same sense as Polar's
+     * `CustomerMeter.balance`, and the opposite of the cumulative total this
+     * used to return. A widget built against the old behaviour rendered the
+     * right number in tests and the wrong one in production.
+     *
+     * `null` covers all three ways the real one reports nothing: no meter
+     * configured, no meter row for that customer, and a failed call — which
+     * is why this consumes a pending `failNext` instead of throwing. The
+     * interface promises `meterBalance` never throws.
+     */
     async meterBalance(externalCustomerId) {
-      return ingested.get(externalCustomerId) ?? 0;
+      if (swallow()) return null;
+      if (!meterConfigured) return null;
+      const credits = credited.get(externalCustomerId);
+      const consumed = ingested.get(externalCustomerId);
+      if (credits === undefined && consumed === undefined) return null;
+      return (credits ?? 0) - (consumed ?? 0);
+    },
+
+    credit(externalCustomerId, units) {
+      credited.set(
+        externalCustomerId,
+        (credited.get(externalCustomerId) ?? 0) + units,
+      );
+    },
+
+    setMeterConfigured(configured) {
+      meterConfigured = configured;
     },
 
     signSubscriptionEvent(type, sub) {
@@ -341,7 +448,13 @@ export function createFakeProvider(): FakeProvider {
 
     signOrderPaidEvent(input) {
       return signed(
-        { type: "order.paid", data: input },
+        {
+          type: "order.paid",
+          data: {
+            ...input,
+            paidAt: (input.paidAt ?? new Date()).toISOString(),
+          },
+        },
         input.deliveryId ?? randomUUID(),
       );
     },

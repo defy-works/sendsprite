@@ -5,6 +5,7 @@ import { SUBSCRIPTION_STATUSES } from "@sendsprite/shared";
 import {
   BillingUnavailableError,
   isSubscriptionType,
+  subscriptionDefect,
   SUBSCRIPTION_TYPES,
 } from "@/services/billing/provider";
 import {
@@ -73,6 +74,44 @@ describe("SUBSCRIPTION_TYPES", () => {
     for (const t of SUBSCRIPTION_TYPES)
       expect(isSubscriptionType(t)).toBe(true);
     expect(isSubscriptionType("order.paid")).toBe(false);
+  });
+});
+
+describe("subscriptionDefect", () => {
+  // The invariant both implementations enforce: Polar gets it from its SDK's
+  // schema, the fake has to be told, and this is the one definition of it.
+  const usable = normalisePolarSubscription({
+    id: "sub_1",
+    customerId: "cus_1",
+    productId: PRO_PRODUCT.id,
+    status: "active",
+    currentPeriodStart: new Date("2026-08-01T00:00:00Z"),
+    currentPeriodEnd: new Date("2026-09-01T00:00:00Z"),
+    cancelAtPeriodEnd: false,
+    createdAt: new Date("2026-07-01T00:00:00Z"),
+    product: PRO_PRODUCT,
+  });
+
+  it("passes a normalised subscription", () => {
+    expect(subscriptionDefect(usable)).toBeNull();
+  });
+
+  it("names the missing identifier or the unreadable date", () => {
+    expect(subscriptionDefect({ ...usable, subscriptionId: "" })).toBe(
+      "missing subscriptionId",
+    );
+    expect(subscriptionDefect({ ...usable, productId: "" })).toBe(
+      "missing productId",
+    );
+    expect(subscriptionDefect({ ...usable, status: "" })).toBe(
+      "missing status",
+    );
+    expect(
+      subscriptionDefect({ ...usable, currentPeriodEnd: new Date("nope") }),
+    ).toBe("invalid currentPeriodEnd");
+    expect(
+      subscriptionDefect({ ...usable, modifiedAt: new Date("nope") }),
+    ).toBe("invalid modifiedAt");
   });
 });
 

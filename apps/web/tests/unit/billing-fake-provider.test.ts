@@ -1,5 +1,20 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { createHmac } from "node:crypto";
 import { createFakeProvider, type FakeProvider } from "@/services/billing/fake";
+
+/**
+ * Re-sign a body for an arbitrary timestamp. The fake's signer always stamps
+ * `now`, so a skew test has to reach for the same HMAC it uses.
+ */
+function signHeaderFor(
+  deliveryId: string,
+  timestamp: string,
+  body: string,
+): string {
+  return createHmac("sha256", "fake-billing-secret")
+    .update(`${deliveryId}.${timestamp}.${body}`)
+    .digest("hex");
+}
 
 let p: FakeProvider;
 beforeEach(() => {
@@ -252,6 +267,120 @@ describe("fake billing provider", () => {
     expect(r.reason).toMatch(/subscription\.trialing/);
   });
 
+  it("refuses a malformed subscription payload, the way the SDK does", () => {
+    // Polar's SDK refuses this delivery outright. Before, the fake returned
+    // `ok: true` with `subscriptionId: undefined` and three `Invalid Date`s,
+    // so anything tested only against the fake never met the refusal.
+    for (const data of [
+      {},
+      { subscriptionId: "", productId: "prod_pro", status: "active" },
+      { subscriptionId: "sub_1", productId: "prod_pro" },
+      {
+        subscriptionId: "sub_1",
+        productId: "prod_pro",
+        status: "active",
+        currentPeriodStart: "not-a-date",
+        currentPeriodEnd: "2026-09-01T00:00:00.000Z",
+        modifiedAt: "2026-08-01T00:00:00.000Z",
+      },
+    ]) {
+      const e = p.signRaw(
+        JSON.stringify({ type: "subscription.updated", data }),
+      );
+      const r = p.verifyWebhook(e.body, e.headers);
+      expect(r.ok).toBe(false);
+      if (r.ok) throw new Error("unreachable");
+      expect(r.reason).toMatch(/unparseable subscription payload/);
+    }
+  });
+
+  it("refuses a delivery outside the replay window, in both directions", () => {
+    const stale = (offsetSeconds: number) => {
+      const body = JSON.stringify({ type: "order.paid", data: {} });
+      const timestamp = String(Math.floor(Date.now() / 1000) - offsetSeconds);
+      // Signed correctly for that timestamp: only its age is wrong.
+      const id = "dlv_skew";
+      const signed = p.signRaw(body, id);
+      const headers = new Headers({
+        "webhook-id": id,
+        "webhook-timestamp": timestamp,
+        "webhook-signature": signHeaderFor(id, timestamp, body),
+      });
+      return p.verifyWebhook(signed.body, headers);
+    };
+    expect(stale(3600).ok).toBe(false);
+    expect(stale(-3600).ok).toBe(false);
+    // Inside the tolerance it still verifies.
+    expect(stale(60).ok).toBe(true);
+  });
+
+  it("stamps order.paid with the payload's own paidAt", () => {
+    const paidAt = new Date("2026-08-03T00:00:00.000Z");
+    const e = p.signOrderPaidEvent({
+      subscriptionId: "sub_j",
+      externalCustomerId: "org_1",
+      paidAt,
+    });
+    const r = p.verifyWebhook(e.body, e.headers);
+    if (!r.ok || r.event.kind !== "order_paid") throw new Error("unreachable");
+    expect(r.event.paidAt).toEqual(paidAt);
+
+    // Absent, it is stamped now — which is why a replay of an older invoice
+    // could not be staged through a signed delivery before.
+    const now = p.signOrderPaidEvent({
+      subscriptionId: "sub_j",
+      externalCustomerId: "org_1",
+    });
+    const r2 = p.verifyWebhook(now.body, now.headers);
+    if (!r2.ok || r2.event.kind !== "order_paid")
+      throw new Error("unreachable");
+    expect(r2.event.paidAt.getTime()).toBeGreaterThan(paidAt.getTime());
+  });
+
+  it("reports a meter balance that counts down, the way Polar's does", async () => {
+    const ev = (externalId: string, count: number) => ({
+      externalId,
+      externalCustomerId: "org_1",
+      name: "email.sent",
+      count,
+      timestamp: new Date(),
+    });
+    // No meter row for a customer nobody has credited or metered.
+    expect(await p.meterBalance!("org_1")).toBeNull();
+
+    p.credit("org_1", 50000);
+    expect(await p.meterBalance!("org_1")).toBe(50000);
+    await p.ingestUsage([ev("a", 12)]);
+    // Credited minus consumed: it counts *down*, and can go negative.
+    expect(await p.meterBalance!("org_1")).toBe(49988);
+    await p.ingestUsage([ev("b", 60000)]);
+    expect(await p.meterBalance!("org_1")).toBe(-10012);
+    // Usage with no credit is a real row, and is negative from the start.
+    await p.ingestUsage([{ ...ev("c", 5), externalCustomerId: "org_2" }]);
+    expect(await p.meterBalance!("org_2")).toBe(-5);
+  });
+
+  it("reports nothing when no meter is configured, and never throws", async () => {
+    p.credit("org_1", 10);
+    p.setMeterConfigured(false);
+    expect(await p.meterBalance!("org_1")).toBeNull();
+    p.setMeterConfigured(true);
+    expect(await p.meterBalance!("org_1")).toBe(10);
+
+    // The real provider swallows its own errors rather than break the billing
+    // page, so an outage here is `null`, not a rejection.
+    p.failNext("meters are down");
+    await expect(p.meterBalance!("org_1")).resolves.toBeNull();
+    // The failure was consumed, not queued for the next call.
+    expect(await p.meterBalance!("org_1")).toBe(10);
+  });
+
+  it("records `ready()` so the factory can be held to awaiting it", async () => {
+    expect(p.readied).toBe(false);
+    await p.ready?.();
+    expect(p.readied).toBe(true);
+  });
+
   it("records ingested usage and reports duplicates by externalId", async () => {
     const ev = {
       externalId: "org_1:2026-08-25T09:00:00.000Z",
@@ -264,8 +393,10 @@ describe("fake billing provider", () => {
     expect(await p.ingestUsage([ev])).toEqual({ inserted: 0, duplicates: 1 });
     expect(p.ingested.get("org_1")).toBe(12);
     expect(p.ingestedIds).toEqual([ev.externalId]);
-    expect(await p.meterBalance!("org_1")).toBe(12);
-    expect(await p.meterBalance!("org_unknown")).toBe(0);
+    // Consumed with nothing credited: the balance is negative, and a customer
+    // with no meter row at all reports nothing.
+    expect(await p.meterBalance!("org_1")).toBe(-12);
+    expect(await p.meterBalance!("org_unknown")).toBeNull();
   });
 
   it("can be made to fail so callers can be tested against an outage", async () => {

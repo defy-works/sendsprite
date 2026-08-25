@@ -7,6 +7,7 @@ import {
   BillingUnavailableError,
   isSubscriptionType,
   PLAN_ORDER,
+  subscriptionDefect,
   SUBSCRIPTION_TYPES,
   type BillingProvider,
   type PlanProduct,
@@ -347,18 +348,30 @@ export function createPolarProvider(opts: PolarOptions): BillingProvider {
         return { ok: true, event: { kind: "ignored", deliveryId, type } };
       }
 
-      if (SUBSCRIPTION_TYPES.has(event.type))
+      if (SUBSCRIPTION_TYPES.has(event.type)) {
+        const subscription = normalisePolarSubscription(
+          event.data as PolarSubscription,
+        );
+        // Belt and braces: the SDK's schema should already have refused a
+        // payload missing any of these, and the fake enforces the same
+        // invariant. Writing an `Invalid Date` into the period columns is not
+        // a failure worth being relaxed about.
+        const defect = subscriptionDefect(subscription);
+        if (defect)
+          return {
+            ok: false,
+            reason: `unparseable ${event.type} payload: ${defect}`,
+          };
         return {
           ok: true,
           event: {
             kind: "subscription",
             deliveryId,
             type: event.type,
-            subscription: normalisePolarSubscription(
-              event.data as PolarSubscription,
-            ),
+            subscription,
           },
         };
+      }
       if (event.type === "order.paid") {
         const o = event.data as {
           subscriptionId?: string | null;

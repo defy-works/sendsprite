@@ -128,7 +128,14 @@ export interface BillingProvider {
   ingestUsage(
     events: UsageEvent[],
   ): Promise<{ inserted: number; duplicates: number }>;
-  /** The provider's own meter balance, when it can be read. Display only. */
+  /**
+   * The provider's own metered balance for a customer — **credited minus
+   * consumed**, so it counts *down* towards zero and can go negative once the
+   * cycle's included units are used up. Display only, and **never throws**:
+   * `null` means "cannot be read" (no meter configured, no such customer, or
+   * the provider is having a bad day), because a reconciliation figure must
+   * not be able to break the page it decorates.
+   */
   meterBalance?(externalCustomerId: string): Promise<number | null>;
 }
 
@@ -157,6 +164,43 @@ export const SUBSCRIPTION_TYPES: ReadonlySet<string> = new Set([
 /** Whether a type is subscription-shaped, modelled or not. */
 export const isSubscriptionType = (type: string): boolean =>
   type.startsWith("subscription.");
+
+/**
+ * How far a delivery's `webhook-timestamp` may be from now, in seconds, before
+ * it is refused as a replay. This is the Standard Webhooks tolerance, which is
+ * what `standardwebhooks` enforces inside Polar's own `validateEvent` — it
+ * lives on the seam so the fake can enforce the same window rather than
+ * accepting deliveries the real provider would reject.
+ */
+export const WEBHOOK_TOLERANCE_SECONDS = 300;
+
+/**
+ * Whether a normalised subscription is usable, and why not if it is not.
+ *
+ * Every implementation has to answer this, and they must answer it the same
+ * way. Polar gets it for free — its SDK refuses to parse a payload missing
+ * these fields — so without a shared check the fake would happily hand back a
+ * subscription with `subscriptionId: undefined` and three `Invalid Date`s for
+ * a delivery the real provider refuses outright. Everything downstream (the
+ * ordering guard, the period columns, the entitlement) reads exactly these
+ * fields, so an unusable subscription must never reach it.
+ */
+export function subscriptionDefect(sub: ProviderSubscription): string | null {
+  for (const [field, value] of [
+    ["subscriptionId", sub.subscriptionId],
+    ["productId", sub.productId],
+    ["status", sub.status],
+  ] as const)
+    if (typeof value !== "string" || value === "") return `missing ${field}`;
+  for (const [field, value] of [
+    ["currentPeriodStart", sub.currentPeriodStart],
+    ["currentPeriodEnd", sub.currentPeriodEnd],
+    ["modifiedAt", sub.modifiedAt],
+  ] as const)
+    if (!(value instanceof Date) || Number.isNaN(value.getTime()))
+      return `invalid ${field}`;
+  return null;
+}
 
 /** Catalog order for the upgrade UI. */
 export const PLAN_ORDER: Record<Plan, number> = { free: 0, pro: 1, scale: 2 };
