@@ -284,7 +284,7 @@ Strings live in a `{ en, ko? }` dictionary from day one (site_v2 convention); on
 
 ## 11. Self-hosting
 
-- `docker-compose.yml`: `app` (`ghcr.io/defyworks/sendsprite`, ports 3000 + 587, healthcheck `/api/health`, `restart: unless-stopped`) + `postgres:16` with named volume. Profiles: `spamassassin`, `worker`.
+- `docker-compose.yml`: `app` (`ghcr.io/defy-works/sendsprite`, ports 3000 + 587, healthcheck `/api/health`, `restart: unless-stopped`) + `postgres:16` with named volume. Profiles: `spamassassin`, `worker`.
 - `install.sh` — checks Docker, writes `.env` (`APP_SECRET`, `POSTGRES_PASSWORD` generated; prompts only for `APP_URL`), `docker compose up -d`, prints the setup URL.
 - Env reference: `APP_URL`, `APP_SECRET`, `DATABASE_URL`, `WORKER_MODE`, `SMTP_ENABLED`, `LANDING_ENABLED`, `SIGNUP_MODE`, `GOOGLE_CLIENT_ID/SECRET`, `GITHUB_CLIENT_ID/SECRET`, `EMAIL_PASSWORD_ENABLED`, `EMAIL_RETENTION_DAYS`. No `NEXT_PUBLIC_*` — one image serves any hostname.
 - Coolify template; Railway/Render buttons later. Dockerfile follows the `site_v2` multistage Bun pattern.

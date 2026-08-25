@@ -1,6 +1,6 @@
 services:
   app:
-    image: ghcr.io/defyworks/sendsprite:latest
+    image: ghcr.io/defy-works/sendsprite:latest
     build: .
     ports:
       - "${APP_PORT:-3000}:3000"
@@ -35,7 +35,7 @@ services:
   # on the internal network (no ports published).
   worker:
     profiles: ["worker"]
-    image: ghcr.io/defyworks/sendsprite:latest
+    image: ghcr.io/defy-works/sendsprite:latest
     build: .
     env_file: .env
     environment:

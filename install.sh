@@ -3,7 +3,7 @@
 set -eu
 
 DIR="${SENDSPRITE_DIR:-$HOME/sendsprite}"
-REPO_RAW="https://raw.githubusercontent.com/defyworks/sendsprite/main"
+REPO_RAW="https://raw.githubusercontent.com/defy-works/sendsprite/main"
 
 command -v docker >/dev/null 2>&1 || { echo "Docker is required: https://docs.docker.com/get-docker/"; exit 1; }
 docker compose version >/dev/null 2>&1 || { echo "Docker Compose v2 is required."; exit 1; }
@@ -38,7 +38,7 @@ EOF
 fi
 
 # A failed pull is fine when the image is already present locally.
-docker compose pull || docker image inspect ghcr.io/defyworks/sendsprite:latest >/dev/null 2>&1 || { echo "Image not available yet"; exit 1; }
+docker compose pull || docker image inspect ghcr.io/defy-works/sendsprite:latest >/dev/null 2>&1 || { echo "Image not available yet"; exit 1; }
 docker compose up -d
 echo
 echo "Sendsprite is starting. Open $(grep '^APP_URL=' .env | cut -d= -f2-)/signup to create the first account."
