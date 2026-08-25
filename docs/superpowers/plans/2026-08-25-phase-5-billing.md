@@ -2119,6 +2119,15 @@ git commit -m "feat(billing): Polar provider — catalog, checkout, portal, webh
 
 ## Openers discovered during Phase 5 (fold into the status block in Task 12)
 
+- **One `team_billing` select per message on the send hot path.** With billing on,
+  `resolveTeamCaps` reads the billing row inside `checkTeamCaps`, and `createBatch` loops
+  `createEmail` — so a 100-message batch issues 100 extra selects. It matches the existing
+  uncached `team_settings` read, so it is not a new pattern, but a per-request memo (or
+  resolving caps once per batch) is the obvious win if send latency ever matters.
+- **`checkTeamCaps` now requires a fully valid environment**, even with billing off, because
+  `resolveTeamCaps` reads env through `billingEnabled()`. The app can't boot without a valid env
+  anyway, so this only bites tests that previously needed none — one existing test file already
+  had to gain `APP_URL`. Worth knowing before it surprises someone.
 - **Embedded-Postgres starvation under full-suite load.** Two different integration files have
   now failed once each in a full 36-file run at `maxWorkers: 4` and passed in isolation:
   `retention.test.ts` hit the 180 s hook timeout in `startPg()`'s `beforeAll`, and the
