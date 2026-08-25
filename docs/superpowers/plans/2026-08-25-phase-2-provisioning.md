@@ -20,6 +20,22 @@
 
 ---
 
+## Phase 2 status: COMPLETE (2026-08-25, HEAD after `06eed28` + docs commit)
+
+Tasks 1–17 shipped; every task's "Review follow-ups" block above records what changed after review. Docs (`README.md`, `infra/aws/README.md`, spec §6/§7) describe the shipped behaviour, not the original plan text. Open these as the **first tasks of the Phase 3 plan** (extension points, not Phase 2 defects):
+
+1. **Verified-domain re-check.** `domain.verify` stops once a domain is `verified`; nothing notices records removed later. Add a periodic re-check (daily cron over `verified` rows, or SES `DKIM`/`MAIL FROM` status from the SNS feed) that flips the domain back to `pending` and warns.
+2. **Heartbeat persistence for `WORKER_MODE=separate`** (Phase 1 opener #6, still open): the web container cannot report worker health without a heartbeat row; Phase 3 has real queues to drive it.
+3. **Reconciliation cron for stale `pending` domains** — a domain whose `domain.provision` job was lost (worker restart before the singleton verify loop was scheduled) stays `pending` with no job (the status enum is `pending|verified|failed`; an empty `dkim_tokens` is the only sign provisioning never ran). A cron that finds `pending` rows with no active job and re-enqueues, and expires rows past `verify_until`, closes the gap.
+4. **Connect-warning persistence from the callback path.** `POST /api/setup/aws/callback` only logs `warning` (for example SNS subscribe failed) and returns it to the Lambda; the wizard never sees it. Persist it (on the token or `instance_settings`) so `/api/setup/aws/status` can surface it.
+5. **Retention job consuming `retentionDays`.** `instance_settings.retention_days` is stored by the Instance tab (T15) but nothing reads it yet; the Phase 3 email tables need the purge job.
+6. **SNS notification ingestion.** `POST /api/webhooks/ses` verifies signatures and confirms subscriptions but only `console.info`s `Notification` messages; Phase 3 replaces that branch with `ses.ingest` (events, bounces/complaints → suppressions). Signature verification against recorded real SNS payloads is also still owed (T9 tests cover only the guardrails).
+7. **REST `/api/v1/domains`** wrapping `services/domains.ts` once API keys exist (spec §7).
+8. **`queue: { policy }` guard.** `registerQueue`'s `QueueOptions.policy` is create-time only in pg-boss 12: changing it for an existing queue is silently ignored. Either assert the stored policy on start (`getQueue(name).policy`) and fail loudly, or document that a policy change needs `deleteQueue` + recreate.
+9. **E2E ordering dependency.** `playwright.config.ts` has a `setup` project that `app` depends on, because the smoke spec needs a completed wizard. New specs must go in `app` (or a new project with the same dependency); a spec that runs before `setup` on a fresh database is redirected to `/setup`.
+
+---
+
 ## File structure (Phase 2 additions)
 
 ```

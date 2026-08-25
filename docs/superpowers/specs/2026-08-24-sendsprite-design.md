@@ -159,33 +159,37 @@ Shown until `instance_settings.setup_completed`; reachable only by the first use
 4. **Connect Cloudflare** — deep link to the API token page + card listing required permissions (_Zone → Zone → Read_, _Zone → DNS → Edit_; zone scope: all or selected). Paste → `GET /user/tokens/verify` + `GET /zones`. Optional; skipping = manual DNS.
 5. **Done** → dashboard with a setup checklist (add domain, create key, first send).
 
+**As shipped (Phase 2):** quick-create only accepts S3 template URLs, so the template is published to a public bucket and the instance builds the link from `CFN_TEMPLATE_URL` (default `https://sendsprite-cfn.s3.us-east-1.amazonaws.com/latest/sendsprite-connect.yaml`; self-hosters may point it at their own copy). The stack does not contain an `AWS::IAM::AccessKey` or the SNS topic: the Lambda creates the access key itself and POSTs `{token, accessKeyId, secretAccessKey, region, accountId}` once, so the secret never enters CloudFormation state, and the topic/configuration set/subscription are created by Sendsprite after any connect path. The callback retries its STS/SES checks for ~18 s to wait out IAM key propagation; the Lambda does not retry (single-use token). One-click requires an `https://` `APP_URL`. The SNS subscription is confirmed with `ConfirmSubscriptionCommand` (`AuthenticateOnUnsubscribe: "true"`) rather than by fetching `SubscribeURL`. Publishing and revocation are documented in `infra/aws/README.md`.
+
 ### 6.2 Domains
 
 `/app/domains/new`: enter name. If a Cloudflare zone is a suffix match, offer **auto**; else **manual**. Job `domain.provision`:
 
 1. `CreateEmailIdentity` (Easy DKIM 2048) with the ConfigurationSet.
 2. `PutEmailIdentityMailFromAttributes` → `bounce.<domain>`.
-3. Compute expected records: 3× DKIM CNAME; MAIL FROM MX (`feedback-smtp.<region>.amazonses.com`, prio 10) + TXT `v=spf1 include:amazonses.com ~all`; DMARC TXT at `_dmarc.<domain>` = `v=DMARC1; p=none; rua=mailto:dmarc@<domain>` (editable).
+3. Compute expected records: 3× DKIM CNAME; MAIL FROM MX (`feedback-smtp.<region>.amazonses.com`, prio 10) + TXT `v=spf1 include:amazonses.com ~all`; DMARC TXT at `_dmarc.<domain>` = `v=DMARC1; p=none` by default — no `rua=` tag unless a reporting address is supplied (`dmarcRua`), since `dmarc@<domain>` would not exist on a sending-only domain.
 4. Auto: upsert via Cloudflare (match on name+type, `proxied=false`). Manual: show table with copy buttons.
 5. Schedule `domain.verify` every 2 min for up to 72 h: `GetEmailIdentity` (DKIM, MAIL FROM) + our own DNS resolution for SPF/DMARC. `verified` when DKIM + MAIL FROM verified. Per-record ✓/✗ live in UI; `POST /domains/:id/verify` forces a check.
 
 Delete: `DeleteEmailIdentity`; in auto mode also delete the records Sendsprite created (tracked in `expected_records`). Domain names are unique across the instance.
 
+**As shipped (Phase 2):** verification is a per-domain re-enqueued pg-boss job (`domain.verify`, `policy: "exclusive"` + `singletonKey: domainId`; first check after 30 s, then every 120 s until `verify_until` = created + 72 h), not a global cron. SPF/DMARC checks use `dns.Resolver` against `1.1.1.1`/`8.8.8.8` (3 s timeout, 2 tries; outbound port 53 required). SPF and DMARC are one-per-name (RFC 7208/7489), so the Cloudflare upsert PATCHes an existing `v=spf1`/`v=DMARC1` TXT at that name instead of adding a second. Auto mode with Cloudflare disconnected degrades to manual with `last_error` set. `POST /domains/:id/verify` is a dashboard action in Phase 2 (`reverifyDomain`); the REST endpoint ships with §7 in Phase 3.
+
 ## 7. REST API (`/api/v1`)
 
 Auth: `Authorization: Bearer ss_live_<32 chars>`. JSON. Cursor pagination (`?limit&cursor`). Rate-limit headers on every response. Errors: `{ "error": { "code", "message", "details"? } }` with stable codes: `validation_error`, `unauthorized`, `forbidden`, `not_found`, `domain_not_verified`, `suppressed_recipient`, `rate_limited`, `daily_quota_exceeded`, `sandbox_restricted`, `idempotency_conflict`, `internal_error`.
 
-| Resource      | Endpoints                                                                                                                                                         |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Emails        | `POST /emails`, `POST /emails/batch` (≤100), `GET /emails/:id` (includes `events`), `GET /emails`, `PATCH /emails/:id` (`scheduledAt`), `POST /emails/:id/cancel` |
-| Domains       | `POST /domains`, `GET /domains`, `GET /domains/:id`, `POST /domains/:id/verify`, `DELETE /domains/:id`                                                            |
-| API keys      | `POST`, `GET`, `DELETE /:id` — `full` keys only                                                                                                                   |
-| Templates     | `POST`, `GET`, `GET /:slug`, `PATCH /:slug`, `DELETE /:slug`, `POST /:slug/render`                                                                                |
-| Contact books | CRUD; `POST /contact-books/:id/contacts/import` (CSV)                                                                                                             |
-| Contacts      | CRUD under a book; `POST /contacts/unsubscribe` by email                                                                                                          |
-| Campaigns     | CRUD, `POST /:id/schedule`, `POST /:id/send`, `POST /:id/cancel`                                                                                                  |
-| Webhooks      | CRUD, `POST /:id/test`                                                                                                                                            |
-| Suppressions  | `GET`, `POST`, `DELETE /:email`                                                                                                                                   |
+| Resource      | Endpoints                                                                                                                                                                                                             |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Emails        | `POST /emails`, `POST /emails/batch` (≤100), `GET /emails/:id` (includes `events`), `GET /emails`, `PATCH /emails/:id` (`scheduledAt`), `POST /emails/:id/cancel`                                                     |
+| Domains       | `POST /domains`, `GET /domains`, `GET /domains/:id`, `POST /domains/:id/verify`, `DELETE /domains/:id` — ships in Phase 3 (needs API keys); Phase 2 exposes the same `services/domains.ts` through the dashboard only |
+| API keys      | `POST`, `GET`, `DELETE /:id` — `full` keys only                                                                                                                                                                       |
+| Templates     | `POST`, `GET`, `GET /:slug`, `PATCH /:slug`, `DELETE /:slug`, `POST /:slug/render`                                                                                                                                    |
+| Contact books | CRUD; `POST /contact-books/:id/contacts/import` (CSV)                                                                                                                                                                 |
+| Contacts      | CRUD under a book; `POST /contacts/unsubscribe` by email                                                                                                                                                              |
+| Campaigns     | CRUD, `POST /:id/schedule`, `POST /:id/send`, `POST /:id/cancel`                                                                                                                                                      |
+| Webhooks      | CRUD, `POST /:id/test`                                                                                                                                                                                                |
+| Suppressions  | `GET`, `POST`, `DELETE /:email`                                                                                                                                                                                       |
 
 `POST /emails` body:
 
