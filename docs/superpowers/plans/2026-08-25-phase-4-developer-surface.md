@@ -3270,14 +3270,22 @@ export function buildProgram(deps: CliDeps): Command {
     .description("Sendsprite CLI")
     .exitOverride();
   const client = () => {
-    const cfg = {
-      url: deps.env.SENDSPRITE_URL,
-      apiKey: deps.env.SENDSPRITE_API_KEY,
-      ...loadConfig(deps.configDir),
-    };
-    if (!cfg.url || !cfg.apiKey)
+    // Env OVERRIDES the saved config (aws/gh/stripe/vercel all work this way):
+    // the file is the persistent default, the env is the per-shell/CI override,
+    // and silently ignoring an explicit `SENDSPRITE_API_KEY=… sendsprite send`
+    // would send from the wrong team with no signal. Resolve the two as a PAIR,
+    // never field-by-field: mixing an env URL with a file key would ship the
+    // saved key as a Bearer token to whatever host the env names.
+    const env =
+      deps.env.SENDSPRITE_URL || deps.env.SENDSPRITE_API_KEY
+        ? { url: deps.env.SENDSPRITE_URL, apiKey: deps.env.SENDSPRITE_API_KEY }
+        : undefined;
+    const cfg = env ?? loadConfig(deps.configDir);
+    if (!cfg?.url || !cfg.apiKey)
       throw new Error(
-        "Not logged in. Run `sendsprite login --url <instance> --api-key <key>` or set SENDSPRITE_URL and SENDSPRITE_API_KEY.",
+        env
+          ? "Set both SENDSPRITE_URL and SENDSPRITE_API_KEY (only one is set)."
+          : "Not logged in. Run `sendsprite login --url <instance> --api-key <key>` or set SENDSPRITE_URL and SENDSPRITE_API_KEY.",
       );
     return deps.createClient(cfg as { url: string; apiKey: string });
   };
