@@ -48,6 +48,8 @@ Blocking findings from the Phase 2 integration review, fixed in three commits. T
 
 ---
 
+**Additional Phase 3 openers from the final integration re-verification (2026-08-25):** distinct audit action names per instance mutation (+ a dedicated row for `PutAccountDetails`); ship `src/worker.ts` in the image or drop `WORKER_MODE=separate`; use `domains.region` for domain ops (region drift on reconnect); persist the SNS-subscribe warning so the wizard can show it; atomic token reissue (partial unique index on `issued_by WHERE consumed_at IS NULL`); SNS `Timestamp` freshness check; pin `cfn-lint` in CI; a Phase 3 test that fires the `domain.verify-sweep` cron itself. Tenancy decisions are recorded in the spec (§6, before §7).
+
 ## File structure (Phase 2 additions)
 
 ```
