@@ -6,10 +6,12 @@ export const metadata = {
 
 # CLI
 
-> **Coming in the next release.** The CLI ships inside the `sendsprite`
-> package as its `bin`, and is not part of the published package yet. This
-> page documents the interface it will have; the [SDK](/docs/sdk) covers
-> everything that works today.
+> **Not yet published to npm.** The CLI is built and working — it ships
+> inside the `sendsprite` package as its `bin` — but that package has not
+> been released, so `npx sendsprite` will not resolve yet. Until it does,
+> build the package from the repository and run `node packages/sdk/dist/cli.js`
+> wherever this page says `npx sendsprite`. Everything below is the shipped
+> behaviour.
 
 `npx sendsprite` is the `sendsprite` npm package's binary — no separate
 install, and the same client underneath.
@@ -28,9 +30,10 @@ Logged in to Acme as ci (ss_live_ab…)
 
 Missing values are prompted for on an interactive terminal and are an error
 otherwise. The credentials are verified with a `/me` call before anything is
-written, then saved to `config.json` with mode `600` in
-`$SENDSPRITE_CONFIG_DIR`, `$XDG_CONFIG_HOME/sendsprite`,
-`~/.config/sendsprite` or `%APPDATA%\sendsprite`.
+written, then saved to `config.json` with mode `600`. The directory is the
+first of `$SENDSPRITE_CONFIG_DIR`, `$XDG_CONFIG_HOME/sendsprite`,
+`%APPDATA%\sendsprite` (Windows only) and `~/.config/sendsprite` that
+applies.
 
 `SENDSPRITE_URL` and `SENDSPRITE_API_KEY` work instead of logging in — handy
 in CI. Any command other than `login` fails with a message pointing at
@@ -54,11 +57,14 @@ npx sendsprite domains list
 ```
 
 ```
-NAME              STATUS    MODE        REGION     ID
-mail.example.com  verified  cloudflare  us-east-1  dom_7q2…
+NAME               STATUS    MODE    REGION     ID
+mail.example.com   verified  auto    us-east-1  dom_7q2…
+other.example.com  pending   manual  us-east-1  dom_9k4…
 ```
 
-`--json` prints the raw array instead of the table.
+`MODE` is the domain's `dnsMode`: `auto` (records managed in a connected
+Cloudflare zone) or `manual`. `--json` prints the raw array instead of the
+table.
 
 ## emails send
 

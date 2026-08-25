@@ -115,7 +115,7 @@ export interface SendEmailInput {
   scheduledAt?: string;
   /** Up to 20 key/value pairs. */
   tags?: Record<string, string>;
-  /** Replays with the same key within 24 h return the original email id. */
+  /** A replay with the same key returns the original email id; no expiry. */
   idempotencyKey?: string;
   trackOpens?: boolean;
   trackClicks?: boolean;

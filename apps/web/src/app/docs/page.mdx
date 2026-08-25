@@ -69,10 +69,10 @@ all.
 
 ## 3. Watch it land
 
-Open **Dashboard → Emails** (`/app/emails`). Every message has a timeline
-built from the SES events your instance ingests: `queued`, `sent`,
-`delivered`, `bounced`, `complained`, `opened`, `clicked`, `failed`. The same
-timeline is available over the API:
+Open **Dashboard → Emails** (`/app/emails`). Every message has a timeline of
+the events your instance records for it — `queued`, `sent`, `delivered`,
+`delivery_delayed`, `bounced`, `complained`, `rejected`, `opened`, `clicked`,
+`failed` and `cancelled`. The same timeline is available over the API:
 
 ```bash
 curl https://mail.example.com/api/v1/emails/em_... \

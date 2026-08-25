@@ -14,7 +14,7 @@ export const DOCS_NAV: DocsNavItem[] = [
   { title: "API keys", href: "/docs/api-keys" },
   { title: "Webhooks", href: "/docs/webhooks" },
   { title: "SDK", href: "/docs/sdk" },
-  { title: "CLI", href: "/docs/cli", soon: true },
+  { title: "CLI", href: "/docs/cli" },
   { title: "MCP server", href: "/docs/mcp", soon: true },
   { title: "API reference", href: "/docs/api" },
 ];

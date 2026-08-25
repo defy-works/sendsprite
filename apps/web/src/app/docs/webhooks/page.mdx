@@ -23,8 +23,12 @@ curl https://mail.example.com/api/v1/webhooks \
 { "id": "wh_...", "secret": "whsec_..." }
 ```
 
-The signing secret is returned **once**. Only its ciphertext is stored, so a
-lost secret means creating a new endpoint.
+The signing secret is returned **once**; only its ciphertext is stored. If you
+lose it, rotate rather than recreate the endpoint: **Rotate secret** on the
+webhook's page issues a new `whsec_…`, shows it once, and keeps the same
+webhook id, URL and subscriptions. Deliveries already pending sign with the
+new secret from their next attempt on, so roll the new value out to your
+endpoint promptly.
 
 URLs must be public and `https`. Private and loopback targets are rejected,
 and the host is re-resolved and re-checked before every delivery — a name
@@ -34,20 +38,20 @@ that resolves to a private address is a terminal failure, not a retry.
 
 Subscribe to any non-empty subset of:
 
-| Event                                                                                | Fired when                                                        |
-| ------------------------------------------------------------------------------------ | ----------------------------------------------------------------- |
-| `email.sent`                                                                         | SES accepted the message.                                         |
-| `email.delivered`                                                                    | SES reported delivery to the receiving mail server.               |
-| `email.delayed`                                                                      | SES reported a delivery delay.                                    |
-| `email.bounced`                                                                      | Hard or soft bounce; a hard bounce also suppresses the recipient. |
-| `email.complained`                                                                   | Spam complaint; also suppresses the recipient.                    |
-| `email.opened`                                                                       | Tracking pixel fetched (once per user agent per UTC day).         |
-| `email.clicked`                                                                      | Tracked link followed (once per url + user agent per UTC day).    |
-| `email.failed`                                                                       | SES rejected it, or the send failed for good.                     |
-| `domain.verified`                                                                    | A domain became verified.                                         |
-| `domain.failed`                                                                      | A verified domain was demoted, or verification failed for good.   |
-| `contact.created`, `contact.updated`, `contact.unsubscribed`, `contact.resubscribed` | Reserved for contacts (Phase 5).                                  |
-| `campaign.sent`, `campaign.completed`                                                | Reserved for campaigns (Phase 5).                                 |
+| Event                                                                                | Fired when                                                                                                                                                            |
+| ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `email.sent`                                                                         | SES accepted the message.                                                                                                                                             |
+| `email.delivered`                                                                    | SES reported delivery to the receiving mail server.                                                                                                                   |
+| `email.delayed`                                                                      | SES reported a delivery delay.                                                                                                                                        |
+| `email.bounced`                                                                      | Hard or soft bounce; a hard bounce also suppresses the recipient.                                                                                                     |
+| `email.complained`                                                                   | Spam complaint; also suppresses the recipient — unless SES reports `complaintFeedbackType: "not-spam"`, which is a retraction: the event fires, nobody is suppressed. |
+| `email.opened`                                                                       | Tracking pixel fetched (once per user agent per UTC day).                                                                                                             |
+| `email.clicked`                                                                      | Tracked link followed (once per url + user agent per UTC day).                                                                                                        |
+| `email.failed`                                                                       | SES rejected it, or the send failed for good.                                                                                                                         |
+| `domain.verified`                                                                    | A domain became verified.                                                                                                                                             |
+| `domain.failed`                                                                      | A verified domain was demoted, or verification failed for good.                                                                                                       |
+| `contact.created`, `contact.updated`, `contact.unsubscribed`, `contact.resubscribed` | Reserved for contacts (Phase 5).                                                                                                                                      |
+| `campaign.sent`, `campaign.completed`                                                | Reserved for campaigns (Phase 5).                                                                                                                                     |
 
 ## Payload
 
@@ -96,16 +100,23 @@ a fresh timestamp and signature.
 
 ```ts
 // app/api/webhooks/sendsprite/route.ts
-import { createWebhookHandler } from "sendsprite/next";
+import type { EmailObject } from "sendsprite";
+import { createWebhookHandler, type WebhookPayload } from "sendsprite/next";
+
+// A handler is given a `WebhookPayload`, whose `data` is
+// `Record<string, unknown>`. Narrow it to the shape the event carries.
+type EmailEvent = WebhookPayload<{ email: EmailObject }>;
 
 export const POST = createWebhookHandler({
   secret: process.env.SENDSPRITE_WEBHOOK_SECRET!,
   on: {
     "email.delivered": async (event) => {
-      await markDelivered(event.data.email.id);
+      const { email } = (event as EmailEvent).data;
+      await markDelivered(email.id);
     },
     "email.bounced": async (event) => {
-      await flagBounce(event.data.email.id);
+      const { email } = (event as EmailEvent).data;
+      await flagBounce(email.id);
     },
   },
 });
@@ -113,25 +124,44 @@ export const POST = createWebhookHandler({
 
 The handler answers `401` on a bad signature or a stale timestamp, `200` for
 an event you did not register a handler for, and `500` when your handler
-throws — which is what makes Sendsprite retry. `verifyWebhook(request, secret)`
-is available on its own if you would rather dispatch yourself; it resolves
-the typed payload or rejects with `WebhookVerificationError`.
+throws — which is what makes Sendsprite retry. Pass `onUnhandled` to see the
+events nobody claimed.
+
+`verifyWebhook(request, secret)` is available on its own if you would rather
+dispatch yourself. It is generic, so
+`verifyWebhook<{ email: EmailObject }>(request, secret)` resolves an already
+narrowed payload — or rejects with `WebhookVerificationError`. Hand it the
+untouched `Request`: it reads the raw body itself, and a body parsed before
+that point can no longer be verified.
 
 ## Verifying — anywhere else
 
 ```ts
 import { createHmac, timingSafeEqual } from "node:crypto";
 
+// One `t`, then one or more `v1` digests, and nothing else. Sendsprite sends
+// a single `v1` today; the header allows several so a secret rotation can
+// sign with both keys at once, and a verifier that accepts only one would
+// break on the day that happens. An unrecognised field must fail rather than
+// be ignored.
+const HEADER_RE = /^t=(\d+)((?:,v1=[a-f0-9]{64})+)$/;
+
 export function verify(rawBody: string, header: string, secret: string) {
-  const m = /^t=(\d+),v1=([a-f0-9]{64})$/.exec(header ?? "");
+  const m = HEADER_RE.exec(header ?? "");
   if (!m) return false;
   const t = Number(m[1]);
   if (Math.abs(Math.floor(Date.now() / 1000) - t) > 300) return false;
   const expected = createHmac("sha256", secret)
     .update(`${t}.${rawBody}`)
     .digest();
-  const got = Buffer.from(m[2], "hex");
-  return got.length === expected.length && timingSafeEqual(got, expected);
+  // Any matching digest is enough.
+  return m[2]
+    .split(",")
+    .slice(1)
+    .some((field) => {
+      const got = Buffer.from(field.slice("v1=".length), "hex");
+      return got.length === expected.length && timingSafeEqual(got, expected);
+    });
 }
 ```
 
@@ -169,6 +199,22 @@ than retried. Fix the endpoint and re-enable it with
 
 `POST /api/v1/webhooks/:id/test` queues one synthetic `email.delivered`
 delivery to that endpoint — regardless of what it is subscribed to — and
-answers `202 { "deliveryId": "…" }`. The dashboard shows every attempt with
-its status code and the first 500 bytes of the response body, and lets you
-replay one.
+answers `202 { "deliveryId": "…" }`. A disabled webhook is refused with
+`conflict` (409); enable it first.
+
+The test payload is deliberately not a real email envelope — its `data` is
+`{ "test": true }`, so a handler that reaches into `data.email` will throw.
+That is worth knowing about your handler, but do not read the test as a
+sample of the real thing:
+
+```json
+{
+  "id": "evt_...",
+  "type": "email.delivered",
+  "createdAt": "2026-08-25T10:31:04.512Z",
+  "data": { "test": true }
+}
+```
+
+The dashboard shows every attempt with its status code and the first 500
+bytes of the response body, and lets you replay one.

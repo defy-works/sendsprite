@@ -96,12 +96,19 @@ without a key, a failed `POST` is never repeated.
 
 `trackOpens` and `trackClicks` default to the team's settings (both on out of
 the box) and can be overridden per message. When on, links in the html are
-rewritten through your instance and a 1×1 pixel is appended. Both are keyed
-by the email id and signed with `APP_SECRET`.
+rewritten to `/t/c/<email id>` on your instance and a 1×1 pixel pointing at
+`/t/o/<email id>.gif` is appended.
 
-Opens and clicks are recorded once per `(user agent[, url])` per UTC day, so
-a mail client fetching the pixel repeatedly counts once. SES's own open and
-click events are ignored — your instance is the single source for those.
+Click links carry an HMAC of the email id and the destination, keyed with
+`APP_SECRET`: the redirect takes the target URL as a query parameter, and the
+signature is what stops anyone using it as an open redirect. The open pixel
+carries the email id and nothing else.
+
+Treat both counts as advisory rather than an audit trail. Opens and clicks
+are deduplicated once per `(user agent[, url])` per UTC day, so a mail client
+refetching the pixel counts once — and an image proxy or a prefetching
+client can register an open the recipient never made. SES's own open and
+click events are ignored; your instance is the single source for those.
 
 ## Suppressions
 
@@ -128,11 +135,15 @@ only add `manual` and `unsubscribe` — the other two come from SES events.
 
 ## Limits and rate headers
 
-Sends are paced against your SES account's `MaxSendRate` with a token bucket
-shared across workers, and checked against the team's daily/monthly caps and
-the instance quota before the row is written. Refusals are typed:
-`daily_quota_exceeded`, `monthly_quota_exceeded` and `rate_limited` all map
-to 429.
+Before the row is written, a send is checked against the team's daily and
+monthly caps and against the instance's SES 24-hour quota. Both refusals are
+typed and map to 429: `daily_quota_exceeded` (the team's daily cap, or the
+SES 24-hour quota) and `monthly_quota_exceeded`.
+
+Your SES account's `MaxSendRate` is _not_ a request-time refusal. Accepted
+messages are paced through a token bucket shared across workers; when the
+bucket is empty the send job is deferred and retried, so the API call still
+answers 201 and the email waits in `queued` a little longer.
 
 Every response from the emails endpoints carries `x-ratelimit-limit` and
 `x-ratelimit-remaining`. With a team daily cap they also carry

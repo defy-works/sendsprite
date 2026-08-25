@@ -77,7 +77,8 @@ them yourself.
 - A pending domain is re-checked by a sweep every **2 minutes** (rows checked
   within the last 100 seconds are skipped so two ticks never duplicate work).
 - A domain that has not verified within **72 hours** is marked `failed` with
-  "Verification timed out after 72 hours."
+  "Verification timed out after 72 hours. Check the records and click
+  Re-verify."
 - A verified domain is re-checked once a day. It stays verified while SES
   still reports success, and is demoted to `pending` only if SES reports DKIM
   or MAIL FROM as `FAILED`/`NOT_STARTED`, or the identity is gone. A
