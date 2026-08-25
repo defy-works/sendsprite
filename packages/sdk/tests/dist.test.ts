@@ -4,13 +4,31 @@
  * nothing from its runtime (`node:` builtins via ids/ulid) may leak into the
  * root entry. Runs `tsup` itself so the check is always against fresh output.
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { beforeAll, describe, expect, it } from "vitest";
 
 const root = join(__dirname, "..");
 const dist = join(root, "dist");
+
+/**
+ * Runs the built bin with a config dir that cannot exist and no inherited
+ * credentials, so the "not logged in" path is what a fresh machine sees.
+ */
+function run(args: string[]) {
+  const result = spawnSync(process.execPath, [join(dist, "cli.js"), ...args], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      SENDSPRITE_CONFIG_DIR: join(tmpdir(), "sendsprite-dist-test-absent"),
+      SENDSPRITE_URL: undefined,
+      SENDSPRITE_API_KEY: undefined,
+    },
+  });
+  return result;
+}
 
 describe("dist", () => {
   beforeAll(() => {
@@ -28,6 +46,8 @@ describe("dist", () => {
         expect(files).toContain(`${entry}.${ext}`);
       }
     }
+    // The bin is ESM-only and ships no declarations.
+    expect(files).toContain("cli.js");
   });
 
   it("inlines @sendsprite/shared types into every .d.ts / .d.cts", () => {
@@ -59,6 +79,30 @@ describe("dist", () => {
       expect(src, f).not.toMatch(/["']@sendsprite\/shared/);
       expect(src, f).not.toContain("ulid");
     }
+  });
+
+  it("ships the CLI as an executable ESM script with no bundled shared/zod", () => {
+    const src = readFileSync(join(dist, "cli.js"), "utf8");
+    expect(src.startsWith("#!/usr/bin/env node\n")).toBe(true);
+    // `commander` is a real dependency, so it must stay an import.
+    expect(src).toMatch(/["']commander["']/);
+    expect(src).not.toMatch(/["']@sendsprite\/shared/);
+    expect(src).not.toMatch(/["']zod["']/);
+  });
+
+  it("runs: `--help` exits 0, `whoami` exits 1 with the login hint", () => {
+    const help = run(["--help"]);
+    expect(help.status).toBe(0);
+    expect(help.stdout).toContain("Usage: sendsprite");
+    for (const command of ["login", "whoami", "domains", "emails"]) {
+      expect(help.stdout).toContain(command);
+    }
+
+    const whoami = run(["whoami"]);
+    expect(whoami.status).toBe(1);
+    expect(`${whoami.stdout}${whoami.stderr}`).toMatch(
+      /Not logged in.*sendsprite login/s,
+    );
   });
 
   it("builds sendsprite/next on node:crypto alone", () => {
