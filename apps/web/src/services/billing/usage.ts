@@ -305,10 +305,10 @@ export async function rollupUsage(
   const pending: TeamRollup[] = [];
   for (const t of teams) {
     // Deliberately **not** `entitlementFrom(t, now).periodStart`: entitlement
-    // substitutes the calendar month whenever the stored period does not
+    // substitutes a window of its own whenever the stored period does not
     // contain `now` (a renewal webhook that has not landed yet, a
     // non-entitling status), so keying on it would have one run key on the
-    // provider period and the next on the calendar month — a second usage row
+    // provider period and the next on that substitute — a second usage row
     // accumulating for hours the first already counted, the watermark reset,
     // and the whole period re-emitted. `meteringPeriodStart` is the same key
     // `teamBillingState` reads the row back under.

@@ -232,7 +232,7 @@ describe("rollupUsage", () => {
 
   it("keys usage on the stored period, not the entitlement's substitute", async () => {
     // A stored period that does not contain `now` — a renewal webhook that
-    // has not landed. `entitlementFrom` substitutes the calendar month for
+    // has not landed. `entitlementFrom` substitutes a window of its own for
     // it, and keying the watermark off that would start a second usage row
     // for hours the first already counted and re-emit the whole period.
     const { rollupUsage, usageRow } = await import("@/services/billing/usage");
@@ -249,16 +249,24 @@ describe("rollupUsage", () => {
       .select()
       .from(teamBilling)
       .where(eq(teamBilling.teamId, team.id));
-    // The premise: entitlement really does substitute the calendar month here.
-    expect(entitlementFrom(row!, NOW).periodStart.toISOString()).toBe(
+    // The premise: entitlement really does substitute a window of its own —
+    // the stored period rolled forward onto its next anniversary, which is
+    // neither the stored start nor the calendar month.
+    const rolled = entitlementFrom(row!, NOW).periodStart;
+    expect(rolled.toISOString()).toBe("2026-08-20T00:00:00.000Z");
+    expect(rolled.toISOString()).not.toBe(
       calendarMonth(NOW).start.toISOString(),
     );
+    expect(rolled.toISOString()).not.toBe(STALE_START.toISOString());
+    // The metering key does not move with it.
     expect(meteringPeriodStart(row!, NOW).toISOString()).toBe(
       STALE_START.toISOString(),
     );
 
     await rollupUsage(provider, "email.sent", NOW);
     expect(await usageRow(team.id, STALE_START)).toBeDefined();
+    // Neither substitute window opened a row of its own.
+    expect(await usageRow(team.id, rolled)).toBeUndefined();
     expect(await usageRow(team.id, calendarMonth(NOW).start)).toBeUndefined();
 
     // And a second run still finds the same row rather than opening another.

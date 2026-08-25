@@ -2,6 +2,7 @@ import { and, eq, isNull, lt, lte, or } from "drizzle-orm";
 import {
   can,
   FREE_PLAN_METADATA,
+  isEntitledStatus,
   type BillingStateObject,
   type TeamRole,
 } from "@sendsprite/shared";
@@ -110,8 +111,8 @@ export async function teamBillingState(
   const e = entitlementFrom(row, now);
   const [used, usage] = await Promise.all([
     countSentIn(teamId, { start: e.periodStart, end: e.periodEnd }),
-    // Deliberately *not* `e.periodStart`: the entitlement may have substituted
-    // the calendar month, and usage is keyed on the stored period.
+    // Deliberately *not* `e.periodStart`: the entitlement may have rolled the
+    // stored period forward, and usage is keyed on the stored one.
     usageRow(teamId, meteringPeriodStart(row, now)),
   ]);
   return {
@@ -595,6 +596,20 @@ export async function startCheckout(
   const cfg = billingConfig();
   if (!cfg.enabled) return DISABLED;
   if (!can(actor.role, "billing.manage")) return DENIED;
+  // A second checkout does not replace the first: the provider happily opens
+  // another subscription for the same customer and bills both, while
+  // `team_billing` holds one row per team — so the two then fight over it and
+  // whichever webhook lands last decides what the customer is paying for.
+  // Plan changes belong in the portal, which changes the existing
+  // subscription in place and prorates it.
+  const existing = await billingRow(actor.teamId);
+  if (existing?.subscriptionId && isEntitledStatus(existing.status))
+    return {
+      ok: false,
+      code: "conflict",
+      error:
+        "This team already has a subscription. Use the billing portal to change plan.",
+    };
   try {
     const p = provider ?? (await getBillingProvider());
     const product = (await p.listPlanProducts()).find((x) => x.plan === plan);

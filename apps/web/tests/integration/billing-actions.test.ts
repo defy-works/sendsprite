@@ -113,6 +113,36 @@ describe("startCheckout", () => {
     });
   });
 
+  it("refuses a second subscription for an already subscribed team", async () => {
+    // The provider would open a second subscription and bill both, while
+    // `team_billing` holds one row per team — the two would then fight over it.
+    const { startCheckout } = await import("@/services/billing");
+    const { createFakeProvider } = await import("@/services/billing/fake");
+    const { team } = await seedTeamWithKey();
+    await subscribe(team.id);
+    const provider = createFakeProvider();
+    const r = await startCheckout(OWNER(team.id), "scale", provider);
+    expect(r).toMatchObject({ ok: false, code: "conflict" });
+    expect(r.ok === false && r.error).toMatch(/portal/i);
+  });
+
+  it("lets a team whose subscription has ended buy again", async () => {
+    const { startCheckout } = await import("@/services/billing");
+    const { createFakeProvider } = await import("@/services/billing/fake");
+    const { db } = await import("@/db");
+    const { teamBilling } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    const { team } = await seedTeamWithKey();
+    await subscribe(team.id);
+    await db()
+      .update(teamBilling)
+      .set({ status: "canceled" })
+      .where(eq(teamBilling.teamId, team.id));
+    expect(
+      await startCheckout(OWNER(team.id), "pro", createFakeProvider()),
+    ).toMatchObject({ ok: true });
+  });
+
   it("refuses a member: seeing the plan is not buying one", async () => {
     const { startCheckout } = await import("@/services/billing");
     const { db } = await import("@/db");

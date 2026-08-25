@@ -143,9 +143,10 @@ const monthWindow = (now: Date) => ({
  *
  * The monthly window is the subscription's billing period, not the calendar
  * month, so a customer who subscribed on the 10th gets their allowance on the
- * 10th. `entitlementFrom` falls back to the calendar month when the stored
- * period has gone stale; that substitution is entitlement-only and must not
- * be reused as a metering key (see `meteringPeriodStart`).
+ * 10th. `entitlementFrom` rolls that period forward onto its next
+ * anniversary when the stored one has gone stale; that substitution is
+ * entitlement-only and must not be reused as a metering key (see
+ * `meteringPeriodStart`).
  */
 export async function resolveTeamCaps(
   teamId: string,
