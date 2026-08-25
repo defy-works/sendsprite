@@ -11,3 +11,4 @@ test-results
 .env
 .env.*
 **/.pgdata
+packages/*/dist

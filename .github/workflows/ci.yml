@@ -35,6 +35,16 @@ jobs:
       - run: bun run lint
       - run: bun run format:check
       - run: bun run test
+      # Build the two published packages and dry-run the tarballs: a broken
+      # `files` list or `exports` map fails here instead of at publish time.
+      - run: bun run --filter sendsprite build
+      - run: bun run --filter @sendsprite/mcp build
+      - name: Pack check (sendsprite)
+        run: npm pack --dry-run
+        working-directory: packages/sdk
+      - name: Pack check (@sendsprite/mcp)
+        run: npm pack --dry-run
+        working-directory: packages/mcp
       - run: bun run test:integration
       - run: bunx playwright install --with-deps chromium
         working-directory: apps/web

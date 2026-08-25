@@ -258,6 +258,36 @@ bun run db:generate          # new migration from schema changes
 CI builds the image (see `.github/workflows/ci.yml`); `docker compose build`
 does the same locally.
 
+## Releasing
+
+Two packages are published from this repo: `sendsprite` (`packages/sdk`) and
+`@sendsprite/mcp` (`packages/mcp`). `@sendsprite/web` is never published and
+`@sendsprite/shared` is private — tsup inlines it into both bundles — so both
+sit in the `ignore` list in `.changeset/config.json`.
+
+One-time setup: create an npm automation token with publish rights to those two
+names and add it as the repository secret `NPM_TOKEN` (Settings → Secrets and
+variables → Actions). `.github/workflows/release.yml` writes it to `~/.npmrc`
+at run time; no token is stored in the repo. Rotate the token on npm after the
+first successful publish.
+
+Per change, record what it does to each package:
+
+```bash
+bun run changeset            # pick packages, pick the bump, write the summary
+```
+
+Commit the generated `.changeset/*.md` file with the change. On a push to the
+default branch the release workflow runs `changesets/action`:
+
+1. With changesets pending it opens (or refreshes) a **"chore: version
+   packages"** PR that applies the bumps, rewrites the changelogs, re-runs
+   `bun run sync:version` so `SDK_VERSION`/`MCP_VERSION` match their manifests,
+   and updates the lockfile.
+2. Merging that PR leaves no changesets, so the same workflow then builds both
+   packages and runs `changeset publish` — publishing to npm and pushing the
+   release tags.
+
 ## Environment reference
 
 | Variable                                             | Default       | Notes                                                                       |

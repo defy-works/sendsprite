@@ -20,9 +20,14 @@
     "db:generate": "bun run --filter @sendsprite/web db:generate",
     "db:migrate": "bun run --filter @sendsprite/web db:migrate",
     "db:studio": "bun run --filter @sendsprite/web db:studio",
-    "sync:scripts": "bun run scripts/sync-public-scripts.ts"
+    "sync:scripts": "bun run scripts/sync-public-scripts.ts",
+    "sync:version": "bun run scripts/sync-version.ts",
+    "changeset": "changeset",
+    "version-packages": "changeset version && bun run sync:version && bun install --lockfile-only",
+    "release": "bun run --filter sendsprite build && bun run --filter @sendsprite/mcp build && changeset publish"
   },
   "devDependencies": {
+    "@changesets/cli": "^3.0.1",
     "@eslint/js": "^9.30.0",
     "@next/eslint-plugin-next": "^16.3.2",
     "eslint": "^9.30.0",
