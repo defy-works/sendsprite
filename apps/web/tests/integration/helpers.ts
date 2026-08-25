@@ -32,7 +32,12 @@ export async function seedTeamWithKey({
   return {
     team,
     actor,
-    key: { id: res.data.id, name, permission },
+    key: {
+      id: res.data.id,
+      name,
+      permission,
+      keyPrefix: res.data.secret.slice(0, 16),
+    },
     secret: res.data.secret,
   };
 }

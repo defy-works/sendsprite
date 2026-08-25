@@ -10,7 +10,9 @@ export type ApiAuthOk = {
   team: { id: string; name: string };
   key: {
     id: string;
+    name: string;
     permission: "full" | "sending_only";
+    keyPrefix: string;
     domainId: string | null;
   };
 };
@@ -70,7 +72,9 @@ export async function authenticateSecret(secret: string): Promise<ApiAuth> {
     team: row.team,
     key: {
       id: row.key.id,
+      name: row.key.name,
       permission: row.key.permission,
+      keyPrefix: row.key.keyPrefix,
       domainId: row.key.domainId,
     },
   };
