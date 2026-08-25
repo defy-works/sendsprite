@@ -68,7 +68,9 @@ test("owner verifies a domain, sends via REST and SMTP, sees the log", async ({
   await page.goto("/app/domains/new");
   await page.fill("#name", domain);
   await page.getByRole("button", { name: "Add domain" }).click();
-  await expect(page).toHaveURL(/\/app\/domains\/dom_/);
+  // Server action, then a client-side push to a route `next dev` has not
+  // compiled yet: 30 s, like setup.spec.ts, rather than the 5 s default.
+  await expect(page).toHaveURL(/\/app\/domains\/dom_/, { timeout: 30_000 });
   const domainUrl = page.url();
   await reloadUntilVisible(
     page,
@@ -92,7 +94,8 @@ test("owner verifies a domain, sends via REST and SMTP, sees the log", async ({
   const secret = (
     await page
       .locator("code.select-all", { hasText: /^ss_live_/ })
-      .textContent()
+      // The key is minted by a server action; same first-compile allowance.
+      .textContent({ timeout: 30_000 })
   )?.trim();
   expect(secret).toMatch(/^ss_live_/);
   const authorization = `Bearer ${secret}`;
@@ -163,5 +166,8 @@ test("owner verifies a domain, sends via REST and SMTP, sees the log", async ({
   await page.goto(domainUrl);
   page.once("dialog", (d) => d.accept());
   await page.getByRole("button", { name: "Delete" }).click();
-  await expect(page).toHaveURL(/\/app\/domains$/);
+  // deleteDomain (server action) then `router.push("/app/domains")`, which is
+  // the first visit to that route in this spec — the dev server compiles it
+  // before the navigation completes, and that can take seconds on CI.
+  await expect(page).toHaveURL(/\/app\/domains$/, { timeout: 30_000 });
 });
