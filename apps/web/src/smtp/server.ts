@@ -2,6 +2,7 @@ import { SMTPServer } from "smtp-server";
 import { authenticateSecret } from "@/lib/api-auth";
 import { handleInbound, SmtpError } from "./inbound";
 import { loadOrGenerateCert, type TlsPem } from "./tls";
+import { setSmtpState } from "./state";
 
 let server: SMTPServer | undefined;
 
@@ -62,7 +63,8 @@ export interface SmtpOptions {
  * where the password is an API key (username ignored), accepted only after
  * STARTTLS unless `allowInsecureAuth`. Accepted messages go through
  * `createEmail` like a REST send. Rejects on the listen error (e.g.
- * EADDRINUSE); the caller decides whether that is fatal.
+ * EADDRINUSE); `startRelay` in ./boot is the caller that turns that into a
+ * logged, non-fatal one.
  */
 export async function startSmtp(opts: SmtpOptions): Promise<void> {
   if (server) throw new Error("SMTP relay already started");
@@ -126,12 +128,14 @@ export async function startSmtp(opts: SmtpOptions): Promise<void> {
   // Post-listen socket errors are logged rather than crashing the web tier.
   s.on("error", (e) => console.error("[smtp] server error", e));
   server = s;
+  setSmtpState({ status: "listening", port: opts.port });
   console.info(`[smtp] listening on ${opts.host ?? "0.0.0.0"}:${opts.port}`);
 }
 
 export async function stopSmtp(): Promise<void> {
   const s = server;
   server = undefined;
+  setSmtpState({ status: "disabled" });
   if (!s) return;
   await new Promise<void>((r) => s.close(() => r()));
 }

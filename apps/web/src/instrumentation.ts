@@ -6,8 +6,10 @@
  * 2. Apply DB migrations (safe/idempotent, advisory-locked).
  * 3. Start the in-process job worker unless WORKER_MODE says otherwise.
  * 4. Start the SMTP relay when SMTP_ENABLED: it is part of the web tier, so
- *    it runs in every WORKER_MODE. A busy port is logged, not fatal; a bad
- *    SMTP_TLS_CERT/KEY path is a configuration error and aborts boot.
+ *    it runs in every WORKER_MODE. It is optional, so no relay failure is
+ *    fatal — `startRelay` logs it and /api/health reports it; the dashboard
+ *    and the REST API keep serving. Steps 2 and 3 stay fatal: without
+ *    migrations or the worker this instance cannot do its job at all.
  */
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
@@ -27,24 +29,13 @@ export async function register() {
     await startWorker();
   }
   if (env.SMTP_ENABLED) {
-    const { startSmtp } = await import("@/smtp/server");
-    const { loadOrGenerateCert } = await import("@/smtp/tls");
-    const tls = await loadOrGenerateCert({
-      cert: env.SMTP_TLS_CERT,
-      key: env.SMTP_TLS_KEY,
+    const { startRelay } = await import("@/smtp/boot");
+    await startRelay({
+      port: env.SMTP_PORT,
+      maxSize: env.SMTP_MAX_SIZE,
+      allowInsecureAuth: env.SMTP_ALLOW_INSECURE_AUTH,
+      tlsCert: env.SMTP_TLS_CERT,
+      tlsKey: env.SMTP_TLS_KEY,
     });
-    try {
-      await startSmtp({
-        port: env.SMTP_PORT,
-        maxSize: env.SMTP_MAX_SIZE,
-        allowInsecureAuth: env.SMTP_ALLOW_INSECURE_AUTH,
-        tls,
-      });
-    } catch (e) {
-      if ((e as { code?: string })?.code !== "EADDRINUSE") throw e;
-      console.error(
-        `[smtp] port ${env.SMTP_PORT} is in use; relay not started`,
-      );
-    }
   }
 }

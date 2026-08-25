@@ -6,6 +6,7 @@ const base: Checks = {
   worker: "running",
   queueLag: 0,
   workerLastSeenSeconds: 30,
+  smtp: { status: "disabled" },
 };
 const s = (over: Partial<Checks>, mode = "inline") =>
   summarize({ ...base, ...over }, mode);
@@ -37,6 +38,13 @@ describe("health summarize", () => {
     expect(
       s({ worker: "disabled", workerLastSeenSeconds: null }, "separate").status,
     ).toBe("degraded");
+  });
+  it("degrades when the SMTP relay could not start, and says which port", () => {
+    const h = s({ smtp: { status: "failed", port: 587, code: "EACCES" } });
+    expect(h.status).toBe("degraded");
+    expect(h.smtp).toEqual({ status: "failed", port: 587, code: "EACCES" });
+    // A relay that is simply off, or listening, is not a problem.
+    expect(s({ smtp: { status: "listening", port: 2587 } }).status).toBe("ok");
   });
   it("does not degrade without a worker when WORKER_MODE=none", () => {
     const h = s({ worker: "disabled", workerLastSeenSeconds: null }, "none");

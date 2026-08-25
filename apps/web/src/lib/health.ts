@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { db } from "@/db";
 import { getWorkerState } from "@/jobs/boss";
+import { getSmtpState, type SmtpState } from "@/smtp/state";
 
 export interface Checks {
   db: "ok" | "error";
@@ -13,6 +14,13 @@ export interface Checks {
    * WORKER_MODE=separate see the worker that runs elsewhere.
    */
   workerLastSeenSeconds: number | null;
+  /**
+   * The SMTP relay of this process: "disabled" when it was never asked for,
+   * "failed" when SMTP_ENABLED but it could not start (a busy or privileged
+   * port, unreadable TLS files). A failed relay is not fatal — this is where
+   * an operator finds it after the boot log has scrolled away.
+   */
+  smtp: SmtpState;
 }
 export interface Health extends Checks {
   status: "ok" | "degraded" | "error";
@@ -26,9 +34,11 @@ export const HEARTBEAT_STALE_S = 15 * 60;
 
 /**
  * `worker` is "running" when this process polls or another process has
- * checked in within HEARTBEAT_RUNNING_S. Health degrades on queue lag, or
- * when a worker is expected (`WORKER_MODE !== "none"`) but neither this
- * process nor any heartbeat within HEARTBEAT_STALE_S shows one.
+ * checked in within HEARTBEAT_RUNNING_S. Health degrades on queue lag, on a
+ * relay that failed to start, or when a worker is expected
+ * (`WORKER_MODE !== "none"`) but neither this process nor any heartbeat
+ * within HEARTBEAT_STALE_S shows one. Only the database is an "error": the
+ * container is still serving usefully without a worker or a relay.
  */
 export function summarize(
   c: Checks,
@@ -47,7 +57,7 @@ export function summarize(
   const status =
     c.db === "error"
       ? "error"
-      : c.queueLag > 60 || workerMissing
+      : c.queueLag > 60 || workerMissing || c.smtp.status === "failed"
         ? "degraded"
         : "ok";
   return { ...c, worker, status, version: process.env.APP_VERSION ?? "dev" };
@@ -105,5 +115,6 @@ export async function collect(): Promise<Health> {
     worker: getWorkerState(),
     queueLag: lag,
     workerLastSeenSeconds: seen,
+    smtp: getSmtpState(),
   });
 }

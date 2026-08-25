@@ -193,6 +193,17 @@ The `worker` service is the same image with `WORKER_MODE=inline` forced on
 and `SMTP_ENABLED=false`, and publishes no ports — the relay belongs to the
 web tier.
 
+## When the relay does not start
+
+The relay is optional, so it cannot take the instance down: if the port is
+busy, or privileged and the container may not bind it, the boot log gets a
+`[smtp]` error naming the port and the likely cause, and the dashboard, the
+REST API and the worker carry on. `GET /api/health` then reports
+`"smtp": { "status": "failed", "port": …, "code": "EADDRINUSE" }` and an
+overall `"status": "degraded"` for as long as the process runs, so it stays
+visible after the log has scrolled away. Fix `SMTP_PORT` (or the host-side
+mapping) and restart, or set `SMTP_ENABLED=false` if you do not want a relay.
+
 ## Upgrades and backups
 
 ```bash
