@@ -501,7 +501,7 @@ git add apps/web packages/shared && git commit -m "feat(web): sending schema —
 - Create: `packages/shared/src/api/errors.ts`, `packages/shared/src/api/emails.ts`, `packages/shared/src/api/webhooks.ts`, `packages/shared/tests/api-emails.test.ts`, `packages/shared/tests/webhook-signature.test.ts`
 - Modify: `packages/shared/src/index.ts`
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 `tests/api-emails.test.ts`:
 
@@ -589,7 +589,7 @@ describe("webhook signature", () => {
 
 Run: `cd packages/shared && bun run test` → FAIL.
 
-- [ ] **Step 2: Implement**
+- [x] **Step 2: Implement**
 
 `src/api/errors.ts`:
 
@@ -815,7 +815,7 @@ export function verifyWebhookSignature(
 
 `node:crypto` in the shared package: it is used by the Node SDK (`sendsprite/next`) and the server; browser bundles must not import `api/webhooks` (document in the file header). Export all three modules from `index.ts`.
 
-- [ ] **Step 3: Run, commit**
+- [x] **Step 3: Run, commit**
 
 Run: `cd packages/shared && bun run test && bun run typecheck` → PASS. Commit `feat(shared): API contracts — send input, error codes, webhook types + signature`.
 
