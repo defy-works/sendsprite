@@ -660,7 +660,7 @@ export * from "./billing";
 
 Run: `cd apps/web && bun run db:generate`
 
-Rename the generated `apps/web/drizzle/00NN_<random>.sql` to `apps/web/drizzle/0012_billing.sql` and change the matching entry's `tag` in `apps/web/drizzle/meta/_journal.json` from `00NN_<random>` to `0012_billing` (the 0009–0011 precedent). Read the SQL and confirm it contains exactly: `CREATE TABLE "team_billing"`, `CREATE TABLE "billing_usage"` with a composite `PRIMARY KEY("team_id","period_start")`, `CREATE TABLE "billing_events"`, three `ADD CONSTRAINT … FOREIGN KEY … ON DELETE cascade`, and `CREATE INDEX "billing_events_team_created_idx"`. It must not touch any existing table.
+Rename the generated `apps/web/drizzle/00NN_<random>.sql` to `apps/web/drizzle/0012_billing.sql` and change the matching entry's `tag` in `apps/web/drizzle/meta/_journal.json` from `00NN_<random>` to `0012_billing` (the 0009–0011 precedent). Read the SQL and confirm it contains exactly: `CREATE TABLE "team_billing"`, `CREATE TABLE "billing_usage"` with a composite `PRIMARY KEY("team_id","period_start")`, `CREATE TABLE "billing_events"`, two `ADD CONSTRAINT … FOREIGN KEY … ON DELETE cascade` (billing_usage and team_billing only — `billing_events.team_id` is deliberately FK-free: the row is inserted before the team is resolved, so an FK would make an unresolvable delivery unstorable and retried forever, and a cascade would delete the very idempotency keys the table exists to hold; `audit.ts` is the same shape), and `CREATE INDEX "billing_events_team_created_idx"`. It must not touch any existing table.
 
 - [ ] **Step 6: Run the test to verify it passes**
 
@@ -2074,6 +2074,38 @@ string.
 overage per cycle and Scale at $500 via `cap_amount` on their metered prices. Nothing in the
 app enforces this; it is provider configuration. Surface it if it is cheaply available on the
 subscription payload, but do not model it in `PlanMetadata`.
+
+**E. Timestamp precision and the metering key.** `billing_usage.period_start`,
+`team_billing.period_start` and `team_billing.provider_modified_at` are `precision: 3`
+(migration 0012 was amended in place, pre-deployment). Beyond precision, the _live_ hazard is
+that `entitlementFrom` substitutes `calendarMonth(now)` whenever the stored period does not
+contain `now` — a renewal webhook that has not landed yet, or a non-entitling status. If
+Task 9 keys `billing_usage` off whatever `entitlementFrom` returned, one run keys on the
+provider period and the next on the calendar month: a second usage row accumulates for hours
+the first already counted, the watermark resets, and the whole period is re-bucketed. The
+provider-side `usageExternalId` dedupe protects the invoice, not our numbers. **Key
+`billing_usage` on the stored `team_billing.period_start`** and treat the calendar-month
+fallback as an entitlement-only concept.
+
+**F. Webhook application is transactional.** `billing_events` insert + apply + mark must
+commit in one transaction. Otherwise a crash between the insert and the `applied_at` update
+leaves a row that short-circuits every retry as a duplicate for an event that was never
+applied — a silently lost subscription change. Polar retries on a non-2xx, so a rolled-back
+delivery is simply redelivered. `payload` stays the `{ type }` stub: a debugging aid, not a
+replay record, and deliberately not the raw body, which would put customer PII in a table with
+no purge story.
+
+**G. Guard the `past_due` clear.** The `order_paid` branch must not clear `pastDueAt`
+unconditionally. A late or replayed `order.paid` for an earlier invoice, arriving after the
+subscription has gone `past_due` again, would reset the grace clock in amendment A and buy
+another week of paid caps on a dead card. `team_billing.last_order_paid_at` exists for this:
+only clear when the order is newer.
+
+**H. Typed upsert `set` object.** `onConflictDoUpdate({ set })` takes a `Partial`, so an upsert
+that omits `includedEmails` compiles and leaves a stale allowance across a plan change. Type
+the shared object as `Required<Pick<typeof teamBilling.$inferInsert, "plan" | "includedEmails" |
+"overagePer1kCents" | "status" | "periodStart" | "periodEnd" | "providerModifiedAt">> &
+Partial<typeof teamBilling.$inferInsert>` so an omission is caught at the seam.
 
 **D. Verify the subscription-status list against the SDK.** `SUBSCRIPTION_STATUSES` in
 Task 1 was written from memory and looks like Stripe's set — `paused` is not a Polar status.
