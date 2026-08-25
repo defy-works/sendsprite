@@ -46,6 +46,7 @@
         "zod": "^4.4.3",
       },
       "devDependencies": {
+        "@modelcontextprotocol/sdk": "^1.30.0",
         "@playwright/test": "^1.55.0",
         "@tailwindcss/postcss": "^4.3.3",
         "@types/mailparser": "^3.4.6",

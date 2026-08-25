@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { saveApiKey } from "./credentials";
 
 // The server runs with AWS_E2E_MOCK=1: SES/SNS/STS answer from
 // src/lib/aws/fake-client.ts (account 111111111111, DKIM tokens e1..e3,
@@ -118,4 +119,21 @@ test("owner completes setup via manual keys, adds a domain, sees records", async
   await page.getByRole("button", { name: "Delete" }).click();
   await expect(page).toHaveURL(/\/app\/domains$/);
   await expect(page.getByText(domain)).toHaveCount(0);
+
+  // A full-permission key on this team, for sdk.spec.ts. Created through the
+  // UI because that is the only place the secret is ever shown, and handed
+  // over in a file (see ./credentials) — env vars do not cross workers.
+  await page.goto("/app/api-keys");
+  await page.fill("#key-name", `e2e-sdk-${suffix}`);
+  await page.selectOption("#key-permission", "full");
+  await page.getByRole("button", { name: "Create key" }).click();
+  // The keys table also shows the prefix in a <code>; the CopyField's is the
+  // `select-all` one (same locator as send.spec.ts).
+  const secret = (
+    await page
+      .locator("code.select-all", { hasText: /^ss_live_/ })
+      .textContent()
+  )?.trim();
+  expect(secret).toMatch(/^ss_live_/);
+  saveApiKey(test.info(), secret!);
 });

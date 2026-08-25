@@ -10,7 +10,7 @@
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
-    "test:e2e": "playwright test",
+    "test:e2e": "bun run --filter sendsprite build && bun run --filter @sendsprite/mcp build && playwright test",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "bun run src/db/migrate-cli.ts",
     "db:dev": "bun run scripts/dev-db.ts",
@@ -47,6 +47,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@playwright/test": "^1.55.0",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/mailparser": "^3.4.6",
