@@ -47,7 +47,7 @@ export function InstanceForm({
           defaultChecked={landingEnabled}
           className="accent-indigo-500"
         />
-        Landing page enabled
+        Landing page (falls back to LANDING_ENABLED env when unset)
       </label>
       <div>
         <Label htmlFor="retentionDays">Retention days</Label>
@@ -63,7 +63,8 @@ export function InstanceForm({
           className="max-w-40"
         />
         <p className="mt-1 text-xs text-white/50">
-          How long email logs are kept (1–3650).
+          How long email logs are kept (1–3650). Used by the retention job
+          (Phase 3).
         </p>
       </div>
       <div className="flex items-center gap-3">

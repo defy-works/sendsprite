@@ -46,9 +46,9 @@ export function RecordsTable({ records }: { records: ExpectedRecord[] }) {
               <td className="px-4 py-3 text-white/65">{r.priority ?? "—"}</td>
               <td
                 className={`px-4 py-3 ${r.ok ? "text-green-300" : "text-white/40"}`}
-                aria-label={r.ok ? "found" : "not found"}
               >
-                {r.ok ? "✓" : "✗"}
+                <span aria-hidden>{r.ok ? "✓" : "✗"}</span>
+                <span className="sr-only">{r.ok ? "found" : "not found"}</span>
               </td>
             </tr>
           ))}

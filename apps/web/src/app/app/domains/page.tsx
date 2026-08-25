@@ -1,9 +1,11 @@
 import NextLink from "next/link";
+import { can } from "@sendsprite/shared";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Link } from "@/components/ui/Link";
 import { StatusDot, type Status } from "@/components/ui/StatusDot";
+import { formatWhen } from "@/lib/format";
 import { requireTeam } from "@/lib/session";
 import { listDomains, type Domain } from "@/services/domains";
 import { getInstanceSettings } from "@/services/instance-settings";
@@ -17,29 +19,17 @@ const DOT: Record<Domain["status"], Status> = {
   failed: "error",
 };
 
-// Server-side, fixed locale/zone: avoids a hydration mismatch.
-const formatWhen = (d: Date | null) =>
-  d
-    ? new Intl.DateTimeFormat("en-US", {
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-        timeZone: "UTC",
-      }).format(d) + " UTC"
-    : "never";
-
 export default async function DomainsPage() {
   const ctx = await requireTeam();
   const [rows, settings] = await Promise.all([
     listDomains(ctx.team.id),
     getInstanceSettings(),
   ]);
-  const addButton = (
+  const addButton = can(ctx.role, "domains.manage") ? (
     <Button asChild>
       <NextLink href="/app/domains/new">Add domain</NextLink>
     </Button>
-  );
+  ) : null;
   return (
     <div className="flex flex-col gap-6">
       {settings.awsMode === "none" && (
@@ -60,7 +50,7 @@ export default async function DomainsPage() {
         />
       ) : (
         <>
-          <div className="flex justify-end">{addButton}</div>
+          {addButton && <div className="flex justify-end">{addButton}</div>}
           <div className="glass overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="num-stamp text-left">

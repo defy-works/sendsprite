@@ -11,10 +11,13 @@ export function DomainActions({
   id,
   name,
   status,
+  provisioned,
 }: {
   id: string;
   name: string;
   status: "pending" | "verified" | "failed";
+  /** False until the provision job has stored the DKIM tokens. */
+  provisioned: boolean;
 }) {
   const router = useRouter();
   const [verifying, startVerify] = useTransition();
@@ -24,7 +27,10 @@ export function DomainActions({
   // Until SSE lands (Phase 3) a pending domain re-renders from the server.
   useEffect(() => {
     if (status !== "pending") return;
-    const t = setInterval(() => router.refresh(), REFRESH_MS);
+    // A background tab does not need to re-render.
+    const t = setInterval(() => {
+      if (document.visibilityState === "visible") router.refresh();
+    }, REFRESH_MS);
     return () => clearInterval(t);
   }, [status, router]);
 
@@ -33,7 +39,8 @@ export function DomainActions({
       <div className="flex items-center gap-3">
         <Button
           variant="secondary"
-          disabled={verifying || deleting}
+          disabled={!provisioned || verifying || deleting}
+          title={provisioned ? undefined : "Waiting for provisioning…"}
           onClick={() =>
             startVerify(async () => {
               setError(null);

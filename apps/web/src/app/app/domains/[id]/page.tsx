@@ -1,8 +1,10 @@
 import { notFound } from "next/navigation";
+import { can } from "@sendsprite/shared";
 import { Badge } from "@/components/ui/Badge";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Link } from "@/components/ui/Link";
 import { StatusDot, type Status } from "@/components/ui/StatusDot";
+import { formatWhen } from "@/lib/format";
 import { requireTeam } from "@/lib/session";
 import { getDomain, type Domain } from "@/services/domains";
 import { Alert } from "@/app/setup/steps/shared";
@@ -14,17 +16,6 @@ const DOT: Record<Domain["status"], Status> = {
   verified: "ok",
   failed: "error",
 };
-
-const formatWhen = (d: Date | null) =>
-  d
-    ? new Intl.DateTimeFormat("en-US", {
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-        timeZone: "UTC",
-      }).format(d) + " UTC"
-    : "never";
 
 export default async function DomainPage({
   params,
@@ -66,14 +57,21 @@ export default async function DomainPage({
           <RecordsTable records={d.expectedRecords} />
         </CardBody>
       </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>Actions</CardTitle>
-        </CardHeader>
-        <CardBody>
-          <DomainActions id={d.id} name={d.name} status={d.status} />
-        </CardBody>
-      </Card>
+      {can(ctx.role, "domains.manage") && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Actions</CardTitle>
+          </CardHeader>
+          <CardBody>
+            <DomainActions
+              id={d.id}
+              name={d.name}
+              status={d.status}
+              provisioned={d.dkimTokens.length > 0}
+            />
+          </CardBody>
+        </Card>
+      )}
     </div>
   );
 }

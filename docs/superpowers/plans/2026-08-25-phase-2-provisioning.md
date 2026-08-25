@@ -4936,6 +4936,14 @@ git add apps/web
 git commit -m "feat(web): instance settings tab, domains list/new/detail with live record checks"
 ```
 
+**Review follow-ups (applied after the Task 15 commit):**
+
+- Steps take `mode: "wizard" | "settings"` (`WizardProps`); the Instance tab passes `settings` to hide Continue/Skip. `updateInstanceAction` returns the first zod issue message; `signupMode: "auto"` stores `null`.
+- Landing page: `app/page.tsx` reads `instance_settings.landing_enabled ?? env.LANDING_ENABLED` (the DB value wins once set; there is no env "override" because `LANDING_ENABLED` defaults to true). Retention days is stored now and consumed by the Phase 3 retention job.
+- `reverifyDomain` refuses (`ok:false`, "Provisioning hasn't finished yet.") while `dkimTokens` is empty; the detail page passes `provisioned` and disables Re-verify with a "Waiting for provisioning…" title.
+- Domain UI is gated by `can(role, "domains.manage")`: no "Add domain" button, `/app/domains/new` redirects to the list, and `DomainActions` is hidden (records stay visible). `/app/domains/new` shows the AWS-not-connected notice above the form.
+- `formatWhen` lives in `lib/format.ts`; `DomainActions` skips `router.refresh()` while the tab is hidden; record ✓/✗ glyphs carry sr-only "found"/"not found" text.
+
 ---
 
 ### Task 16: E2E — setup wizard (manual path, mocked AWS) and domains page

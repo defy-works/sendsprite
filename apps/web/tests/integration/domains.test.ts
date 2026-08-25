@@ -413,6 +413,11 @@ describe("domains", () => {
   it("reverifyDomain resets the window, audits, and checks inline", async () => {
     ses.on(GetEmailIdentityCommand).resolves(pendingIdentity);
     const { reverifyDomain } = await import("@/services/domains");
+    // Re-verify needs a provisioned identity; the fixture skipped the job.
+    await pg.db
+      .update(domains)
+      .set({ dkimTokens: ["t1", "t2", "t3"] })
+      .where(eq(domains.name, "slow.acme.com"));
     const d = await byName("slow.acme.com");
     const enqueue = vi.fn(async () => "job");
     const deps = { enqueue, resolver: emptyDns };
@@ -451,6 +456,25 @@ describe("domains", () => {
       ok: false,
       error: /Rate exceeded/,
     });
+  });
+  it("reverifyDomain refuses a domain that has not been provisioned", async () => {
+    const { createDomain, reverifyDomain } = await import("@/services/domains");
+    const enqueue = vi.fn(async () => "job");
+    const res = await createDomain(
+      actor,
+      { name: "unprovisioned.acme.com" },
+      { enqueue, fetch: cfFetch },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    ses.reset();
+    expect(await reverifyDomain(actor, res.data.id, { enqueue })).toEqual({
+      ok: false,
+      error: "Provisioning hasn't finished yet.",
+    });
+    expect(ses.commandCalls(GetEmailIdentityCommand)).toHaveLength(0);
+    // Later assertions list the team's domains; leave only the fixture.
+    await pg.db.delete(domains).where(eq(domains.id, res.data.id));
   });
   it("verifyDomain stops polling (no throw, no re-enqueue) when AWS is disconnected", async () => {
     const { updateInstanceSettings } =

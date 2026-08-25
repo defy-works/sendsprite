@@ -1,9 +1,13 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { env } from "@/env";
+import { getInstanceSettings } from "@/services/instance-settings";
 
-export default function HomePage() {
-  if (!env.LANDING_ENABLED) redirect("/app");
+export default async function HomePage() {
+  // The instance setting wins; the env value is the fallback while unset.
+  const s = await getInstanceSettings();
+  const landing = s.landingEnabled ?? env.LANDING_ENABLED;
+  if (!landing) redirect("/app");
   return (
     <main className="grid-hairlines flex min-h-dvh flex-col items-center justify-center gap-6 p-8">
       <p className="num-stamp">Sendsprite</p>

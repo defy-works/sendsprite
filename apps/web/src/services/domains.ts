@@ -349,6 +349,9 @@ export async function reverifyDomain(
   if (!can(actor.role, "domains.manage")) return DENIED;
   const d = await getDomain(actor.teamId, id);
   if (!d) return { ok: false, error: "Domain not found." };
+  // Before provisioning there is no identity to check; the job will verify.
+  if (d.dkimTokens.length === 0)
+    return { ok: false, error: "Provisioning hasn't finished yet." };
   await db()
     .update(domains)
     .set({
