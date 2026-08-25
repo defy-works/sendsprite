@@ -66,10 +66,13 @@ describe("recordEvent", () => {
 
   it("delivery_delayed, opened and clicked are timeline-only", async () => {
     const id = await seed();
-    await ev(id, "sent", "s");
-    await ev(id, "delivery_delayed", "dd");
-    await ev(id, "opened", "o");
-    await ev(id, "clicked", "c");
+    // Distinct times: the timeline sorts by occurredAt, and two events
+    // recorded in the same millisecond would tie.
+    const t = (s: number) => new Date(Date.UTC(2026, 7, 25, 0, 0, s));
+    await ev(id, "sent", "s", t(1));
+    await ev(id, "delivery_delayed", "dd", t(2));
+    await ev(id, "opened", "o", t(3));
+    await ev(id, "clicked", "c", t(4));
     expect((await load(id)).status).toBe("sent");
     const { listEvents } = await import("@/services/email-events");
     expect((await listEvents(id)).map((e) => e.type)).toEqual([

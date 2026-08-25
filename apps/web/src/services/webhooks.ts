@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, lte } from "drizzle-orm";
 import { z } from "zod";
 import {
   can,
@@ -76,23 +76,16 @@ const newSecret = () => `whsec_${randomBytes(32).toString("base64url")}`;
 
 /**
  * The delivery queue is `exclusive`, so one job per delivery id can be
- * queued/active at a time: a Replay while a retry is scheduled is deduped
+ * queued/active at a time: a Replay while a retry is queued is deduped
  * instead of producing two concurrent attempts. `deliver()` additionally
  * skips rows already `delivered`.
+ *
+ * Only fan-out, Replay and the retry sweep call this — never `deliver()`
+ * itself: while a job is `active` its key is taken and a self-enqueued
+ * retry would be dropped by that same index (see webhook-deliver.ts).
  */
-const enqueueDelivery = (
-  enqueue: Enqueue,
-  deliveryId: string,
-  startAfter?: number,
-) =>
-  enqueue(
-    QUEUE,
-    { deliveryId },
-    {
-      singletonKey: deliveryId,
-      ...(startAfter !== undefined && { startAfter }),
-    },
-  );
+const enqueueDelivery = (enqueue: Enqueue, deliveryId: string) =>
+  enqueue(QUEUE, { deliveryId }, { singletonKey: deliveryId });
 
 /** REST shape: never the secret, not even encrypted. */
 export const publicWebhook = (w: Webhook) => ({
@@ -333,10 +326,11 @@ async function readExcerpt(res: Response): Promise<string> {
 /**
  * One delivery attempt. Never throws on the HTTP side: a non-2xx (redirects
  * are not followed and count as failures), a timeout (10 s) or a network
- * error schedules the next attempt per RETRY_SCHEDULE_S, and the sixth
- * failure marks the delivery `exhausted`. A webhook failing continuously
- * for 24 h is disabled. Returns the delivery row after the attempt, or null
- * when the delivery is gone or its webhook is disabled.
+ * error sets `nextRetryAt` per RETRY_SCHEDULE_S (the once-a-minute sweep
+ * enqueues it when due), and the sixth failure marks the delivery
+ * `exhausted`. A webhook failing continuously for 24 h is disabled.
+ * Returns the delivery row after the attempt, or null when the delivery is
+ * gone or its webhook is disabled.
  */
 export async function deliver(
   deliveryId: string,
@@ -433,7 +427,6 @@ export async function deliver(
           nextRetryAt: new Date(now.getTime() + delay * 1000),
         })
         .where(eq(webhookDeliveries.id, deliveryId));
-      await enqueueDelivery(deps.enqueue, deliveryId, delay);
     } else
       await db()
         .update(webhookDeliveries)
@@ -494,6 +487,21 @@ export async function sendTestEvent(
   return { ok: true, data: { deliveryId } };
 }
 
+/** Ids of pending deliveries whose retry is due at `now` (oldest first). */
+export const listDueRetries = async (now: Date): Promise<string[]> =>
+  (
+    await db()
+      .select({ id: webhookDeliveries.id })
+      .from(webhookDeliveries)
+      .where(
+        and(
+          eq(webhookDeliveries.status, "pending"),
+          lte(webhookDeliveries.nextRetryAt, now),
+        ),
+      )
+      .orderBy(webhookDeliveries.nextRetryAt)
+  ).map((r) => r.id);
+
 /** Newest first. */
 export const listDeliveries = (
   teamId: string,
@@ -514,9 +522,9 @@ export const listDeliveries = (
 
 /**
  * Restarts the retry series from attempt 0 and enqueues it right away.
- * While a retry of the same delivery is still queued the enqueue is deduped
- * by the exclusive queue key, so the scheduled attempt simply runs from
- * attempt 0 when it fires rather than running twice.
+ * `nextRetryAt` is set to now as well, so if the enqueue is deduped against
+ * a job that is still queued or active, the sweep picks the row up within
+ * a minute instead of it waiting out the old schedule.
  */
 export async function replayDelivery(
   actor: TeamActor,
@@ -531,7 +539,7 @@ export async function replayDelivery(
       status: "pending",
       statusCode: null,
       responseExcerpt: null,
-      nextRetryAt: null,
+      nextRetryAt: new Date(),
       deliveredAt: null,
     })
     .where(

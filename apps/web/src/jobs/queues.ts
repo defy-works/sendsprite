@@ -7,6 +7,7 @@ export const Q = {
   emailSend: "email.send",
   emailReconcile: "email.reconcile-sending",
   webhookDeliver: "webhook.deliver",
+  webhookRetrySweep: "webhook.retry-sweep",
   retentionPurge: "retention.purge",
 } as const;
 export type QueueName = (typeof Q)[keyof typeof Q];

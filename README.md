@@ -74,6 +74,9 @@ plain SubscribeURL confirm), and reads your account status and quota.
 `*.local`/`*.internal`, single-label hosts and loopback, private (RFC 1918),
 link-local (incl. `169.254.169.254`), CGNAT and IPv6 ULA/link-local literals
 are rejected, redirects are not followed and replies are read up to 500 bytes.
+Failed deliveries retry after 1 m, 5 m, 30 m, 2 h and 8 h; a once-a-minute
+sweep enqueues the ones that are due, so a `nextRetryAt` is a floor rather
+than an exact time.
 The check is syntactic: a public name that resolves to a private address
 (DNS rebinding) is not caught, so run the worker in a network segment that
 cannot reach internal services.

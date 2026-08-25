@@ -3,8 +3,12 @@ import { eq } from "drizzle-orm";
 import { startPg } from "./_pg";
 import { webhookDeliveries, webhooks } from "@/db/schema";
 
-// The REST test route enqueues through pg-boss; stub the bridge.
-vi.mock("@/jobs/enqueue", () => ({ enqueue: vi.fn(async () => "") }));
+// The REST test route and the retry sweep enqueue through pg-boss; stub
+// the bridge. `null` from it means "deduped by the exclusive key".
+const { bossEnqueue } = vi.hoisted(() => ({
+  bossEnqueue: vi.fn(async (): Promise<string | null> => "job"),
+}));
+vi.mock("@/jobs/enqueue", () => ({ enqueue: bossEnqueue }));
 
 let pg: Awaited<ReturnType<typeof startPg>>;
 beforeAll(async () => {
@@ -149,6 +153,8 @@ describe("webhooks", () => {
       { enqueue },
     );
     enqueue.mockClear();
+    const { sweepWebhookRetries } =
+      await import("@/jobs/handlers/webhook-deliver");
     const t0 = new Date("2026-08-25T10:00:00Z");
     const f = fetchWith(500);
     for (let attempt = 1; attempt <= RETRY_SCHEDULE_S.length; attempt++) {
@@ -160,18 +166,28 @@ describe("webhooks", () => {
         statusCode: 500,
         nextRetryAt: new Date(now.getTime() + delay * 1000),
       });
-      expect(enqueue).toHaveBeenLastCalledWith(
+      // deliver() never enqueues its own retry (exclusive queue: the key is
+      // taken while its job is active); the sweep does, once the row is due.
+      expect(enqueue).not.toHaveBeenCalled();
+      bossEnqueue.mockClear();
+      const due = new Date(now.getTime() + delay * 1000);
+      expect(await sweepWebhookRetries(new Date(due.getTime() - 1))).toBe(0);
+      expect(bossEnqueue).not.toHaveBeenCalled();
+      expect(await sweepWebhookRetries(due)).toBe(1);
+      expect(bossEnqueue).toHaveBeenCalledWith(
         "webhook.deliver",
         { deliveryId: id },
-        { singletonKey: id, startAfter: delay },
+        { singletonKey: id },
       );
       // The failure clock starts at the first failure and stays put.
       expect((await hook(w.data.id)).failingSince).toEqual(
         new Date(t0.getTime() + 1000),
       );
     }
-    expect(enqueue).toHaveBeenCalledTimes(RETRY_SCHEDULE_S.length);
-    // Sixth failure: no delay left → exhausted, nothing enqueued.
+    // A sweep whose send is deduped (job still queued/active) counts nothing.
+    bossEnqueue.mockResolvedValueOnce(null);
+    expect(await sweepWebhookRetries(new Date(t0.getTime() + 9e5))).toBe(0);
+    // Sixth failure: no delay left → exhausted, nothing left for the sweep.
     expect(
       await deliver(id!, {
         fetch: f,
@@ -179,7 +195,8 @@ describe("webhooks", () => {
         now: new Date(t0.getTime() + 9e5),
       }),
     ).toMatchObject({ status: "exhausted", attempt: 6, nextRetryAt: null });
-    expect(enqueue).toHaveBeenCalledTimes(RETRY_SCHEDULE_S.length);
+    expect(await sweepWebhookRetries(new Date(t0.getTime() + 9e6))).toBe(0);
+    expect(enqueue).not.toHaveBeenCalled();
     expect((await hook(w.data.id)).enabled).toBe(true);
     // A network error (thrown fetch) counts as a failure with no status code.
     const [id2] = await fanOutEvent(
@@ -295,9 +312,15 @@ describe("webhooks", () => {
     expect(
       (await replayDelivery(actor, t.data.deliveryId, { enqueue })).ok,
     ).toBe(true);
-    expect(await listDeliveries("org_1", w.data.id)).toMatchObject([
-      { attempt: 0, status: "pending", statusCode: null, deliveredAt: null },
-    ]);
+    const [replayed] = await listDeliveries("org_1", w.data.id);
+    expect(replayed).toMatchObject({
+      attempt: 0,
+      status: "pending",
+      statusCode: null,
+      deliveredAt: null,
+    });
+    // Due right away, so a deduped enqueue is caught by the next sweep.
+    expect(replayed!.nextRetryAt!.getTime()).toBeLessThanOrEqual(Date.now());
     const f2 = fetchWith(200);
     await deliver(t.data.deliveryId, { fetch: f2, enqueue });
     const { verifyWebhookSignature } = await import("@sendsprite/shared");
@@ -447,6 +470,7 @@ describe("webhooks", () => {
       );
     };
     const now = new Date("2026-08-25T12:00:00Z");
+    const sends = enqueue.mock.calls.length; // fan-out sent it once already
     expect(
       await deliver(slow!, { fetch: timeout, enqueue, now }),
     ).toMatchObject({
@@ -456,11 +480,8 @@ describe("webhooks", () => {
       responseExcerpt: "The operation was aborted due to timeout",
       nextRetryAt: new Date(now.getTime() + 60_000),
     });
-    expect(enqueue).toHaveBeenLastCalledWith(
-      "webhook.deliver",
-      { deliveryId: slow },
-      { singletonKey: slow, startAfter: 60 },
-    );
+    // The retry is left to the sweep; deliver() itself sends nothing.
+    expect(enqueue.mock.calls).toHaveLength(sends);
     // Enqueue failure: the row is marked failed instead of lingering pending.
     const broken = vi.fn(async () => {
       throw new Error("pg-boss down");

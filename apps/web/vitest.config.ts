@@ -21,6 +21,9 @@ export default defineConfig({
           environment: "node",
           testTimeout: 120_000,
           hookTimeout: 180_000,
+          // Each file boots its own embedded Postgres; more than a few at
+          // once starves the machine and flakes the slow loop tests.
+          maxWorkers: 4,
         },
       },
     ],
