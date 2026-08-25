@@ -339,6 +339,11 @@ export function planFromProductMetadata(
  * Subscription lifecycle states we model. The list is Polar's, but the names
  * are generic enough to survive a provider swap; anything not in it is stored
  * verbatim and treated as not entitling.
+ *
+ * Verified in Task 5 against `SubscriptionStatus` in `@polar-sh/sdk@0.49.0`:
+ * the eight below are exactly the SDK's set, in the same order, `paused`
+ * included. No correction was needed. A unit test in `apps/web` pins the two
+ * together so an SDK upgrade that changes the set fails loudly.
  */
 export const SUBSCRIPTION_STATUSES = [
   "incomplete",
@@ -2031,6 +2036,51 @@ and await it in `getBillingProvider` (Task 6's `index.ts`), right before returni
 
 > The one uncertainty in this task, and the only place to adjust: the page shape of `polar.products.list` / `polar.customerMeters.list` in `@polar-sh/sdk@0.49.0`. The code assumes the Speakeasy page iterator (`for await (const page of await …) page.result.items`). If it differs, change the two `for await` loops only — `planProductsFrom` takes a plain array and is what the tests drive, so nothing else moves.
 
+### What Task 5 actually shipped — deviations from the draft above
+
+The page-iterator shape was right; `for await (const page of await …) page.result.items` is
+exactly what `@polar-sh/sdk@0.49.0` returns for both list calls, and neither loop moved. What
+did change, all of it forced by reading the installed SDK:
+
+1. **`validateEvent` takes the _raw_ secret, not base64.** It base64-encodes what it is given
+   before constructing the Standard Webhooks key. So `POLAR_WEBHOOK_SECRET` holds the raw
+   dashboard secret, and a test that signs a delivery must build its `Webhook` with the
+   **base64 form** of that same string. The draft test did the opposite and could never have
+   produced a valid signature.
+2. **`validateEvent` also _parses_, strictly, per event type**, and throws
+   `SDKValidationError` on an unknown type or a payload the pinned models do not match — so
+   the draft's expectation that `benefit.created` with `{ id: "ben_1" }` normalises to
+   `ignored` cannot come from a bare try/catch. `verifyWebhook` now classifies the failure:
+   a `WebhookVerificationError` (bad signature, missing headers, timestamp outside the 5-minute
+   replay window) is `{ ok: false }`; anything else happened _after_ the signature passed, so
+   the delivery is authentic and merely unmodelled — it becomes `ignored`, because refusing
+   would make Polar retry a delivery that can never succeed. The one exception is a
+   **subscription** type, where silently dropping the event loses an entitlement change: that
+   returns `{ ok: false }` so it retries and shows up in Polar's failed-delivery list.
+3. **`overageCapCents`** is populated off the metered price (amendment C).
+4. **`polarUsageEvents(events, fallbackName)` is extracted and exported** so the ingest
+   mapping — `metadata.count`, which is what the org's `emails` meter sums — is unit-testable
+   without a network. `ingestUsage` chunks the mapped array.
+5. **The SDK client is typed with `import type { Polar } from "@polar-sh/sdk"`** rather than a
+   hand-rolled structural `PolarSdk`. A type-only import is erased, so the lazy-load guarantee
+   is untouched, and the four call sites are now checked against the real request/response
+   types. The **payload** shapes (`PolarPrice`, `PolarProduct`, `PolarSubscription`) are still
+   re-declared and are now _exported_, so the pure functions can be driven from a test with a
+   plain typed object instead of `as never`. `unitAmount` was dropped from `PolarPrice` (never
+   read) and `capAmount` added.
+6. **`order.paid` reports the payload's own `timestamp` as `paidAt`**, not `new Date()`.
+7. **`standardwebhooks` is a devDependency of `apps/web`**, as this task's step 5 anticipated:
+   it is not hoisted where the test can resolve it otherwise.
+8. The `ready?()` hook landed on `BillingProvider` as drafted. `verifyWebhook` returns
+   `{ ok: false, reason: "provider SDK not loaded" }` if called cold, and warms the cache for
+   the redelivery.
+
+Step 5's expected count is **23 tests**, not 10: the extra ones cover the replay window, a
+signature replayed under a new delivery id, the cold-start path, the ingest mapping, the
+`SUBSCRIPTION_STATUSES` pin from amendment D, and two wire-format fixtures (a real
+`subscription.updated` and a real `order.paid`, in Polar's own snake_case JSON) that prove the
+pinned SDK parses a genuine payload into the fields the billing service reads.
+
 - [ ] **Step 5: Run the test to verify it passes**
 
 Run: `cd apps/web && bunx vitest run --project unit tests/unit/billing-polar.test.ts`
@@ -2075,6 +2125,15 @@ overage per cycle and Scale at $500 via `cap_amount` on their metered prices. No
 app enforces this; it is provider configuration. Surface it if it is cheaply available on the
 subscription payload, but do not model it in `PlanMetadata`.
 
+_Settled in Task 5: it is cheaply available, so it is surfaced._ `capAmount` sits on the same
+`ProductPriceMeteredUnit` object the `hasMeteredPrice` check already has in hand, on both
+`subscription.prices` and `product.prices`. `ProviderSubscription` therefore gained an optional
+`overageCapCents?: number | null`, the Polar provider populates it, and the fake grew a matching
+per-product default (Pro 20 000, Scale 50 000) plus a `FakeSubscriptionInput.overageCapCents`
+override. `null` means "metered but uncapped" or "no metered price at all". `PlanProduct` was
+deliberately **not** extended — the catalog listing has no consumer for a cap in this phase.
+The field is display-only; no cap is enforced anywhere in this app.
+
 **E. Timestamp precision and the metering key.** `billing_usage.period_start`,
 `team_billing.period_start` and `team_billing.provider_modified_at` are `precision: 3`
 (migration 0012 was amended in place, pre-deployment). Beyond precision, the _live_ hazard is
@@ -2113,6 +2172,17 @@ During Task 5, diff it against `SubscriptionStatus` in `@polar-sh/sdk` and corre
 constant and this plan. The constant is documentation only: the DB column is plain `text` and
 `BillingStateObject.status` is `z.string()`, so an unmodelled status is stored verbatim and is
 non-entitling by construction.
+
+_Settled in Task 5: the suspicion was wrong and nothing changed._ `SubscriptionStatus` in
+`@polar-sh/sdk@0.49.0` is exactly `incomplete`, `incomplete_expired`, `trialing`, `active`,
+`past_due`, `canceled`, `unpaid`, `paused` — the same eight names in the same order.
+`paused` **is** a Polar status: the subscription payload carries `pause_at_period_end`,
+`paused_at` and `resumes_at` to go with it. The list resembles Stripe's because Polar's own
+model does. The constant's comment now records the diff, and
+`apps/web/tests/unit/billing-polar.test.ts` asserts the two are equal so a later SDK bump that
+moves the set fails a test instead of rotting a comment. The assertion lives in `apps/web`
+because `@sendsprite/shared` must stay free of a provider dependency. Note the SDK's enum is
+itself open (`OpenEnum`), which is the same tolerance the plain `text` column gives us.
 
 ## Task 6: The billing service — state, plan resolution, event application
 

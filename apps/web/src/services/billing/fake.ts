@@ -85,6 +85,17 @@ const PRODUCT_METADATA: Record<string, Record<string, unknown>> = {
 };
 
 /**
+ * Per-cycle overage ceilings, mirroring the `cap_amount` the sandbox carries
+ * on each metered price. It lives on the price rather than in the metadata
+ * above because that is where the real provider keeps it — and, like the real
+ * one, nothing here enforces it; it is reported so the dashboard can state it.
+ */
+const PRODUCT_CAP_CENTS: Record<string, number | null> = {
+  prod_pro: 20000,
+  prod_scale: 50000,
+};
+
+/**
  * Standard Webhooks signs `<id>.<timestamp>.<body>`, not the body alone —
  * that is what stops a captured signature being replayed under a different
  * delivery id. The fake binds the same three, so a test that tampers with any
@@ -112,6 +123,12 @@ export interface FakeSubscriptionInput {
   modifiedAt?: Date;
   /** Force the metered flag independently of the catalog (overage-off tests). */
   hasMeteredPrice?: boolean;
+  /**
+   * Force the per-cycle overage ceiling. Omit for the product's own cap; pass
+   * `null` for an explicitly uncapped metered price. A subscription with no
+   * metered price reports `null` whatever this says.
+   */
+  overageCapCents?: number | null;
   deliveryId?: string;
 }
 
@@ -222,6 +239,15 @@ export function createFakeProvider(): FakeProvider {
           modifiedAt: string;
         };
         const metadata = PRODUCT_METADATA[d.productId];
+        const hasMeteredPrice =
+          d.hasMeteredPrice ??
+          CATALOG.find((p) => p.productId === d.productId)?.hasMeteredPrice ??
+          false;
+        // An explicit `null` in the payload means "uncapped" and must not fall
+        // through to the product default, so this checks presence, not
+        // nullishness. (`undefined` never survives `JSON.stringify`.)
+        const capOverride =
+          "overageCapCents" in d ? d.overageCapCents : undefined;
         const subscription: ProviderSubscription = {
           subscriptionId: d.subscriptionId,
           customerId: `cus_${d.externalCustomerId ?? "unknown"}`,
@@ -232,10 +258,12 @@ export function createFakeProvider(): FakeProvider {
           currentPeriodEnd: new Date(d.currentPeriodEnd),
           cancelAtPeriodEnd: d.cancelAtPeriodEnd ?? false,
           modifiedAt: new Date(d.modifiedAt),
-          hasMeteredPrice:
-            d.hasMeteredPrice ??
-            CATALOG.find((p) => p.productId === d.productId)?.hasMeteredPrice ??
-            false,
+          hasMeteredPrice,
+          overageCapCents: !hasMeteredPrice
+            ? null
+            : capOverride !== undefined
+              ? capOverride
+              : (PRODUCT_CAP_CENTS[d.productId] ?? null),
           plan: planFromProductMetadata(metadata),
           claimsPlan: claimsPlanMetadata(metadata),
         };

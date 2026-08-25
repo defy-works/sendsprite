@@ -157,6 +157,36 @@ describe("fake billing provider", () => {
     });
   });
 
+  it("reports the per-cycle overage ceiling the way a real price carries it", () => {
+    const cap = (input: Parameters<typeof p.signSubscriptionEvent>[1]) => {
+      const signed = p.signSubscriptionEvent("subscription.updated", input);
+      const r = p.verifyWebhook(signed.body, signed.headers);
+      if (!r.ok || r.event.kind !== "subscription")
+        throw new Error("unreachable");
+      return r.event.subscription.overageCapCents;
+    };
+    const base = {
+      subscriptionId: "sub_cap",
+      externalCustomerId: "org_cap",
+      status: "active",
+    };
+    // The sandbox caps Pro at $200 a cycle and Scale at $500.
+    expect(cap({ ...base, productId: "prod_pro" })).toBe(20000);
+    expect(cap({ ...base, productId: "prod_scale" })).toBe(50000);
+    // An explicit `null` is "uncapped", not "use the default".
+    expect(cap({ ...base, productId: "prod_pro", overageCapCents: null })).toBe(
+      null,
+    );
+    expect(cap({ ...base, productId: "prod_pro", overageCapCents: 999 })).toBe(
+      999,
+    );
+    // No metered price, no ceiling — and Free never has one.
+    expect(
+      cap({ ...base, productId: "prod_pro", hasMeteredPrice: false }),
+    ).toBeNull();
+    expect(cap({ ...base, productId: "prod_free" })).toBeNull();
+  });
+
   it("can simulate a subscription with no metered price on a metered plan", () => {
     const signed = p.signSubscriptionEvent("subscription.updated", {
       subscriptionId: "sub_3",

@@ -100,9 +100,13 @@ export const claimsPlanMetadata = (metadata: unknown): boolean =>
  * where it would fail the webhook and leave the row stale. Do not "fix" the
  * column to use this as an enum.
  *
- * The list has not yet been diffed against `SubscriptionStatus` in
- * `@polar-sh/sdk` (that package is not installed yet), so treat membership as
- * indicative rather than authoritative.
+ * Diffed against `SubscriptionStatus` in `@polar-sh/sdk@0.49.0` and found
+ * identical, `paused` included — Polar really does model a paused
+ * subscription (`pause_at_period_end`, `paused_at`, `resumes_at` all exist on
+ * its subscription payload). The SDK's enum is itself open, so an unlisted
+ * status still round-trips. `apps/web/tests/unit/billing-polar.test.ts` pins
+ * the two together, because this package must stay free of a provider
+ * dependency and so cannot check it itself.
  */
 export const SUBSCRIPTION_STATUSES = [
   "incomplete",

@@ -25,6 +25,16 @@ export interface ProviderSubscription {
   /** Newest of the payload's modified/created stamps; the ordering guard. */
   modifiedAt: Date;
   hasMeteredPrice: boolean;
+  /**
+   * Ceiling the provider itself puts on metered charges per cycle, in cents
+   * (`cap_amount` on the Polar price), or `null` when the metered price is
+   * uncapped or absent. **Display only.** It is provider configuration, not a
+   * plan attribute — which is why it is not in `PlanMetadata` — and nothing in
+   * this app enforces it; it is surfaced only because the billing page can
+   * honestly say "overage is capped at $200 a cycle" when it knows so. Absent
+   * on a provider that has no such concept.
+   */
+  overageCapCents?: number | null;
   plan: PlanMetadata | null;
   /**
    * The product declares one of our plans, however unusable the rest of its
@@ -89,6 +99,12 @@ export class BillingUnavailableError extends Error {
 export interface BillingProvider {
   /** `"polar"`, `"fake"` — stored on `team_billing.provider`. */
   readonly id: string;
+  /**
+   * Optional: pre-load anything `verifyWebhook` needs. Awaited once by the
+   * factory, because `verifyWebhook` is synchronous and an implementation that
+   * loads its SDK lazily cannot do it on the first delivery.
+   */
+  ready?(): Promise<void>;
   /** Catalog products carrying our plan metadata, cheapest first. */
   listPlanProducts(): Promise<PlanProduct[]>;
   createCheckout(input: {
