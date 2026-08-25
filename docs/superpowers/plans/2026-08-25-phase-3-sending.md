@@ -3326,7 +3326,7 @@ SSE route `api/stream/route.ts`: `requireTeam()`; `ReadableStream` that writes `
 - Create: `apps/web/src/app/api/v1/emails/{route.ts,batch/route.ts,[id]/route.ts,[id]/cancel/route.ts}`, `apps/web/src/app/api/v1/domains/{route.ts,[id]/route.ts,[id]/verify/route.ts}`
 - Test: `apps/web/tests/integration/rest-emails.test.ts`
 
-- [ ] **Step 1: Failing test** (calls route handlers with real `Request`s and a real API key from Task 4; SES mocked; enqueue real via `@/jobs/enqueue` with `getBoss()` send-only)
+- [x] **Step 1: Failing test** (calls route handlers with real `Request`s and a real API key from Task 4; SES mocked; enqueue real via `@/jobs/enqueue` with `getBoss()` send-only)
 
 ```ts
 describe("REST /api/v1/emails", () => {
@@ -3376,11 +3376,11 @@ describe("REST /api/v1/emails", () => {
 
 Run → FAIL.
 
-- [ ] **Step 2: Routes**
+- [x] **Step 2: Routes**
 
 Common: `withApiKey`; body via `await req.json().catch(() => null)`; `fail("validation_error", …)` on null. Rate-limit headers on every response: `x-ratelimit-limit` (team daily cap or `sesDailyQuota` or `unlimited`), `x-ratelimit-remaining`, `x-ratelimit-reset` (next UTC midnight epoch) — computed by a small `rateHeaders(teamId)` in `lib/api-response.ts` using `send-limits`. `POST /emails` → `createEmail({ teamId, source: "api", apiKeyId, actorUserId: null, keyDomainId }, body, { enqueue })` → 201 `{ id }` (Resend-compatible). `POST /emails/batch` → `createBatch` → 201 `{ data: [{id}] }`. `GET /emails/[id]` → `{ ...publicEmail(e), events: [...] }`. `GET /emails` → `listEmails` → `{ data, nextCursor }`. `PATCH /emails/[id]` → `rescheduleEmail`. `POST /emails/[id]/cancel` → `cancelEmail`. Domains: `GET /domains` (list, public shape: id, name, status, dnsMode, region, records w/o cloudflareId, createdAt), `POST /domains` (`createDomain` with a synthetic admin actor), `GET /domains/[id]`, `POST /domains/[id]/verify` (`reverifyDomain`), `DELETE /domains/[id]`. `sending_only` keys get 403 on everything except `POST /emails*`.
 
-- [ ] **Step 3: Run, commit** → `feat(web): REST v1 emails and domains endpoints with error envelope and rate headers`.
+- [x] **Step 3: Run, commit** → `feat(web): REST v1 emails and domains endpoints with error envelope and rate headers`.
 
 ---
 

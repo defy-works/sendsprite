@@ -5,6 +5,7 @@ import {
   requireFullPermission,
   type ApiAuthOk,
 } from "./api-auth";
+import { usageSnapshot } from "@/services/send-limits";
 
 /** Error envelope (spec §12): `{ error: { code, message, details? } }`. */
 export const fail = (
@@ -28,6 +29,50 @@ export const ok = (
   });
 
 export const noContent = () => new Response(null, { status: 204 });
+
+/** Largest JSON body accepted (a batch of base64 attachments). */
+export const MAX_BODY_BYTES = 25 * 1024 * 1024;
+
+/**
+ * 413 envelope when the declared body is over the cap, else null. Checked
+ * before parsing so an oversized batch is refused without being buffered.
+ */
+export function tooLarge(req: Request, headers?: HeadersInit) {
+  const len = Number(req.headers.get("content-length"));
+  return len > MAX_BODY_BYTES
+    ? fail(
+        "payload_too_large",
+        `Request body must be at most ${MAX_BODY_BYTES} bytes.`,
+        undefined,
+        headers,
+      )
+    : null;
+}
+
+/**
+ * `x-ratelimit-*` for the emails endpoints: the team's daily cap when set,
+ * else the SES 24-hour quota, else `unlimited`. `reset` is the next UTC
+ * midnight (the daily-cap window) as epoch seconds.
+ */
+export async function rateHeaders(
+  teamId: string,
+  now = new Date(),
+): Promise<Record<string, string>> {
+  const u = await usageSnapshot(teamId, now);
+  const limit = u.dailyLimit ?? u.instanceQuota;
+  const used = u.dailyLimit != null ? u.dailyUsed : u.instanceUsed;
+  const reset = Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate() + 1,
+  );
+  return {
+    "x-ratelimit-limit": limit == null ? "unlimited" : String(limit),
+    "x-ratelimit-remaining":
+      limit == null ? "unlimited" : String(Math.max(0, limit - used)),
+    "x-ratelimit-reset": String(Math.floor(reset / 1000)),
+  };
+}
 
 /** Request body as JSON, or `undefined` when absent/unparseable (caller → 400). */
 export async function readJson(req: Request): Promise<unknown> {

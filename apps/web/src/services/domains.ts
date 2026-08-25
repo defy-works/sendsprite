@@ -60,7 +60,13 @@ const DENIED: Result<never> = {
 };
 const DUPLICATE: Result<never> = {
   ok: false,
+  code: "conflict",
   error: "That domain is already added on this instance.",
+};
+const NOT_FOUND: Result<never> = {
+  ok: false,
+  code: "not_found",
+  error: "Domain not found.",
 };
 const CF_DISCONNECTED =
   "Cloudflare is not connected; add the records manually.";
@@ -204,7 +210,7 @@ export async function retryProvisioning(
 ): Promise<Result> {
   if (!can(actor.role, "domains.manage")) return DENIED;
   const d = await getDomain(actor.teamId, id);
-  if (!d) return { ok: false, error: "Domain not found." };
+  if (!d) return NOT_FOUND;
   if (d.dkimTokens.length > 0)
     return { ok: false, error: "This domain is already provisioned." };
   await db()
@@ -455,7 +461,7 @@ export async function reverifyDomain(
 ): Promise<Result> {
   if (!can(actor.role, "domains.manage")) return DENIED;
   const d = await getDomain(actor.teamId, id);
-  if (!d) return { ok: false, error: "Domain not found." };
+  if (!d) return NOT_FOUND;
   // Before provisioning there is no identity to check; the job will verify.
   if (d.dkimTokens.length === 0)
     return { ok: false, error: "Provisioning hasn't finished yet." };
@@ -506,7 +512,7 @@ export async function deleteDomain(
 ): Promise<Result<DeleteOutcome>> {
   if (!can(actor.role, "domains.manage")) return DENIED;
   const d = await getDomain(actor.teamId, id);
-  if (!d) return { ok: false, error: "Domain not found." };
+  if (!d) return NOT_FOUND;
   const connected = (await getInstanceSettings()).awsMode !== "none";
   if (connected) {
     try {
@@ -555,3 +561,23 @@ export async function deleteDomain(
   });
   return { ok: true, data: { leftoverDnsRecords } };
 }
+
+/** REST shape: DNS records without the Cloudflare ids, no internals. */
+export const publicDomain = (d: Domain) => ({
+  id: d.id,
+  name: d.name,
+  status: d.status,
+  dnsMode: d.dnsMode,
+  region: d.region,
+  records: d.expectedRecords.map((r) => ({
+    kind: r.kind,
+    type: r.type,
+    name: r.name,
+    value: r.value,
+    priority: r.priority ?? null,
+    ok: r.ok,
+  })),
+  lastError: d.lastError,
+  createdAt: d.createdAt,
+  verifiedAt: d.verifiedAt,
+});

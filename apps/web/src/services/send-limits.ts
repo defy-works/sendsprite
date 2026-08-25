@@ -125,6 +125,16 @@ export async function checkTeamCaps(
   return { ok: true };
 }
 
+/** Sends SES accepted (`sent_at`) instance-wide in the trailing 24 h. */
+async function countSentLast24h(now: Date) {
+  const since = new Date(now.getTime() - 24 * 3600 * 1000);
+  const [row] = await db()
+    .select({ n: count() })
+    .from(emails)
+    .where(and(isNotNull(emails.sentAt), gte(emails.sentAt, since)));
+  return Number(row?.n ?? 0);
+}
+
 /**
  * SES Max24HourSend is account-wide: count every send across the instance in
  * the trailing 24 h (`sent_at`, which is set once SES accepted the message).
@@ -137,16 +147,40 @@ export async function checkInstanceQuota(
 ): Promise<CapResult> {
   const s = await getInstanceSettings();
   if (!s.sesDailyQuota) return { ok: true };
-  const since = new Date(now.getTime() - 24 * 3600 * 1000);
-  const [row] = await db()
-    .select({ n: count() })
-    .from(emails)
-    .where(and(isNotNull(emails.sentAt), gte(emails.sentAt, since)));
-  return Number(row?.n ?? 0) + adding > s.sesDailyQuota
+  return (await countSentLast24h(now)) + adding > s.sesDailyQuota
     ? {
         ok: false,
         code: "daily_quota_exceeded",
         message: `SES 24-hour quota of ${s.sesDailyQuota} reached.`,
       }
     : { ok: true };
+}
+
+export interface UsageSnapshot {
+  /** Team daily cap (`team_settings.daily_limit`), null when unlimited. */
+  dailyLimit: number | null;
+  /** Emails created today (UTC) that count against the daily cap. */
+  dailyUsed: number;
+  /** SES Max24HourSend, null when unknown (AWS not connected). */
+  instanceQuota: number | null;
+  /** Instance-wide sends in the trailing 24 h. */
+  instanceUsed: number;
+}
+
+/** What the REST rate-limit headers report. */
+export async function usageSnapshot(
+  teamId: string,
+  now = new Date(),
+): Promise<UsageSnapshot> {
+  const [ts] = await db()
+    .select({ daily: teamSettings.dailyLimit })
+    .from(teamSettings)
+    .where(eq(teamSettings.teamId, teamId));
+  const s = await getInstanceSettings();
+  return {
+    dailyLimit: ts?.daily ?? null,
+    dailyUsed: await countActiveSince(teamId, startOfDay(now)),
+    instanceQuota: s.sesDailyQuota ?? null,
+    instanceUsed: await countSentLast24h(now),
+  };
 }
