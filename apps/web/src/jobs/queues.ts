@@ -4,6 +4,8 @@ export const Q = {
   domainProvision: "domain.provision",
   domainVerify: "domain.verify",
   domainVerifySweep: "domain.verify-sweep",
-  // Phase 3+: "email.send", "webhook.deliver", "retention.purge"
+  emailSend: "email.send",
+  webhookDeliver: "webhook.deliver",
+  retentionPurge: "retention.purge",
 } as const;
 export type QueueName = (typeof Q)[keyof typeof Q];

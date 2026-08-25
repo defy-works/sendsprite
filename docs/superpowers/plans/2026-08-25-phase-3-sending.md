@@ -1965,7 +1965,7 @@ export async function checkInstanceQuota(
 - Modify: `apps/web/src/jobs/queues.ts` (`emailSend: "email.send"`, `webhookDeliver: "webhook.deliver"`, `retentionPurge: "retention.purge"`)
 - Test: `apps/web/tests/integration/emails.test.ts`
 
-- [ ] **Step 1: Failing test**
+- [x] **Step 1: Failing test**
 
 ```ts
 const ctx = {
@@ -2116,7 +2116,7 @@ describe("createEmail", () => {
 
 Write the two sketched cases in full (they're listed as intent; the implementer writes them out). Run → FAIL.
 
-- [ ] **Step 2: Implement**
+- [x] **Step 2: Implement**
 
 `lib/notify.ts`:
 
@@ -2476,7 +2476,15 @@ export async function rescheduleEmail(
 
 Write `createBatch`, `listEmails`, `cancelEmail`, `rescheduleEmail` out fully (the plan sketches their contracts; implement and test them — the tests in Step 1 cover cancel/reschedule and the test file must exercise `listEmails` pagination with 3 rows + limit 2).
 
-- [ ] **Step 3: Run, commit** → `feat(web): emails service — create/batch/list/cancel/reschedule with tracking, suppression, limits`.
+- [x] **Step 3: Run, commit** → `feat(web): emails service — create/batch/list/cancel/reschedule with tracking, suppression, limits`.
+
+**Shipped (deviations from the sketch):**
+
+- Idempotency compares a fingerprint � `subject`, sorted `to`, sha256 of `html` and `text` � not just `subject + to`. The stored html is the tracking-rewritten body, so the retry's html is rewritten with the existing id first (the rewrite is deterministic per id). After retention purged the body only `subject + to` can be compared.
+- `createBatch` runs `createEmail` per item with no outer transaction: on the first failure it returns `{ ok:false, code, error, details:{ index, cause? } }` and the earlier items stay queued (partial success; the Phase 4 SDK surfaces it).
+- `listEmails` returns `{ data, nextCursor }`; cursor = base64url of `${createdAt.toISOString()}|${id}`, a malformed cursor is ignored (first page). `to` uses jsonb `?`, `tag` is `k:v` via `->>`.
+- `cancelEmail` flips status with a single conditional `UPDATE � WHERE status IN (queued, scheduled)` (no check-then-write race) and records `cancelled`; `rescheduleEmail` requires a future ISO time, only for `scheduled`, records no event.
+- `email.send` is registered in `Q` only; the handler is Task 8. SSE `listen()` is Task 11 � `lib/notify.ts` has `notifyTeam` + `teamChannel` only.
 
 ---
 
