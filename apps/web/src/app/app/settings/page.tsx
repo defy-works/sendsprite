@@ -3,6 +3,7 @@ import { can } from "@sendsprite/shared";
 import { db } from "@/db";
 import { invitation, member, user } from "@/db/schema";
 import { requireTeam } from "@/lib/session";
+import { billingConfig } from "@/services/billing/config";
 import { Card, CardHeader, CardTitle, CardBody } from "@/components/ui/Card";
 import { Link } from "@/components/ui/Link";
 import { RenameForm } from "./RenameForm";
@@ -83,6 +84,22 @@ export default async function SettingsPage() {
           </CardHeader>
           <CardBody>
             <InvitePanel invites={invites} />
+          </CardBody>
+        </Card>
+      )}
+      {/* Mirrors the Instance card deliberately: there is no settings
+          sub-nav to extend, and inventing one for a single page would be a
+          bigger change than the page itself. */}
+      {billingConfig().enabled && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Billing</CardTitle>
+          </CardHeader>
+          <CardBody>
+            <p className="text-sm text-white/70">
+              Your plan, this period&apos;s usage and payment details.{" "}
+              <Link href="/app/settings/billing">Open billing</Link>
+            </p>
           </CardBody>
         </Card>
       )}

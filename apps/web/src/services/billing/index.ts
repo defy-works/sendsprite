@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull, lt, lte, or } from "drizzle-orm";
 import {
   can,
   FREE_PLAN_METADATA,
@@ -19,6 +19,7 @@ import { createFakeProvider } from "./fake";
 import {
   BillingUnavailableError,
   type BillingProvider,
+  type PlanProduct,
   type ProviderEvent,
   type ProviderSubscription,
 } from "./provider";
@@ -254,10 +255,22 @@ async function apply(
 }
 
 /**
- * A paid order clears the past-due grace clock — but only when it is *newer*
- * than the last order applied. A late or replayed `order.paid` for an earlier
- * invoice, arriving after the subscription has gone `past_due` again, would
- * otherwise reset the clock and buy another week of paid caps on a dead card.
+ * A paid order clears the past-due grace clock — under two conditions.
+ *
+ * It must be an order **for the subscription we track**. A provider bills every
+ * purchase the customer makes through the same customer record (Polar's
+ * `billingReason: "purchase"` is a one-off product, not a renewal), so an
+ * unrelated receipt would otherwise wipe the grace clock on a subscription
+ * whose card is still dead.
+ *
+ * And it must be *newer* than the last order applied. A late or replayed
+ * `order.paid` for an earlier invoice, arriving after the subscription has gone
+ * `past_due` again, would otherwise reset the clock and buy another week of
+ * paid caps.
+ *
+ * Both are re-stated in the `WHERE` of the write, not only checked against the
+ * row that was read: two deliveries racing on one team would both pass a check
+ * made against the same pre-read row.
  */
 async function applyOrderPaid(
   tx: DbClient,
@@ -268,13 +281,30 @@ async function applyOrderPaid(
   if (!teamId) return { applied: false, reason: "no_external_customer" };
   const before = await billingRow(teamId, tx);
   if (!before) return { applied: false, reason: "no_subscription" };
+  // An order with no subscription id is a one-off purchase by construction.
+  if (!event.subscriptionId || event.subscriptionId !== before.subscriptionId)
+    return { applied: false, reason: "unrelated_order" };
   if (!orderIsNewer(event.paidAt, before.lastOrderPaidAt))
     return { applied: false, reason: "stale" };
-  await tx
+  const updated = await tx
     .update(teamBilling)
     .set({ pastDueAt: null, lastOrderPaidAt: event.paidAt, updatedAt: now })
-    .where(eq(teamBilling.teamId, teamId));
-  return { applied: true };
+    .where(
+      and(
+        eq(teamBilling.teamId, teamId),
+        eq(teamBilling.subscriptionId, event.subscriptionId),
+        or(
+          isNull(teamBilling.lastOrderPaidAt),
+          lt(teamBilling.lastOrderPaidAt, event.paidAt),
+        ),
+      ),
+    )
+    .returning({ teamId: teamBilling.teamId });
+  // Nothing matched: a concurrent delivery moved the row between the read and
+  // the write, and what it wrote is at least as new as this.
+  return updated.length
+    ? { applied: true }
+    : { applied: false, reason: "stale" };
 }
 
 /**
@@ -424,12 +454,30 @@ export async function applySubscription(
     // `$onUpdate` does not fire on an upsert.
     updatedAt: now,
   };
+  // The ordering guard belongs in the write, not only in the read above.
+  // `db()` runs at READ COMMITTED, and a provider emits several deliveries at
+  // once on a plan change: two handlers can both read the pre-change row and
+  // the later commit then wins with values computed from a stale read —
+  // `canceled` overwriting `active` and blocking a paying customer. Restating
+  // it as `setWhere` makes the database refuse that write.
+  //
+  // `lte`, not `lt`: two deliveries from one provider transaction share a
+  // `modified_at`, and they describe the same object state, so ties keep the
+  // arrival-order behaviour the pre-read check has always had. Only a payload
+  // strictly older than what is stored is refused.
   const [after] = await tx
     .insert(teamBilling)
     .values({ teamId, ...set })
-    .onConflictDoUpdate({ target: teamBilling.teamId, set })
+    .onConflictDoUpdate({
+      target: teamBilling.teamId,
+      set,
+      setWhere: lte(teamBilling.providerModifiedAt, sub.modifiedAt),
+    })
     .returning();
-  if (!after) throw new Error("team_billing upsert returned no row");
+  // No row came back: the conflicting row is newer than this payload, so a
+  // concurrent delivery has already applied something later. Not an error —
+  // the same answer the pre-read check gives when it wins the race.
+  if (!after) return { applied: false, reason: "stale" };
 
   return {
     applied: true,
@@ -492,9 +540,42 @@ const UNAVAILABLE: Result<never> = {
     "Billing is unavailable: the payment provider is not configured correctly on this instance. Please contact support.",
 };
 
-const providerFailure = (what: string, e: unknown, fallback: Result<never>) => {
+/**
+ * The provider's own words about why it is unusable, for the one person who
+ * can act on them.
+ *
+ * On a self-hosted or single-operator instance the person clicking "Manage
+ * billing" is often the person who set `POLAR_ACCESS_TOKEN`, and telling them
+ * "contact support" when the answer is "that variable is empty" wastes the
+ * only diagnosis they could have made themselves. So the detail is attached —
+ * but only for `instance.manage`, which is owner-only and is exactly the
+ * permission to change the configuration being complained about.
+ *
+ * It is deliberately **not** folded into `error`: that string is what a
+ * customer reads, it must stay stable, and keeping the two apart means a
+ * renderer cannot leak the diagnostic by accident. Truncated because a
+ * provider SDK can throw a whole response body, and capped exposure to an
+ * owner is still exposure.
+ */
+const OPERATOR_DETAIL_MAX = 300;
+
+export const operatorDetail = (e: unknown): string =>
+  (e instanceof Error ? `${e.name}: ${e.message}` : String(e)).slice(
+    0,
+    OPERATOR_DETAIL_MAX,
+  );
+
+const providerFailure = (
+  what: string,
+  e: unknown,
+  fallback: Result<never>,
+  role: TeamRole,
+): Result<never> => {
   console.error(`[billing] ${what} failed`, e);
-  return e instanceof BillingUnavailableError ? UNAVAILABLE : fallback;
+  if (!(e instanceof BillingUnavailableError)) return fallback;
+  return can(role, "instance.manage")
+    ? { ...UNAVAILABLE, details: { providerDetail: operatorDetail(e) } }
+    : UNAVAILABLE;
 };
 
 /**
@@ -539,11 +620,16 @@ export async function startCheckout(
     });
     return { ok: true, data: { url } };
   } catch (e) {
-    return providerFailure("checkout", e, {
-      ok: false,
-      error: "Could not start checkout. Please try again.",
-      code: "internal_error",
-    });
+    return providerFailure(
+      "checkout",
+      e,
+      {
+        ok: false,
+        error: "Could not start checkout. Please try again.",
+        code: "internal_error",
+      },
+      actor.role,
+    );
   }
 }
 
@@ -578,22 +664,45 @@ export async function openPortal(
     });
     return { ok: true, data: { url } };
   } catch (e) {
-    return providerFailure("portal", e, {
-      ok: false,
-      error: "Could not open the billing portal. Please try again.",
-      code: "internal_error",
-    });
+    return providerFailure(
+      "portal",
+      e,
+      {
+        ok: false,
+        error: "Could not open the billing portal. Please try again.",
+        code: "internal_error",
+      },
+      actor.role,
+    );
   }
 }
 
-/** The catalog for the upgrade UI; empty when billing is off or unreachable. */
-export async function planCatalog() {
-  if (!billingConfig().enabled) return [];
+/**
+ * The catalog for the upgrade UI. Never throws: a provider outage must leave
+ * the billing page renderable — the team's plan and usage come from our own
+ * tables and are still true.
+ *
+ * `error` carries the same operator-only diagnostic `providerFailure` attaches
+ * to a refused action, for the same reason: an owner staring at an empty Plans
+ * grid is usually looking at the *first* symptom of a misconfiguration, and
+ * "try again in a moment" is a lie when the token is empty. **The caller is
+ * responsible for showing it only to `instance.manage`** — it is returned
+ * unconditionally because this function has no actor.
+ */
+export interface PlanCatalog {
+  products: PlanProduct[];
+  /** Why `products` is empty, for an instance owner. Null when it is not. */
+  error: string | null;
+}
+
+export async function planCatalog(): Promise<PlanCatalog> {
+  if (!billingConfig().enabled) return { products: [], error: null };
   try {
-    return await (await getBillingProvider()).listPlanProducts();
+    const products = await (await getBillingProvider()).listPlanProducts();
+    return { products, error: null };
   } catch (e) {
     console.error("[billing] catalog unavailable", e);
-    return [];
+    return { products: [], error: operatorDetail(e) };
   }
 }
 

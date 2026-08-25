@@ -47,6 +47,10 @@ export default defineConfig({
           // Canned SES/SNS/STS responses (src/lib/aws/fake-client.ts); set
           // here unconditionally so CI needs no extra variable.
           AWS_E2E_MOCK: "1",
+          // Billing against the in-memory provider: the e2e proves the page,
+          // the flag and the entitlement wiring without a Polar account.
+          BILLING_ENABLED: "1",
+          BILLING_PROVIDER: "fake",
           // Fake SES reports DKIM/MAIL FROM as SUCCESS so send.spec.ts can
           // verify a domain with one Re-verify click.
           AWS_E2E_VERIFY: "1",

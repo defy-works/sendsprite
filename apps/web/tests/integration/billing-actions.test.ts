@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startPg } from "./_pg";
 import { seedTeamWithKey } from "./helpers";
+import type { FakeProvider } from "@/services/billing/fake";
 import type { BillingProvider } from "@/services/billing/provider";
 
 let pg: Awaited<ReturnType<typeof startPg>>;
@@ -161,6 +162,86 @@ describe("startCheckout", () => {
     if (r.ok) throw new Error("unreachable");
     expect(r.error).toMatch(/not configured/i);
     expect(r.error).not.toMatch(/POLAR_ACCESS_TOKEN|Error:/);
+  });
+
+  it("hands an owner the underlying reason, out of band from the message", async () => {
+    // A misconfigured provider on a self-hosted instance is usually the fault
+    // of the person clicking, and "contact support" wastes the one diagnosis
+    // they could have made. The detail rides in `details`, never in `error`:
+    // the customer-facing string stays stable and a renderer cannot leak the
+    // diagnostic by reaching for the wrong field.
+    const { startCheckout } = await import("@/services/billing");
+    const { team } = await seedTeamWithKey();
+    const r = await startCheckout(
+      OWNER(team.id),
+      "pro",
+      await unavailableProvider(),
+    );
+    if (r.ok) throw new Error("unreachable");
+    expect(r.details).toEqual({
+      providerDetail: "BillingUnavailableError: POLAR_ACCESS_TOKEN is empty",
+    });
+    expect(r.error).not.toMatch(/POLAR_ACCESS_TOKEN/);
+  });
+
+  it("withholds it from an admin, who cannot set the variable it names", async () => {
+    const { startCheckout } = await import("@/services/billing");
+    const { team } = await seedTeamWithKey();
+    const r = await startCheckout(
+      { teamId: team.id, userId: "u_1", role: "admin" },
+      "pro",
+      await unavailableProvider(),
+    );
+    expect(r).toMatchObject({ ok: false, code: "not_configured" });
+    if (r.ok) throw new Error("unreachable");
+    expect(r.details).toBeUndefined();
+  });
+
+  it("does not attach it to an ordinary failure", async () => {
+    // Only `BillingUnavailableError` is an operator problem; a transient
+    // provider error is not, and must not turn into a configuration hint.
+    const { startCheckout } = await import("@/services/billing");
+    const { createFakeProvider } = await import("@/services/billing/fake");
+    const { team } = await seedTeamWithKey();
+    const provider = createFakeProvider();
+    provider.failNext("connect ECONNREFUSED");
+    const r = await startCheckout(OWNER(team.id), "pro", provider);
+    expect(r).toMatchObject({ ok: false, code: "internal_error" });
+    if (r.ok) throw new Error("unreachable");
+    expect(r.details).toBeUndefined();
+  });
+});
+
+describe("planCatalog", () => {
+  it("lists the provider's plan products", async () => {
+    const { planCatalog } = await import("@/services/billing");
+    const c = await planCatalog();
+    expect(c.products.map((p) => p.plan)).toEqual(["free", "pro", "scale"]);
+    expect(c.error).toBeNull();
+  });
+
+  it("degrades to an empty catalog and reports why", async () => {
+    // The page must still render the team's plan and usage from our own
+    // tables when the provider is unreachable; only the upgrade grid is lost.
+    const { planCatalog, getBillingProvider } =
+      await import("@/services/billing");
+    // `BILLING_PROVIDER=fake`, so the memoised provider is the fake and one
+    // `failNext` is enough to stage an outage for exactly the next call.
+    const provider = (await getBillingProvider()) as FakeProvider;
+    provider.failNext("catalog is down");
+    const c = await planCatalog();
+    expect(c.products).toEqual([]);
+    expect(c.error).toBe("Error: catalog is down");
+  });
+
+  it("is empty and silent with billing off", async () => {
+    const { resetEnvCache } = await import("@/env.schema");
+    const { planCatalog } = await import("@/services/billing");
+    delete process.env.BILLING_ENABLED;
+    resetEnvCache();
+    expect(await planCatalog()).toEqual({ products: [], error: null });
+    process.env.BILLING_ENABLED = "1";
+    resetEnvCache();
   });
 });
 
