@@ -1,7 +1,7 @@
-import { registerQueue } from "../boss";
+import { isFinalAttempt, registerQueue } from "../boss";
 import { enqueue } from "../enqueue";
 import { Q } from "../queues";
-import { sendQueuedEmail } from "@/services/ses-send";
+import { reconcileStuckSending, sendQueuedEmail } from "@/services/ses-send";
 
 registerQueue<{ emailId: string }>(
   Q.emailSend,
@@ -10,10 +10,9 @@ registerQueue<{ emailId: string }>(
       await sendQueuedEmail(
         job.data.emailId,
         { enqueue },
-        // pg-boss bumps retryCount on each re-fetch, so the attempt where it
-        // has reached retryLimit is the last one: a retryable SES error there
-        // marks the email `failed` instead of reverting it to `queued`.
-        { finalAttempt: job.retryCount >= job.retryLimit },
+        // A retryable SES error on the last attempt marks the email `failed`
+        // instead of reverting it to `queued`.
+        { finalAttempt: isFinalAttempt(job) },
       );
   },
   {
@@ -22,7 +21,15 @@ registerQueue<{ emailId: string }>(
       retryLimit: 5,
       retryDelay: 30,
       retryBackoff: true,
-      expireInSeconds: 120,
+      // Above the SES client's 120 s request timeout + its retries.
+      expireInSeconds: 300,
     },
   },
 );
+
+// Settles rows a crashed worker left in `sending` (see `reconcileStuckSending`).
+registerQueue(Q.emailReconcile, () => reconcileStuckSending(), {
+  cron: "*/5 * * * *",
+  // retryLimit 0: a failed sweep is simply retried by the next tick.
+  queue: { retryLimit: 0 },
+});

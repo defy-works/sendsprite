@@ -72,8 +72,9 @@ export const emails = pgTable(
     sentAt: timestamp("sent_at", { withTimezone: true }),
     bodyPurgedAt: timestamp("body_purged_at", { withTimezone: true }),
     // Millisecond precision on purpose: the list cursor round-trips
-    // `createdAt` through a JS Date (ms), so a �s column would make the
-    // keyset comparison skip rows created within the same millisecond.
+    // `createdAt` through a JS Date (ms), so a microsecond column would
+    // make the keyset comparison skip rows created within the same
+    // millisecond.
     createdAt: timestamp("created_at", { withTimezone: true, precision: 3 })
       .notNull()
       .defaultNow(),

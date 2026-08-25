@@ -214,3 +214,10 @@ export async function stopWorker() {
   shared.role = "client";
   shared.state = "stopped";
 }
+
+/**
+ * pg-boss bumps `retryCount` on each re-fetch, so the attempt on which it
+ * has reached `retryLimit` is the last one: a failure there is terminal.
+ */
+export const isFinalAttempt = (job: JobWithMetadata<never> | JobWithMetadata) =>
+  job.retryCount >= job.retryLimit;

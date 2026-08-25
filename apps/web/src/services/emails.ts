@@ -16,7 +16,6 @@ import {
   type EmailSource,
 } from "@/db/schema";
 import { domainOf, parseAddress } from "@/lib/email-address";
-import { notifyTeam } from "@/lib/notify";
 import { injectPixel, wrapLinks } from "@/lib/tracking";
 import { loadEnv } from "@/env.schema";
 import { Q } from "@/jobs/queues";
@@ -503,7 +502,6 @@ export async function rescheduleEmail(
     dedupeKey: `local:${id}:reschedule:${at.toISOString()}`,
     payload: { rescheduledTo: at.toISOString() },
   });
-  await notifyTeam(teamId, { type: "email", id });
   await deps.enqueue(Q.emailSend, { emailId: id }, delayOpts(at, now));
   return { ok: true, data: row };
 }

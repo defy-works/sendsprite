@@ -2773,6 +2773,15 @@ On the final failed attempt (I3 pattern from Phase 2: `includeMetadata`), mark t
 
 - [x] **Step 3: Run, commit** → `feat(web): email.send job — SESv2 send with token bucket, retries and failure classes`.
 
+**Shipped (deviations from the sketch; review fixes folded in):**
+
+- Attachments go through SESv2 `Content.Simple.Attachments` (the installed SDK has it); no nodemailer. `ConfigurationOverrides.Tracking` values are the SDK enum `"DISABLED"` (the sketch's `"false"` does not typecheck).
+- Order is pre-read (cheap skips: `missing`, `cancelled`…, `not_due`) → token → **atomic claim** (`UPDATE … WHERE status IN (queued, scheduled) AND due RETURNING`; loser → `skipped: not_claimed`) → SES. Token before claim so rows are never parked in `sending` while waiting; the cost is one wasted token when a claim loses a race. Concurrency test: two parallel sends → one SES call, one `sent` event.
+- `finalAttempt` lives in `sendQueuedEmail` (as in `provisionDomain`); handlers derive it with `isFinalAttempt(job)` from `jobs/boss.ts`. A retryable error on the final attempt marks `failed` + `failed` event and still throws.
+- `NO_RETRY` also covers `NotFoundException` and `ValidationException`. Sandbox detection matches SES's "…failed the check in region…" text (`sandbox_restricted:` prefix in `lastError`, `code` in the event payload).
+- `sent` event `occurredAt` is the SES response time. `email.send` `expireInSeconds: 300`; `makeSes` bounds requests (`NodeHttpHandler` 5 s connect / 120 s request, `maxAttempts: 3`; `@smithy/node-http-handler` added as a direct dep). The e2e fake client path is untouched.
+- Stuck `sending` recovery: cron `email.reconcile-sending` (`*/5 * * * *`, `retryLimit: 0`) runs `reconcileStuckSending(now)`: `sending` rows with `updated_at` older than 10 min become `sent` (dedupe `local:<id>:reconciled`) when a `ses_message_id` exists, else `failed` ("Send did not complete (worker interrupted); not retried because SES may have accepted it.") with a `failed` event.
+
 ---
 
 ### Task 9: SNS ingestion → events, suppressions, webhook fan-out (TDD)

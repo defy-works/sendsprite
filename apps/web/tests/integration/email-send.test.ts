@@ -10,9 +10,26 @@ import {
 } from "vitest";
 import { mockClient } from "aws-sdk-client-mock";
 import { SESv2Client, SendEmailCommand } from "@aws-sdk/client-sesv2";
+import { eq } from "drizzle-orm";
 import { startPg } from "./_pg";
 
 const ses = mockClient(SESv2Client);
+/**
+ * The concurrency test parks both callers after their pre-read so they race
+ * the atomic claim rather than the pre-read (a serialised pool would let the
+ * second pre-read see the first send already done).
+ */
+const gate = vi.hoisted(() => ({ delayMs: 0 }));
+vi.mock("@/services/send-limits", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("@/services/send-limits")>();
+  return {
+    ...mod,
+    takeSesToken: async (now?: Date) => {
+      if (gate.delayMs) await new Promise((r) => setTimeout(r, gate.delayMs));
+      return mod.takeSesToken(now);
+    },
+  };
+});
 let pg: Awaited<ReturnType<typeof startPg>>;
 
 beforeAll(async () => {
@@ -327,5 +344,91 @@ describe("sendQueuedEmail", () => {
       (ev) => ev.type === "failed",
     );
     expect(failed?.payload).toMatchObject({ code: "sandbox_restricted" });
+  });
+
+  it("two concurrent attempts: exactly one SES call, one sent event, the loser is skipped: not_claimed", async () => {
+    ses.on(SendEmailCommand).resolves({ MessageId: "ses-race" });
+    const { updateInstanceSettings } =
+      await import("@/services/instance-settings");
+    await updateInstanceSettings({ sesMaxSendRate: 2 }, undefined, {
+      audit: false,
+    });
+    const { resetRateForTests } = await import("@/services/send-limits");
+    await resetRateForTests(new Date(Date.now() - 10_000));
+    const created = await create();
+    const { sendQueuedEmail } = await import("@/services/ses-send");
+    const deps = { enqueue: vi.fn(async () => "") };
+    gate.delayMs = 100;
+    let outs;
+    try {
+      outs = await Promise.all([
+        sendQueuedEmail(created.id, deps),
+        sendQueuedEmail(created.id, deps),
+      ]);
+    } finally {
+      gate.delayMs = 0;
+    }
+    expect(outs).toEqual(
+      expect.arrayContaining([
+        { outcome: "sent" },
+        { outcome: "skipped", reason: "not_claimed" },
+      ]),
+    );
+    expect(ses.commandCalls(SendEmailCommand)).toHaveLength(1);
+    expect(await events(created.id)).toEqual(["queued", "sent"]);
+    expect(await load(created.id)).toMatchObject({
+      status: "sent",
+      attempts: 1,
+    });
+    await updateInstanceSettings({ sesMaxSendRate: 1 }, undefined, {
+      audit: false,
+    });
+  });
+});
+
+describe("reconcileStuckSending", () => {
+  async function stuck(sesMessageId: string | null, ageMs: number) {
+    const created = await create();
+    const { emails } = await import("@/db/schema");
+    await pg.db
+      .update(emails)
+      .set({
+        status: "sending",
+        attempts: 1,
+        sesMessageId,
+        updatedAt: new Date(Date.now() - ageMs),
+      })
+      .where(eq(emails.id, created.id));
+    return created.id;
+  }
+
+  it("marks a stuck row with a ses_message_id as sent, one without as failed; leaves fresh rows alone", async () => {
+    const withId = await stuck("ses-lost", 11 * 60_000);
+    const without = await stuck(null, 11 * 60_000);
+    const fresh = await stuck(null, 60_000);
+    const { reconcileStuckSending } = await import("@/services/ses-send");
+    const out = await reconcileStuckSending();
+    expect(out.sent).toEqual([withId]);
+    expect(out.failed).toEqual([without]);
+
+    expect(await load(withId)).toMatchObject({
+      status: "sent",
+      sesMessageId: "ses-lost",
+    });
+    expect((await load(withId)).sentAt).toBeInstanceOf(Date);
+    expect(await events(withId)).toEqual(["queued", "sent"]);
+
+    const failed = await load(without);
+    expect(failed.status).toBe("failed");
+    expect(failed.lastError).toBe(
+      "Send did not complete (worker interrupted); not retried because SES may have accepted it.",
+    );
+    expect(await events(without)).toEqual(["queued", "failed"]);
+
+    expect(await load(fresh)).toMatchObject({ status: "sending" });
+    expect(await events(fresh)).toEqual(["queued"]);
+
+    // Idempotent: a second sweep finds nothing.
+    expect(await reconcileStuckSending()).toEqual({ sent: [], failed: [] });
   });
 });

@@ -5,6 +5,7 @@ export const Q = {
   domainVerify: "domain.verify",
   domainVerifySweep: "domain.verify-sweep",
   emailSend: "email.send",
+  emailReconcile: "email.reconcile-sending",
   webhookDeliver: "webhook.deliver",
   retentionPurge: "retention.purge",
 } as const;

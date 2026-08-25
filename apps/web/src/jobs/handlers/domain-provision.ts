@@ -1,4 +1,4 @@
-import { registerQueue } from "../boss";
+import { isFinalAttempt, registerQueue } from "../boss";
 import { enqueue } from "../enqueue";
 import { Q } from "../queues";
 import { provisionDomain } from "@/services/domains";
@@ -10,10 +10,8 @@ registerQueue<{ domainId: string }>(
       await provisionDomain(
         job.data.domainId,
         { enqueue },
-        // pg-boss bumps retryCount on each re-fetch, so the final attempt is
-        // the one where it has reached retryLimit; that attempt's failure is
-        // terminal and marks the domain `failed` (Retry provisioning re-sends).
-        { finalAttempt: job.retryCount >= job.retryLimit },
+        // A terminal failure marks the domain `failed` (Retry provisioning re-sends).
+        { finalAttempt: isFinalAttempt(job) },
       );
   },
   {
