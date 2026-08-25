@@ -49,15 +49,13 @@ test("owner completes setup via manual keys, adds a domain, sees records", async
   const createTeam = page.getByRole("button", { name: "Create team" });
   const checklist = page.getByText("Setup checklist");
   const wizard = page.getByRole("navigation", { name: "Setup steps" });
-  await expect(createTeam.or(checklist).or(wizard)).toBeVisible({
-    timeout: 30_000,
-  });
+  await expect(createTeam.or(checklist).or(wizard)).toBeVisible();
   if (await createTeam.isVisible()) {
     await page.fill("#name", `Acme ${suffix}`);
     await createTeam.click();
     // The team creator is an owner: a fresh instance sends them to the
     // wizard, an instance that already finished setup to the dashboard.
-    await expect(wizard.or(checklist)).toBeVisible({ timeout: 30_000 });
+    await expect(wizard.or(checklist)).toBeVisible();
   }
 
   if (await wizard.isVisible()) {
@@ -68,7 +66,7 @@ test("owner completes setup via manual keys, adds a domain, sees records", async
     // picks the first unfinished step: production access, in the sandbox.
     await expect(
       page.getByRole("heading", { name: "SES production access" }),
-    ).toBeVisible({ timeout: 30_000 });
+    ).toBeVisible();
     await expect(page.getByText("sandbox", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Skip for now" }).click();
     await expect(page).toHaveURL(/step=cloudflare/);
@@ -90,7 +88,7 @@ test("owner completes setup via manual keys, adds a domain, sees records", async
     await expect(manual.or(connected)).toBeVisible();
     if (await manual.isVisible()) {
       await connectAwsWithKeys(page);
-      await expect(connected).toBeVisible({ timeout: 30_000 });
+      await expect(connected).toBeVisible();
       await expect(page.getByText("111111111111")).toBeVisible();
     }
   }
@@ -98,6 +96,10 @@ test("owner completes setup via manual keys, adds a domain, sees records", async
   await page.goto("/app/domains/new");
   await page.fill("#name", domain);
   await page.getByRole("button", { name: "Add domain" }).click();
+  // createDomain (server action) then `router.push("/app/domains/<id>")`: the
+  // URL only changes once `next dev` has compiled that route, which it has
+  // not before this line. A failure would instead keep this page and render
+  // the form's `role="alert"`, so waiting here can only cost time.
   await expect(page).toHaveURL(/\/app\/domains\/dom_/);
 
   // Provisioning is a job on the inline worker; the fake SES issues the DKIM
@@ -132,7 +134,10 @@ test("owner completes setup via manual keys, adds a domain, sees records", async
   const secret = (
     await page
       .locator("code.select-all", { hasText: /^ss_live_/ })
-      .textContent()
+      // The key is minted by a server action, and `textContent` is a locator
+      // call, not an assertion — the global `expect` timeout does not reach
+      // it, so the allowance is spelled out (as in send.spec.ts).
+      .textContent({ timeout: 30_000 })
   )?.trim();
   expect(secret).toMatch(/^ss_live_/);
   saveApiKey(test.info(), secret!);

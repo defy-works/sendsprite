@@ -16,7 +16,7 @@ test("signup → create team → shell renders → settings rename", async ({
   // rather than the URL: either the create-team form or the app shell.
   const createTeam = page.getByRole("button", { name: "Create team" });
   const checklist = page.getByText("Setup checklist");
-  await expect(createTeam.or(checklist)).toBeVisible({ timeout: 30_000 });
+  await expect(createTeam.or(checklist)).toBeVisible();
   await expect(page).toHaveURL(/\/(teams\/new|app)$/);
   if (await createTeam.isVisible()) {
     await page.fill("#name", "Acme");

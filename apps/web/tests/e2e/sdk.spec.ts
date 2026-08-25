@@ -135,7 +135,6 @@ test("SDK: me, domains.list, emails.send + get, and stream sees the change", asy
 
   await expect
     .poll(() => seen.includes(id), {
-      timeout: 15_000,
       message: "the SSE stream never reported the email",
     })
     .toBe(true);

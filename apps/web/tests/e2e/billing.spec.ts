@@ -16,7 +16,7 @@ async function signUpOwner(page: Page, label: string) {
   await page.click("button[type=submit]");
   const createTeam = page.getByRole("button", { name: "Create team" });
   const checklist = page.getByText("Setup checklist");
-  await expect(createTeam.or(checklist)).toBeVisible({ timeout: 30_000 });
+  await expect(createTeam.or(checklist)).toBeVisible();
   if (await createTeam.isVisible()) {
     await page.fill("#name", `Billing ${suffix}`);
     await createTeam.click();
@@ -87,7 +87,7 @@ test("checkout sends the browser to the provider", async ({ page }) => {
     .getByRole("button", { name: "Choose" })
     .click();
 
-  await expect.poll(() => seen.length, { timeout: 15_000 }).toBeGreaterThan(0);
+  await expect.poll(() => seen.length).toBeGreaterThan(0);
   expect(seen[0]).toContain("/checkout/prod_pro");
 });
 
@@ -142,7 +142,7 @@ test("a subscribed team is sent to the portal, not to a checkout that would refu
     .filter({ hasText: "Sendsprite Pro" })
     .getByRole("button", { name: "Choose" })
     .click();
-  await expect.poll(() => seen.length, { timeout: 15_000 }).toBeGreaterThan(0);
+  await expect.poll(() => seen.length).toBeGreaterThan(0);
   const [checkoutUrl] = seen;
   if (!checkoutUrl) throw new Error("no checkout navigation was intercepted");
   const teamId = new URL(checkoutUrl).searchParams.get("customer");
@@ -189,7 +189,7 @@ test("a subscribed team is sent to the portal, not to a checkout that would refu
     .filter({ hasText: "Sendsprite Scale" })
     .getByRole("button", { name: "Change in portal" })
     .click();
-  await expect.poll(() => seen.length, { timeout: 15_000 }).toBeGreaterThan(0);
+  await expect.poll(() => seen.length).toBeGreaterThan(0);
   expect(seen[0]).toContain(`/portal/${teamId}`);
 });
 

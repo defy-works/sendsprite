@@ -6,7 +6,19 @@ const baseURL = process.env.E2E_BASE_URL ?? `http://localhost:${PORT}`;
 
 export default defineConfig({
   testDir: "tests/e2e",
-  timeout: 60_000,
+  // The suite drives `next dev` (see `webServer`), so the first visit to a
+  // route compiles it on demand: milliseconds locally, seconds on a cold CI
+  // runner. Actions and navigations already have the whole test budget
+  // (`actionTimeout`/`navigationTimeout` default to no limit under
+  // @playwright/test); assertions were the outlier at 5 s, which is why they
+  // had to be annotated one at a time — and why the one that was missed
+  // failed the `setup` project and blocked the 13 tests depending on it.
+  // A single global allowance instead: free when the assertion passes, and it
+  // only delays the report of a genuine failure.
+  expect: { timeout: 30_000 },
+  // A spec that walks the wizard, adds a domain and mints a key pays close to
+  // ten first compiles; 60 s left no room for one slow assertion on top.
+  timeout: 120_000,
   reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : "list",
   use: {
     baseURL,

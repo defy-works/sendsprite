@@ -52,10 +52,10 @@ test("the API reference renders with the network cut off", async ({
   await page.goto("/docs/api");
   await expect(
     page.getByText("Sendsprite API", { exact: false }).first(),
-  ).toBeVisible({ timeout: 20_000 });
+  ).toBeVisible();
   await expect(
     page.getByText("sendEmail").or(page.getByText("Send an email")).first(),
-  ).toBeVisible({ timeout: 20_000 });
+  ).toBeVisible();
   expect(external).toEqual([]);
   expect(await loadedMarker(page)).toBe("true");
 

@@ -55,11 +55,11 @@ test("owner verifies a domain, sends via REST and SMTP, sees the log", async ({
   await page.click("button[type=submit]");
   const createTeam = page.getByRole("button", { name: "Create team" });
   const checklist = page.getByText("Setup checklist");
-  await expect(createTeam.or(checklist)).toBeVisible({ timeout: 30_000 });
+  await expect(createTeam.or(checklist)).toBeVisible();
   if (await createTeam.isVisible()) {
     await page.fill("#name", `Send ${suffix}`);
     await createTeam.click();
-    await expect(checklist).toBeVisible({ timeout: 30_000 });
+    await expect(checklist).toBeVisible();
   }
 
   // Domain: provisioning is an inline job; the records table appears once
@@ -69,8 +69,8 @@ test("owner verifies a domain, sends via REST and SMTP, sees the log", async ({
   await page.fill("#name", domain);
   await page.getByRole("button", { name: "Add domain" }).click();
   // Server action, then a client-side push to a route `next dev` has not
-  // compiled yet: 30 s, like setup.spec.ts, rather than the 5 s default.
-  await expect(page).toHaveURL(/\/app\/domains\/dom_/, { timeout: 30_000 });
+  // compiled yet; the config's global `expect` timeout covers the wait.
+  await expect(page).toHaveURL(/\/app\/domains\/dom_/);
   const domainUrl = page.url();
   await reloadUntilVisible(
     page,
@@ -94,7 +94,9 @@ test("owner verifies a domain, sends via REST and SMTP, sees the log", async ({
   const secret = (
     await page
       .locator("code.select-all", { hasText: /^ss_live_/ })
-      // The key is minted by a server action; same first-compile allowance.
+      // The key is minted by a server action, and `textContent` is a locator
+      // call, not an assertion — the global `expect` timeout does not reach
+      // it, so the allowance stays spelled out here.
       .textContent({ timeout: 30_000 })
   )?.trim();
   expect(secret).toMatch(/^ss_live_/);
@@ -169,5 +171,5 @@ test("owner verifies a domain, sends via REST and SMTP, sees the log", async ({
   // deleteDomain (server action) then `router.push("/app/domains")`, which is
   // the first visit to that route in this spec — the dev server compiles it
   // before the navigation completes, and that can take seconds on CI.
-  await expect(page).toHaveURL(/\/app\/domains$/, { timeout: 30_000 });
+  await expect(page).toHaveURL(/\/app\/domains$/);
 });
