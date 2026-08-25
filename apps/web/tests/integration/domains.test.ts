@@ -131,6 +131,27 @@ const pendingIdentity = {
   },
 };
 
+/** SES gave up on the records: the only statuses that demote a verified domain. */
+const failedIdentity = {
+  DkimAttributes: { Status: "FAILED" as const, Tokens: ["t1", "t2", "t3"] },
+  MailFromAttributes: {
+    MailFromDomain: "bounce.x",
+    MailFromDomainStatus: "FAILED" as const,
+    BehaviorOnMxFailure: "USE_DEFAULT_VALUE" as const,
+  },
+};
+const temporaryIdentity = {
+  DkimAttributes: {
+    Status: "TEMPORARY_FAILURE" as const,
+    Tokens: ["t1", "t2", "t3"],
+  },
+  MailFromAttributes: {
+    MailFromDomain: "bounce.x",
+    MailFromDomainStatus: "PENDING" as const,
+    BehaviorOnMxFailure: "USE_DEFAULT_VALUE" as const,
+  },
+};
+
 async function byName(name: string) {
   const [d] = await pg.db.select().from(domains).where(eq(domains.name, name));
   if (!d) throw new Error(`domain ${name} missing`);
@@ -508,8 +529,14 @@ describe("domains", () => {
     await verifyDomain(d.id, { resolver, enqueue: noop.enqueue });
     expect(ses.commandCalls(GetEmailIdentityCommand)).toHaveLength(0);
   });
-  it("reverifyDomain keeps a verified domain verified, demotes only when SES disagrees", async () => {
-    const { reverifyDomain } = await import("@/services/domains");
+  it("reverifyDomain keeps a verified domain verified, demotes only when SES reports FAILED", async () => {
+    const { reverifyDomain, verifyDomain } = await import("@/services/domains");
+    const verifyDomainForced = (id: string) =>
+      verifyDomain(
+        id,
+        { resolver: emptyDns, enqueue: noop.enqueue },
+        { force: true },
+      );
     const before = await byName("mail.acme.com");
     expect(before.status).toBe("verified");
     const success = {
@@ -538,9 +565,29 @@ describe("domains", () => {
     expect(still.lastCheckedAt!.getTime()).toBeGreaterThan(
       before.lastCheckedAt!.getTime(),
     );
-    // SES no longer agrees: demoted to pending, verifiedAt cleared.
+    // A transient SES status (even with the 72 h window long past) keeps
+    // the domain verified; the check notes it and the sweep will look again.
+    await pg.db
+      .update(domains)
+      .set({ verifyUntil: new Date(Date.now() - 1000) })
+      .where(eq(domains.id, before.id));
     ses.reset();
-    ses.on(GetEmailIdentityCommand).resolves(pendingIdentity);
+    ses.on(GetEmailIdentityCommand).resolves(temporaryIdentity);
+    await verifyDomainForced(before.id);
+    const kept = await byName("mail.acme.com");
+    expect(kept).toMatchObject({
+      status: "verified",
+      dkimStatus: "TEMPORARY_FAILURE",
+      mailFromStatus: "PENDING",
+      lastError: "SES reported TEMPORARY_FAILURE/PENDING; will re-check",
+    });
+    expect(kept.verifiedAt!.getTime()).toBe(before.verifiedAt!.getTime());
+    expect(kept.lastCheckedAt!.getTime()).toBeGreaterThan(
+      still.lastCheckedAt!.getTime(),
+    );
+    // SES gave up (FAILED): demoted to pending, verifiedAt cleared.
+    ses.reset();
+    ses.on(GetEmailIdentityCommand).resolves(failedIdentity);
     expect(
       (
         await reverifyDomain(actor, before.id, {
@@ -552,6 +599,7 @@ describe("domains", () => {
     const demoted = await byName("mail.acme.com");
     expect(demoted.status).toBe("pending");
     expect(demoted.verifiedAt).toBeNull();
+    expect(demoted.lastError).toBeNull();
     // Later tests expect the fixture verified again.
     ses.reset();
     ses.on(GetEmailIdentityCommand).resolves(success);
@@ -587,9 +635,9 @@ describe("domains", () => {
     // Without force the verified row is untouched (a stray plain job).
     await verifyDomain(d.id, noop);
     expect(ses.commandCalls(GetEmailIdentityCommand)).toHaveLength(0);
-    // Forced: SES no longer agrees → demoted, `domain.failed` fanned out.
+    // Forced: SES reports FAILED → demoted, `domain.failed` fanned out.
     const enqueue = vi.fn(async () => "job");
-    ses.on(GetEmailIdentityCommand).resolves(pendingIdentity);
+    ses.on(GetEmailIdentityCommand).resolves(failedIdentity);
     await verifyDomain(d.id, { resolver: emptyDns, enqueue }, { force: true });
     expect((await byName("mail.acme.com")).status).toBe("pending");
     expect(await selectSweepCandidates()).toEqual([]);

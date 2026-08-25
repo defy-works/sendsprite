@@ -109,12 +109,33 @@ describe("SMTP relay", () => {
     expect(row.apiKeyId).toMatch(/^key_/);
   });
 
+  it("delivers to the envelope, not the headers: a To header outside RCPT TO is dropped", async () => {
+    const t = transport(secret);
+    const info = await t.sendMail({
+      from: "a@mail.acme.com",
+      to: "customer@x.io",
+      subject: "forwarded to me",
+      text: "t",
+      envelope: { from: "a@mail.acme.com", to: ["me@x.io"] },
+    });
+    expect(info.response).toMatch(/^250/);
+    t.close();
+    const row = await latest();
+    expect(row).toMatchObject({
+      subject: "forwarded to me",
+      to: ["me@x.io"],
+      cc: [],
+      bcc: [],
+    });
+    expect(JSON.stringify(row)).not.toContain("customer@x.io");
+  });
+
   it("refuses AUTH on a plain connection (STARTTLS required by default)", async () => {
     await expect(
       transport(secret, { ignoreTLS: true }).sendMail(mail),
     ).rejects.toThrow(/538/);
     const { emails } = await import("@/db/schema");
-    expect((await pg.db.select().from(emails)).length).toBe(1);
+    expect((await pg.db.select().from(emails)).length).toBe(2);
   });
 
   it("rejects a bad API key with 535", async () => {

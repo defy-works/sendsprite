@@ -107,16 +107,22 @@ export async function handleInbound(
   if (!from?.address) throw new SmtpError("From header required", 501);
   if (!parsed.html && !parsed.text)
     throw new SmtpError("html or text body required", 501);
-  const headerTo = addresses(parsed.to);
-  const envelope = session.envelope.rcptTo.map((r) => r.address);
-  // Header recipients when present, else the envelope (Bcc-only sends).
-  const to = headerTo.length ? headerTo : envelope;
-  const cc = addresses(parsed.cc);
-  // Bcc never appears in the headers: it is what the envelope adds.
-  const visible = new Set([...to, ...cc].map(normaliseEmail));
-  const bcc = [
-    ...new Set(envelope.map(normaliseEmail).filter((e) => !visible.has(e))),
+  // The envelope (RCPT TO) is what gets delivered — never a header address
+  // the client did not also name in RCPT TO (a relayed message can carry a
+  // `To:` of someone the sender is only quoting). Headers only decide which
+  // envelope recipients are visible as To/Cc; the rest are Bcc.
+  const envelope = [
+    ...new Set(session.envelope.rcptTo.map((r) => normaliseEmail(r.address))),
   ];
+  const headerTo = new Set(addresses(parsed.to).map(normaliseEmail));
+  const headerCc = new Set(addresses(parsed.cc).map(normaliseEmail));
+  const cc = envelope.filter((e) => headerCc.has(e) && !headerTo.has(e));
+  let to = envelope.filter((e) => headerTo.has(e));
+  // No usable To header (Bcc-only sends): every non-Cc recipient is To.
+  if (!to.length) to = envelope.filter((e) => !headerCc.has(e));
+  if (!to.length) to = envelope;
+  const visible = new Set([...to, ...cc]);
+  const bcc = envelope.filter((e) => !visible.has(e));
   const headers: Record<string, string> = {};
   for (const { key, line } of parsed.headerLines) {
     if (!isCustomHeader(key)) continue;

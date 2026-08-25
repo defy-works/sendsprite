@@ -362,9 +362,13 @@ async function setError(id: string, lastError: string) {
  * the status (the sweep keeps trying once per tick until reconnect or
  * Re-verify); the SES identity gone is `failed` (the user deletes and
  * re-adds). Any other SES error records `lastError` and rethrows so
- * pg-boss retries. A verified domain is a no-op unless `force` (Re-verify):
- * then it stays verified while SES still agrees and is demoted to pending
- * only when SES reports DKIM or MAIL FROM as no longer SUCCESS.
+ * pg-boss retries. A verified domain is a no-op unless `force` (Re-verify,
+ * daily re-check): then it stays verified while SES still agrees, and is
+ * demoted to pending only when SES reports DKIM or MAIL FROM as `FAILED` or
+ * `NOT_STARTED` (or the identity is gone). A transient SES status
+ * (`PENDING`, `TEMPORARY_FAILURE`) keeps it verified — sending still works
+ * — with `lastError` noting it; the 72 h `verifyUntil` window never applies
+ * to a domain that is already verified.
  */
 export async function verifyDomain(
   domainId: string,
@@ -409,9 +413,22 @@ export async function verifyDomain(
   const spfOk = recs.some((r) => r.kind === "MAIL_FROM_SPF" && r.ok);
   const dmarcOk = recs.some((r) => r.kind === "DMARC" && r.ok);
   // SES is the authority on sending; SPF/DMARC are advisory and shown per-record.
-  const verified = dkimOk && mailFromOk;
+  const sesOk = dkimOk && mailFromOk;
+  const sesStatuses = [
+    ident.DkimAttributes?.Status,
+    ident.MailFromAttributes?.MailFromDomainStatus,
+  ];
+  const hardFailure = sesStatuses.some(
+    (s) => s === "FAILED" || s === "NOT_STARTED",
+  );
+  // Already verified and SES reports only a transient state: keep sending.
+  const transient = d.status === "verified" && !sesOk && !hardFailure;
+  const verified = sesOk || transient;
   const expired =
-    !verified && !!d.verifyUntil && d.verifyUntil.getTime() < Date.now();
+    d.status !== "verified" &&
+    !verified &&
+    !!d.verifyUntil &&
+    d.verifyUntil.getTime() < Date.now();
   const [row] = await db()
     .update(domains)
     .set({
@@ -423,9 +440,13 @@ export async function verifyDomain(
       lastCheckedAt: new Date(),
       status: verified ? "verified" : expired ? "failed" : "pending",
       verifiedAt: verified ? (d.verifiedAt ?? new Date()) : null,
-      lastError: expired
-        ? "Verification timed out after 72 hours. Check the records and click Re-verify."
-        : null,
+      lastError: transient
+        ? `SES reported ${sesStatuses
+            .filter((s) => s && s !== "SUCCESS")
+            .join("/")}; will re-check`
+        : expired
+          ? "Verification timed out after 72 hours. Check the records and click Re-verify."
+          : null,
     })
     .where(eq(domains.id, d.id))
     .returning();
