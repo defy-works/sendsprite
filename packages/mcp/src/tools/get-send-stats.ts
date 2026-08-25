@@ -1,3 +1,4 @@
+import { statsOutput } from "./output";
 import type { ToolRegistration } from "./register";
 import { toolError, toolResult } from "./result";
 
@@ -10,6 +11,7 @@ export const registerGetSendStats: ToolRegistration = (server, client) =>
         "Aggregate counters for the team: emails sent today, over 7 days and over 30 days; " +
         "30-day delivered/bounced/complained rates; and any account-health alerts (a bounce or " +
         "complaint rate high enough to put sending at risk).",
+      outputSchema: statsOutput,
       annotations: { readOnlyHint: true },
     },
     async () => {

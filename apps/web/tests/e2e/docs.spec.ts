@@ -1,4 +1,12 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+/** `--scalar-loaded-api-reference` — set by Scalar's stylesheet, and only by it. */
+const loadedMarker = (page: Page) =>
+  page.evaluate(() =>
+    getComputedStyle(document.documentElement)
+      .getPropertyValue("--scalar-loaded-api-reference")
+      .trim(),
+  );
 
 test("docs pages render and the OpenAPI document is served", async ({
   page,
@@ -16,6 +24,11 @@ test("docs pages render and the OpenAPI document is served", async ({
   const spec = await page.request.get("/api/v1/openapi.json");
   expect(spec.ok()).toBe(true);
   expect(((await spec.json()) as { openapi: string }).openapi).toBe("3.1.0");
+
+  // Scalar's stylesheet is a full CSS reset. It is scoped to the `(reference)`
+  // route group precisely so it cannot reach the prose pages; the marker it
+  // sets on `:root` is how we can tell it did not.
+  expect(await loadedMarker(page)).toBe("");
 });
 
 test("the API reference renders with the network cut off", async ({
@@ -44,12 +57,17 @@ test("the API reference renders with the network cut off", async ({
     page.getByText("sendEmail").or(page.getByText("Send an email")).first(),
   ).toBeVisible({ timeout: 20_000 });
   expect(external).toEqual([]);
+  expect(await loadedMarker(page)).toBe("true");
 
   // Not a dead end: the reference links back into the docs.
   await page.getByRole("link", { name: /docs/i }).first().click();
   await expect(
     page.getByRole("heading", { level: 1, name: /getting started/i }),
   ).toBeVisible();
+  // The back link is a plain anchor, so this is a real page load and the
+  // reference's stylesheet does not follow the reader into the prose pages.
+  // (With `next/link` it would: a soft navigation keeps the route CSS.)
+  expect(await loadedMarker(page)).toBe("");
 });
 
 test("every docs section is reachable from the sidebar", async ({ page }) => {

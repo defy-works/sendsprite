@@ -27,7 +27,11 @@ export const registerSendEmail: ToolRegistration = (server, client) =>
     },
     async (input) => {
       try {
-        return toolResult(await client.emails.send(input));
+        // Only `id`: the advertised output schema is closed, and clients
+        // validate against it, so passing the response through verbatim would
+        // break every one of them the day `POST /emails` grows a field.
+        const { id } = await client.emails.send(input);
+        return toolResult({ id });
       } catch (e) {
         return toolError(e);
       }

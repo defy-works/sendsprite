@@ -1,3 +1,4 @@
+import { pageOutput } from "./output";
 import type { ToolRegistration } from "./register";
 import { toolError, toolResult } from "./result";
 
@@ -14,6 +15,7 @@ export const registerListDomains: ToolRegistration = (server, client) =>
         "List the domains configured on this instance with their verification status and DNS " +
         "records. Only a domain whose status is `verified` can appear in `send_email`'s `from`; " +
         "a `pending` one is still waiting on the DNS records listed here.",
+      outputSchema: pageOutput,
       annotations: { readOnlyHint: true },
     },
     async () => {

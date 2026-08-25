@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { limit, status } from "./list-emails";
+import { pageOutput } from "./output";
 import { compact, type ToolRegistration } from "./register";
 import { toolError, toolResult } from "./result";
 
@@ -32,14 +33,19 @@ export const registerSearchEmails: ToolRegistration = (server, client) =>
           .optional()
           .describe("Sending domain id, e.g. `dom_…` (see `list_domains`)."),
         limit,
+        cursor: z
+          .string()
+          .optional()
+          .describe("`nextCursor` from the previous page of this same search."),
       },
+      outputSchema: pageOutput,
       annotations: { readOnlyHint: true },
     },
-    async ({ to, status, tag, domainId, limit }) => {
+    async ({ to, status, tag, domainId, limit, cursor }) => {
       try {
         return toolResult(
           await client.emails.list(
-            compact({ to, status, tag, domainId, limit }),
+            compact({ to, status, tag, domainId, limit, cursor }),
           ),
         );
       } catch (e) {

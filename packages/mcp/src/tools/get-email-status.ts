@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { emailStatusOutput } from "./output";
 import type { ToolRegistration } from "./register";
 import { toolError, toolResult } from "./result";
 
@@ -19,6 +20,7 @@ export const registerGetEmailStatus: ToolRegistration = (server, client) =>
         `its status, when it was sent, the last error if it failed, and its ${RECENT_EVENTS} most ` +
         "recent delivery events (oldest first).",
       inputSchema: { id: z.string().min(1).describe("Email id, e.g. `em_…`.") },
+      outputSchema: emailStatusOutput,
       annotations: { readOnlyHint: true },
     },
     async ({ id }) => {

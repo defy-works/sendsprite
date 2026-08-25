@@ -1,5 +1,6 @@
 import { EMAIL_STATUS } from "@sendsprite/shared";
 import { z } from "zod";
+import { pageOutput } from "./output";
 import { compact, type ToolRegistration } from "./register";
 import { toolError, toolResult } from "./result";
 
@@ -34,6 +35,7 @@ export const registerListEmails: ToolRegistration = (server, client) =>
           .describe("`nextCursor` from the previous page."),
         status,
       },
+      outputSchema: pageOutput,
       annotations: { readOnlyHint: true },
     },
     async ({ limit, cursor, status }) => {

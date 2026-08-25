@@ -31,6 +31,10 @@ export function ApiReference() {
         // to api.scalar.com — which is most self-hosted instances, and not a
         // service this app may send anyone's API surface to.
         agent: { disabled: true },
+        // Same story, one click further away: the developer toolbar also
+        // defaults to showing on localhost, and its Share/Register buttons
+        // POST the whole document to api.scalar.com / registry.scalar.com.
+        showDeveloperTools: "never",
       }}
     />
   );

@@ -49,9 +49,13 @@ npx @sendsprite/mcp --http 8787
 ```
 
 Serves the streamable HTTP transport at `POST /mcp`, stateless — a new
-transport per request, so it scales behind a load balancer. Put your own
-authentication in front of it: the process holds an API key and does not
-authenticate its callers.
+transport per request, so it scales behind a load balancer.
+
+The process holds an API key and does not authenticate its callers, so it
+binds `127.0.0.1` and refuses `Host` headers that do not name the loopback
+address (DNS rebinding protection). To expose it, set `SENDSPRITE_MCP_HOST`
+and put your own authentication in front of it — the server warns at startup
+when you do. Request bodies are capped at 20 MB.
 
 ## Tools
 

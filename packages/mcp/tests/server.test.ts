@@ -196,6 +196,34 @@ describe("@sendsprite/mcp", () => {
     expect(JSON.stringify(r.content)).toContain("not_found");
   });
 
+  // One rejecting call per tool: no tool may let an API failure escape as a
+  // protocol error, which would end the session instead of informing the model.
+  it.each([
+    ["send_email", { from: "a@b.io", to: ["c@d.io"], subject: "s", text: "t" }],
+    ["get_email_status", { id: "em_1" }],
+    ["list_emails", {}],
+    ["search_emails", { to: "c@d.io" }],
+    ["list_domains", {}],
+    ["get_send_stats", {}],
+  ])("%s reports a rejected call as an isError result", async (name, args) => {
+    const client = fake();
+    const boom = Object.assign(new Error("upstream is down"), {
+      name: "SendspriteError",
+      code: "rate_limited",
+      status: 429,
+    });
+    client.emails.send.mockRejectedValue(boom);
+    client.emails.get.mockRejectedValue(boom);
+    client.emails.list.mockRejectedValue(boom);
+    client.domains.list.mockRejectedValue(boom);
+    client.stats.mockRejectedValue(boom);
+
+    const { c } = await connect(client);
+    const r = await c.callTool({ name, arguments: args });
+    expect(r.isError, name).toBe(true);
+    expect(JSON.stringify(r.content), name).toContain("rate_limited");
+  });
+
   it("reports a non-Sendsprite failure without inventing a code", async () => {
     const client = fake();
     client.stats.mockRejectedValue(new TypeError("fetch failed"));
