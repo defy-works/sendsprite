@@ -1570,7 +1570,7 @@ UI `/app/api-keys`: list (name, prefix `ss_live_ab12…`, permission Badge, last
 - Create: `apps/web/src/services/suppressions.ts`, `apps/web/src/app/app/suppressions/{page.tsx,actions.ts,SuppressionsPanel.tsx}`, `apps/web/src/app/api/v1/suppressions/route.ts`, `apps/web/src/app/api/v1/suppressions/[email]/route.ts`
 - Test: `apps/web/tests/integration/suppressions.test.ts`
 
-- [ ] **Step 1: Failing test**
+- [x] **Step 1: Failing test**
 
 ```ts
 describe("suppressions", () => {
@@ -1615,7 +1615,7 @@ describe("suppressions", () => {
 
 (Same fixture boilerplate as Task 4.) Run → FAIL.
 
-- [ ] **Step 2: Service**
+- [x] **Step 2: Service**
 
 ```ts
 import { and, eq, inArray, desc } from "drizzle-orm";
@@ -1736,7 +1736,7 @@ export async function removeSuppression(
 
 REST: `GET /api/v1/suppressions` (list), `POST` (add manual/unsubscribe), `DELETE /api/v1/suppressions/[email]`. UI `/app/suppressions`: table (email, reason Badge, source email link, created, Remove), add form. `AppShell` NAV: add "Suppressions" after Webhooks.
 
-- [ ] **Step 3: Run, commit** → `feat(web): suppressions — service, REST, dashboard`.
+- [x] **Step 3: Run, commit** → `feat(web): suppressions — service, REST, dashboard`.
 
 ---
 

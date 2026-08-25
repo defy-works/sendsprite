@@ -13,6 +13,7 @@ const NAV = [
   { href: "/app/domains", label: "Domains" },
   { href: "/app/api-keys", label: "API keys" },
   { href: "/app/webhooks", label: "Webhooks" },
+  { href: "/app/suppressions", label: "Suppressions" },
   { href: "/app/templates", label: "Templates" },
   { href: "/app/contacts", label: "Contacts" },
   { href: "/app/campaigns", label: "Campaigns" },
