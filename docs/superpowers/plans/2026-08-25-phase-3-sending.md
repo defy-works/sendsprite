@@ -2505,7 +2505,7 @@ Write `createBatch`, `listEmails`, `cancelEmail`, `rescheduleEmail` out fully (t
 - Modify: `apps/web/src/jobs/handlers/index.ts`
 - Test: `apps/web/tests/integration/email-send.test.ts`
 
-- [ ] **Step 1: Failing test**
+- [x] **Step 1: Failing test**
 
 ```ts
 const ses = mockClient(SESv2Client);
@@ -2584,7 +2584,7 @@ describe("sendQueuedEmail", () => {
 
 Write the sketched cases fully. Run → FAIL.
 
-- [ ] **Step 2: Implement**
+- [x] **Step 2: Implement**
 
 `services/ses-send.ts`:
 
@@ -2768,7 +2768,7 @@ registerQueue<{ emailId: string }>(
 
 On the final failed attempt (I3 pattern from Phase 2: `includeMetadata`), mark the email `failed` with `lastError` — copy the `finalAttempt` approach from `domain-provision.ts`.
 
-- [ ] **Step 3: Run, commit** → `feat(web): email.send job — SESv2 send with token bucket, retries and failure classes`.
+- [x] **Step 3: Run, commit** → `feat(web): email.send job — SESv2 send with token bucket, retries and failure classes`.
 
 ---
 

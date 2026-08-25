@@ -4,3 +4,4 @@ import "./heartbeat";
 import "./ses-refresh-account";
 import "./domain-provision";
 import "./domain-verify";
+import "./email-send";
