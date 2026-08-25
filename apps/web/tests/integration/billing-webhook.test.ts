@@ -614,6 +614,200 @@ describe("handleProviderEvent", () => {
   });
 });
 
+describe("ordering under concurrency", () => {
+  /**
+   * Runs `hook` once, between the moment the code under test builds its insert
+   * and the moment that statement is awaited.
+   *
+   * That gap is the whole bug: `db()` runs at READ COMMITTED, so a handler
+   * reads the row, another delivery commits, and the first then writes values
+   * computed from a read that is no longer true. Staging it with a real second
+   * connection makes the test deterministic — no sleeps, no racing threads —
+   * and leaves the code under test completely untouched.
+   */
+  const hookInsert = <T extends object>(
+    client: T,
+    hook: () => Promise<void>,
+  ): T => {
+    let ran = false;
+    const once = async () => {
+      if (ran) return;
+      ran = true;
+      await hook();
+    };
+    const wrap = <O extends object>(target: O): O =>
+      new Proxy(target, {
+        get(t, prop, recv) {
+          const value = Reflect.get(t, prop, recv) as unknown;
+          if (prop === "then" && typeof value === "function")
+            return (res: unknown, rej: unknown) =>
+              once().then(() =>
+                (value as (...a: unknown[]) => unknown).call(t, res, rej),
+              );
+          if (typeof value !== "function") return value;
+          return (...args: unknown[]) => {
+            const out = (value as (...a: unknown[]) => unknown).apply(t, args);
+            return out && typeof out === "object" ? wrap(out as object) : out;
+          };
+        },
+      });
+    return new Proxy(client, {
+      get(t, prop, recv) {
+        const value = Reflect.get(t, prop, recv) as unknown;
+        if (prop !== "insert" || typeof value !== "function") return value;
+        return (...args: unknown[]) =>
+          wrap((value as (...a: unknown[]) => object).apply(t, args));
+      },
+    });
+  };
+
+  const subscriptionPayload = (
+    teamId: string,
+    subscriptionId: string,
+    status: string,
+    modifiedAt: Date,
+  ) => ({
+    subscriptionId,
+    customerId: `cus_${teamId}`,
+    externalCustomerId: teamId,
+    productId: "prod_pro",
+    status,
+    currentPeriodStart: AUG,
+    currentPeriodEnd: SEP,
+    cancelAtPeriodEnd: false,
+    modifiedAt,
+    hasMeteredPrice: true,
+    overageCapCents: null,
+    plan: {
+      plan: "pro" as const,
+      includedEmails: 50000,
+      overagePer1kCents: 40,
+    },
+    claimsPlan: true,
+  });
+
+  const seedSubscription = async (teamId: string, subscriptionId: string) => {
+    const { handleProviderEvent } = await import("@/services/billing");
+    const e = provider.signSubscriptionEvent("subscription.created", {
+      subscriptionId,
+      externalCustomerId: teamId,
+      productId: "prod_pro",
+      status: "active",
+      currentPeriodStart: AUG,
+      currentPeriodEnd: SEP,
+      modifiedAt: new Date("2026-08-01T00:00:00Z"),
+    });
+    await handleProviderEvent(provider, e.body, e.headers);
+  };
+
+  it("refuses a subscription write whose read has gone stale", async () => {
+    const { applySubscription } = await import("@/services/billing");
+    const { billingRow } = await import("@/services/billing/plans");
+    const { db } = await import("@/db");
+    const { teamBilling } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    const { team } = await seedTeamWithKey();
+    await seedSubscription(team.id, "sub_race");
+
+    // This delivery is newer than what it reads (Aug 1) and older than what
+    // lands underneath it (Aug 20). Only a guard in the write can refuse it.
+    const client = hookInsert(db(), async () => {
+      await db()
+        .update(teamBilling)
+        .set({
+          status: "active",
+          providerModifiedAt: new Date("2026-08-20T00:00:00Z"),
+        })
+        .where(eq(teamBilling.teamId, team.id));
+    });
+    expect(
+      await applySubscription(
+        client,
+        "fake",
+        subscriptionPayload(
+          team.id,
+          "sub_race",
+          "canceled",
+          new Date("2026-08-10T00:00:00Z"),
+        ),
+        "subscription.updated",
+      ),
+    ).toMatchObject({ applied: false, reason: "stale" });
+    // The newer state stands: a paying customer is not cancelled by a delivery
+    // that was overtaken between its read and its write.
+    expect((await billingRow(team.id))!.status).toBe("active");
+  });
+
+  it("applies a subscription write whose read is still current", async () => {
+    // The mirror of the test above: the guard must refuse only what is stale.
+    const { applySubscription } = await import("@/services/billing");
+    const { billingRow } = await import("@/services/billing/plans");
+    const { db } = await import("@/db");
+    const { team } = await seedTeamWithKey();
+    await seedSubscription(team.id, "sub_race_ok");
+    expect(
+      await applySubscription(
+        db(),
+        "fake",
+        subscriptionPayload(
+          team.id,
+          "sub_race_ok",
+          "canceled",
+          new Date("2026-08-20T00:00:00Z"),
+        ),
+        "subscription.updated",
+      ),
+    ).toMatchObject({ applied: true });
+    expect((await billingRow(team.id))!.status).toBe("canceled");
+  });
+
+  it("ignores an order for a subscription it does not track", async () => {
+    // Polar bills one-off purchases through the same customer record. Such an
+    // order clearing the grace clock would hand a dead card another week.
+    const { handleProviderEvent } = await import("@/services/billing");
+    const { billingRow } = await import("@/services/billing/plans");
+    const { team } = await seedTeamWithKey();
+    const a = provider.signSubscriptionEvent("subscription.created", {
+      subscriptionId: "sub_tracked",
+      externalCustomerId: team.id,
+      productId: "prod_pro",
+      status: "past_due",
+      currentPeriodStart: AUG,
+      currentPeriodEnd: SEP,
+    });
+    await handleProviderEvent(provider, a.body, a.headers, AUG);
+    const stampedAt = (await billingRow(team.id))!.pastDueAt;
+    expect(stampedAt).not.toBeNull();
+
+    for (const subscriptionId of ["sub_other", null]) {
+      const order = provider.signOrderPaidEvent({
+        subscriptionId,
+        externalCustomerId: team.id,
+      });
+      expect(
+        await handleProviderEvent(provider, order.body, order.headers),
+      ).toMatchObject({
+        status: 200,
+        applied: false,
+        reason: "unrelated_order",
+      });
+      const row = (await billingRow(team.id))!;
+      expect(row.pastDueAt).toEqual(stampedAt);
+      expect(row.lastOrderPaidAt).toBeNull();
+    }
+
+    // The tracked subscription's own order still clears it.
+    const own = provider.signOrderPaidEvent({
+      subscriptionId: "sub_tracked",
+      externalCustomerId: team.id,
+    });
+    expect(
+      await handleProviderEvent(provider, own.body, own.headers),
+    ).toMatchObject({ applied: true });
+    expect((await billingRow(team.id))!.pastDueAt).toBeNull();
+  });
+});
+
 describe("teamBillingState", () => {
   const NOW = new Date("2026-08-25T12:00:00Z");
 
