@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
 
-test("docs pages and API reference render", async ({ page }) => {
+test("docs pages render and the OpenAPI document is served", async ({
+  page,
+}) => {
   await page.goto("/docs");
   await expect(
     page.getByRole("heading", { level: 1, name: /getting started/i }),
@@ -11,6 +13,29 @@ test("docs pages and API reference render", async ({ page }) => {
     .click();
   await expect(page.getByText("sendsprite-signature").first()).toBeVisible();
 
+  const spec = await page.request.get("/api/v1/openapi.json");
+  expect(spec.ok()).toBe(true);
+  expect(((await spec.json()) as { openapi: string }).openapi).toBe("3.1.0");
+});
+
+test("the API reference renders with the network cut off", async ({
+  page,
+  baseURL,
+}) => {
+  // The whole pitch is self-hosting: an instance on a private network or an
+  // offline runner must render the reference from its own bundle. Everything
+  // that is not this origin is refused, so a CDN fetch cannot silently save
+  // the page — and any attempt is recorded.
+  const origin = new URL(baseURL ?? "http://localhost").origin;
+  const external: string[] = [];
+  await page.route("**/*", async (route) => {
+    const url = route.request().url();
+    if (url.startsWith(origin) || url.startsWith("data:"))
+      return route.fallback();
+    external.push(url);
+    return route.abort();
+  });
+
   await page.goto("/docs/api");
   await expect(
     page.getByText("Sendsprite API", { exact: false }).first(),
@@ -18,10 +43,13 @@ test("docs pages and API reference render", async ({ page }) => {
   await expect(
     page.getByText("sendEmail").or(page.getByText("Send an email")).first(),
   ).toBeVisible({ timeout: 20_000 });
+  expect(external).toEqual([]);
 
-  const spec = await page.request.get("/api/v1/openapi.json");
-  expect(spec.ok()).toBe(true);
-  expect(((await spec.json()) as { openapi: string }).openapi).toBe("3.1.0");
+  // Not a dead end: the reference links back into the docs.
+  await page.getByRole("link", { name: /docs/i }).first().click();
+  await expect(
+    page.getByRole("heading", { level: 1, name: /getting started/i }),
+  ).toBeVisible();
 });
 
 test("every docs section is reachable from the sidebar", async ({ page }) => {
