@@ -660,8 +660,8 @@ describe("teamBillingState", () => {
     const { billingUsage, teamBilling } = await import("@/db/schema");
     const { team } = await seedTeamWithKey();
     // A renewal webhook that never landed: the stored period is stale, so the
-    // entitlement window becomes the calendar month — but the usage row is
-    // still keyed on the stored period start (amendment E).
+    // entitlement window rolls forward onto the next anniversary — but the
+    // usage row is still keyed on the stored period start (amendment E).
     const storedStart = new Date("2026-06-10T00:00:00Z");
     const storedEnd = new Date("2026-07-10T00:00:00Z");
     await db().insert(teamBilling).values({
@@ -683,8 +683,8 @@ describe("teamBillingState", () => {
     });
     expect(await teamBillingState(team.id, NOW)).toMatchObject({
       plan: "pro",
-      periodStart: "2026-08-01T00:00:00.000Z",
-      periodEnd: "2026-09-01T00:00:00.000Z",
+      periodStart: "2026-08-09T00:00:00.000Z",
+      periodEnd: "2026-09-08T00:00:00.000Z",
       reportedUnits: 99,
     });
   });

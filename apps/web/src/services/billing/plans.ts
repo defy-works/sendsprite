@@ -96,6 +96,39 @@ export type BillingSnapshot = Pick<
   | "pastDueAt"
 >;
 
+/**
+ * The window the customer is actually in, when the stored one has gone stale.
+ *
+ * A renewal webhook can lag, and an empty window would mean no cap at all — but
+ * substituting the *calendar month* is wrong in the other direction: it moves
+ * the allowance boundary to the 1st for a customer who bought on the 10th, so
+ * sends already counted against the previous period are counted again and a
+ * customer who has just paid is refused. Rolling the stored period forward by
+ * its own length keeps the anniversary they bought.
+ *
+ * Whole periods only, so the window always contains `now` (the arithmetic
+ * handles a stored period that has not started yet — clock skew, a scheduled
+ * change — by rolling backwards). A period whose length is not positive is not
+ * something to extrapolate from; the calendar month is the last resort.
+ *
+ * Rolling by elapsed *length* rather than by calendar month drifts for a
+ * customer whose anniversary is near the end of a month, but only while the
+ * renewal is late, and by less than the calendar-month jump it replaces.
+ */
+const currentWindow = (row: BillingSnapshot, now: Date): UsageWindow => {
+  const start = row.periodStart.getTime();
+  const end = row.periodEnd.getTime();
+  if (start <= now.getTime() && now.getTime() < end)
+    return { start: row.periodStart, end: row.periodEnd };
+  const length = end - start;
+  if (!(length > 0)) return calendarMonth(now);
+  const n = Math.floor((now.getTime() - start) / length);
+  return {
+    start: new Date(start + n * length),
+    end: new Date(start + (n + 1) * length),
+  };
+};
+
 /** Free caps, but still a managed team: the portal must stay reachable. */
 const freeButManaged = (row: BillingSnapshot, now: Date): Entitlement => ({
   ...FREE_ENTITLEMENT(now),
@@ -114,14 +147,19 @@ const freeButManaged = (row: BillingSnapshot, now: Date): Entitlement => ({
  * - `past_due` past its grace window: the same free caps, with the status and
  *   `pastDueAt` carried so the banner can say why. Inside the window the paid
  *   caps stand — see `PAST_DUE_GRACE_MS`.
+ * - Cancelled at the period end, and that end has passed: free caps, whether
+ *   or not the revoke webhook ever arrived. The status alone cannot be
+ *   trusted here — the provider leaves it `active` until the period ends —
+ *   and a row whose revocation was lost would otherwise be handed a fresh
+ *   allowance every month, for ever.
  * - Entitled with a metered price: no monthly cap. The customer has agreed to
  *   pay for the excess and blocking their sending would be the wrong failure.
  * - Entitled without one: the include becomes a hard cap. This is what makes
  *   fixed-tier billing work on its own, before metered pricing is switched on.
- * - A period that no longer contains `now` (a renewal webhook that never
- *   arrived): fall back to the UTC month, so a stale row can never produce an
- *   empty window and with it unlimited sending. This substitution is for
- *   entitlement only — see `meteringPeriodStart`.
+ * - A period that no longer contains `now` (a renewal webhook that has not
+ *   landed yet): roll the stored period forward by its own length, so a stale
+ *   row can never produce an empty window and with it unlimited sending. This
+ *   substitution is for entitlement only — see `meteringPeriodStart`.
  */
 export function entitlementFrom(
   row: BillingSnapshot | undefined,
@@ -129,21 +167,26 @@ export function entitlementFrom(
 ): Entitlement {
   if (!row) return FREE_ENTITLEMENT(now);
   if (!isEntitledStatus(row.status)) return freeButManaged(row, now);
-  // A past_due row with no stamp has no clock to run out: the webhook handler
-  // stamps every transition into past_due, so this is a row written before
-  // that existed, and downgrading it silently would be the worse guess.
+  // Cancelled, and the paid-for period is over. The provider keeps the status
+  // `active` with `cancel_at_period_end` set right up to the boundary, so the
+  // status cannot answer this — and if the revoke webhook is lost, dropped as
+  // stale, or arrives while the team is unknown, nothing else ever will. The
+  // window roll-forward below would otherwise hand this row a fresh allowance
+  // every period for ever, uncapped when overage is enabled.
+  if (row.cancelAtPeriodEnd && now.getTime() >= row.periodEnd.getTime())
+    return freeButManaged(row, now);
+  // The grace clock runs from the stamp when there is one. There need not be:
+  // `order.paid` clears `pastDueAt` without touching `status`, so a row can
+  // sit at `past_due` with no stamp — and treating that as an unstartable
+  // clock would let a dead card send for ever. The period end is the honest
+  // fallback: a subscription goes past due because the renewal was not paid.
+  const graceFrom = row.pastDueAt ?? row.periodEnd;
   if (
     row.status === "past_due" &&
-    row.pastDueAt &&
-    now.getTime() >= row.pastDueAt.getTime() + PAST_DUE_GRACE_MS
+    now.getTime() >= graceFrom.getTime() + PAST_DUE_GRACE_MS
   )
     return freeButManaged(row, now);
-  const fresh =
-    row.periodStart.getTime() <= now.getTime() &&
-    now.getTime() < row.periodEnd.getTime();
-  const window = fresh
-    ? { start: row.periodStart, end: row.periodEnd }
-    : calendarMonth(now);
+  const window = currentWindow(row, now);
   return {
     plan: row.plan,
     status: row.status,
@@ -163,10 +206,10 @@ export function entitlementFrom(
  * The key a team's `billing_usage` row is stored under: the **stored**
  * `team_billing.period_start`, never the window `entitlementFrom` returned.
  *
- * Entitlement substitutes the calendar month whenever the stored period does
- * not contain `now` — a renewal webhook that has not landed yet, a
+ * Entitlement substitutes a rolled-forward window whenever the stored period
+ * does not contain `now` — a renewal webhook that has not landed yet, a
  * non-entitling status. Keying usage off that would mean one metering run
- * keys on the provider period and the next on the calendar month: a second
+ * keys on the provider period and the next on a window we invented: a second
  * row accumulates for hours the first already counted, the watermark resets
  * and the whole period is re-bucketed. The provider-side `externalId` dedupe
  * protects the invoice from that, not our numbers.

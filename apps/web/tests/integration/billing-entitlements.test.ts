@@ -226,7 +226,7 @@ describe("plan entitlements feed the existing caps", () => {
     expect(u.monthlyFrom.toISOString()).toBe("2026-08-10T00:00:00.000Z");
   });
 
-  it("a stale stored period falls back to the calendar month", async () => {
+  it("a stale stored period rolls forward on its own anniversary", async () => {
     await enableBilling();
     const { resolveTeamCaps } = await import("@/services/send-limits");
     const { meteringPeriodStart, billingRow } =
@@ -238,9 +238,12 @@ describe("plan entitlements feed the existing caps", () => {
       periodStart: new Date("2026-06-10T00:00:00Z"),
       periodEnd: new Date("2026-07-10T00:00:00Z"),
     });
+    // The cap window keeps the customer's anniversary rather than jumping to
+    // the 1st, which would re-count sends already consumed against the
+    // previous allowance and refuse a customer who has just paid.
     const caps = await resolveTeamCaps(team.id, NOW);
-    expect(caps.monthlyFrom.toISOString()).toBe("2026-08-01T00:00:00.000Z");
-    expect(caps.monthlyUntil.toISOString()).toBe("2026-09-01T00:00:00.000Z");
+    expect(caps.monthlyFrom.toISOString()).toBe("2026-08-09T00:00:00.000Z");
+    expect(caps.monthlyUntil.toISOString()).toBe("2026-09-08T00:00:00.000Z");
     // The metering key stays on the stored period (amendment E): the two
     // windows are deliberately different and must not be conflated.
     expect(

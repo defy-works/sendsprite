@@ -79,20 +79,70 @@ describe("entitlementFrom", () => {
       });
   });
 
-  it("a stale period (now outside it) falls back to the UTC month", () => {
-    // A renewal webhook that never arrived must not hand out an empty window,
-    // and with it unlimited sending.
+  it("a stale period rolls forward on its own anniversary", () => {
+    // A renewal webhook that has not landed must not hand out an empty window,
+    // and with it unlimited sending — but jumping to the calendar month would
+    // re-count sends already consumed against the previous allowance and 429 a
+    // customer who has just paid.
     const e = entitlementFrom(
       {
         ...row,
-        periodStart: new Date("2026-06-10T00:00:00Z"),
-        periodEnd: new Date("2026-07-10T00:00:00Z"),
+        periodStart: new Date("2026-06-10T09:30:00Z"),
+        periodEnd: new Date("2026-07-10T09:30:00Z"),
       },
       NOW,
     );
+    expect(e.periodStart).toEqual(new Date("2026-08-09T09:30:00.000Z"));
+    expect(e.periodEnd).toEqual(new Date("2026-09-08T09:30:00.000Z"));
+    expect(e.periodStart.getTime()).toBeLessThanOrEqual(NOW.getTime());
+    expect(e.periodEnd.getTime()).toBeGreaterThan(NOW.getTime());
+    expect(e.plan).toBe("pro");
+  });
+
+  it("rolls backwards for a period that has not started yet", () => {
+    const e = entitlementFrom(
+      {
+        ...row,
+        periodStart: new Date("2026-09-10T00:00:00Z"),
+        periodEnd: new Date("2026-10-10T00:00:00Z"),
+      },
+      NOW,
+    );
+    expect(e.periodStart).toEqual(new Date("2026-08-11T00:00:00.000Z"));
+    expect(e.periodEnd).toEqual(new Date("2026-09-10T00:00:00.000Z"));
+  });
+
+  it("falls back to the calendar month for a period of no length", () => {
+    const at = new Date("2026-06-10T00:00:00Z");
+    const e = entitlementFrom({ ...row, periodStart: at, periodEnd: at }, NOW);
     expect(e.periodStart).toEqual(new Date("2026-08-01T00:00:00.000Z"));
     expect(e.periodEnd).toEqual(new Date("2026-09-01T00:00:00.000Z"));
-    expect(e.plan).toBe("pro");
+  });
+
+  it("ends entitlement once a cancelled period is over", () => {
+    // The provider keeps `status: "active"` with `cancelAtPeriodEnd` until the
+    // boundary, and the revoke webhook can be lost, dropped as stale, or land
+    // while the team is unknown. Without this the roll-forward above would
+    // hand a churned customer a fresh allowance every period, for ever.
+    const cancelled = { ...row, cancelAtPeriodEnd: true };
+    // Before the boundary the paid caps still stand — they are paid for.
+    expect(
+      entitlementFrom(cancelled, new Date("2026-09-09T23:59:59Z")),
+    ).toMatchObject({ plan: "pro", monthlyCap: null });
+    expect(
+      entitlementFrom(cancelled, new Date("2026-09-10T00:00:00Z")),
+    ).toMatchObject({
+      plan: "free",
+      includedEmails: 3000,
+      monthlyCap: 3000,
+      status: "active",
+      cancelAtPeriodEnd: true,
+      managed: true,
+    });
+    // A year later it is still free, not re-entitled by a rolled window.
+    expect(
+      entitlementFrom(cancelled, new Date("2027-09-10T00:00:00Z")).plan,
+    ).toBe("free");
   });
 });
 
@@ -139,12 +189,21 @@ describe("entitlementFrom past-due grace", () => {
     expect(e.pastDueAt).toEqual(dueAt);
   });
 
-  it("keeps the plan when the clock was never started", () => {
-    // Defensive: every past_due row is stamped by the webhook handler, but a
-    // row without a stamp must not be silently downgraded.
+  it("runs the clock from the period end when there is no stamp", () => {
+    // A row can sit at `past_due` with no stamp: `order.paid` clears
+    // `pastDueAt` without touching `status`. Treating that as a clock that
+    // never starts would let a dead card send for ever.
+    const unstamped = { ...pastDue, pastDueAt: null };
+    // `periodEnd` is 2026-09-10; the grace runs to the 17th.
     expect(
-      entitlementFrom({ ...pastDue, pastDueAt: null }, new Date("2027-01-01")),
-    ).toMatchObject({ plan: "pro" });
+      entitlementFrom(unstamped, new Date("2026-09-16T00:00:00Z")).plan,
+    ).toBe("pro");
+    expect(
+      entitlementFrom(unstamped, new Date("2026-09-17T00:00:00Z")),
+    ).toMatchObject({ plan: "free", monthlyCap: 3000, status: "past_due" });
+    expect(
+      entitlementFrom(unstamped, new Date("2027-01-01T00:00:00Z")).plan,
+    ).toBe("free");
   });
 
   it("carries pastDueAt onto a non-entitling row", () => {
@@ -163,9 +222,11 @@ describe("meteringPeriodStart", () => {
       periodStart: new Date("2026-06-10T00:00:00Z"),
       periodEnd: new Date("2026-07-10T00:00:00Z"),
     };
+    // The entitlement window has rolled forward off the stored start...
     expect(entitlementFrom(stale, NOW).periodStart).toEqual(
-      new Date("2026-08-01T00:00:00.000Z"),
+      new Date("2026-08-09T00:00:00.000Z"),
     );
+    // ...and the metering key has not moved with it.
     expect(meteringPeriodStart(stale, NOW)).toEqual(stale.periodStart);
   });
 
