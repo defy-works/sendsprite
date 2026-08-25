@@ -13,3 +13,4 @@ export * from "./webhooks";
 export * from "./webhook-deliveries";
 export * from "./send-rate";
 export * from "./worker-heartbeats";
+export * from "./billing";
