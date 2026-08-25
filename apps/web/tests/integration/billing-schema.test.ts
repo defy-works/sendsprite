@@ -65,9 +65,11 @@ describe("billing schema", () => {
   });
 
   // Migration 0011 exists because a µs/ms mismatch silently skipped rows.
-  // These four columns are compared to each other or ordered against a value
+  // These seven columns are compared to each other or ordered against a value
   // that has been through a JS `Date`, so lock the precision down rather than
-  // trusting the next `db:generate` to preserve it.
+  // trusting the next `db:generate` to preserve it. `past_due_at` is
+  // deliberately absent: it is only ever compared to `now() - 7 days`, a
+  // boundary no sub-millisecond difference can move.
   it("stores millisecond precision on the compared timestamps", async () => {
     const { sql } = await import("drizzle-orm");
     const rows = await pg.db.execute(
@@ -76,14 +78,16 @@ describe("billing schema", () => {
           where table_schema = 'public'
             and (table_name, column_name) in (
               ('team_billing', 'period_start'),
+              ('team_billing', 'period_end'),
               ('team_billing', 'provider_modified_at'),
               ('team_billing', 'last_order_paid_at'),
               ('billing_usage', 'period_start'),
+              ('billing_usage', 'period_end'),
               ('billing_events', 'created_at')
             )
           order by table_name, column_name`,
     );
-    expect(rows).toHaveLength(5);
+    expect(rows).toHaveLength(7);
     for (const r of rows) expect(r.datetime_precision).toBe(3);
   });
 

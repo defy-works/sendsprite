@@ -12,7 +12,7 @@ CREATE TABLE "billing_events" (
 CREATE TABLE "billing_usage" (
 	"team_id" text NOT NULL,
 	"period_start" timestamp (3) with time zone NOT NULL,
-	"period_end" timestamp with time zone NOT NULL,
+	"period_end" timestamp (3) with time zone NOT NULL,
 	"reported_through" timestamp with time zone,
 	"reported_units" integer DEFAULT 0 NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -33,7 +33,7 @@ CREATE TABLE "team_billing" (
 	"overage_enabled" boolean DEFAULT false NOT NULL,
 	"cancel_at_period_end" boolean DEFAULT false NOT NULL,
 	"period_start" timestamp (3) with time zone NOT NULL,
-	"period_end" timestamp with time zone NOT NULL,
+	"period_end" timestamp (3) with time zone NOT NULL,
 	"provider_modified_at" timestamp (3) with time zone NOT NULL,
 	"past_due_at" timestamp with time zone,
 	"last_order_paid_at" timestamp (3) with time zone,

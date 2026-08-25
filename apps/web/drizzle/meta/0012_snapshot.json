@@ -1,5 +1,5 @@
 {
-  "id": "c19b3bd9-820f-4339-b97e-35c495c98d28",
+  "id": "610c4e7d-6f5e-4870-a0a4-58df2ee8ec4e",
   "prevId": "5274bd8d-ec4c-4a65-aac7-f5b0086299be",
   "version": "7",
   "dialect": "postgresql",
@@ -2453,7 +2453,7 @@
         },
         "period_end": {
           "name": "period_end",
-          "type": "timestamp with time zone",
+          "type": "timestamp (3) with time zone",
           "primaryKey": false,
           "notNull": true
         },
@@ -2591,7 +2591,7 @@
         },
         "period_end": {
           "name": "period_end",
-          "type": "timestamp with time zone",
+          "type": "timestamp (3) with time zone",
           "primaryKey": false,
           "notNull": true
         },

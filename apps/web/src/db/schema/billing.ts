@@ -45,15 +45,21 @@ export const teamBilling = pgTable("team_billing", {
   /** The subscription carries a metered price → no hard monthly cap. */
   overageEnabled: boolean("overage_enabled").notNull().default(false),
   cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
-  // Millisecond precision, matching `billing_events.created_at` and the rule
-  // migration 0011 established: this value is compared for equality against
-  // `billing_usage.period_start` and round-trips through a JS `Date` (ms), so
-  // a microsecond column could make the two tables disagree about one period.
+  // Both period bounds are millisecond precision, matching
+  // `billing_events.created_at` and the rule migration 0011 established. They
+  // arrive in one provider payload, round-trip through a JS `Date` (ms), and
+  // are compared for equality against `billing_usage`'s pair — and the natural
+  // period identity is `nextPeriodStart === prevPeriodEnd`, so the end bound
+  // needs the same treatment as the start or that comparison misses at the
+  // boundary.
   periodStart: timestamp("period_start", {
     withTimezone: true,
     precision: 3,
   }).notNull(),
-  periodEnd: timestamp("period_end", { withTimezone: true }).notNull(),
+  periodEnd: timestamp("period_end", {
+    withTimezone: true,
+    precision: 3,
+  }).notNull(),
   /**
    * `modified_at` of the newest provider payload applied; the ordering guard
    * that drops an out-of-order webhook. Millisecond precision because it is
@@ -102,14 +108,19 @@ export const billingUsage = pgTable(
     teamId: text("team_id")
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
-    // Millisecond precision: half the primary key, and matched for equality
-    // against `team_billing.period_start`. Both sides must round-trip through
-    // a JS `Date` identically or a lookup silently misses its row.
+    // Millisecond precision on both bounds: `period_start` is half the primary
+    // key and is matched for equality against `team_billing.period_start`, and
+    // `period_end` is what the next period's start is derived from. Every side
+    // must round-trip through a JS `Date` identically or a lookup silently
+    // misses its row.
     periodStart: timestamp("period_start", {
       withTimezone: true,
       precision: 3,
     }).notNull(),
-    periodEnd: timestamp("period_end", { withTimezone: true }).notNull(),
+    periodEnd: timestamp("period_end", {
+      withTimezone: true,
+      precision: 3,
+    }).notNull(),
     reportedThrough: timestamp("reported_through", { withTimezone: true }),
     reportedUnits: integer("reported_units").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true })
