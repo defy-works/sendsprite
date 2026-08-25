@@ -531,8 +531,8 @@ describe("webhooks", () => {
         },
       );
       // No `fetch` injected: the service resolves, pins and fetches itself.
-      // undici 8 hands the 3xx itself back under `redirect: "manual"` (an
-      // `opaqueredirect` with status 0 is also accepted by `deliver()`).
+      // `node:http` never follows a redirect, so the 3xx comes back as
+      // itself (an `opaqueredirect` with status 0 is also accepted).
       expect(await deliver(r!, { enqueue })).toMatchObject({
         status: "pending",
         attempt: 1,

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import dns from "node:dns";
+import http from "node:http";
 import { eq } from "drizzle-orm";
 import { webhookDeliveries } from "@/db/schema";
 import { startPg, type TestPg } from "./_pg";
@@ -13,19 +14,15 @@ import { startPg, type TestPg } from "./_pg";
  */
 let pg: TestPg;
 let status = 500;
+let endpoint: http.Server;
+let port = 0;
 const calls: string[] = [];
-// The handler calls deliver() without a fetch seam: the target is resolved
-// (stubbed public) and fetched through undici's `fetch` (Bun's global fetch
-// ignores undici's dispatcher, so the service uses undici's), stubbed here.
-vi.mock("undici", async (importOriginal) => {
-  const mod = await importOriginal<typeof import("undici")>();
-  return {
-    ...mod,
-    fetch: async (url: unknown) => {
-      calls.push(String(url));
-      return new mod.Response("resp", { status });
-    },
-  };
+// The handler calls deliver() without a fetch seam, so the real pinned
+// connection is made: DNS is stubbed to loopback (below) and the endpoint is
+// a local listener, which the address vetting would otherwise refuse.
+vi.mock("@/lib/url-safety", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("@/lib/url-safety")>();
+  return { ...mod, isPublicIp: () => true };
 });
 const actor = {
   userId: "u1",
@@ -65,13 +62,20 @@ beforeAll(async () => {
     `insert into "organization"(id,name,slug,created_at) values ('org_1','Acme','acme',now())`,
   );
   vi.spyOn(dns.promises, "lookup").mockImplementation(
-    async () => [{ address: "93.184.216.34", family: 4 }] as never,
+    async () => [{ address: "127.0.0.1", family: 4 }] as never,
   );
+  endpoint = http.createServer((req, res) => {
+    calls.push(req.url ?? "");
+    res.writeHead(status).end("resp");
+  });
+  await new Promise<void>((r) => endpoint.listen(0, "127.0.0.1", r));
+  port = (endpoint.address() as { port: number }).port;
 });
 afterAll(async () => {
   vi.restoreAllMocks();
   const { stopWorker } = await import("@/jobs/boss");
   await stopWorker();
+  await new Promise<void>((r) => endpoint.close(() => r()));
   await pg.stop();
 });
 
@@ -86,7 +90,8 @@ describe("webhook retries through pg-boss", () => {
     expect(getWorkerState()).toBe("running");
 
     const w = await createWebhook(actor, {
-      url: "https://hooks.acme.com/loop",
+      // Pinned to loopback; the name itself never resolves.
+      url: `http://hooks.acme.test:${port}/loop`,
       events: ["email.delivered"],
     });
     if (!w.ok) throw new Error(w.error);

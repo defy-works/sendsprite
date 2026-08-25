@@ -43,7 +43,6 @@
     "server-only": "^0.0.1",
     "smtp-server": "^3.19.3",
     "sns-validator": "^0.3.5",
-    "undici": "^8.10.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
