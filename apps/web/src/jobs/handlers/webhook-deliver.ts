@@ -5,11 +5,12 @@ import { deliver } from "@/services/webhooks";
 
 // Retries follow the service's own schedule (`deliver` re-enqueues with a
 // delay), so pg-boss must not add its own. A single attempt is bounded by
-// the 10 s request timeout, well under the 60 s expiry.
+// the 10 s request timeout, well under the 60 s expiry. `exclusive` makes
+// `singletonKey: deliveryId` dedup a Replay against a queued retry.
 registerQueue<{ deliveryId: string }>(
   Q.webhookDeliver,
   async (jobs) => {
     for (const job of jobs) await deliver(job.data.deliveryId, { enqueue });
   },
-  { queue: { retryLimit: 0, expireInSeconds: 60 } },
+  { queue: { policy: "exclusive", retryLimit: 0, expireInSeconds: 60 } },
 );

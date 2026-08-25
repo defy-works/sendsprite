@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm";
+import type { WebhookEventType } from "@sendsprite/shared";
 import { db } from "@/db";
 import { emails, type EmailEventType } from "@/db/schema";
 import { parseSesEvent } from "@/lib/ses-events";
@@ -8,7 +9,7 @@ import { fanOutEvent } from "./webhooks";
 import type { Enqueue } from "./domains";
 
 /** Timeline types that fan out to webhooks; the rest are timeline-only. */
-const WEBHOOK_TYPE: Partial<Record<EmailEventType, string>> = {
+const WEBHOOK_TYPE: Partial<Record<EmailEventType, WebhookEventType>> = {
   sent: "email.sent",
   delivered: "email.delivered",
   delivery_delayed: "email.delayed",
@@ -76,7 +77,7 @@ export async function ingestSesEvent(
           recipients: ev.recipients,
         },
       },
-      deps,
+      { ...deps, createdAt: row.occurredAt },
     );
   return { ok: true, recorded: true };
 }

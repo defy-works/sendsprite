@@ -59,7 +59,7 @@ export async function recordTrackingHit(
           ...payload,
         },
       },
-      { enqueue },
+      { enqueue, createdAt: row.occurredAt },
     );
   } catch (err) {
     console.error(`[tracking] ${hit.type} ${emailId}:`, err);

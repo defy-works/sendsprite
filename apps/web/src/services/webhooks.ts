@@ -8,12 +8,15 @@ import {
   SIGNATURE_HEADER,
   EVENT_ID_HEADER,
   WEBHOOK_EVENT_TYPES,
+  type WebhookEventType,
+  type WebhookPayload,
 } from "@sendsprite/shared";
 import { db } from "@/db";
 import { webhookDeliveries, webhooks } from "@/db/schema";
 import { getCipher } from "@/lib/crypto";
 import { recordAudit } from "@/lib/audit";
 import { notifyTeam } from "@/lib/notify";
+import { isPublicHttpUrl } from "@/lib/url-safety";
 import type { Result } from "@/lib/result";
 import type { FetchLike } from "@/lib/cloudflare/client";
 import type { TeamActor } from "./team";
@@ -28,9 +31,11 @@ export const RETRY_SCHEDULE_S = [60, 300, 1800, 7200, 28800] as const;
 export const DISABLE_AFTER_MS = 24 * 3600 * 1000;
 export const DISABLED_REASON = "Disabled after 24 hours of failed deliveries.";
 const TIMEOUT_MS = 10_000;
-const EXCERPT_LEN = 500;
+/** Bytes of the response body kept as `responseExcerpt` (and read at all). */
+export const EXCERPT_LEN = 500;
 /** Event type of the synthetic delivery `sendTestEvent` produces. */
-const TEST_EVENT_TYPE = "email.delivered";
+const TEST_EVENT_TYPE: WebhookEventType = "email.delivered";
+const QUEUE = "webhook.deliver";
 
 const DENIED: Result<never> = {
   ok: false,
@@ -43,11 +48,16 @@ const NOT_FOUND: Result<never> = {
   error: "Webhook not found.",
 };
 
+// https is required in production; dev/test may point at a local http
+// listener. Private targets are rejected everywhere (SSRF: the worker would
+// otherwise POST signed payloads at anything reachable from its network).
 const url = z
-  .url("Enter a valid URL.")
+  .string()
+  .max(2048, "URL is too long.")
   .refine(
-    (u) => u.startsWith("https://") || process.env.NODE_ENV !== "production",
-    "URL must use https.",
+    (u) =>
+      isPublicHttpUrl(u, { httpsOnly: process.env.NODE_ENV === "production" }),
+    "Webhook URL must be a public https address",
   );
 const events = z
   .array(z.enum(WEBHOOK_EVENT_TYPES))
@@ -63,6 +73,26 @@ const invalid = (e: z.ZodError): Result<never> => ({
   error: e.issues[0]?.message ?? "Invalid input.",
 });
 const newSecret = () => `whsec_${randomBytes(32).toString("base64url")}`;
+
+/**
+ * The delivery queue is `exclusive`, so one job per delivery id can be
+ * queued/active at a time: a Replay while a retry is scheduled is deduped
+ * instead of producing two concurrent attempts. `deliver()` additionally
+ * skips rows already `delivered`.
+ */
+const enqueueDelivery = (
+  enqueue: Enqueue,
+  deliveryId: string,
+  startAfter?: number,
+) =>
+  enqueue(
+    QUEUE,
+    { deliveryId },
+    {
+      singletonKey: deliveryId,
+      ...(startAfter !== undefined && { startAfter }),
+    },
+  );
 
 /** REST shape: never the secret, not even encrypted. */
 export const publicWebhook = (w: Webhook) => ({
@@ -215,11 +245,14 @@ export async function rotateSecret(
   return { ok: true, data: { secret } };
 }
 
+/**
+ * Inserts the pending delivery row, then enqueues it. If the enqueue fails
+ * (pg-boss down) the row is marked `failed` so it never lingers as a
+ * pending delivery nothing will pick up; Replay can retry it.
+ */
 async function createDelivery(
   hook: Pick<Webhook, "id" | "teamId">,
-  type: string,
-  eventId: string,
-  data: Record<string, unknown>,
+  payload: WebhookPayload,
   deps: { enqueue: Enqueue },
 ): Promise<string> {
   const id = newId("whd");
@@ -229,40 +262,81 @@ async function createDelivery(
       id,
       webhookId: hook.id,
       teamId: hook.teamId,
-      eventId,
-      eventType: type,
-      payload: { id: eventId, type, createdAt: new Date().toISOString(), data },
+      eventId: payload.id,
+      eventType: payload.type,
+      payload: payload as unknown as Record<string, unknown>,
     });
-  await deps.enqueue("webhook.deliver", { deliveryId: id });
+  try {
+    await enqueueDelivery(deps.enqueue, id);
+  } catch (e) {
+    console.error(`[webhooks] enqueue failed for ${id}:`, e);
+    await db()
+      .update(webhookDeliveries)
+      .set({ status: "failed", responseExcerpt: "could not enqueue" })
+      .where(eq(webhookDeliveries.id, id));
+  }
   return id;
 }
 
 /**
  * Creates a pending delivery per enabled webhook subscribed to `type` and
- * enqueues each. Returns the delivery ids.
+ * enqueues each. `createdAt` is the event's own time (defaults to now).
+ * Returns the delivery ids (including any marked failed at enqueue).
  */
 export async function fanOutEvent(
   teamId: string,
-  type: string,
+  type: WebhookEventType,
   eventId: string,
   data: Record<string, unknown>,
-  deps: { enqueue: Enqueue },
+  deps: { enqueue: Enqueue; createdAt?: Date },
 ): Promise<string[]> {
   const hooks = (await listWebhooks(teamId)).filter(
     (w) => w.enabled && w.events.includes(type),
   );
+  const payload: WebhookPayload = {
+    id: eventId,
+    type,
+    createdAt: (deps.createdAt ?? new Date()).toISOString(),
+    data,
+  };
   const ids: string[] = [];
-  for (const w of hooks)
-    ids.push(await createDelivery(w, type, eventId, data, deps));
+  for (const w of hooks) ids.push(await createDelivery(w, payload, deps));
   return ids;
 }
 
 /**
- * One delivery attempt. Never throws on the HTTP side: a non-2xx, a timeout
- * (10 s) or a network error schedules the next attempt per RETRY_SCHEDULE_S,
- * and the sixth failure marks the delivery `exhausted`. A webhook failing
- * continuously for 24 h is disabled. Returns the delivery row after the
- * attempt, or null when the delivery is gone or its webhook is disabled.
+ * At most EXCERPT_LEN bytes of the body, then the stream is cancelled so a
+ * misbehaving endpoint cannot make the worker download an unbounded reply.
+ */
+async function readExcerpt(res: Response): Promise<string> {
+  const reader = res.body?.getReader();
+  if (!reader) return (await res.text().catch(() => "")).slice(0, EXCERPT_LEN);
+  const chunks: Uint8Array[] = [];
+  let n = 0;
+  try {
+    while (n < EXCERPT_LEN) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      n += value.length;
+    }
+  } catch {
+    // A truncated body is still an excerpt.
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  return new TextDecoder()
+    .decode(Buffer.concat(chunks).subarray(0, EXCERPT_LEN))
+    .slice(0, EXCERPT_LEN);
+}
+
+/**
+ * One delivery attempt. Never throws on the HTTP side: a non-2xx (redirects
+ * are not followed and count as failures), a timeout (10 s) or a network
+ * error schedules the next attempt per RETRY_SCHEDULE_S, and the sixth
+ * failure marks the delivery `exhausted`. A webhook failing continuously
+ * for 24 h is disabled. Returns the delivery row after the attempt, or null
+ * when the delivery is gone or its webhook is disabled.
  */
 export async function deliver(
   deliveryId: string,
@@ -309,10 +383,16 @@ export async function deliver(
         [EVENT_ID_HEADER]: d.eventId,
       },
       body,
+      // A redirect could re-point the signed POST at a host that never
+      // passed URL validation; the customer can update the endpoint instead.
+      redirect: "manual",
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     statusCode = res.status;
-    excerpt = (await res.text().catch(() => "")).slice(0, EXCERPT_LEN);
+    excerpt =
+      res.status >= 300 && res.status < 400
+        ? "redirect not followed"
+        : await readExcerpt(res);
   } catch (e) {
     excerpt = (e as Error).message.slice(0, EXCERPT_LEN);
   }
@@ -353,11 +433,7 @@ export async function deliver(
           nextRetryAt: new Date(now.getTime() + delay * 1000),
         })
         .where(eq(webhookDeliveries.id, deliveryId));
-      await deps.enqueue(
-        "webhook.deliver",
-        { deliveryId },
-        { startAfter: delay },
-      );
+      await enqueueDelivery(deps.enqueue, deliveryId, delay);
     } else
       await db()
         .update(webhookDeliveries)
@@ -399,9 +475,12 @@ export async function sendTestEvent(
     return { ok: false, error: "Enable the webhook before sending a test." };
   const deliveryId = await createDelivery(
     w,
-    TEST_EVENT_TYPE,
-    newId("evt"),
-    { test: true },
+    {
+      id: newId("evt"),
+      type: TEST_EVENT_TYPE,
+      createdAt: new Date().toISOString(),
+      data: { test: true },
+    },
     deps,
   );
   await recordAudit({
@@ -433,7 +512,12 @@ export const listDeliveries = (
     .orderBy(desc(webhookDeliveries.createdAt))
     .limit(limit);
 
-/** Restarts the retry series from attempt 0 and enqueues it right away. */
+/**
+ * Restarts the retry series from attempt 0 and enqueues it right away.
+ * While a retry of the same delivery is still queued the enqueue is deduped
+ * by the exclusive queue key, so the scheduled attempt simply runs from
+ * attempt 0 when it fires rather than running twice.
+ */
 export async function replayDelivery(
   actor: TeamActor,
   deliveryId: string,
@@ -459,7 +543,7 @@ export async function replayDelivery(
     .returning({ webhookId: webhookDeliveries.webhookId });
   if (!row)
     return { ok: false, code: "not_found", error: "Delivery not found." };
-  await deps.enqueue("webhook.deliver", { deliveryId });
+  await enqueueDelivery(deps.enqueue, deliveryId);
   await recordAudit({
     teamId: actor.teamId,
     actorUserId: actor.userId,

@@ -65,12 +65,14 @@ describe("webhooks", () => {
       "email.delivered",
       "evt_1",
       { hello: "world" },
-      { enqueue },
+      { enqueue, createdAt: new Date("2026-08-25T09:00:00.000Z") },
     );
     expect(ids).toHaveLength(1);
-    expect(enqueue).toHaveBeenCalledWith("webhook.deliver", {
-      deliveryId: ids[0],
-    });
+    expect(enqueue).toHaveBeenCalledWith(
+      "webhook.deliver",
+      { deliveryId: ids[0] },
+      { singletonKey: ids[0] },
+    );
     expect(
       await fanOutEvent("org_1", "email.bounced", "evt_2", {}, { enqueue }),
     ).toHaveLength(0);
@@ -93,11 +95,13 @@ describe("webhooks", () => {
     ).toBe(true);
     expect(h.get("sendsprite-event-id")).toBe("evt_1");
     expect(h.get("content-type")).toBe("application/json");
-    expect(JSON.parse(String(f.calls[0]!.init.body))).toMatchObject({
+    expect(JSON.parse(String(f.calls[0]!.init.body))).toEqual({
       id: "evt_1",
       type: "email.delivered",
+      createdAt: "2026-08-25T09:00:00.000Z",
       data: { hello: "world" },
     });
+    expect(f.calls[0]!.init.redirect).toBe("manual");
     // A delivered row is not sent twice (duplicate job).
     expect(await deliver(ids[0]!, { fetch: f, enqueue })).toMatchObject({
       status: "delivered",
@@ -159,7 +163,7 @@ describe("webhooks", () => {
       expect(enqueue).toHaveBeenLastCalledWith(
         "webhook.deliver",
         { deliveryId: id },
-        { startAfter: delay },
+        { singletonKey: id, startAfter: delay },
       );
       // The failure clock starts at the first failure and stays put.
       expect((await hook(w.data.id)).failingSince).toEqual(
@@ -263,9 +267,11 @@ describe("webhooks", () => {
     const enqueue = vi.fn(async () => "");
     const t = await sendTestEvent(actor, w.data.id, { enqueue });
     if (!t.ok) throw new Error(t.error);
-    expect(enqueue).toHaveBeenCalledWith("webhook.deliver", {
-      deliveryId: t.data.deliveryId,
-    });
+    expect(enqueue).toHaveBeenCalledWith(
+      "webhook.deliver",
+      { deliveryId: t.data.deliveryId },
+      { singletonKey: t.data.deliveryId },
+    );
     const f = fetchWith(200);
     await deliver(t.data.deliveryId, { fetch: f, enqueue });
     const body = JSON.parse(String(f.calls[0]!.init.body));
@@ -313,10 +319,30 @@ describe("webhooks", () => {
     expect(
       (await listWebhooks("org_1")).find((x) => x.id === w.data.id)?.url,
     ).toBe("https://hooks.acme.com/t2");
-    // Validation.
+    // Validation: malformed and private targets are refused (create + update).
     expect((await createWebhook(actor, { url: "nope", events: [] })).ok).toBe(
       false,
     );
+    for (const bad of [
+      "https://localhost/hook",
+      "http://127.0.0.1:3000/hook",
+      "https://169.254.169.254/latest/meta-data/",
+      "https://10.0.0.5/",
+      "https://[::1]/",
+      "https://vault.internal/",
+      "ftp://hooks.acme.com/",
+    ]) {
+      expect(
+        await createWebhook(actor, { url: bad, events: ["email.sent"] }),
+        bad,
+      ).toMatchObject({
+        ok: false,
+        error: "Webhook URL must be a public https address",
+      });
+      expect((await updateWebhook(actor, w.data.id, { url: bad })).ok).toBe(
+        false,
+      );
+    }
     expect(
       (
         await createWebhook(actor, {
@@ -361,6 +387,97 @@ describe("webhooks", () => {
     expect((await deleteWebhook(other, w.data.id)).ok).toBe(false);
     expect((await deleteWebhook(actor, w.data.id)).ok).toBe(true);
     expect(await listDeliveries("org_1", w.data.id)).toHaveLength(0); // cascade
+  });
+
+  it("does not follow redirects, caps the response read, records timeouts, and marks un-enqueueable deliveries failed", async () => {
+    const { createWebhook, fanOutEvent, deliver, EXCERPT_LEN } = await svc();
+    const w = await createWebhook(actor, {
+      url: "https://hooks.acme.com/h",
+      events: ["email.sent"],
+    });
+    if (!w.ok) throw new Error(w.error);
+    const enqueue = vi.fn(async () => "");
+    const fan = () =>
+      fanOutEvent("org_1", "email.sent", "evt_h", {}, { enqueue });
+    // 3xx: a failed attempt with the code kept and no body read.
+    const [r] = await fan();
+    const redirect = async () =>
+      new Response(null, {
+        status: 302,
+        headers: { location: "https://elsewhere.example/" },
+      });
+    expect(await deliver(r!, { fetch: redirect, enqueue })).toMatchObject({
+      status: "pending",
+      attempt: 1,
+      statusCode: 302,
+      responseExcerpt: "redirect not followed",
+    });
+    // Large body: only EXCERPT_LEN bytes are read, then the stream is cancelled.
+    const [big] = await fan();
+    let pulls = 0;
+    let cancelled = false;
+    const chunk = new TextEncoder().encode("x".repeat(100));
+    const endless = new ReadableStream<Uint8Array>({
+      pull(c) {
+        pulls++;
+        c.enqueue(chunk);
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const huge = async () => new Response(endless, { status: 200 });
+    const res = await deliver(big!, { fetch: huge, enqueue });
+    expect(res).toMatchObject({ status: "delivered", statusCode: 200 });
+    expect(res!.responseExcerpt).toHaveLength(EXCERPT_LEN);
+    expect(cancelled).toBe(true);
+    expect(pulls).toBeLessThan(20);
+    // A plain large body is truncated too.
+    const [big2] = await fan();
+    const plain = async () => new Response("y".repeat(10_000), { status: 200 });
+    expect(
+      (await deliver(big2!, { fetch: plain, enqueue }))!.responseExcerpt,
+    ).toBe("y".repeat(EXCERPT_LEN));
+    // Timeout (AbortSignal.timeout rejects with a TimeoutError DOMException).
+    const [slow] = await fan();
+    const timeout = async () => {
+      throw new DOMException(
+        "The operation was aborted due to timeout",
+        "TimeoutError",
+      );
+    };
+    const now = new Date("2026-08-25T12:00:00Z");
+    expect(
+      await deliver(slow!, { fetch: timeout, enqueue, now }),
+    ).toMatchObject({
+      status: "pending",
+      attempt: 1,
+      statusCode: null,
+      responseExcerpt: "The operation was aborted due to timeout",
+      nextRetryAt: new Date(now.getTime() + 60_000),
+    });
+    expect(enqueue).toHaveBeenLastCalledWith(
+      "webhook.deliver",
+      { deliveryId: slow },
+      { singletonKey: slow, startAfter: 60 },
+    );
+    // Enqueue failure: the row is marked failed instead of lingering pending.
+    const broken = vi.fn(async () => {
+      throw new Error("pg-boss down");
+    });
+    const [orphan] = await fanOutEvent(
+      "org_1",
+      "email.sent",
+      "evt_o",
+      {},
+      {
+        enqueue: broken,
+      },
+    );
+    expect(await delivery(orphan!)).toMatchObject({
+      status: "failed",
+      responseExcerpt: "could not enqueue",
+    });
   });
 
   it("REST: 401/403, create returns the secret once, list, patch, test, delete", async () => {

@@ -70,6 +70,14 @@ After any path Sendsprite creates the `sendsprite` configuration set, the
 `sns:ConfirmSubscription` for that; without it the webhook falls back to the
 plain SubscribeURL confirm), and reads your account status and quota.
 
+**Webhooks.** Endpoint URLs must be public https addresses: `localhost`,
+`*.local`/`*.internal`, single-label hosts and loopback, private (RFC 1918),
+link-local (incl. `169.254.169.254`), CGNAT and IPv6 ULA/link-local literals
+are rejected, redirects are not followed and replies are read up to 500 bytes.
+The check is syntactic: a public name that resolves to a private address
+(DNS rebinding) is not caught, so run the worker in a network segment that
+cannot reach internal services.
+
 **Sandbox.** New SES accounts start in the sandbox: you can only send to
 verified addresses and at a low quota. The wizard's production step submits
 the request (`PutAccountDetails`: website, use case, expected volume) and an
