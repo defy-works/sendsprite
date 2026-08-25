@@ -5,7 +5,9 @@ import {
 } from "@sendsprite/shared";
 import {
   BillingUnavailableError,
+  isSubscriptionType,
   PLAN_ORDER,
+  SUBSCRIPTION_TYPES,
   type BillingProvider,
   type PlanProduct,
   type ProviderSubscription,
@@ -124,9 +126,7 @@ export function normalisePolarSubscription(
 ): ProviderSubscription {
   const metadata = s.product?.metadata;
   const plan: PlanMetadata | null = planFromProductMetadata(metadata);
-  const teamId =
-    s.customer?.externalId ??
-    (typeof s.metadata?.teamId === "string" ? s.metadata.teamId : null);
+  const teamId = teamIdFrom(s.customer?.externalId, s.metadata);
   const metered = meteredPrice(s.prices ?? s.product?.prices);
   return {
     subscriptionId: s.id,
@@ -144,17 +144,6 @@ export function normalisePolarSubscription(
     claimsPlan: claimsPlanMetadata(metadata),
   };
 }
-
-/** Types we act on. Everything else verifies and is recorded as ignored. */
-const SUBSCRIPTION_TYPES = new Set([
-  "subscription.created",
-  "subscription.updated",
-  "subscription.active",
-  "subscription.canceled",
-  "subscription.uncanceled",
-  "subscription.revoked",
-  "subscription.past_due",
-]);
 
 /** Events per ingest call. Conservative; Polar's own limit is higher. */
 export const INGEST_CHUNK = 500;
@@ -176,9 +165,8 @@ export function polarUsageEvents(events: UsageEvent[], fallbackName: string) {
   }));
 }
 
-/** What the lazy import resolves to, cached for the life of the provider. */
-interface LoadedSdk {
-  polar: Polar;
+/** The webhook validator, cached for the life of the provider. */
+interface LoadedWebhooks {
   validate: (
     body: string,
     headers: Record<string, string>,
@@ -188,49 +176,89 @@ interface LoadedSdk {
 }
 
 export function createPolarProvider(opts: PolarOptions): BillingProvider {
+  // Fail fast on an unusable secret, because the failure it causes downstream
+  // is silent and severe. `standardwebhooks` builds its key in the `Webhook`
+  // constructor, which `validateEvent` runs *outside* its own try/catch, so an
+  // empty secret throws a plain `Error("Secret can't be empty.")` rather than a
+  // `WebhookVerificationError`. `verifyWebhook` classifies a non-verification
+  // throw as "authentic but unmodelled", so every forged delivery would come
+  // back `ignored` — 200, a stored event row, and no HMAC ever checked.
+  // `env.schema.ts` already refuses `BILLING_ENABLED` without the secret; this
+  // is the second lock, because `billingConfig().webhookSecret` is nullable and
+  // a caller coercing it to `""` must not be able to disarm verification.
+  if (!opts.webhookSecret)
+    throw new BillingUnavailableError(
+      "POLAR_WEBHOOK_SECRET is empty; refusing to build a provider that cannot verify webhooks",
+    );
+  if (!opts.accessToken)
+    throw new BillingUnavailableError("POLAR_ACCESS_TOKEN is empty");
+
   const eventName = opts.eventName ?? "email.sent";
-  let loading: Promise<LoadedSdk> | undefined;
+  let loadingWebhooks: Promise<LoadedWebhooks> | undefined;
+  let loadingClient: Promise<Polar> | undefined;
   // `verifyWebhook` is synchronous (the interface says so), so the validator
   // is cached here by the first successful load and `ready()` — awaited by
   // `getBillingProvider()` — makes sure that happened before any delivery.
-  let loaded: LoadedSdk | undefined;
+  let webhooksReady: LoadedWebhooks | undefined;
 
-  function client(): Promise<LoadedSdk> {
-    loading ??= (async () => {
-      const [sdkModule, webhooksModule] = await Promise.all([
-        import("@polar-sh/sdk"),
-        import("@polar-sh/sdk/webhooks"),
-      ]);
-      const sdk: LoadedSdk = {
-        polar: new sdkModule.Polar({
-          accessToken: opts.accessToken,
-          server: opts.server,
-        }),
-        validate: webhooksModule.validateEvent as LoadedSdk["validate"],
-        VerificationError: webhooksModule.WebhookVerificationError,
-      };
-      loaded = sdk;
-      return sdk;
-    })().catch((e: unknown) => {
-      // Let the next call retry rather than caching the failure forever.
-      loading = undefined;
-      throw new BillingUnavailableError(
-        `Polar SDK could not be loaded: ${(e as Error).message}`,
-      );
-    });
-    return loading;
+  const unavailable = (e: unknown) =>
+    new BillingUnavailableError(
+      `Polar SDK could not be loaded: ${(e as Error).message}`,
+    );
+
+  /**
+   * The webhook path loads `@polar-sh/sdk/webhooks` alone rather than the
+   * package index: it pulls in the payload schemas and `standardwebhooks`, but
+   * none of the HTTP client machinery. This is the one path where a cold start
+   * turns into refused deliveries (plan amendment I), so it stays as small as
+   * it can be.
+   */
+  function webhooks(): Promise<LoadedWebhooks> {
+    loadingWebhooks ??= import("@polar-sh/sdk/webhooks")
+      .then((m) => {
+        const loaded: LoadedWebhooks = {
+          validate: m.validateEvent as LoadedWebhooks["validate"],
+          VerificationError: m.WebhookVerificationError,
+        };
+        webhooksReady = loaded;
+        return loaded;
+      })
+      .catch((e: unknown) => {
+        // Let the next call retry rather than caching the failure forever.
+        loadingWebhooks = undefined;
+        throw unavailable(e);
+      });
+    return loadingWebhooks;
+  }
+
+  /** The API client, loaded only when an API call is actually made. */
+  function client(): Promise<Polar> {
+    loadingClient ??= import("@polar-sh/sdk")
+      .then(
+        (m) =>
+          new m.Polar({ accessToken: opts.accessToken, server: opts.server }),
+      )
+      .catch((e: unknown) => {
+        loadingClient = undefined;
+        throw unavailable(e);
+      });
+    return loadingClient;
   }
 
   return {
     id: "polar",
 
-    /** Awaited by `getBillingProvider()` so `verifyWebhook` is never cold. */
+    /**
+     * Awaited by `getBillingProvider()` so `verifyWebhook` is never cold. Only
+     * the validator is warmed; the API client loads on its first call, which is
+     * inside an `await` anyway.
+     */
     async ready() {
-      await client();
+      await webhooks();
     },
 
     async listPlanProducts() {
-      const { polar } = await client();
+      const polar = await client();
       const items: PolarProduct[] = [];
       // Speakeasy list methods return a page iterator; each page carries
       // `result.items`.
@@ -250,7 +278,7 @@ export function createPolarProvider(opts: PolarOptions): BillingProvider {
       successUrl,
       metadata,
     }) {
-      const { polar } = await client();
+      const polar = await client();
       const r = await polar.checkouts.create({
         products: [productId],
         externalCustomerId,
@@ -264,7 +292,7 @@ export function createPolarProvider(opts: PolarOptions): BillingProvider {
     },
 
     async createPortalSession({ externalCustomerId, returnUrl }) {
-      const { polar } = await client();
+      const polar = await client();
       const r = await polar.customerSessions.create({
         externalCustomerId,
         returnUrl,
@@ -275,12 +303,12 @@ export function createPolarProvider(opts: PolarOptions): BillingProvider {
     verifyWebhook(body, headers): VerifyResult {
       const deliveryId = headers.get("webhook-id");
       if (!deliveryId) return { ok: false, reason: "missing webhook-id" };
-      if (!loaded) {
+      if (!webhooksReady) {
         // Warm the cache for the retry; the provider will redeliver.
-        void client().catch(() => undefined);
+        void webhooks().catch(() => undefined);
         return { ok: false, reason: "provider SDK not loaded" };
       }
-      const { validate, VerificationError } = loaded;
+      const { validate, VerificationError } = webhooksReady;
       const signed = {
         "webhook-id": deliveryId,
         "webhook-timestamp": headers.get("webhook-timestamp") ?? "",
@@ -306,7 +334,12 @@ export function createPolarProvider(opts: PolarOptions): BillingProvider {
         const type = typeOf(body);
         if (type === null)
           return { ok: false, reason: "payload is not JSON with a type" };
-        if (SUBSCRIPTION_TYPES.has(type))
+        // Keyed on the `subscription.` *prefix*, not on the modelled set: the
+        // day Polar ships a subscription type this SDK predates, the pinned
+        // parser throws `Unknown event type` and the delivery would otherwise
+        // be dropped as `ignored` — an entitlement change lost, which is the
+        // one thing amendment J forbids.
+        if (isSubscriptionType(type))
           return {
             ok: false,
             reason: `unparseable ${type} payload: ${(e as Error).message}`,
@@ -330,6 +363,7 @@ export function createPolarProvider(opts: PolarOptions): BillingProvider {
         const o = event.data as {
           subscriptionId?: string | null;
           customer?: { externalId?: string | null };
+          metadata?: Record<string, unknown>;
           createdAt?: Date;
         };
         return {
@@ -339,7 +373,12 @@ export function createPolarProvider(opts: PolarOptions): BillingProvider {
             deliveryId,
             type: event.type,
             subscriptionId: o.subscriptionId ?? null,
-            externalCustomerId: o.customer?.externalId ?? null,
+            // Same two sources, in the same order, as
+            // `normalisePolarSubscription`: a customer created outside our
+            // checkout has no external id, and the `teamId` we copy onto every
+            // checkout is the fallback. Reading only one of them here would
+            // orphan exactly the orders the subscription path can still place.
+            externalCustomerId: teamIdFrom(o.customer?.externalId, o.metadata),
             paidAt: event.timestamp ?? o.createdAt ?? new Date(),
           },
         };
@@ -352,7 +391,7 @@ export function createPolarProvider(opts: PolarOptions): BillingProvider {
 
     async ingestUsage(events: UsageEvent[]) {
       if (events.length === 0) return { inserted: 0, duplicates: 0 };
-      const { polar } = await client();
+      const polar = await client();
       const payload = polarUsageEvents(events, eventName);
       let inserted = 0;
       let duplicates = 0;
@@ -369,7 +408,7 @@ export function createPolarProvider(opts: PolarOptions): BillingProvider {
     async meterBalance(externalCustomerId) {
       if (!opts.meterId) return null;
       try {
-        const { polar } = await client();
+        const polar = await client();
         for await (const page of await polar.customerMeters.list({
           externalCustomerId,
           meterId: opts.meterId,
@@ -385,6 +424,20 @@ export function createPolarProvider(opts: PolarOptions): BillingProvider {
       }
     },
   };
+}
+
+/**
+ * Our team id off a Polar payload: the customer's `externalId`, set at
+ * checkout, falling back to the `teamId` the checkout copies onto the
+ * resulting objects' metadata for a customer created some other way.
+ */
+function teamIdFrom(
+  externalId: string | null | undefined,
+  metadata: Record<string, unknown> | undefined,
+): string | null {
+  if (typeof externalId === "string" && externalId) return externalId;
+  const fromMetadata = metadata?.teamId;
+  return typeof fromMetadata === "string" && fromMetadata ? fromMetadata : null;
 }
 
 /** The `type` of an already-signature-verified body, or null if unreadable. */

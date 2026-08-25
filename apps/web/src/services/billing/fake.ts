@@ -3,12 +3,14 @@ import {
   claimsPlanMetadata,
   planFromProductMetadata,
 } from "@sendsprite/shared";
-import type {
-  BillingProvider,
-  PlanProduct,
-  ProviderSubscription,
-  UsageEvent,
-  VerifyResult,
+import {
+  isSubscriptionType,
+  SUBSCRIPTION_TYPES,
+  type BillingProvider,
+  type PlanProduct,
+  type ProviderSubscription,
+  type UsageEvent,
+  type VerifyResult,
 } from "./provider";
 
 /**
@@ -232,7 +234,10 @@ export function createFakeProvider(): FakeProvider {
       const type = parsed.type;
       const data = (parsed.data ?? {}) as Record<string, unknown>;
 
-      if (type.startsWith("subscription.")) {
+      // The modelled set, not the prefix — the same dispatch the real provider
+      // does. A test that invents a `subscription.*` type has to fail here too,
+      // or it proves nothing about production: see the refusal below.
+      if (SUBSCRIPTION_TYPES.has(type)) {
         const d = data as unknown as FakeSubscriptionInput & {
           currentPeriodStart: string;
           currentPeriodEnd: string;
@@ -284,6 +289,11 @@ export function createFakeProvider(): FakeProvider {
             paidAt: new Date(),
           },
         };
+      // A subscription-shaped type nobody models is refused rather than
+      // dropped, mirroring what the real provider does when its SDK cannot
+      // parse one: losing an entitlement change silently is the worse failure.
+      if (isSubscriptionType(type))
+        return { ok: false, reason: `unmodelled subscription type ${type}` };
       return { ok: true, event: { kind: "ignored", deliveryId: id, type } };
     },
 

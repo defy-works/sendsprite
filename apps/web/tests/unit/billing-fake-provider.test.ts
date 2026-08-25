@@ -235,6 +235,23 @@ describe("fake billing provider", () => {
     });
   });
 
+  it("refuses an unmodelled subscription type, the way the real provider does", () => {
+    // The fake and the Polar provider dispatch on the same `SUBSCRIPTION_TYPES`
+    // from the seam. Were the fake to accept any `subscription.*`, a test
+    // written against an invented type would pass here and be refused in
+    // production — the seam would be lying.
+    const signed = p.signSubscriptionEvent("subscription.trialing", {
+      subscriptionId: "sub_future",
+      externalCustomerId: "org_future",
+      productId: "prod_pro",
+      status: "trialing",
+    });
+    const r = p.verifyWebhook(signed.body, signed.headers);
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/subscription\.trialing/);
+  });
+
   it("records ingested usage and reports duplicates by externalId", async () => {
     const ev = {
       externalId: "org_1:2026-08-25T09:00:00.000Z",

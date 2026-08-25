@@ -2061,6 +2061,24 @@ did change, all of it forced by reading the installed SDK:
 4. **`polarUsageEvents(events, fallbackName)` is extracted and exported** so the ingest
    mapping — `metadata.count`, which is what the org's `emails` meter sums — is unit-testable
    without a network. `ingestUsage` chunks the mapped array.
+   4b. **The lazy loader is split in two.** `@polar-sh/sdk/webhooks` (payload schemas +
+   `standardwebhooks`, none of the HTTP client machinery) loads on its own for the webhook
+   path, and the package index loads only when an API call is made. `ready()` warms the
+   validator alone — the one path where a cold start becomes refused deliveries.
+   4c. **`createPolarProvider` refuses to be built without a webhook secret.** Empirically
+   verified: `standardwebhooks` builds its key in the `Webhook` constructor, which
+   `validateEvent` runs _outside_ its own try, so an empty secret throws a plain
+   `Error("Secret can't be empty.")` rather than a `WebhookVerificationError`. Under the
+   classification in item 2 that reads as "authentic but unmodelled", so every forged
+   delivery would have come back `ignored` — 200, a stored event row, no HMAC ever checked,
+   and invisible, because subscription events would still refuse and the instance would look
+   healthy. `env.schema.ts` already refuses `BILLING_ENABLED` without the secret; this is the
+   second lock, since `billingConfig().webhookSecret` is nullable.
+   4d. **The refusal rule keys off the `subscription.` prefix, not the modelled set**, so a
+   subscription type Polar ships after this SDK was pinned is still refused rather than
+   dropped. `SUBSCRIPTION_TYPES` and `isSubscriptionType()` now live in `provider.ts`, and the
+   fake dispatches on the same set — otherwise a test written against an invented
+   `subscription.foo` would pass against the fake and be refused in production.
 5. **The SDK client is typed with `import type { Polar } from "@polar-sh/sdk"`** rather than a
    hand-rolled structural `PolarSdk`. A type-only import is erased, so the lazy-load guarantee
    is untouched, and the four call sites are now checked against the real request/response
@@ -2075,9 +2093,11 @@ did change, all of it forced by reading the installed SDK:
    `{ ok: false, reason: "provider SDK not loaded" }` if called cold, and warms the cache for
    the redelivery.
 
-Step 5's expected count is **23 tests**, not 10: the extra ones cover the replay window, a
+Step 5's expected count is **28 tests**, not 10: the extra ones cover the replay window, a
 signature replayed under a new delivery id, the cold-start path, the ingest mapping, the
-`SUBSCRIPTION_STATUSES` pin from amendment D, and two wire-format fixtures (a real
+`SUBSCRIPTION_STATUSES` pin from amendment D, the empty-secret refusal, the
+prefix-based subscription refusal, the `order.paid` team-id fallback, and two wire-format
+fixtures (a real
 `subscription.updated` and a real `order.paid`, in Polar's own snake_case JSON) that prove the
 pinned SDK parses a genuine payload into the fields the billing service reads.
 
@@ -2134,7 +2154,9 @@ overage per cycle and Scale at $500 via `cap_amount` on their metered prices. No
 app enforces this; it is provider configuration. Surface it if it is cheaply available on the
 subscription payload, but do not model it in `PlanMetadata`.
 
-_Settled in Task 5: it is cheaply available, so it is surfaced._ `capAmount` sits on the same
+_Settled in Task 5: it is cheaply available, so it is surfaced (as a **required**
+`number | null`, since every implementation can answer "is there a ceiling" and two states
+spare a renderer an unreachable case)._ `capAmount` sits on the same
 `ProductPriceMeteredUnit` object the `hasMeteredPrice` check already has in hand, on both
 `subscription.prices` and `product.prices`. `ProviderSubscription` therefore gained an optional
 `overageCapCents?: number | null`, the Polar provider populates it, and the fake grew a matching

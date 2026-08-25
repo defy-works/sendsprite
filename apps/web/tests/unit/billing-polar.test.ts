@@ -3,6 +3,11 @@ import { Webhook } from "standardwebhooks";
 import { SubscriptionStatus } from "@polar-sh/sdk/models/components/subscriptionstatus.js";
 import { SUBSCRIPTION_STATUSES } from "@sendsprite/shared";
 import {
+  BillingUnavailableError,
+  isSubscriptionType,
+  SUBSCRIPTION_TYPES,
+} from "@/services/billing/provider";
+import {
   createPolarProvider,
   normalisePolarSubscription,
   planProductsFrom,
@@ -48,6 +53,26 @@ describe("SUBSCRIPTION_STATUSES", () => {
     expect([...SUBSCRIPTION_STATUSES]).toEqual(
       Object.values(SubscriptionStatus),
     );
+  });
+});
+
+describe("SUBSCRIPTION_TYPES", () => {
+  it("is the seven subscription payloads @polar-sh/sdk@0.49.0 models", () => {
+    expect([...SUBSCRIPTION_TYPES].sort()).toEqual([
+      "subscription.active",
+      "subscription.canceled",
+      "subscription.created",
+      "subscription.past_due",
+      "subscription.revoked",
+      "subscription.uncanceled",
+      "subscription.updated",
+    ]);
+    // Every member is subscription-shaped, so the dispatch set is a subset of
+    // what the prefix-based refusal covers. That containment is the invariant
+    // that makes an unmodelled `subscription.*` refused rather than dropped.
+    for (const t of SUBSCRIPTION_TYPES)
+      expect(isSubscriptionType(t)).toBe(true);
+    expect(isSubscriptionType("order.paid")).toBe(false);
   });
 });
 
@@ -353,6 +378,28 @@ describe("polar webhook verification", () => {
     expect(r.reason).toMatch(/subscription/i);
   });
 
+  it("refuses to exist without a webhook secret", () => {
+    // `standardwebhooks` throws a plain `Error` from the `Webhook` constructor
+    // on an empty secret, and that constructor runs outside `validateEvent`'s
+    // try. Classified as "authentic but unmodelled", a forged delivery would
+    // come back `ignored` with no HMAC ever checked — so the provider refuses
+    // to be built at all rather than verify nothing.
+    expect(() =>
+      createPolarProvider({
+        accessToken: "t",
+        webhookSecret: "",
+        server: "sandbox",
+      }),
+    ).toThrow(BillingUnavailableError);
+    expect(() =>
+      createPolarProvider({
+        accessToken: "",
+        webhookSecret: SECRET,
+        server: "sandbox",
+      }),
+    ).toThrow(/POLAR_ACCESS_TOKEN/);
+  });
+
   it("normalises a real subscription delivery end to end", () => {
     const { body, headers } = deliver(
       subscriptionPayload("subscription.updated"),
@@ -396,6 +443,37 @@ describe("polar webhook verification", () => {
       externalCustomerId: "org_live",
     });
     expect(r.event.paidAt).toEqual(new Date("2026-08-15T10:00:00.000Z"));
+  });
+
+  it("refuses a subscription type the SDK does not model, rather than ignoring it", () => {
+    // The refusal keys off the `subscription.` prefix, not the modelled set,
+    // so a type Polar ships after this SDK was pinned is still refused loudly.
+    // `payout.created` above proves the other half: unknown *and* not
+    // subscription-shaped is ignored.
+    const { body, headers } = deliver(
+      { type: "subscription.trialing", data: { id: "sub_1" } },
+      "msg_future_sub",
+    );
+    const r = provider.verifyWebhook(body, headers);
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/subscription\.trialing/);
+  });
+
+  it("reads the team off order metadata when the customer has no external id", () => {
+    const base = orderPaidPayload();
+    const payload = {
+      ...base,
+      data: {
+        ...base.data,
+        customer: { ...CUSTOMER, external_id: null },
+        metadata: { teamId: "org_from_metadata" },
+      },
+    };
+    const { body, headers } = deliver(payload, "msg_order_meta");
+    const r = provider.verifyWebhook(body, headers);
+    if (!r.ok || r.event.kind !== "order_paid") throw new Error("unreachable");
+    expect(r.event.externalCustomerId).toBe("org_from_metadata");
   });
 
   it("is not verifiable before the SDK has loaded", () => {
@@ -541,7 +619,10 @@ const orderPaidPayload = () => ({
   type: "order.paid",
   timestamp: "2026-08-15T10:00:00Z",
   data: {
-    created_at: "2026-08-15T10:00:00Z",
+    // Deliberately *not* the envelope timestamp: `paidAt` is load-bearing for
+    // the past-due clear guard, so the assertion has to be able to tell which
+    // of the two it came from.
+    created_at: "2026-08-14T09:00:00Z",
     modified_at: null,
     id: "ord_1",
     status: "paid",

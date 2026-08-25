@@ -26,15 +26,19 @@ export interface ProviderSubscription {
   modifiedAt: Date;
   hasMeteredPrice: boolean;
   /**
-   * Ceiling the provider itself puts on metered charges per cycle, in cents
+   * Ceiling the provider puts on metered charges per cycle, in cents
    * (`cap_amount` on the Polar price), or `null` when the metered price is
-   * uncapped or absent. **Display only.** It is provider configuration, not a
-   * plan attribute — which is why it is not in `PlanMetadata` — and nothing in
-   * this app enforces it; it is surfaced only because the billing page can
-   * honestly say "overage is capped at $200 a cycle" when it knows so. Absent
-   * on a provider that has no such concept.
+   * uncapped, absent, or the provider has no such concept. **Display only.**
+   * It is provider configuration, not a plan attribute — which is why it is
+   * not in `PlanMetadata` — and nothing in this app enforces it; it is
+   * surfaced only so the billing page can honestly say "overage is capped at
+   * $200 a cycle" when it knows so.
+   *
+   * Required rather than optional: every implementation can answer "is there a
+   * ceiling", even if the answer is always `null`. Two states, not three, so a
+   * renderer has no unreachable case to write.
    */
-  overageCapCents?: number | null;
+  overageCapCents: number | null;
   plan: PlanMetadata | null;
   /**
    * The product declares one of our plans, however unusable the rest of its
@@ -127,6 +131,32 @@ export interface BillingProvider {
   /** The provider's own meter balance, when it can be read. Display only. */
   meterBalance?(externalCustomerId: string): Promise<number | null>;
 }
+
+/**
+ * Event types that carry a subscription, and so are dispatched to the
+ * `subscription` branch of `ProviderEvent`. The seam owns this vocabulary
+ * rather than any one implementation, because the fake and the real provider
+ * must agree: a test that invents `subscription.foo` has to fail the same way
+ * against both, or it proves nothing about production.
+ *
+ * Note this is the **dispatch** set, not the refusal set. Deciding whether an
+ * unparseable delivery may be dropped keys off the `subscription.` prefix, so
+ * that a subscription type Polar ships after this list was written is still
+ * refused loudly rather than silently ignored (plan amendment J).
+ */
+export const SUBSCRIPTION_TYPES: ReadonlySet<string> = new Set([
+  "subscription.created",
+  "subscription.updated",
+  "subscription.active",
+  "subscription.canceled",
+  "subscription.uncanceled",
+  "subscription.revoked",
+  "subscription.past_due",
+]);
+
+/** Whether a type is subscription-shaped, modelled or not. */
+export const isSubscriptionType = (type: string): boolean =>
+  type.startsWith("subscription.");
 
 /** Catalog order for the upgrade UI. */
 export const PLAN_ORDER: Record<Plan, number> = { free: 0, pro: 1, scale: 2 };
