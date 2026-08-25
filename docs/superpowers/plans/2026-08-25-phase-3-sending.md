@@ -1747,7 +1747,7 @@ REST: `GET /api/v1/suppressions` (list), `POST` (add manual/unsubscribe), `DELET
 - Create: `apps/web/src/services/send-limits.ts`
 - Test: `apps/web/tests/integration/send-limits.test.ts`
 
-- [ ] **Step 1: Failing test**
+- [x] **Step 1: Failing test**
 
 ```ts
 describe("send limits", () => {
@@ -1811,7 +1811,7 @@ describe("send limits", () => {
 
 (Fixture: create `dom_1` domain row for `org_1` in `beforeAll`.) Run → FAIL.
 
-- [ ] **Step 2: Implement**
+- [x] **Step 2: Implement**
 
 ```ts
 import { and, count, eq, gte, inArray, sql } from "drizzle-orm";
@@ -1953,7 +1953,7 @@ export async function checkInstanceQuota(
 }
 ```
 
-- [ ] **Step 3: Run, commit** → `feat(web): send limits — SES token bucket, team caps, instance quota`.
+- [x] **Step 3: Run, commit** → `feat(web): send limits — SES token bucket, team caps, instance quota`.
 
 ---
 
