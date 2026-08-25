@@ -4953,11 +4953,11 @@ git commit -m "feat(web): instance settings tab, domains list/new/detail with li
 - Create: `apps/web/tests/e2e/setup.spec.ts`
 - Modify: `apps/web/playwright.config.ts` (webServer env `AWS_E2E_MOCK=1`), `apps/web/src/lib/aws/clients.ts` (mock seam)
 
-- [ ] **Step 1: Mock seam**
+- [x] **Step 1: Mock seam**
 
 E2E runs a real Next server, so AWS calls need an in-process fake. In `clients.ts`, when `process.env.AWS_E2E_MOCK === "1"`, return clients whose `send()` resolves canned responses (`GetCallerIdentity` → account `111111111111`; `GetAccount` → sandbox; `CreateConfigurationSet*`/`CreateTopic`/`Subscribe` → ok; `CreateEmailIdentity` → tokens `e1,e2,e3`; `GetEmailIdentity` → PENDING). Implement as a small `FakeClient` class with a `send(cmd)` switch on `cmd.constructor.name`, guarded so it can never activate in production (`NODE_ENV !== "production"` AND the env var).
 
-- [ ] **Step 2: Spec**
+- [x] **Step 2: Spec**
 
 `tests/e2e/setup.spec.ts`:
 
@@ -5000,7 +5000,7 @@ test("owner completes setup via manual keys, adds a domain, sees records", async
 
 `playwright.config.ts` webServer env: add `AWS_E2E_MOCK: "1"`, and `WORKER_MODE: "inline"` for this project (provisioning runs as a job). Use ids `#accessKeyId`, `#secretAccessKey`, `#name` in the forms accordingly.
 
-- [ ] **Step 3: Run, commit**
+- [x] **Step 3: Run, commit**
 
 Run: `cd apps/web && bun run test:e2e` (db:dev running) → 2 passed.
 
@@ -5008,6 +5008,14 @@ Run: `cd apps/web && bun run test:e2e` (db:dev running) → 2 passed.
 git add apps/web
 git commit -m "test(web): e2e setup wizard (manual AWS) and domain provisioning with mocked AWS"
 ```
+
+**Review follow-ups (applied with the Task 16 commit):**
+
+- The fake lives in `lib/aws/fake-client.ts` (`FakeAwsClient`, a `send()` switch on `cmd.constructor.name`; unhandled commands throw). `clients.ts` returns it from every factory only when `AWS_E2E_MOCK === "1"` **and** `NODE_ENV !== "production"`, cast to the SDK client type at the boundary. `playwright.config.ts` sets `AWS_E2E_MOCK: "1"` and `WORKER_MODE: "inline"` unconditionally in the webServer env, so `ci.yml` needs no new variable.
+- A successful manual-keys connect on `/setup` calls `router.refresh()` without a `step` param, so the server advances to the production step itself: there is no "Continue" link to click. The spec asserts the production heading and the "sandbox" status, then "Skip for now" → "Skip" → "Go to dashboard"; the account id is asserted on the Done step ("AWS connected · 111111111111 · us-east-1").
+- The spec does not assume a fresh instance: when signup lands in the app (setup already completed, e.g. the local dev database) it connects AWS on `/app/settings/instance` with the same ids, or keeps an existing connection (the fake ignores stored keys). The domain and team names carry a per-run suffix (instance-wide uniqueness), and the test deletes the domain through the UI at the end (fake `DeleteEmailIdentity`).
+- The Phase 1 smoke spec expects an open dashboard, which an empty database no longer offers until the wizard has run, and two specs creating teams in parallel raced on the slug. `playwright.config.ts` now has two projects: `setup` (`setup.spec.ts`) and `app` (everything else, `dependencies: ["setup"]`), so the wizard completes first and the smoke spec runs after it.
+- Records appear after the provision job runs on the inline worker; the spec reloads in a loop (30 s ceiling) rather than waiting on the page's 15 s refresh, then asserts Re-verify is enabled and the status is `pending` (DNS checks against public resolvers find nothing for the made-up domain, as intended).
 
 ---
 

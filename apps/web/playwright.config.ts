@@ -12,6 +12,13 @@ export default defineConfig({
     baseURL,
     trace: "retain-on-failure",
   },
+  // On an empty database (CI) the dashboard is closed until an owner finishes
+  // the wizard; setup.spec.ts does that, so it runs first and alone, and the
+  // other specs (which expect an open dashboard) depend on it.
+  projects: [
+    { name: "setup", testMatch: /setup\.spec\.ts/ },
+    { name: "app", testIgnore: /setup\.spec\.ts/, dependencies: ["setup"] },
+  ],
   // With E2E_BASE_URL set we target an already-running server (e.g. the
   // Docker image); otherwise `next dev` is started on PORT. DATABASE_URL and
   // APP_SECRET come from .env.local locally (Next loads it) and from the job
@@ -33,7 +40,11 @@ export default defineConfig({
           APP_URL: `http://localhost:${PORT}`,
           EMAIL_PASSWORD_ENABLED: "true",
           SIGNUP_MODE: "open",
-          WORKER_MODE: "none",
+          // Domain provisioning runs as a job, so the in-process worker is on.
+          WORKER_MODE: "inline",
+          // Canned SES/SNS/STS responses (src/lib/aws/fake-client.ts); set
+          // here unconditionally so CI needs no extra variable.
+          AWS_E2E_MOCK: "1",
         },
       },
 });
