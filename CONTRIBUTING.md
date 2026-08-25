@@ -79,6 +79,11 @@ bun run verify:pin
 bun run test:e2e            # in apps/web; only if you touched the app or a spec
 ```
 
+The e2e builds the app and runs against the built server, so nothing compiles
+during a test. While iterating on a spec, `bun run test:e2e:dev` skips the build
+and uses `next dev` instead — faster to start, and the only place a wait can
+fail because a route was still compiling.
+
 Also:
 
 - **Add a test at the level the change lives at.** A pure function gets a unit

@@ -61,7 +61,7 @@ let domain: DomainObject;
  * Held here, not in the test that opens it: a test that fails or times out
  * never reaches its own `close()`, and afterEach runs either way. An SSE
  * connection is the one thing this suite opens that outlives the test body,
- * and leaving one attached to `next dev` after the run should have finished
+ * and leaving one attached to the server after the run should have finished
  * is how a red spec turns into a wedged job.
  */
 let feed: StreamHandle | undefined;
@@ -73,7 +73,7 @@ async function provisionDomain(name: string): Promise<DomainObject> {
   expect(created.status).toBe("pending");
   await expect
     .poll(async () => (await client.domains.get(created.id)).records.length, {
-      timeout: 60_000,
+      timeout: 30_000,
       message: "domain provisioning never produced DNS records",
     })
     .toBeGreaterThan(0);
@@ -92,10 +92,11 @@ test.beforeAll(async () => {
   const { Sendsprite } = (await import(SDK_DIST.href)) as {
     Sendsprite: SendspriteCtor;
   };
-  // 60 s rather than the SDK's 30 s default: `next dev` compiles a route on
-  // its first hit, which is seconds on a cold CI runner, and that budget now
-  // also covers the stream's connect (see `StreamHandle.ready`).
-  client = new Sendsprite({ apiKey, baseUrl: base, timeoutMs: 60_000 });
+  // The SDK's own default, spelled out because it has to stay under the
+  // test timeout: this budget covers the stream's connect (see
+  // `StreamHandle.ready`), and a stream that never opens should fail with the
+  // SDK's message rather than expire together with the whole test.
+  client = new Sendsprite({ apiKey, baseUrl: base, timeoutMs: 30_000 });
   const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   domain = await provisionDomain(`mail.e2e-sdk-${suffix}.com`);
 });
@@ -130,9 +131,9 @@ test("SDK: me, domains.list, emails.send + get, and stream sees the change", asy
     },
     reconnect: false,
   }));
-  // Opening the stream is not the same as having it: the request still has to
-  // reach a route `next dev` may only now be compiling, and a `queued`/`sent`
-  // change emitted before the server has the subscription is gone for good —
+  // Opening the stream is not the same as having it: auth, routing and the
+  // Postgres LISTEN still sit between this call and a live subscription, and a
+  // `queued`/`sent` change emitted before the server has it is gone for good —
   // no timeout can recover a missed event. `ready` is the server's own
   // confirmation (its `: connected` frame), and it rejects rather than hangs
   // if the stream never opens.
@@ -149,7 +150,7 @@ test("SDK: me, domains.list, emails.send + get, and stream sees the change", asy
 
   await expect
     .poll(async () => (await client.emails.get(id)).status, {
-      timeout: 60_000,
+      timeout: 30_000,
       message: "the inline worker never moved the email to `sent`",
     })
     .toBe("sent");
@@ -205,7 +206,7 @@ test("CLI: whoami, domains list --json and emails send, on env credentials", asy
 
   const id = /em_[A-Za-z0-9_-]+/.exec(sent)![0];
   await expect
-    .poll(async () => (await client.emails.get(id)).status, { timeout: 60_000 })
+    .poll(async () => (await client.emails.get(id)).status, { timeout: 30_000 })
     .toBe("sent");
 });
 

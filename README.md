@@ -327,7 +327,9 @@ bun run typecheck            # next typegen + tsc, every workspace
 bun run lint · format · format:check
 bun run test                 # unit (vitest)
 bun run test:integration     # vitest against an embedded Postgres (or TEST_DATABASE_URL)
-bun run test:e2e             # Playwright (builds sendsprite + @sendsprite/mcp first: the e2e drives the real bundles)
+bun run test:e2e             # Playwright: builds sendsprite + @sendsprite/mcp (the e2e drives the real
+                             # bundles), then the app itself, and runs against the built server so no
+                             # route compiles mid-test. `E2E_SERVER=dev` swaps in `next dev` instead
 bun run db:generate          # new migration from schema changes
 ```
 

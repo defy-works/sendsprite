@@ -97,9 +97,9 @@ test("owner completes setup via manual keys, adds a domain, sees records", async
   await page.fill("#name", domain);
   await page.getByRole("button", { name: "Add domain" }).click();
   // createDomain (server action) then `router.push("/app/domains/<id>")`: the
-  // URL only changes once `next dev` has compiled that route, which it has
-  // not before this line. A failure would instead keep this page and render
-  // the form's `role="alert"`, so waiting here can only cost time.
+  // URL only changes once the action has returned an id. A failure would
+  // instead keep this page and render the form's `role="alert"`, so waiting
+  // here can only cost time.
   await expect(page).toHaveURL(/\/app\/domains\/dom_/);
 
   // Provisioning is a job on the inline worker; the fake SES issues the DKIM
@@ -136,8 +136,8 @@ test("owner completes setup via manual keys, adds a domain, sees records", async
       .locator("code.select-all", { hasText: /^ss_live_/ })
       // The key is minted by a server action, and `textContent` is a locator
       // call, not an assertion — the global `expect` timeout does not reach
-      // it, so the allowance is spelled out (as in send.spec.ts).
-      .textContent({ timeout: 30_000 })
+      // it, so the same allowance is spelled out (as in send.spec.ts).
+      .textContent({ timeout: 10_000 })
   )?.trim();
   expect(secret).toMatch(/^ss_live_/);
   saveApiKey(test.info(), secret!);

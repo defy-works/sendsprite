@@ -68,8 +68,8 @@ test("owner verifies a domain, sends via REST and SMTP, sees the log", async ({
   await page.goto("/app/domains/new");
   await page.fill("#name", domain);
   await page.getByRole("button", { name: "Add domain" }).click();
-  // Server action, then a client-side push to a route `next dev` has not
-  // compiled yet; the config's global `expect` timeout covers the wait.
+  // Server action, then a client-side push; the config's global `expect`
+  // timeout covers the wait.
   await expect(page).toHaveURL(/\/app\/domains\/dom_/);
   const domainUrl = page.url();
   await reloadUntilVisible(
@@ -96,8 +96,8 @@ test("owner verifies a domain, sends via REST and SMTP, sees the log", async ({
       .locator("code.select-all", { hasText: /^ss_live_/ })
       // The key is minted by a server action, and `textContent` is a locator
       // call, not an assertion — the global `expect` timeout does not reach
-      // it, so the allowance stays spelled out here.
-      .textContent({ timeout: 30_000 })
+      // it, so the same allowance is spelled out here.
+      .textContent({ timeout: 10_000 })
   )?.trim();
   expect(secret).toMatch(/^ss_live_/);
   const authorization = `Bearer ${secret}`;
@@ -168,8 +168,7 @@ test("owner verifies a domain, sends via REST and SMTP, sees the log", async ({
   await page.goto(domainUrl);
   page.once("dialog", (d) => d.accept());
   await page.getByRole("button", { name: "Delete" }).click();
-  // deleteDomain (server action) then `router.push("/app/domains")`, which is
-  // the first visit to that route in this spec — the dev server compiles it
-  // before the navigation completes, and that can take seconds on CI.
+  // deleteDomain (server action) then `router.push("/app/domains")`: the URL
+  // only changes once the action has returned and the list has rendered.
   await expect(page).toHaveURL(/\/app\/domains$/);
 });

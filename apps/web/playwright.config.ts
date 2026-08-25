@@ -3,22 +3,24 @@ import { defineConfig } from "@playwright/test";
 // Port 3000 is often taken on dev machines; CI sets E2E_PORT=3000.
 const PORT = process.env.E2E_PORT ?? "3001";
 const baseURL = process.env.E2E_BASE_URL ?? `http://localhost:${PORT}`;
+// The suite runs against a built server: same app the dev server served,
+// compiled before the run instead of during it (scripts/e2e-server.ts has the
+// why). `E2E_SERVER=dev` swaps `next dev` back in for local iteration: no
+// build to wait for, at the price of a route compiling on its first request —
+// budget accordingly if a wait fails there and nowhere else. CI never sets it.
+const devServer = process.env.E2E_SERVER === "dev";
 
 export default defineConfig({
   testDir: "tests/e2e",
-  // The suite drives `next dev` (see `webServer`), so the first visit to a
-  // route compiles it on demand: milliseconds locally, seconds on a cold CI
-  // runner. Actions and navigations already have the whole test budget
-  // (`actionTimeout`/`navigationTimeout` default to no limit under
-  // @playwright/test); assertions were the outlier at 5 s, which is why they
-  // had to be annotated one at a time — and why the one that was missed
-  // failed the `setup` project and blocked the 13 tests depending on it.
-  // A single global allowance instead: free when the assertion passes, and it
-  // only delays the report of a genuine failure.
-  expect: { timeout: 30_000 },
-  // A spec that walks the wizard, adds a domain and mints a key pays close to
-  // ten first compiles; 60 s left no room for one slow assertion on top.
-  timeout: 120_000,
+  // Every route is already compiled, so an assertion that has not passed in
+  // ten seconds is a bug, not a slow first paint. Anything that legitimately
+  // waits longer waits on a background job (domain provisioning, a send), and
+  // those spell their own budget out in the spec.
+  expect: { timeout: 10_000 },
+  // The longest spec walks the wizard, verifies a domain and sends over both
+  // REST and SMTP, waiting on the worker throughout: ~15 s here, so 60 s
+  // leaves room for a slower runner and still reports a hang promptly.
+  timeout: 60_000,
   reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : "list",
   use: {
     baseURL,
@@ -26,24 +28,30 @@ export default defineConfig({
   },
   // On an empty database (CI) the dashboard is closed until an owner finishes
   // the wizard; setup.spec.ts does that, so it runs first and alone, and the
-  // other specs (which expect an open dashboard) depend on it.
+  // other specs (which expect an open dashboard) depend on it. Both projects
+  // share the one `webServer` below, so the build happens once per run.
   projects: [
     { name: "setup", testMatch: /setup\.spec\.ts/ },
     { name: "app", testIgnore: /setup\.spec\.ts/, dependencies: ["setup"] },
   ],
   // With E2E_BASE_URL set we target an already-running server (e.g. the
-  // Docker image); otherwise `next dev` is started on PORT. DATABASE_URL and
-  // APP_SECRET come from .env.local locally (Next loads it) and from the job
-  // env in CI; APP_URL is overridden so it matches the port in use.
+  // Docker image); otherwise the server is built and started on PORT.
+  // DATABASE_URL and APP_SECRET come from .env.local locally (Next loads it,
+  // in either server mode) and from the job env in CI; APP_URL is overridden
+  // so it matches the port in use.
   webServer: process.env.E2E_BASE_URL
     ? undefined
     : {
-        command: `bun run dev -- -p ${PORT}`,
+        command: devServer
+          ? `bun run dev -- -p ${PORT}`
+          : `bun run scripts/e2e-server.ts ${PORT}`,
         url: `${baseURL}/api/health`,
         // Never attach to a stray dev server: it may run with a different
         // env (no AWS mock, another database) and make the run meaningless.
         reuseExistingServer: false,
-        timeout: 120_000,
+        // The build is inside this budget on the built-server path: a cold
+        // `next build` on a CI runner, then boot (migrations, worker, relay).
+        timeout: devServer ? 120_000 : 300_000,
         stdout: "pipe",
         stderr: "pipe",
         env: {
