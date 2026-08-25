@@ -2119,6 +2119,19 @@ git commit -m "feat(billing): Polar provider — catalog, checkout, portal, webh
 
 ## Openers discovered during Phase 5 (fold into the status block in Task 12)
 
+- **Metered emails are never un-metered.** An email that flips from a billable state into a
+  non-billable terminal one (`failed`, `cancelled`) more than 30 minutes after its hour closed
+  has already been reported to the provider, and nothing reverses it. Small and bounded, but it
+  is a customer being charged for a message that did not go out — worth either a compensating
+  adjustment or an explicit "we bill on acceptance" line in the docs.
+- **`billing_usage.reported_units` can drift upward.** It is a local display counter: if an
+  ingest succeeds but the following `commitRollup` write fails, the next run re-emits (the
+  provider dedupes, so the invoice is safe) and re-adds locally. The billed figure is the
+  provider's and `teamBillingState.used` is counted live from `emails`, so nothing user-facing
+  is wrong — but the column should not be mistaken for a billing source of truth.
+- **Catch-up cost for a stale stored period.** A team whose stored `period_start` is far in the
+  past scans up to 168 buckets per sweep until it catches up. Bounded and quiet, but if that
+  ever matters, clamping `from` forward is the lever.
 - **One `team_billing` select per message on the send hot path.** With billing on,
   `resolveTeamCaps` reads the billing row inside `checkTeamCaps`, and `createBatch` loops
   `createEmail` — so a 100-message batch issues 100 extra selects. It matches the existing
