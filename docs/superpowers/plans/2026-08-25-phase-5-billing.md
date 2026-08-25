@@ -5306,3 +5306,257 @@ git tag phase-5-complete
 **Type consistency:** `PlanMetadata` (`plan`, `includedEmails`, `overagePer1kCents`) is one shape from `planFromProductMetadata` through `PlanProduct`, `ProviderSubscription.plan`, `team_billing` and `Entitlement`. `UsageWindow { start, end }` is used by `countSentIn`, `calendarMonth` and `hourlyBuckets`; `TeamCaps` uses `monthlyFrom`/`monthlyUntil` in `resolveTeamCaps`, `checkTeamCaps`, `usageSnapshot` and `rateHeaders` alike. `Result<T>` is the return of every service function, `ProviderEvent.deliveryId` is the idempotency key in the provider, the service and the table, and `BillingProvider` is the only type the route, the job and the actions know.
 
 **Two decisions worth confirming before implementation starts** (both are recorded above as chosen, and both are cheap to reverse in Task 8 / Task 6 respectively): that `past_due` keeps the paid entitlement rather than dropping to Free after a grace window, and that a paid plan with metered overage has **no** hard ceiling at all — no "you may spend at most $X" guard. The second is the one with real financial exposure, in both directions.
+
+---
+
+## Phase 5 status: COMPLETE
+
+Shipped on `master`, `5e46b5b`..`phase-5-complete` — 36 commits, the plan
+itself included. Every gate green at the tagged commit; counts below.
+
+### What shipped, per task
+
+| Task                              | Commits                                                          | Notes                                                                                                                                                                                                                                                                                       |
+| --------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Plan                              | `5e46b5b`, `e68ff0b`, `8b7bc86`, `b9666dc`, `2306484`, `9dcf14e` | The plan was amended six times while it was being executed; every amendment is above this block.                                                                                                                                                                                            |
+| 1. Shared contracts               | `680b711`, `1ce84bf`                                             | `1ce84bf`: malformed metadata is **rejected**, not coerced to zero — a typo must not silently become a 0-email allowance.                                                                                                                                                                   |
+| 2. Schema                         | `3fdfad3`, `5049aaf`, `1f0d2f2`                                  | Migration `0012_billing`, amended in place (pre-deployment) for `precision: 3` on every compared timestamp.                                                                                                                                                                                 |
+| 3. Env plumbing                   | `bd81947`                                                        | `BILLING_ENABLED` default off; two refines make a half-configured instance fail at boot.                                                                                                                                                                                                    |
+| 4. Provider seam + fake           | `9a1d51f`, `0d8cefd`                                             | `0d8cefd`: the fake refuses what Polar refuses, so a test cannot pass against a laxer double.                                                                                                                                                                                               |
+| 5. Polar provider                 | `9a10fb3`, `e555ea8`                                             | `e555ea8`: a provider that cannot verify webhooks refuses to be built — without it every forged delivery would have read as "authentic but unmodelled".                                                                                                                                     |
+| 6. Billing service                | `706dfc2`, `a3a2afb`, `19358a2`, `c215e93`, `88b7e7c`, `4503bf5` | Absorbed the most correction; see "deviations" below.                                                                                                                                                                                                                                       |
+| 7. Webhook route                  | `4470c0b`                                                        | 64 KB cap, 404 with billing off, 403 only for the unverifiable, 200 for everything authentic.                                                                                                                                                                                               |
+| 8. Entitlements                   | `6bd8049`                                                        | `resolveTeamCaps` in front of the existing `checkTeamCaps`; no parallel quota system.                                                                                                                                                                                                       |
+| 9. Usage metering                 | `dff0335`, `a686d89`                                             | `a686d89`: resume from the team's watermark, not the period's — a per-period read loses one bucket per team per cycle, permanently and silently.                                                                                                                                            |
+| 10. Checkout and portal           | `fe909aa`                                                        | `billing.manage`, owner/admin only, audited as `billing.checkout` / `billing.portal`.                                                                                                                                                                                                       |
+| 11. Billing page                  | `56ca92b`, `7c84fb3`                                             | **Attribution:** the write-level ordering guard and the unrelated-order refusal were _implemented_ inside `56ca92b` — that agent staged `services/billing/index.ts` whole while the fixes sat in its working tree. Their tests and their reasoning are in `7c84fb3`. Read the two together. |
+| 12. e2e, docs, README, status     | `5b2ad19`, this block                                            | The e2e spec and the Playwright env landed with Task 11; Task 12 extended that spec rather than duplicating it.                                                                                                                                                                             |
+| Cross-cutting                     | `ef59c9c`                                                        | `SEND_CONSUMING_STATUS` in `@sendsprite/shared`: the meter and the caps count the same rows by construction, not by comment.                                                                                                                                                                |
+| Openers recorded as they appeared | `e6f6995`, `faa41d6`, `c27e56b`, `13593bd`                       | Folded into the list below.                                                                                                                                                                                                                                                                 |
+
+### Gates at the tag
+
+| Gate                       | Result                                |
+| -------------------------- | ------------------------------------- |
+| `bun run typecheck`        | 4 packages, clean                     |
+| `bun run lint`             | clean                                 |
+| `bun run format:check`     | clean                                 |
+| `bun run test` (unit)      | **47 files, 449 tests** passed        |
+| — `@sendsprite/shared`     | 8 files, 71                           |
+| — `sendsprite` (SDK + CLI) | 8 files, 115                          |
+| — `@sendsprite/web`        | 28 files, 231                         |
+| — `@sendsprite/mcp`        | 3 files, 32                           |
+| `bun run test:integration` | **40 files, 300 tests** passed (92 s) |
+| `bun run test:e2e`         | **7 files, 14 tests** passed (31 s)   |
+
+Billing's own share of that: 13 shared, 87 web unit (6 files), 78 integration
+(6 files), 3 e2e. No flakes in this run — `retention.test.ts` and
+`email-send.test.ts`'s concurrent-claim test both passed inside the full 40-file
+integration run on the first attempt, so neither needed an isolated re-run.
+
+**The e2e needs a Postgres on `localhost:5432`.** There is no Docker on the dev
+machine, so `bun run db:dev` (embedded-postgres, persistent in
+`apps/web/.pgdata`) has to be running before `bun run test:e2e`, which otherwise
+dies in `runMigrations` with `ECONNREFUSED` before Playwright starts. That was
+not written down anywhere.
+
+### What the e2e actually exercises
+
+Three cases, all through the real server with `BILLING_ENABLED=1` and
+`BILLING_PROVIDER=fake`, each starting from a freshly signed-up owner with their
+own team so nothing leaks between them:
+
+1. **Settings → Billing → the page.** The Billing card exists under Settings (so
+   the `BILLING_ENABLED` branch of the settings page is taken), its link lands on
+   `/app/settings/billing`, and the page renders the _resolved entitlement_
+   rather than a placeholder: "Your plan", `3,000 included`, the "capped at the
+   included volume" copy that only a plan with no metered price produces, and a
+   `progressbar` whose `aria-valuemax` is `3000` — i.e. the number came through
+   `teamBillingState` from `FREE_ENTITLEMENT`, not from a constant in the view.
+   The catalogue renders all three tiers from `listPlanProducts()` with Free
+   marked current, and **Manage billing** is absent, which is the unmanaged
+   branch.
+2. **Checkout really navigates.** Clicking **Choose** on the Pro card runs the
+   server action → `startCheckout` → catalogue lookup by `metadata.plan` → the
+   provider's checkout URL, and the browser is sent there. The off-origin request
+   is intercepted and asserted to contain `/checkout/prod_pro`, so plan → product
+   resolution is exercised end to end. A button that silently does nothing is the
+   regression this catches.
+3. **The webhook endpoint is mounted and trusts nothing.**
+   `POST /api/billing/webhook` answers **403 `forbidden`** for an unsigned body:
+   not a 404 (the route exists once billing is on — with it off every other
+   environment gets the 404 instead) and not a 200 (nothing unverified is ever
+   applied).
+
+Every pre-existing spec runs with billing on and no subscription — a 3,000/month
+Free cap, far above anything they send — and none of them changed.
+
+Not covered by e2e, deliberately: a _subscribed_ team's page, the past-due banner
+and the cancel banner. Reaching those through the UI needs a signed webhook
+mid-run; they are covered directly in `billing-webhook.test.ts` and
+`billing-entitlements.test.ts` against embedded Postgres, and `BillingPanel`
+renders purely from `BillingStateObject`, so there is no state the e2e would
+reach that those two do not.
+
+### Deviations from the plan worth knowing
+
+- **The roll-forward replaced the calendar-month substitution.** The plan had a
+  stale stored period fall back to `calendarMonth(now)`. That moves a customer's
+  allowance boundary to the 1st and re-counts sends already counted, so
+  `c215e93` rolls the stored period forward by its own length instead, keeping
+  the anniversary they bought. Two tests that asserted the old premise were
+  rewritten rather than deleted (`88b7e7c`).
+- **A cancelled subscription now ends at its period end** whether or not the
+  revoke webhook ever arrived (`c215e93`). Without that, the roll-forward would
+  hand a row whose revocation was lost a fresh allowance every period for ever —
+  uncapped where overage is on.
+- **Checkout refuses a team that already has a subscription** (`88b7e7c`),
+  pointing at the portal. A second checkout would open a second subscription and
+  the two would fight over one `team_billing` row.
+- **The past-due grace runs from the provider's own `past_due_at`** (`4503bf5`),
+  not from our arrival time; otherwise a webhook outage quietly hands every
+  affected customer extra days of paid caps on a dead card.
+- **`/docs/billing` carries no price table.** Prices, includes and overage rates
+  are Polar product metadata; a table here would drift the day it was written.
+  The page describes the mechanism and says where to read the numbers.
+- **The cutover runbook went to `/docs/self-hosting`, not `/docs/billing`.** The
+  reader is an operator, and an operator does not go looking under Billing.
+
+---
+
+## Phase 6 openers
+
+**The body of Phase 6** is Phase 4's openers 1–4, displaced by billing and
+carried over verbatim: templates + variables, contacts/audiences, CLI
+`templates pull|push`, MCP `list_templates` / `render_template` / `add_contact`,
+and the `/docs` Templates page. The README roadmap now says so (`5b2ad19`).
+`AppShell`'s `NAV` still links `/app/templates`, `/app/contacts` and
+`/app/campaigns` at pages that do not exist.
+
+**Also carried forward unchanged from Phase 4:** 5–7 (audit log UI; audit rows
+for cancel/resend/reschedule; REST audit ip/UA), 9 (`sending_only` and
+`GET /emails`), 10 (per-key stream connection cap), 12–16 (MCP host allowlist,
+MCP stdout hazard, `workspace:*` publish, CLI column padding, CLI password
+prompt), 17–25 (the Phase 3 carry-overs), 26–30 (operational). Openers 8 (audit
+action naming) and 21 (body caps on non-email routes) are **partly closed** — see
+"Phase 5 openers" at the top of this plan.
+
+### New, created or discovered by this phase
+
+**Billing accuracy and mechanism**
+
+1. **Metered emails are never un-metered — now documented, still true.** An email
+   that flips into `failed` or `cancelled` more than ~30 minutes after its hour
+   closed has already been reported, and nothing reverses it. `/docs/billing`
+   states this plainly ("we meter on acceptance") rather than leaving customers to
+   discover it, which closes the _honesty_ half. The _accuracy_ half — a
+   compensating adjustment — is still open, and is only worth building if the
+   volume ever justifies it.
+2. **The roll-forward is an approximation, not a calendar anniversary**
+   (`c215e93`). It advances the stored period by its own **length**, so a customer
+   billed on the 31st drifts while their renewal is late: a 30-day stored period
+   rolls to the 30th, not to the next 31st. It is strictly better than the
+   calendar-month jump it replaced, it applies only while the stored period is
+   stale, and it self-corrects the moment the renewal webhook lands — but it is
+   arithmetic, not a calendar. Doing it properly means real month arithmetic with
+   an end-of-month clamp.
+3. **The catch-up still scans up to 168 buckets per run** for a badly stale team
+   (`MAX_BUCKETS_PER_RUN`, one week). Bounded and quiet, and the sweep is hourly
+   so a week-long outage clears over a week of ticks; clamping `from` forward is
+   the lever if it ever matters.
+4. **The metering-key / entitlement-window asymmetry is load-bearing and is
+   deliberately not "tidied".** `billing_usage` is keyed on the **stored**
+   `team_billing.period_start` (`meteringPeriodStart`), while entitlement
+   resolution may substitute a rolled-forward window (`entitlementFrom`). They
+   look like they should be one expression and they must not be: keying usage off
+   the entitlement window would have one run key on the provider period and the
+   next on a window we invented — a second usage row accumulating for hours the
+   first already counted, and the watermark reset. Both functions carry the reason
+   in a comment; anyone who "simplifies" them together has introduced a silent
+   re-bill. A note for a future reader, not a task.
+5. **`billing_usage.reported_units` can drift upward.** A successful ingest
+   followed by a failed `commitRollup` re-emits next tick (the provider dedupes,
+   so the invoice is safe) and re-adds locally. It is a display counter, not a
+   billing source of truth; `teamBillingState.used` is counted live from `emails`.
+6. **One `team_billing` select per message on the send hot path.** With billing
+   on, `resolveTeamCaps` reads the billing row inside `checkTeamCaps`, and
+   `createBatch` loops `createEmail` — a 100-message batch issues 100 extra
+   selects. It matches the existing uncached `team_settings` read, so it is not a
+   new pattern; a per-request memo, or resolving caps once per batch, is the
+   obvious win if send latency ever matters.
+7. **`checkTeamCaps` now requires a fully valid environment even with billing
+   off**, because `resolveTeamCaps` reads env through `billingEnabled()`. The app
+   cannot boot without a valid env anyway, so this only bites tests that
+   previously needed none.
+
+**Provider and go-live**
+
+8. **A production Polar organization does not exist yet.** Everything is the
+   sandbox org (`01ab540b-e2bd-4386-9849-2190aca34b2e`). Creating the production
+   org, re-creating the three products with the same `metadata` keys, and
+   re-creating the `emails` meter is a manual checklist that must happen before
+   the first customer.
+9. **Confirm the meter's aggregation.** Our events carry `metadata.count`, so the
+   meter must aggregate **`sum` over `metadata.count`**, not `count()` of events —
+   a meter counting events reports 24 units a day per team at any volume. Verify
+   in the dashboard before taking money.
+10. **The webhook needs a public URL.** Polar cannot deliver to a laptop, so the
+    first true end-to-end run depends on Phase 4 opener 26 (push and deploy) or a
+    tunnel. Until then the fake provider is the only coverage.
+11. **Webhook secret rotation is undocumented.** `POLAR_WEBHOOK_SECRET` is a
+    single value; rotating it means a window in which one of the two secrets
+    fails. Either accept a brief window during a maintenance minute, or accept a
+    list of secrets.
+12. **Downgrades are the provider's semantics, not ours.** Whether Polar
+    prorates, schedules for the period end, or charges immediately has not been
+    exercised. Test it in sandbox before advertising it.
+13. **Refunds and disputes are not modelled.** `refund.created` and
+    `order.refunded` verify and are recorded as ignored. Whether a refund should
+    claw back entitlement is a policy question, not a bug.
+14. **No email is sent on a payment failure.** The dashboard shows a banner and
+    nothing else. Transactional mail from the instance to its own users is still
+    blocked on the instance having a verified sending domain of its own (deferred
+    since Phase 3).
+15. **Team ids remain unprefixed** (Phase 4 opener 11) and are now the provider's
+    customer reference. Decide before the first production customer: changing them
+    afterwards orphans every Polar customer mapping.
+
+**UI and operations**
+
+16. **The catalogue's buttons refuse for a subscribed team.** `startCheckout`
+    answers `conflict` ("use the billing portal to change plan") whenever the team
+    already has a subscription in an entitling status, but `BillingPanel` still
+    renders **Choose** / **Downgrade** on every non-current tier. A paying
+    customer's only working path is **Manage billing**, so those buttons teach the
+    wrong thing and can only produce an error. Hide them once `managed` is true,
+    relabel them, or deep-link them into the portal.
+17. **`billing_events` grows without bound.** The nightly `retention.purge` does
+    not touch it. A row is a few hundred bytes and the volume is tiny, but it
+    should join the retention sweep eventually.
+18. **No admin view of billing.** There is no instance-level list of subscriptions
+    or failed webhook deliveries; diagnosis is
+    `select * from billing_events where skipped_reason is not null`.
+
+**Docs, tests and tooling**
+
+19. **The MDX docs have no heading anchors.** `next.config.ts` loads `remark-gfm`
+    and nothing else, so headings get no `id` and no page can link to a _section_
+    of another. `/docs/billing` wants to point at "Turning billing on" in
+    `/docs/self-hosting` and has to name the heading in prose instead.
+    `rehype-slug` is a one-line addition — but plugins cross the Turbopack loader
+    boundary as strings, so verify it in a dev build rather than assuming.
+20. **Embedded-Postgres starvation under full-suite load.** `retention.test.ts`
+    (180 s hook timeout inside `startPg()`) and `email-send.test.ts`'s
+    concurrent-claim test (`not_claimed`) have each failed once in a full run at
+    `maxWorkers: 4` and passed in isolation. Both passed clean in this phase's
+    final run, so it stays intermittent rather than fixed. Capping workers for the
+    integration project, or sharing one Postgres across files, is the fix before
+    CI starts failing on unrelated PRs.
+21. **The local test invocations are undocumented.** Vitest must be run from
+    `apps/web` (`bunx vitest --root apps/web` from the repo root breaks `startPg`'s
+    embedded Postgres), and `bun run test:e2e` needs `bun run db:dev` already
+    running. Both belong in a contributing doc.
+22. **`BILLING_PROVIDER` is absent from `.env.example`.** Deliberate — `fake` is
+    refused in production by an env refine and exists only for tests and e2e — but
+    someone will eventually go looking for it, and a commented "test only" line
+    would cost nothing.

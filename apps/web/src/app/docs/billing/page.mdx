@@ -65,9 +65,16 @@ x-ratelimit-remaining: 48211
 x-ratelimit-reset: 1789084800
 ```
 
-`x-ratelimit-reset` is the end of your billing period as a Unix timestamp.
-`x-ratelimit-limit` reads `unlimited` on a plan whose overage is billed, because
-there is no monthly ceiling left to report.
+Where the plan's included volume is the binding cap, `x-ratelimit-limit` is that
+volume and `x-ratelimit-reset` is the end of your **billing period** as a Unix
+timestamp.
+
+On a plan whose overage is billed there is no monthly ceiling to report, so the
+headers fall through to whatever binds next — the instance's SES 24-hour quota,
+which is a trailing window and therefore carries no `x-ratelimit-reset`, or
+`unlimited` when there is no cap of any kind. The same is true in the other
+direction: a `team_settings.daily_limit` binds before the plan does, and then
+the reset is the next UTC midnight.
 
 ### The overage spend ceiling
 
