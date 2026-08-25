@@ -47,6 +47,14 @@ export default defineConfig({
           // Canned SES/SNS/STS responses (src/lib/aws/fake-client.ts); set
           // here unconditionally so CI needs no extra variable.
           AWS_E2E_MOCK: "1",
+          // Fake SES reports DKIM/MAIL FROM as SUCCESS so send.spec.ts can
+          // verify a domain with one Re-verify click.
+          AWS_E2E_VERIFY: "1",
+          // SMTP relay on a non-privileged port; the spec authenticates over
+          // a plain connection (self-signed cert, no client verification).
+          SMTP_ENABLED: "true",
+          SMTP_PORT: "2587",
+          SMTP_ALLOW_INSECURE_AUTH: "true",
         },
       },
 });

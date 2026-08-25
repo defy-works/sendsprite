@@ -5,6 +5,11 @@
  * cover the wizard's manual-keys path and domain provisioning; anything else
  * throws so an unexpected call fails loudly instead of returning `{}`.
  *
+ * `AWS_E2E_VERIFY=1` makes `GetEmailIdentity` report DKIM and MAIL FROM as
+ * SUCCESS so an inline Re-verify flips a domain to `verified` at once, and
+ * `SendEmail` answers with a unique `fake-<nonce>-<n>` message id — both for
+ * the send e2e spec.
+ *
  * Typed loosely on purpose: the factory casts it to the SDK client type at
  * the boundary, and the SDK's `send` overloads are far more specific than a
  * name switch can honour.
@@ -12,6 +17,10 @@
 const ACCOUNT_ID = "111111111111";
 const TOPIC_ARN = `arn:aws:sns:us-east-1:${ACCOUNT_ID}:sendsprite-events`;
 const DKIM_TOKENS = ["e1", "e2", "e3"];
+// `emails.ses_message_id` is unique and the dev database persists between
+// runs, so ids carry a per-boot nonce in addition to the counter.
+const SEND_NONCE = Date.now().toString(36);
+let sendCounter = 0;
 
 export class FakeAwsClient {
   async send(cmd: object): Promise<unknown> {
@@ -30,11 +39,17 @@ export class FakeAwsClient {
         return { SubscriptionArn: `${TOPIC_ARN}:sub` };
       case "CreateEmailIdentityCommand":
         return { DkimAttributes: { Tokens: DKIM_TOKENS, Status: "PENDING" } };
-      case "GetEmailIdentityCommand":
+      case "GetEmailIdentityCommand": {
+        const status =
+          process.env.AWS_E2E_VERIFY === "1" ? "SUCCESS" : "PENDING";
         return {
-          DkimAttributes: { Status: "PENDING", Tokens: DKIM_TOKENS },
-          MailFromAttributes: { MailFromDomainStatus: "PENDING" },
+          DkimAttributes: { Status: status, Tokens: DKIM_TOKENS },
+          MailFromAttributes: { MailFromDomainStatus: status },
         };
+      }
+      case "SendEmailCommand":
+        sendCounter += 1;
+        return { MessageId: `fake-${SEND_NONCE}-${sendCounter}` };
       case "CreateConfigurationSetCommand":
       case "CreateConfigurationSetEventDestinationCommand":
       case "UnsubscribeCommand":

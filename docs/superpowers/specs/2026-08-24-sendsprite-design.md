@@ -100,6 +100,8 @@ Per-team token bucket honours SES `MaxSendRate` and daily quota (from `GetAccoun
 
 Live UI updates: `/api/stream?team=` SSE fed by pg-boss/DB notifications; TanStack Query refetches on message.
 
+**As shipped (Phase 3):** open/click tracking is Sendsprite's own — links are rewritten to `/t/c/:id?u=<url>&s=<hmac>` and a pixel is injected at `/t/o/:id.gif` (team defaults `team_settings.track_opens/track_clicks`, per-request `trackOpens`/`trackClicks`); every `SendEmail` carries `ConfigurationOverrides.Tracking` with open and click tracking `DISABLED` so every count has one source. The token bucket is **instance-level** (SES quota is per account): a single `send_rate_state` row refilled at `MaxSendRate` (burst = `MaxSendRate`), refreshed hourly from `instance_settings`; per-team caps are `team_settings.daily_limit/monthly_limit` (UTC calendar windows) and the instance 24 h quota is checked when a team has no daily cap. A throttled `email.send` re-enqueues itself with `startAfter`. Event attribution is by `EmailTags` (`ss_email`, `ss_team`) first, `ses_message_id` second. The SSE stream is `/api/stream` (session-scoped to the current team; no `?team=`) backed by Postgres `LISTEN/NOTIFY`, and a small `useTeamStream` hook calls `router.refresh()` — no TanStack Query. `render` today means `html`/`text`; templates arrive in Phase 5 and the SDK's `react` in Phase 4 (pre-rendered to `html`).
+
 ## 5. Data model (Drizzle)
 
 Every team-scoped table carries `team_id` with an index. Timestamps `created_at`/`updated_at` everywhere. IDs are prefixed ULIDs (`em_`, `dom_`, `key_`, …) exposed in the API.
@@ -228,12 +230,16 @@ Exactly one content source is required: `html`/`text` (either or both), or `temp
 
 OpenAPI 3.1 generated from `packages/shared` zod schemas at build; served at `/api/v1/openapi.json`, rendered at `/docs/api`.
 
+**As shipped (Phase 3):** endpoints live for Emails (`POST /emails` → 201 `{ id }`, 200 with the earlier id on an idempotent replay; `POST /emails/batch` → 201 `{ data }`, partial success on the first failure with `details.index`; `GET /emails` with `limit/cursor/status/to/domainId/tag`; `GET /emails/:id` incl. `events`; `PATCH /emails/:id`; `POST /emails/:id/cancel`), Domains (`GET`, `POST`, `GET /:id`, `POST /:id/verify`, `DELETE /:id` → 204 or 200 `{ leftoverDnsRecords }`), API keys (`GET`, `POST`, `DELETE /:id`), Webhooks (`GET`, `POST`, `PATCH/DELETE /:id`, `POST /:id/test`) and Suppressions (`GET`, `POST`, `DELETE /:email`). API keys carry `permission` (`full` | `sending_only` — the latter may only call `POST /emails*`) and an optional pinned `domainId`. The body also accepts `trackOpens`, `trackClicks`, `overrideSuppression` (bypasses `manual` suppressions only); CR/LF in addresses, subject, headers and attachment names is rejected; recipients ≤ 50 across `to/cc/bcc`, tags ≤ 20, attachments ≤ 10 MB each, body ≤ 25 MB (`413 payload_too_large`). Extra error codes: `monthly_quota_exceeded` (429), `conflict` (409), `payload_too_large` (413). Rate-limit headers (`x-ratelimit-limit/remaining`, `x-ratelimit-reset` only with a team daily cap) are sent on the emails routes only. Templates, contact books, contacts and campaigns REST → Phase 5; OpenAPI generation and `/docs/api` → Phase 4.
+
 ## 8. Outbound webhooks
 
 `POST <url>` with body `{ "id": "evt_…", "type": "email.delivered", "createdAt": "…", "data": { … } }`.
 Headers: `Sendsprite-Signature: t=<unix>,v1=<hex hmac-sha256(secret, t + "." + body)>`, `Sendsprite-Event-Id`. Retry schedule 1 m, 5 m, 30 m, 2 h, 8 h; after 24 h of continuous failure the webhook is disabled and team owners are emailed.
 
 Event types: `email.sent|delivered|delayed|bounced|complained|opened|clicked|failed`, `contact.created|updated|unsubscribed|resubscribed`, `domain.verified|failed`, `campaign.sent|completed`.
+
+**As shipped (Phase 3):** retries are driven by a once-a-minute `webhook.retry-sweep` cron rather than pg-boss retries: a failed delivery sets `next_retry_at` per the 1 m / 5 m / 30 m / 2 h / 8 h schedule and the sweep re-enqueues it (a handler on an `exclusive` queue can never re-enqueue itself while active — see the Phase 3 plan). After 24 h of continuous failure the webhook is disabled with a reason shown on Team → Webhooks; re-enabling clears the failure clock. **Owner e-mail on disable is deferred** (it needs a verified sending domain of the instance itself) — Phase 5. Secrets are `whsec_…`, shown once; header names are lower-cased on the wire (`sendsprite-signature`, `sendsprite-event-id`); verification (`verifyWebhookSignature` in `@sendsprite/shared`) allows a 300 s timestamp skew. `email.*` and `domain.*` events ship now; `contact.*`/`campaign.*` with Phase 5.
 
 ## 9. SDK, CLI, MCP
 
@@ -291,6 +297,8 @@ Strings live in a `{ en, ko? }` dictionary from day one (site_v2 convention); on
 - AWS/Cloudflare calls return typed errors surfaced verbatim in the UI (e.g. token lacking DNS:Edit on a zone). Provisioning jobs are idempotent and re-runnable.
 - Inbound SNS: signature verified against the `sns.amazonaws.com` cert URL allow-list; unknown message IDs logged at info, 200 returned.
 - `/api/health` reports DB, queue lag, SES connectivity, sandbox status. Bounce ≥ 4 % or complaint ≥ 0.08 % (rolling 24 h) triggers owner email + banner.
+
+**As shipped (Phase 3):** bounce/complaint thresholds and webhook disablement show as **dashboard banners only** (overview alerts need ≥ 20 sends in the window so one bounce cannot trip them); owner e-mails are Phase 5, for the same reason as §8. `email.send` retries retryable SES errors 5× with backoff and marks the row `failed` on the last attempt; `MessageRejected`, sandbox refusals (`sandbox_restricted`) and the other non-retryable SES errors fail at once. `/api/health` also reports `workerLastSeenSeconds` from the `worker_heartbeats` table (`degraded` when no worker has been seen in 15 min).
 
 ## 13. Testing
 
