@@ -3324,6 +3324,12 @@ SSE route `api/stream/route.ts`: `requireTeam()`; `ReadableStream` that writes `
 
 - [x] **Step 3: Run, commit** → `feat(web): open/click tracking endpoints and SSE team stream`.
 
+**Review follow-ups (shipped):**
+
+- The load → flag check → `recordEvent` → `fanOutEvent` sequence lives in `services/tracking.ts` (`recordTrackingHit`), shared by both routes; it selects only the columns `publicEmail` needs (never html/text) and never throws. A bare `/t/o/<id>` (no `.gif`) still answers the gif but is not counted.
+- `lib/notify.ts`: `listenTeam` keeps one `postgres(url, { max: 1 })` LISTEN connection per process on `globalThis`; `teamChannel` is cut to 63 bytes (Postgres identifier limit); `listenerCount(teamId)` (tests) and `closeListener()` (tests/shutdown) are exported. The unsubscribe function is idempotent.
+- SSE route: a `cleaned` flag guards cleanup (ping timer, unlisten, close) so it runs exactly once on abort, cancel, or a failed write; the abort listener is attached before `await listenTeam`, and an abort that lands during setup drops the subscription right after. `stream.test.ts` drives the route with an `AbortController`, reads the `: connected` comment and a `change` event, and asserts the subscription count drops to 0 and `clearInterval` ran once.
+
 ---
 
 ### Task 12: REST v1 — emails + domains routes (integration-tested through the handlers)
@@ -3388,6 +3394,15 @@ Run → FAIL.
 Common: `withApiKey`; body via `await req.json().catch(() => null)`; `fail("validation_error", …)` on null. Rate-limit headers on every response: `x-ratelimit-limit` (team daily cap or `sesDailyQuota` or `unlimited`), `x-ratelimit-remaining`, `x-ratelimit-reset` (next UTC midnight epoch) — computed by a small `rateHeaders(teamId)` in `lib/api-response.ts` using `send-limits`. `POST /emails` → `createEmail({ teamId, source: "api", apiKeyId, actorUserId: null, keyDomainId }, body, { enqueue })` → 201 `{ id }` (Resend-compatible). `POST /emails/batch` → `createBatch` → 201 `{ data: [{id}] }`. `GET /emails/[id]` → `{ ...publicEmail(e), events: [...] }`. `GET /emails` → `listEmails` → `{ data, nextCursor }`. `PATCH /emails/[id]` → `rescheduleEmail`. `POST /emails/[id]/cancel` → `cancelEmail`. Domains: `GET /domains` (list, public shape: id, name, status, dnsMode, region, records w/o cloudflareId, createdAt), `POST /domains` (`createDomain` with a synthetic admin actor), `GET /domains/[id]`, `POST /domains/[id]/verify` (`reverifyDomain`), `DELETE /domains/[id]`. `sending_only` keys get 403 on everything except `POST /emails*`.
 
 - [x] **Step 3: Run, commit** → `feat(web): REST v1 emails and domains endpoints with error envelope and rate headers`.
+
+**Review follow-ups (shipped):**
+
+- `createEmail` returns `CreateResult` (`SendResult` + `created: boolean`); `POST /emails` answers 200 (not 201) with the earlier id on an idempotent replay.
+- Rate headers are on the emails routes only. `usageSnapshot` skips the instance-wide 24 h count when the team has a daily cap; `x-ratelimit-reset` (next UTC midnight) is only sent with a team daily cap — the SES quota is a trailing window with no fixed reset, so the header is omitted then, and with no cap at all.
+- Body cap: `tooLarge(req)` checks `content-length` only; chunked bodies rely on the reverse proxy's limit.
+- Domains: `publicDomain()` in `services/domains.ts`; service refusals carry `code` (`not_found` → 404, `conflict` → 409 for duplicate name, "already provisioned", "provisioning hasn't finished"); `DELETE /domains/:id` is 204, or 200 `{ leftoverDnsRecords }` when Cloudflare records could not be removed.
+- Cancel/reschedule via REST record `actorUserId: api:<keyId>` on the event (`rescheduleEmail` takes `actorUserId` in `deps`).
+- `rest-emails.test.ts` mocks `@/jobs/enqueue` (the send path is covered by `email-send.test.ts`) and also covers: idempotent replay, a batch that fails mid-way leaving the earlier item queued and the later one never created, the `to`/`tag`/`domainId` list filters, and the 413 cap.
 
 ---
 

@@ -82,8 +82,26 @@ export async function ingestSesEvent(
   return { ok: true, recorded: true };
 }
 
+/** Columns `publicEmail` reads; callers may select just these. */
+export type PublicEmailRow = Pick<
+  typeof emails.$inferSelect,
+  | "id"
+  | "from"
+  | "to"
+  | "cc"
+  | "bcc"
+  | "replyTo"
+  | "subject"
+  | "status"
+  | "tags"
+  | "createdAt"
+  | "sentAt"
+  | "scheduledAt"
+  | "lastError"
+>;
+
 /** The email as webhook consumers see it: no body, headers or internals. */
-export const publicEmail = (e: typeof emails.$inferSelect) => ({
+export const publicEmail = (e: PublicEmailRow) => ({
   id: e.id,
   from: e.from,
   to: e.to,

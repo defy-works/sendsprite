@@ -25,7 +25,28 @@ export async function recordTrackingHit(
     | { type: "clicked"; headers: Headers; url: string },
 ): Promise<void> {
   try {
-    const [e] = await db().select().from(emails).where(eq(emails.id, emailId));
+    // No body columns: html/text can be megabytes and are not needed here.
+    const [e] = await db()
+      .select({
+        id: emails.id,
+        teamId: emails.teamId,
+        trackOpens: emails.trackOpens,
+        trackClicks: emails.trackClicks,
+        from: emails.from,
+        to: emails.to,
+        cc: emails.cc,
+        bcc: emails.bcc,
+        replyTo: emails.replyTo,
+        subject: emails.subject,
+        status: emails.status,
+        tags: emails.tags,
+        createdAt: emails.createdAt,
+        sentAt: emails.sentAt,
+        scheduledAt: emails.scheduledAt,
+        lastError: emails.lastError,
+      })
+      .from(emails)
+      .where(eq(emails.id, emailId));
     if (!e) return;
     if (hit.type === "opened" ? !e.trackOpens : !e.trackClicks) return;
     const { ip, userAgent } = requestMeta(hit.headers);

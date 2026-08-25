@@ -40,6 +40,9 @@ export type SendFailure = {
   details?: unknown;
 };
 export type SendResult = { ok: true; data: EmailRow } | SendFailure;
+/** `created: false` is an idempotent replay returning the earlier email. */
+export type CreateResult =
+  { ok: true; data: EmailRow; created: boolean } | SendFailure;
 
 const fail = (
   code: ErrorCode,
@@ -119,7 +122,7 @@ export async function createEmail(
   ctx: SendContext,
   raw: unknown,
   deps: { enqueue: Enqueue; now?: Date },
-): Promise<SendResult> {
+): Promise<CreateResult> {
   const parsed = SendEmailInput.safeParse(raw);
   if (!parsed.success)
     return fail(
@@ -171,7 +174,7 @@ export async function createEmail(
             text: input.text ?? null,
           });
       return same
-        ? { ok: true, data: existing }
+        ? { ok: true, data: existing, created: false }
         : fail(
             "idempotency_conflict",
             "idempotencyKey was already used with a different payload.",
@@ -289,7 +292,7 @@ export async function createEmail(
     { emailId: id },
     scheduledAt ? delayOpts(scheduledAt, now) : undefined,
   );
-  return { ok: true, data: row };
+  return { ok: true, data: row, created: true };
 }
 
 const delayOpts = (at: Date, now: Date) => {
@@ -467,7 +470,7 @@ export async function rescheduleEmail(
   teamId: string,
   id: string,
   scheduledAt: string,
-  deps: { enqueue: Enqueue; now?: Date },
+  deps: { enqueue: Enqueue; now?: Date; actorUserId?: string | null },
 ): Promise<SendResult> {
   const now = deps.now ?? new Date();
   const p = futureIso.safeParse(scheduledAt);
@@ -500,7 +503,10 @@ export async function rescheduleEmail(
     teamId,
     type: "queued",
     dedupeKey: `local:${id}:reschedule:${at.toISOString()}`,
-    payload: { rescheduledTo: at.toISOString() },
+    payload: {
+      rescheduledTo: at.toISOString(),
+      ...(deps.actorUserId && { actorUserId: deps.actorUserId }),
+    },
   });
   await deps.enqueue(Q.emailSend, { emailId: id }, delayOpts(at, now));
   return { ok: true, data: row };

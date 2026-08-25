@@ -14,7 +14,10 @@ import { sendContext, sendFailure } from "./_shared";
 
 export const dynamic = "force-dynamic";
 
-/** 201 `{ id }` (Resend-compatible). Sending-only keys may call this. */
+/**
+ * 201 `{ id }` (Resend-compatible); 200 with the earlier id when an
+ * `idempotencyKey` replays. Sending-only keys may call this.
+ */
 export const POST = withApiKey(async (req, auth) => {
   const large = tooLarge(req);
   if (large) return large;
@@ -23,7 +26,7 @@ export const POST = withApiKey(async (req, auth) => {
   const res = await createEmail(sendContext(auth), body, { enqueue });
   const headers = await rateHeaders(auth.team.id);
   if (!res.ok) return sendFailure(res, headers);
-  return ok({ id: res.data.id }, { status: 201, headers });
+  return ok({ id: res.data.id }, { status: res.created ? 201 : 200, headers });
 });
 
 /** `{ data, nextCursor }`; filters per `ListQuery` (limit, cursor, status, to, domainId, tag). */

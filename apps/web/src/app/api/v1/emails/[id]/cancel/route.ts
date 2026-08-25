@@ -10,7 +10,7 @@ export const POST = withApiKey(
   async (_req, auth, ctx) => {
     const { id } = await ctx.params;
     const headers = await rateHeaders(auth.team.id);
-    const res = await cancelEmail(auth.team.id, id ?? "", null);
+    const res = await cancelEmail(auth.team.id, id ?? "", `api:${auth.key.id}`);
     if (!res.ok) return sendFailure(res, headers);
     return ok(publicEmail(res.data), { headers });
   },

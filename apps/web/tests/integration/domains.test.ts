@@ -646,6 +646,7 @@ describe("domains", () => {
     ses.reset();
     expect(await reverifyDomain(actor, res.data.id)).toEqual({
       ok: false,
+      code: "conflict",
       error: "Provisioning hasn't finished yet.",
     });
     expect(ses.commandCalls(GetEmailIdentityCommand)).toHaveLength(0);

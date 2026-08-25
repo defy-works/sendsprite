@@ -48,9 +48,7 @@ export const PATCH = withApiKey(
       auth.team.id,
       id ?? "",
       body.scheduledAt,
-      {
-        enqueue,
-      },
+      { enqueue, actorUserId: `api:${auth.key.id}` },
     );
     if (!res.ok) return sendFailure(res, headers);
     return ok(publicEmail(res.data), { headers });

@@ -212,7 +212,11 @@ export async function retryProvisioning(
   const d = await getDomain(actor.teamId, id);
   if (!d) return NOT_FOUND;
   if (d.dkimTokens.length > 0)
-    return { ok: false, error: "This domain is already provisioned." };
+    return {
+      ok: false,
+      code: "conflict",
+      error: "This domain is already provisioned.",
+    };
   await db()
     .update(domains)
     .set({
@@ -464,7 +468,11 @@ export async function reverifyDomain(
   if (!d) return NOT_FOUND;
   // Before provisioning there is no identity to check; the job will verify.
   if (d.dkimTokens.length === 0)
-    return { ok: false, error: "Provisioning hasn't finished yet." };
+    return {
+      ok: false,
+      code: "conflict",
+      error: "Provisioning hasn't finished yet.",
+    };
   const status = d.status === "failed" ? "pending" : d.status;
   await db()
     .update(domains)

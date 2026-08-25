@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import { startPg } from "./_pg";
+import { emailEvents, emails } from "@/db/schema";
 
 // The routes enqueue `email.send` (and domain jobs) through pg-boss. A module
 // mock of the bridge is simpler than booting pg-boss send-only for a test
@@ -167,6 +169,19 @@ describe("REST /api/v1/emails", () => {
       noParams,
     );
     expect(so.status).toBe(201);
+    // Idempotent replay: 200 with the same id.
+    const keyed = { ...mail, idempotencyKey: "k-1" };
+    const first = await POST(
+      req("/emails", { method: "POST", body: keyed }),
+      noParams,
+    );
+    expect(first.status).toBe(201);
+    const replay = await POST(
+      req("/emails", { method: "POST", body: keyed }),
+      noParams,
+    );
+    expect(replay.status).toBe(200);
+    expect(await json(replay)).toEqual(await json(first));
   });
 
   it("batch → 201 {data:[{id}]}, or the envelope with details.index", async () => {
@@ -182,7 +197,11 @@ describe("REST /api/v1/emails", () => {
     const bad = await POST(
       req("/emails/batch", {
         method: "POST",
-        body: [mail, { ...mail, from: "a@nope.io" }],
+        body: [
+          { ...mail, subject: "partial" },
+          { ...mail, subject: "partial", from: "a@nope.io" },
+          { ...mail, subject: "partial" },
+        ],
       }),
       noParams,
     );
@@ -190,6 +209,12 @@ describe("REST /api/v1/emails", () => {
     expect(await json(bad)).toMatchObject({
       error: { code: "domain_not_verified", details: { index: 1 } },
     });
+    // The item before the failure is already queued; the one after never ran.
+    const partial = await pg.db
+      .select({ status: emails.status })
+      .from(emails)
+      .where(eq(emails.subject, "partial"));
+    expect(partial).toEqual([{ status: "queued" }]);
     const invalid = await POST(
       req("/emails/batch", { method: "POST", body: { nope: 1 } }),
       noParams,
@@ -245,6 +270,24 @@ describe("REST /api/v1/emails", () => {
     expect(
       (await list(req("/emails?status=cancelled"), noParams).then(json)).data,
     ).toEqual([]);
+    // Filters: to, tag (key:value), domainId.
+    const { POST: create } = await import("@/app/api/v1/emails/route");
+    const tagged = await create(
+      req("/emails", {
+        method: "POST",
+        body: { ...mail, to: "Filter Me <f@x.io>", tags: { env: "a:b" } },
+      }),
+      noParams,
+    ).then(json<{ id: string }>);
+    const ids = async (qs: string) =>
+      (
+        await list(req(`/emails?${qs}`), noParams).then(json<typeof p1>)
+      ).data.map((e) => e.id);
+    expect(await ids("to=f%40x.io")).toEqual([tagged.id]);
+    expect(await ids("tag=env%3Aa%3Ab")).toEqual([tagged.id]);
+    expect(await ids("tag=env%3Anope")).toEqual([]);
+    expect(await ids("domainId=dom_1")).toContain(tagged.id);
+    expect(await ids("domainId=dom_x")).toEqual([]);
 
     const id = p1.data[0]!.id as string;
     const one = await get(req(`/emails/${id}`), withId(id));
@@ -332,6 +375,13 @@ describe("REST /api/v1/emails", () => {
     );
     expect(c.status).toBe(200);
     expect(await json(c)).toMatchObject({ id: queued.id, status: "cancelled" });
+    const [cancelled] = await pg.db
+      .select({ payload: emailEvents.payload })
+      .from(emailEvents)
+      .where(eq(emailEvents.dedupeKey, `local:${queued.id}:cancelled`));
+    expect(cancelled?.payload).toEqual({
+      actorUserId: expect.stringMatching(/^api:key_/),
+    });
     const again = await cancel(
       req(`/emails/${queued.id}/cancel`, { method: "POST" }),
       withId(queued.id),
@@ -463,7 +513,8 @@ describe("REST /api/v1/domains", () => {
       req("/domains/dom_1/verify", { method: "POST" }),
       withId("dom_1"),
     );
-    expect(v.status).toBe(400);
+    expect(v.status).toBe(409);
+    expect(await json(v)).toMatchObject({ error: { code: "conflict" } });
     expect(
       (
         await verify(
@@ -484,7 +535,10 @@ describe("REST /api/v1/domains", () => {
       req("/domains/dom_1", { method: "DELETE" }),
       withId("dom_1"),
     );
-    expect(del.status).toBe(204);
+    // AWS is disconnected, so the two Cloudflare records we created stay
+    // behind and are reported instead of a bare 204.
+    expect(del.status).toBe(200);
+    expect(await json(del)).toEqual({ leftoverDnsRecords: 2 });
     expect((await get(req("/domains/dom_1"), withId("dom_1"))).status).toBe(
       404,
     );

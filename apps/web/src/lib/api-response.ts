@@ -36,6 +36,8 @@ export const MAX_BODY_BYTES = 25 * 1024 * 1024;
 /**
  * 413 envelope when the declared body is over the cap, else null. Checked
  * before parsing so an oversized batch is refused without being buffered.
+ * Only `content-length` is inspected: a chunked body has none, so the cap
+ * on those is the reverse proxy's (`client_max_body_size` or equivalent).
  */
 export function tooLarge(req: Request, headers?: HeadersInit) {
   const len = Number(req.headers.get("content-length"));
@@ -50,27 +52,39 @@ export function tooLarge(req: Request, headers?: HeadersInit) {
 }
 
 /**
- * `x-ratelimit-*` for the emails endpoints: the team's daily cap when set,
- * else the SES 24-hour quota, else `unlimited`. `reset` is the next UTC
- * midnight (the daily-cap window) as epoch seconds.
+ * `x-ratelimit-*` for the emails endpoints. With a team daily cap: limit,
+ * remaining, and `reset` = next UTC midnight (epoch seconds), the cap's
+ * window. Without one the SES 24-hour quota is shown instead; it is a
+ * trailing window with no fixed reset, so `x-ratelimit-reset` is omitted.
+ * No cap at all: `unlimited`, no reset.
  */
 export async function rateHeaders(
   teamId: string,
   now = new Date(),
 ): Promise<Record<string, string>> {
   const u = await usageSnapshot(teamId, now);
-  const limit = u.dailyLimit ?? u.instanceQuota;
-  const used = u.dailyLimit != null ? u.dailyUsed : u.instanceUsed;
-  const reset = Date.UTC(
-    now.getUTCFullYear(),
-    now.getUTCMonth(),
-    now.getUTCDate() + 1,
-  );
+  if (u.dailyLimit != null) {
+    const reset = Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate() + 1,
+    );
+    return {
+      "x-ratelimit-limit": String(u.dailyLimit),
+      "x-ratelimit-remaining": String(Math.max(0, u.dailyLimit - u.dailyUsed)),
+      "x-ratelimit-reset": String(Math.floor(reset / 1000)),
+    };
+  }
+  if (u.instanceQuota != null)
+    return {
+      "x-ratelimit-limit": String(u.instanceQuota),
+      "x-ratelimit-remaining": String(
+        Math.max(0, u.instanceQuota - u.instanceUsed),
+      ),
+    };
   return {
-    "x-ratelimit-limit": limit == null ? "unlimited" : String(limit),
-    "x-ratelimit-remaining":
-      limit == null ? "unlimited" : String(Math.max(0, limit - used)),
-    "x-ratelimit-reset": String(Math.floor(reset / 1000)),
+    "x-ratelimit-limit": "unlimited",
+    "x-ratelimit-remaining": "unlimited",
   };
 }
 

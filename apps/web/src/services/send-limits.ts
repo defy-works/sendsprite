@@ -167,7 +167,11 @@ export interface UsageSnapshot {
   instanceUsed: number;
 }
 
-/** What the REST rate-limit headers report. */
+/**
+ * What the REST rate-limit headers report. A team with its own daily cap
+ * is reported against that cap only; the instance-wide count (a scan of
+ * every team's sends) is skipped and `instanceUsed` is 0 then.
+ */
 export async function usageSnapshot(
   teamId: string,
   now = new Date(),
@@ -176,11 +180,12 @@ export async function usageSnapshot(
     .select({ daily: teamSettings.dailyLimit })
     .from(teamSettings)
     .where(eq(teamSettings.teamId, teamId));
+  const dailyLimit = ts?.daily ?? null;
   const s = await getInstanceSettings();
   return {
-    dailyLimit: ts?.daily ?? null,
+    dailyLimit,
     dailyUsed: await countActiveSince(teamId, startOfDay(now)),
     instanceQuota: s.sesDailyQuota ?? null,
-    instanceUsed: await countSentLast24h(now),
+    instanceUsed: dailyLimit == null ? await countSentLast24h(now) : 0,
   };
 }
