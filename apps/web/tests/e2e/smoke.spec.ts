@@ -35,6 +35,15 @@ test("signup → create team → shell renders → settings rename", async ({
   await expect(renameForm.getByRole("alert")).toHaveCount(0);
   await expect(page.getByRole("banner")).toContainText("Acme Renamed");
 
+  // AGPL section 13: every dashboard page offers the source, next to the
+  // version it is offering the source *of*, and /api/health says the same.
   const health = await page.request.get("/api/health");
   expect(health.ok()).toBeTruthy();
+  const body = await health.json();
+  const offer = page.getByRole("contentinfo");
+  await expect(offer).toContainText(`Sendsprite ${body.version}`);
+  await expect(offer.getByRole("link", { name: "Source" })).toHaveAttribute(
+    "href",
+    body.sourceUrl,
+  );
 });

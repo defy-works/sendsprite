@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { summarize, type Checks } from "@/lib/health";
+import { UPSTREAM_SOURCE_URL, appVersion, sourceUrl } from "@/lib/build-info";
 
 const base: Checks = {
   db: "ok",
@@ -50,6 +51,14 @@ describe("health summarize", () => {
     const h = s({ worker: "disabled", workerLastSeenSeconds: null }, "none");
     expect(h.worker).toBe("disabled");
     expect(h.status).toBe("ok");
+  });
+  it("reports the version and the source offer together (AGPL section 13)", () => {
+    // /api/health is the machine-readable half of the offer the dashboard
+    // footer makes; both read build-info, so they cannot drift apart.
+    const h = s({});
+    expect(h.version).toBe(appVersion());
+    expect(h.sourceUrl).toBe(sourceUrl());
+    expect(h.sourceUrl).toBe(UPSTREAM_SOURCE_URL);
   });
   it("an in-process worker is running even with a stale heartbeat table", () => {
     const h = s({ worker: "running", workerLastSeenSeconds: null });

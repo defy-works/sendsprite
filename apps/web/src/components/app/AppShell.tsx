@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/Badge";
+import { appVersion, sourceUrl } from "@/lib/build-info";
 import type { InstanceSettings } from "@/services/instance-settings";
 import { MobileNav } from "./MobileNav";
 import { NavLink } from "./NavLink";
@@ -75,7 +76,31 @@ export function AppShell(p: {
           </div>
         </header>
         <main className="flex-1 p-6">{p.children}</main>
+        <SourceOffer />
       </div>
     </div>
+  );
+}
+
+/**
+ * The offer of source that AGPL section 13 requires of anyone who runs a
+ * modified Sendsprite for other people, sitting next to the version so the
+ * two are read together: this build, and where its code lives. Operators
+ * point it at their own source with `SOURCE_URL`.
+ */
+function SourceOffer() {
+  return (
+    <footer className="flex items-center justify-end gap-2 border-t border-white/5 px-4 py-3 font-mono text-[11px] tracking-[0.08em] text-white/30">
+      <span>Sendsprite {appVersion()}</span>
+      <span aria-hidden>·</span>
+      <a
+        href={sourceUrl()}
+        target="_blank"
+        rel="noreferrer"
+        className="hover:text-white/60"
+      >
+        Source
+      </a>
+    </footer>
   );
 }

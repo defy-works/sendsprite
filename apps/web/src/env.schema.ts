@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { SES_REGIONS } from "@/lib/aws/regions";
 import { isS3TemplateUrl } from "@/lib/aws/quick-create";
+import { UPSTREAM_SOURCE_URL } from "@/lib/build-info";
 
 const bool = z
   .union([z.boolean(), z.string()])
@@ -55,6 +56,20 @@ export const schema = z
         "https://sendsprite-cfn.s3.us-east-1.amazonaws.com/latest/sendsprite-connect.yaml",
       ),
     AWS_DEFAULT_REGION: z.enum(SES_REGIONS).default("us-east-1"),
+    /**
+     * The source offer this instance makes to its users (AGPL section 13),
+     * shown in the dashboard footer and in `/api/health`.
+     *
+     * The default points at upstream, which is correct only while you run
+     * Sendsprite unmodified. If you change the server and let anyone else use
+     * it over a network, the licence requires you to offer *your* source to
+     * those users — so point this at your own repository, mirror or tarball.
+     * Nothing checks that for you; setting it is what discharges section 13
+     * for a modified instance.
+     */
+    SOURCE_URL: z
+      .url({ error: "SOURCE_URL must be a full URL incl. protocol" })
+      .default(UPSTREAM_SOURCE_URL),
   })
   .refine((e) => Boolean(e.SMTP_TLS_CERT) === Boolean(e.SMTP_TLS_KEY), {
     message: "SMTP_TLS_CERT and SMTP_TLS_KEY must be set together",

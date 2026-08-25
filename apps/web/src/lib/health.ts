@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import { db } from "@/db";
 import { getWorkerState } from "@/jobs/boss";
 import { getSmtpState, type SmtpState } from "@/smtp/state";
+import { appVersion, sourceUrl } from "@/lib/build-info";
 
 export interface Checks {
   db: "ok" | "error";
@@ -25,6 +26,12 @@ export interface Checks {
 export interface Health extends Checks {
   status: "ok" | "degraded" | "error";
   version: string;
+  /**
+   * Where this instance offers its source (AGPL section 13, `SOURCE_URL`).
+   * Next to the version on purpose: together they say exactly which code is
+   * running here and where to get it.
+   */
+  sourceUrl: string;
 }
 
 /** A heartbeat younger than this counts as a running worker. */
@@ -60,7 +67,13 @@ export function summarize(
       : c.queueLag > 60 || workerMissing || c.smtp.status === "failed"
         ? "degraded"
         : "ok";
-  return { ...c, worker, status, version: process.env.APP_VERSION ?? "dev" };
+  return {
+    ...c,
+    worker,
+    status,
+    version: appVersion(),
+    sourceUrl: sourceUrl(),
+  };
 }
 
 // Postgres SQLSTATEs: undefined_table / invalid_schema_name. pg-boss creates

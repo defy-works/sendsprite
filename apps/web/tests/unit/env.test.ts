@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseEnv } from "@/env.schema";
+import { UPSTREAM_SOURCE_URL, sourceUrl } from "@/lib/build-info";
 
 const BASE = {
   APP_URL: "https://mail.example.com",
@@ -70,6 +71,20 @@ describe("parseEnv", () => {
         CFN_TEMPLATE_URL: "https://raw.githubusercontent.com/x/y.yaml",
       }),
     ).toThrow(/S3/);
+  });
+  it("offers upstream as the source by default (AGPL section 13)", () => {
+    // The default is only correct for an unmodified instance; an operator who
+    // patches the server points SOURCE_URL at their own source instead.
+    expect(parseEnv(BASE).SOURCE_URL).toBe(UPSTREAM_SOURCE_URL);
+    expect(parseEnv(BASE).SOURCE_URL).toBe(sourceUrl());
+    expect(
+      parseEnv({ ...BASE, SOURCE_URL: "https://git.example.com/ss" }),
+    ).toHaveProperty("SOURCE_URL", "https://git.example.com/ss");
+  });
+  it("rejects a SOURCE_URL that is not a URL", () => {
+    expect(() => parseEnv({ ...BASE, SOURCE_URL: "git.example.com" })).toThrow(
+      /SOURCE_URL/,
+    );
   });
   it("rejects an AWS_DEFAULT_REGION where SES is unavailable", () => {
     expect(() =>
