@@ -75,5 +75,12 @@ describe("suppressions", () => {
     expect((await addSuppression(actor, { email: "not-an-email" })).ok).toBe(
       false,
     );
+    // Bounce/complaint come only from SES events, never from an actor.
+    expect(
+      (await addSuppression(actor, { email: "x@x.io", reason: "bounce" })).ok,
+    ).toBe(false);
+    expect(
+      await removeSuppression({ ...actor, role: "member" }, "b2@x.io"),
+    ).toMatchObject({ ok: false, code: "forbidden" });
   });
 });

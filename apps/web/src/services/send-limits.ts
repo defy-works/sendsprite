@@ -39,15 +39,15 @@ export async function takeSesToken(now = new Date()): Promise<TokenResult> {
       .where(eq(sendRateState.id, 1))
       .for("update");
     if (!row) throw new Error("send_rate_state singleton missing");
-    const elapsed = Math.max(
-      0,
-      (now.getTime() - row.refilledAt.getTime()) / 1000,
-    );
+    // A lagging clock (another worker's `now` behind the stamp) earns nothing
+    // and must not rewind the stamp, or the next taker double-credits.
+    const stamp = Math.max(now.getTime(), row.refilledAt.getTime());
+    const elapsed = (stamp - row.refilledAt.getTime()) / 1000;
     const tokens = Math.min(rate, row.tokens + elapsed * rate);
     const ok = tokens >= 1;
     await tx
       .update(sendRateState)
-      .set({ tokens: ok ? tokens - 1 : tokens, refilledAt: now })
+      .set({ tokens: ok ? tokens - 1 : tokens, refilledAt: new Date(stamp) })
       .where(eq(sendRateState.id, 1));
     return ok
       ? { ok: true }
@@ -85,7 +85,12 @@ async function countActiveSince(teamId: string, since: Date) {
   return Number(row?.n ?? 0);
 }
 
-/** Per-team daily/monthly caps (`team_settings`), UTC calendar windows. */
+/**
+ * Per-team daily/monthly caps (`team_settings`), UTC calendar windows.
+ * Counts by `createdAt` (reservation semantics: an email scheduled for later
+ * counts against the day it was created). Check-then-insert is not atomic,
+ * so concurrent creates can overshoot a cap by a few — the caps are soft.
+ */
 export async function checkTeamCaps(
   teamId: string,
   adding: number,
@@ -123,6 +128,8 @@ export async function checkTeamCaps(
 /**
  * SES Max24HourSend is account-wide: count every send across the instance in
  * the trailing 24 h (`sent_at`, which is set once SES accepted the message).
+ * In-flight `sending` rows have no `sent_at` yet and are not counted, so this
+ * too is a soft cap; SES itself is the hard one.
  */
 export async function checkInstanceQuota(
   adding: number,

@@ -1607,7 +1607,11 @@ describe("suppressions", () => {
     ).toEqual(["b2@x.io", "bad@x.io"]);
     expect((await removeSuppression(actor, "bad@x.io")).ok).toBe(true);
     expect(
-      (await removeSuppression({ ...actor, role: "member" }, "b2@x.io")).ok,
+      await removeSuppression({ ...actor, role: "member" }, "b2@x.io"),
+    ).toMatchObject({ ok: false, code: "forbidden" });
+    // Bounce/complaint come only from SES events, never from an actor.
+    expect(
+      (await addSuppression(actor, { email: "x@x.io", reason: "bounce" })).ok,
     ).toBe(false);
   });
 });
@@ -1672,9 +1676,8 @@ const input = z.object({
     .trim()
     .email()
     .transform((s) => s.toLowerCase()),
-  reason: z
-    .enum(["manual", "unsubscribe", "bounce", "complaint"])
-    .default("manual"),
+  // Bounce/complaint entries are written only by `suppressFromEvent`.
+  reason: z.enum(["manual", "unsubscribe"]).default("manual"),
   note: z.string().max(500).optional(),
 });
 export async function addSuppression(
@@ -1706,12 +1709,17 @@ export async function addSuppression(
   });
   return { ok: true, data: undefined };
 }
+/** Members hold `contacts.manage`; un-suppressing re-enables a bounced address, so it is admin-only. */
 export async function removeSuppression(
   actor: TeamActor,
   email: string,
 ): Promise<Result> {
-  if (!can(actor.role, "contacts.manage"))
-    return { ok: false, error: "You don't have permission to do that." };
+  if (!can(actor.role, "settings.manage"))
+    return {
+      ok: false,
+      code: "forbidden",
+      error: "You don't have permission to do that.",
+    };
   const [row] = await db()
     .delete(suppressions)
     .where(
@@ -1734,7 +1742,7 @@ export async function removeSuppression(
 }
 ```
 
-REST: `GET /api/v1/suppressions` (list), `POST` (add manual/unsubscribe), `DELETE /api/v1/suppressions/[email]`. UI `/app/suppressions`: table (email, reason Badge, source email link, created, Remove), add form. `AppShell` NAV: add "Suppressions" after Webhooks.
+REST: `GET /api/v1/suppressions` (list), `POST` (add manual/unsubscribe), `DELETE /api/v1/suppressions/[email]` (URL-decoded; `forbidden` for a denied actor, else `not_found`). Review: add = `contacts.manage` (any member), remove = `settings.manage` (admin+); DENIED results carry `code: "forbidden"`. UI `/app/suppressions`: table (email, reason Badge, source email link, created, Remove), add form. `AppShell` NAV: add "Suppressions" after Webhooks.
 
 - [x] **Step 3: Run, commit** → `feat(web): suppressions — service, REST, dashboard`.
 
@@ -1844,15 +1852,14 @@ export async function takeSesToken(
       .from(sendRateState)
       .where(eq(sendRateState.id, 1))
       .for("update");
-    const elapsed = Math.max(
-      0,
-      (now.getTime() - row!.refilledAt.getTime()) / 1000,
-    );
+    // A lagging clock earns nothing and never rewinds the stamp (no double credit).
+    const stamp = Math.max(now.getTime(), row!.refilledAt.getTime());
+    const elapsed = (stamp - row!.refilledAt.getTime()) / 1000;
     const tokens = Math.min(rate, row!.tokens + elapsed * rate);
     if (tokens < 1) {
       await tx
         .update(sendRateState)
-        .set({ tokens, refilledAt: now })
+        .set({ tokens, refilledAt: new Date(stamp) })
         .where(eq(sendRateState.id, 1));
       return {
         ok: false as const,
@@ -1861,7 +1868,7 @@ export async function takeSesToken(
     }
     await tx
       .update(sendRateState)
-      .set({ tokens: tokens - 1, refilledAt: now })
+      .set({ tokens: tokens - 1, refilledAt: new Date(stamp) })
       .where(eq(sendRateState.id, 1));
     return { ok: true as const };
   });
@@ -1954,6 +1961,8 @@ export async function checkInstanceQuota(
 ```
 
 - [x] **Step 3: Run, commit** → `feat(web): send limits — SES token bucket, team caps, instance quota`.
+
+Review notes: `checkTeamCaps` counts by `createdAt` (reservation semantics — scheduled-for-later counts today) and check-then-insert is not atomic, so caps are soft under concurrency; `checkInstanceQuota` counts `sent_at` only, so in-flight `sending` rows are not counted (SES is the hard cap). Tests cover concurrent takers on the row lock and the lagging-clock guard.
 
 ---
 

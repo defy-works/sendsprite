@@ -23,7 +23,7 @@ afterAll(async () => {
   await pg.stop();
 });
 
-const at = (s: number) => new Date(Date.UTC(2026, 7, 25, 0, 0, s));
+const at = (s: number) => new Date(Date.UTC(2026, 7, 25) + s * 1000);
 
 const emailRow = (id: string, extra: Record<string, unknown> = {}) => ({
   id,
@@ -61,6 +61,19 @@ describe("send limits", () => {
     expect(await takeSesToken(at(60))).toEqual({ ok: true });
     expect(await takeSesToken(at(60))).toEqual({ ok: true });
     expect(await takeSesToken(at(60))).toMatchObject({ ok: false });
+  });
+
+  it("takeSesToken never rewinds the stamp for a lagging clock", async () => {
+    const { takeSesToken, resetRateForTests } =
+      await import("@/services/send-limits");
+    await resetRateForTests(at(200));
+    expect(await takeSesToken(at(201))).toEqual({ ok: true });
+    expect(await takeSesToken(at(201))).toEqual({ ok: true }); // bucket empty, stamp = 201
+    // A worker whose clock is behind earns nothing and must not move the stamp back...
+    expect(await takeSesToken(at(200.5))).toMatchObject({ ok: false });
+    // ...otherwise this taker would be credited 200.5→201.5 (2 tokens) instead of 201→201.5 (1).
+    expect(await takeSesToken(at(201.5))).toEqual({ ok: true });
+    expect(await takeSesToken(at(201.5))).toMatchObject({ ok: false });
   });
 
   it("takeSesToken serialises concurrent takers on the row lock", async () => {

@@ -13,6 +13,7 @@ export type { SuppressionReason };
 
 const DENIED: Result<never> = {
   ok: false,
+  code: "forbidden",
   error: "You don't have permission to do that.",
 };
 const UNIQUE = { target: [suppressions.teamId, suppressions.email] };
@@ -71,9 +72,8 @@ const input = z.object({
     .trim()
     .email("Enter a valid email.")
     .transform(normaliseEmail),
-  reason: z
-    .enum(["manual", "unsubscribe", "bounce", "complaint"])
-    .default("manual"),
+  // Bounce/complaint entries are written only by `suppressFromEvent`.
+  reason: z.enum(["manual", "unsubscribe"]).default("manual"),
   // A form's empty input arrives as ""; treat it as unset.
   note: z
     .string()

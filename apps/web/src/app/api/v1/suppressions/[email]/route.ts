@@ -15,7 +15,11 @@ export const DELETE = withApiKey(
       return fail("validation_error", "Malformed email in URL.");
     }
     const res = await removeSuppression(keyActor(auth), decoded);
-    if (!res.ok) return fail("not_found", res.error);
+    if (!res.ok)
+      return fail(
+        res.code === "forbidden" ? "forbidden" : "not_found",
+        res.error,
+      );
     return noContent();
   },
   { permission: "full" },
