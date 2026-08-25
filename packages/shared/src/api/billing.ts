@@ -31,21 +31,40 @@ export const FREE_PLAN_METADATA: PlanMetadata = {
   overagePer1kCents: 0,
 };
 
-// Provider metadata values are `string | number | boolean`; Polar preserves the
-// JSON type it was given, but a value typed by hand in the dashboard arrives as
-// a string. Coerce rather than reject: a mistyped number must not un-plan a
-// paying customer.
-const int = z.coerce.number().int().min(0);
+/**
+ * Provider metadata values are `string | number | boolean`, and a value typed
+ * by hand in the dashboard arrives as a string — so a numeric string has to be
+ * accepted. It is accepted *narrowly*, by preprocess and not by
+ * `z.coerce.number()`: coercion is `Number(v)`, and `Number(null)`,
+ * `Number("")`, `Number(false)` and `Number([])` are all `0`, while
+ * `Number("0x10")` is 16 and `Number("1e5")` is 100 000. Coercing would turn a
+ * cleared `included_emails` field into a *valid* plan of zero included emails,
+ * which reads as a real entitlement everywhere downstream and 429s every send
+ * a paying customer makes. Anything that is not a number or an all-digits
+ * string is rejected, so malformed is indistinguishable from absent.
+ */
+const int = z.preprocess(
+  (v) => (typeof v === "string" && /^\s*\d+\s*$/.test(v) ? Number(v) : v),
+  z.number().int().min(0),
+);
+
 const RawPlanMetadata = z.object({
   plan: z.enum(PLANS),
   included_emails: int,
-  overage_per_1k_cents: int.default(0),
+  // Display only — whether overage is billed at all is decided by the
+  // subscription's metered price, not by this number — so a typo degrades to
+  // 0 rather than failing the object and un-planning a paying customer.
+  overage_per_1k_cents: int.catch(0),
 });
 
 /**
  * Provider product metadata → `PlanMetadata`, or `null` when the product is
- * not one of ours (or is missing the fields). Never throws: it runs inside
- * webhook handling, where a bad product must degrade to "free", not 500.
+ * not one of ours **or** is one of ours with unusable fields. Never throws: it
+ * runs inside webhook handling, where a bad product must degrade rather than
+ * 500.
+ *
+ * `null` alone cannot tell those two cases apart; use `claimsPlanMetadata` when
+ * the difference matters.
  */
 export function planFromProductMetadata(
   metadata: unknown,
@@ -60,9 +79,30 @@ export function planFromProductMetadata(
 }
 
 /**
- * Subscription lifecycle states we model. The list is Polar's, but the names
- * are generic enough to survive a provider swap; anything not in it is stored
- * verbatim and treated as not entitling.
+ * Whether the metadata claims to be one of our plan products at all, however
+ * broken the rest of it is. This is the difference between "a product we do
+ * not sell" and "our Pro product whose `included_emails` someone just cleared
+ * in the dashboard": the first is genuinely not a plan, the second is a
+ * configuration fault. A caller applying a subscription uses it to refuse the
+ * change — keeping the entitlement already stored and warning — instead of
+ * overwriting a paid entitlement on the strength of a bad string.
+ */
+export const claimsPlanMetadata = (metadata: unknown): boolean =>
+  z.object({ plan: z.enum(PLANS) }).safeParse(metadata).success;
+
+/**
+ * Subscription lifecycle states we model.
+ *
+ * **Documentation only.** Nothing validates against this list: the stored
+ * column is plain `text` and `BillingStateObject.status` is `z.string()`, on
+ * purpose — a provider status we have not modelled must round-trip verbatim
+ * and be treated as not entitling, never be rejected at the database boundary
+ * where it would fail the webhook and leave the row stale. Do not "fix" the
+ * column to use this as an enum.
+ *
+ * The list has not yet been diffed against `SubscriptionStatus` in
+ * `@polar-sh/sdk` (that package is not installed yet), so treat membership as
+ * indicative rather than authoritative.
  */
 export const SUBSCRIPTION_STATUSES = [
   "incomplete",
@@ -79,11 +119,10 @@ export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number];
 /**
  * Statuses that keep the paid entitlement. `past_due` deliberately does:
  * dunning is the provider's job and cutting a customer's sending off the hour
- * a card expires is a worse failure than carrying them for a cycle. It is not
- * open-ended — entitlement resolution carries a past-due team for a grace
- * window measured from `pastDueAt` and then falls back to the free caps — but
- * that clock lives with the entitlement, not with the status. The dashboard
- * shows a banner throughout (see the Billing page).
+ * a card expires is a worse failure than carrying them. How *long* they are
+ * carried is not decided here — this is a pure function of the status — and
+ * any time-boxing of the past-due window belongs to entitlement resolution,
+ * which is the only caller that knows when the subscription went past due.
  */
 const ENTITLED: ReadonlySet<string> = new Set([
   "trialing",
@@ -112,9 +151,10 @@ export const BillingStateObject = z.object({
   /** There is a provider subscription behind this state. */
   managed: z.boolean(),
   /**
-   * When the subscription went `past_due`; the grace window runs from here.
-   * Absent for every state that is not past due, which is the common case.
+   * When the subscription went past due, `null` otherwise. Reserved for the
+   * banner and for time-boxing the past-due window; no code consumes it yet,
+   * and it arrives with entitlement resolution.
    */
-  pastDueAt: z.string().nullable().optional(),
+  pastDueAt: z.string().nullable(),
 });
 export type BillingStateObject = z.infer<typeof BillingStateObject>;
