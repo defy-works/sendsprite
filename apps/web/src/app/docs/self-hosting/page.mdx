@@ -43,8 +43,13 @@ Two services by default:
 
 | Service | Image                                  | Notes                                                                                   |
 | ------- | -------------------------------------- | --------------------------------------------------------------------------------------- |
-| `app`   | `ghcr.io/defy-works/sendsprite:latest` | Publishes `${APP_PORT:-3000}:3000` and `${SMTP_PORT:-587}` for the relay. Reads `.env`. |
+| `app`   | `ghcr.io/defy-works/sendsprite:latest` | Publishes `${APP_PORT:-3000}:3000` and `${SMTP_PORT:-587}:2587` for the relay. Reads `.env`. |
 | `db`    | `postgres:16-alpine`                   | User/database `sendsprite`, data in the `pgdata` volume, `pg_isready` healthcheck.      |
+
+`SMTP_PORT` is the port on the **host**: inside the container the relay always
+listens on 2587, because the image runs as a non-root user and Linux only lets
+root bind below 1024. Set `SMTP_PORT` in `.env` to publish it somewhere other
+than 587.
 
 `DATABASE_URL` is set by Compose to
 `postgres://sendsprite:${POSTGRES_PASSWORD}@db:5432/sendsprite`; you only
@@ -84,8 +89,8 @@ Two things to know before you deploy:
 
 The SMTP relay is off in that file. It speaks raw TCP, which cannot go through
 an HTTP proxy, so turning it on means setting `SMTP_ENABLED=true` _and_
-uncommenting the `ports:` block to publish `587` on the host — check nothing else
-on the server already holds it.
+uncommenting the `ports:` block, which publishes the container's 2587 as `587`
+on the host — check nothing else on the server already holds it.
 
 ## Environment
 
@@ -99,7 +104,7 @@ stops the container with a message naming the variable.
 | `DATABASE_URL`                              | — (required)         | Postgres connection string.                                                                                                                                       |
 | `WORKER_MODE`                               | `inline`             | `inline` runs jobs in the web process, `separate` leaves them to the worker container, `none` disables them.                                                      |
 | `SMTP_ENABLED`                              | `true`               | Whether the submission relay listens.                                                                                                                             |
-| `SMTP_PORT`                                 | `587`                | Relay port.                                                                                                                                                       |
+| `SMTP_PORT`                                 | `587`                | Relay port. The image pins it to 2587 (unprivileged) and Compose publishes it on the host as `SMTP_PORT`.                                                         |
 | `SMTP_ALLOW_INSECURE_AUTH`                  | `false`              | Accept `AUTH` before STARTTLS. Development only — the API key travels in clear.                                                                                   |
 | `SMTP_TLS_CERT` / `SMTP_TLS_KEY`            | unset                | PEM paths, both or neither. Without them a self-signed pair is generated.                                                                                         |
 | `SMTP_MAX_SIZE`                             | `10485760`           | Largest message the relay accepts.                                                                                                                                |

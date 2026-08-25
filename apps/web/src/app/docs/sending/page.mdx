@@ -164,6 +164,10 @@ validation, same suppression list, same event log.
 | Username   | anything (ignored)         |
 | Password   | an API key (`ss_live_…`)   |
 
+That port is the one clients connect to. Under Docker it is the host port:
+inside the container the relay listens on 2587, because a non-root container
+cannot bind below 1024, and Compose publishes it as `SMTP_PORT`.
+
 `AUTH PLAIN` and `AUTH LOGIN` are offered, and only after STARTTLS unless
 `SMTP_ALLOW_INSECURE_AUTH` is on (development only). Five bad passwords from
 one address within 10 minutes lock that address out for 10 minutes.

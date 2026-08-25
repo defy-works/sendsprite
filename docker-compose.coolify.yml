@@ -37,18 +37,20 @@ services:
       # The SMTP relay is off here: it speaks raw TCP, which cannot go through
       # Coolify's HTTP proxy, so it needs a published host port (see below).
       - SMTP_ENABLED=${SMTP_ENABLED:-false}
-      - SMTP_PORT=${SMTP_PORT:-587}
+      # Fixed: the container runs as a non-root user and cannot bind below
+      # 1024. SMTP_PORT below is the port on the *host*, mapped onto this one.
+      - SMTP_PORT=2587
       - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
       # Optional OAuth sign-in; leave empty to offer email + password only.
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
       - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
-    # To accept SMTP, set SMTP_ENABLED=true and uncomment this. The port is
+    # To accept SMTP, set SMTP_ENABLED=true and uncomment this. SMTP_PORT is
     # published straight on the host — check nothing else on the server already
     # holds 587, and open it in the firewall.
     # ports:
-    #   - "${SMTP_PORT:-587}:${SMTP_PORT:-587}"
+    #   - "${SMTP_PORT:-587}:2587"
     depends_on:
       db:
         condition: service_healthy

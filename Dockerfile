@@ -29,6 +29,11 @@ RUN --mount=type=cache,target=/app/apps/web/.next/cache \
 FROM base AS runner
 ARG APP_VERSION=dev
 ENV NODE_ENV=production HOSTNAME=0.0.0.0 PORT=3000 NEXT_TELEMETRY_DISABLED=1
+# The image runs as the non-root `bun` user, which cannot bind below 1024 on
+# Linux, so the relay listens on 2587 in here. Publish it as 587 on the host
+# (`docker compose` does: "${SMTP_PORT:-587}:2587"). Overriding SMTP_PORT with
+# a privileged port only makes the relay fail to start; the app still serves.
+ENV SMTP_PORT=2587
 # APP_VERSION is reported by /api/health. NEXT_MANUAL_SIG_HANDLE hands
 # SIGTERM to instrumentation.ts, which stops pg-boss before exiting.
 ENV APP_VERSION=$APP_VERSION NEXT_MANUAL_SIG_HANDLE=true
@@ -44,8 +49,7 @@ COPY --from=build --chown=bun:bun /app/apps/web/.next/static ./apps/web/.next/st
 COPY --from=build --chown=bun:bun /app/apps/web/public ./apps/web/public
 USER bun
 WORKDIR /app/apps/web
-# 587 is the SMTP relay; unprivileged, so the non-root `bun` user can bind it.
-EXPOSE 3000 587
+EXPOSE 3000 2587
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
   CMD bun -e "fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["bun", "server.js"]

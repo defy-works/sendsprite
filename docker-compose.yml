@@ -4,11 +4,15 @@ services:
     build: .
     ports:
       - "${APP_PORT:-3000}:3000"
-      # .env is passed through, so the relay listens on SMTP_PORT inside too.
-      - "${SMTP_PORT:-587}:${SMTP_PORT:-587}"
+      # SMTP_PORT is the port on the host. Inside, the relay always listens on
+      # 2587: the container runs as a non-root user, which cannot bind 587.
+      - "${SMTP_PORT:-587}:2587"
     env_file: .env
     environment:
       DATABASE_URL: postgres://sendsprite:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/sendsprite
+      # `environment` wins over `env_file`, so an SMTP_PORT in .env moves the
+      # published port above without breaking the mapping.
+      SMTP_PORT: "2587"
     depends_on:
       db:
         condition: service_healthy

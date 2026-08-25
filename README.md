@@ -263,12 +263,14 @@ app.post("/hooks/sendsprite", express.raw({ type: "*/*" }), (req, res) => {
 ### SMTP relay
 
 Port 587 (`SMTP_PORT`), STARTTLS, `AUTH PLAIN`/`LOGIN` with **any username and
-an API key as the password**. Messages are parsed and go through the same
-pipeline as the API (`source: smtp`; `bcc` = envelope recipients not in
-`To`/`Cc`). Without `SMTP_TLS_CERT`/`SMTP_TLS_KEY` the relay uses a self-signed
-certificate generated at boot, so clients must skip verification (nodemailer:
-`tls: { rejectUnauthorized: false }`); put real PEM files there for
-production. AUTH is refused on a plain connection unless
+an API key as the password**. Under Docker the relay listens on 2587 inside
+the container — a non-root user cannot bind a port below 1024 — and compose
+publishes it as `SMTP_PORT` (587 by default) on the host. Messages are parsed
+and go through the same pipeline as the API (`source: smtp`; `bcc` = envelope
+recipients not in `To`/`Cc`). Without `SMTP_TLS_CERT`/`SMTP_TLS_KEY` the relay
+uses a self-signed certificate generated at boot, so clients must skip
+verification (nodemailer: `tls: { rejectUnauthorized: false }`); put real PEM
+files there for production. AUTH is refused on a plain connection unless
 `SMTP_ALLOW_INSECURE_AUTH=true` (development only — the key travels in clear).
 Refusals map to SMTP codes (invalid key 535, unverified domain / suppressed
 recipient 550, quota 452, too large 552, max 10 MB by default). Login
@@ -372,7 +374,7 @@ default branch the release workflow runs `changesets/action`:
 | `WORKER_MODE`                                        | `inline`      | `inline` / `separate` / `none`                                              |
 | `SMTP_ENABLED`                                       | `true`        | SMTP relay (username anything, password = API key); AUTH requires STARTTLS  |
 | `SMTP_ALLOW_INSECURE_AUTH`                           | `false`       | Dev only: accept AUTH on a plain connection (the API key travels in clear)  |
-| `SMTP_PORT`                                          | `587`         | Relay port inside the container; compose maps it to the same host port      |
+| `SMTP_PORT`                                          | `587`         | Relay port. Under compose: the host port, mapped onto 2587 in the container |
 | `SMTP_TLS_CERT`, `SMTP_TLS_KEY`                      | —             | PEM paths for STARTTLS; unset → self-signed cert (clients must skip verify) |
 | `SMTP_MAX_SIZE`                                      | `10485760`    | Max message size in bytes (552 above it)                                    |
 | `LANDING_ENABLED`                                    | `true`        | `false` sends `/` to `/app`                                                 |
