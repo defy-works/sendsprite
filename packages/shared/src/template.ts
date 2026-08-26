@@ -124,11 +124,16 @@ export interface RenderedTemplate {
   text: string | null;
 }
 
-/** Only the fields the renderer reads; the full schema lives in `api/templates.ts`. */
+/*
+ * Only the fields the renderer reads; the full schema lives in
+ * `api/templates.ts`. There is deliberately no `required` flag: a `default`
+ * and the rule that every placeholder must resolve already express
+ * optionality between them, and a third way to say it would end up meaning
+ * "substitute nothing here", which is the behaviour Decision 2 refuses.
+ */
 export interface RenderVariableSpec {
   name: string;
   type?: "string" | "number" | "boolean";
-  required?: boolean;
   default?: string | number | boolean;
 }
 export interface RenderVariablesSchema {

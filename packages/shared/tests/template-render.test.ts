@@ -277,9 +277,7 @@ describe("renderTemplate", () => {
       base,
       {},
       {
-        variables: [
-          { name: "name", type: "string", required: false, default: "there" },
-        ],
+        variables: [{ name: "name", type: "string", default: "there" }],
       },
     );
     if (!r.ok) throw new Error("unreachable");
@@ -496,7 +494,7 @@ describe("renderTemplate", () => {
     const r = renderTemplate(
       { subject: "s", bodyHtml: "{{n}}", bodyText: null },
       { n: "12" },
-      { variables: [{ name: "n", type: "number", required: true }] },
+      { variables: [{ name: "n", type: "number" }] },
     );
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error("unreachable");
