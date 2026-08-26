@@ -245,6 +245,35 @@ README.md                                  + templates/contacts paragraphs, road
 
 ---
 
+## Amendment after the Task 1 review — empty values, nulls, and escaping scope
+
+**Empty string counts as missing.** Decision 2 exists so nobody mails "Hi ," to a whole list —
+but an empty string is a _supplied_ value, so it sails through, and a blank CSV cell or an unset
+contact field produces `""`, not `undefined`. The refusal was firing for the case that is easy
+to notice and not for the case that actually happens at volume. So `""` and whitespace-only are
+treated as **missing**: they take a declared `default` if there is one, and are refused
+otherwise. A genuinely empty value is expressed by declaring `default: ""` in the schema, which
+is explicit rather than accidental. Task 4's CSV import must not paper over this by mapping
+blank cells to `""`.
+
+**JSON `null` takes the default.** `null` is the natural wire encoding of "no value" and is what
+a nullable column serialises to, so a declared default must apply to it rather than being
+skipped because `null !== undefined`.
+
+**Escaping scope is element text and quoted attributes only.** Values are not safe in unquoted
+or backtick-delimited attributes unless `` ` `` and `=` are escaped (escaping `=` is what
+actually stops the breakout, since attribute _names_ are not entity-decoded), and are out of
+scope inside `<style>`, `<script>` and URL-scheme positions. State this in the module docstring
+rather than implying a broader guarantee — and render the dashboard preview in a sandboxed
+iframe, which is what actually covers the URL-scheme case.
+
+**Size the per-value cap against the 500× multiplier.** The amplification is per-value ×
+`MAX_PLACEHOLDERS` × up to 6 for escaping, so only the per-value cap bounds the blast radius —
+the serialised-payload cap does not. Task 2's 2 000 chars gives a worst case around 12 MB of
+transient UTF-16, which is the right order. The renderer additionally needs its **own**
+incremental check, because the dashboard preview imports it directly with no contract in front
+of it.
+
 ## Amendment after Task 1 — cap the variables payload
 
 `renderTemplate` enforces `MAX_RENDERED_CHARS` **after** building the string. With up to 500
