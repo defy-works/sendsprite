@@ -55,3 +55,4 @@
 | 07:15 | image upload: team_assets, sniffing, /a/<token>, picker; layouts + presets; DateTimePicker                                                   | migration 0026, 14 files  | 22 new integration tests pass                          | ~160k   |
 | 07:30 | theme threaded through both editors, the fan-out and the test send; docs; 4 new e2e                                                          | ~20 files                 | **24/24 e2e**, 582 integration (1 known failure)       | ~90k    |
 | 07:50 | webhooks retry test was a time bomb (fixed t0 vs wall clock), pinned both trailing deliver calls | tests/integration/webhooks.test.ts | green, 8/8 | ~8k |
+| 07:58 | SDK types had drifted from the campaign contract (columns, presentation, theme); mirrored + widened parity guard | packages/sdk/src/types.ts, tests/types-parity.test.ts | typecheck clean | ~14k |

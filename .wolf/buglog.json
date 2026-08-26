@@ -184,5 +184,24 @@
     "related_bugs": [],
     "occurrences": 1,
     "last_seen": "2026-08-27T07:50:00Z"
+  },
+  {
+    "id": "bug-011",
+    "timestamp": "2026-08-27T07:58:00Z",
+    "error_message": "CI: packages/sdk/tests/types-parity.test.ts(202-207) error TS2322: Type 'true' is not assignable to type 'false'",
+    "file": "packages/sdk/src/types.ts",
+    "root_cause": "The SDK ships hand-written types so its .d.ts has no dependency on zod or the private shared package, and types-parity.test.ts pins each one to the contract it mirrors with a compile-time Mutual<> tuple. Adding columns, per-block presentation and the body theme to the campaign contract flipped four entries to false. It was invisible locally because the parity half is enforced by tsc, not vitest - vitest transpiles without type-checking, so the suite runs green with a broken tuple (the file even says so).",
+    "fix": "Mirrored every new field in packages/sdk/src/types.ts (align/color, button colour+textColor+corners+fullWidth, image align/width/corners, divider colour, LeafBlock/ColumnsBlock/ColumnLayout, CampaignTheme on create/update/object) and widened the guard: parity entries for LeafBlock, ColumnsBlock and CampaignTheme plus run-time enum checks against BLOCK_ALIGNMENTS, CORNER_STYLES, COLUMN_LAYOUTS, FONT_FAMILIES, IMAGE_WIDTHS and CONTENT_WIDTHS. Added a minor changeset for `sendsprite`.",
+    "tags": [
+      "sdk",
+      "types",
+      "contract-drift",
+      "typecheck",
+      "ci",
+      "campaigns"
+    ],
+    "related_bugs": [],
+    "occurrences": 1,
+    "last_seen": "2026-08-27T07:58:00Z"
   }
 ]

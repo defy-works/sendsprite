@@ -328,3 +328,11 @@ scripts/gen-brand.mjs`; never hand-edit Logo.tsx or the SVGs. `apps/web/public/f
     `cloudflareZoneId` and `ExpectedRecord.cloudflareId`.** Automatic DNS
     writing survives, so all of that had to stay; OAuth swaps the credential,
     not the capability. The REST/SDK surface is unchanged.
+
+- **[2026-08-27] Run the root `bun run typecheck`, not the workspace you edited.**
+  Changing a zod contract in `packages/shared` can only be validated at the
+  root: `packages/sdk/tests/types-parity.test.ts` pins the SDK's hand-written
+  types to the contract with a compile-time tuple, and that half is enforced by
+  `tsc` alone. Vitest transpiles without type-checking, so the suite runs green
+  with a broken tuple and CI is the first thing to notice. Any edit to
+  `packages/shared/src/api/*` means a matching edit to `packages/sdk/src/types.ts`.

@@ -1,0 +1,16 @@
+{
+  "at": "2026-08-26T22:46:06.410Z",
+  "trigger": "auto",
+  "session": {
+    "session_id": "session-2026-08-26-2336",
+    "started": "2026-08-26T14:36:55.887Z",
+    "files_read": {},
+    "files_written": [],
+    "edit_counts": {},
+    "anatomy_hits": 0,
+    "anatomy_misses": 0,
+    "repeated_reads_warned": 0,
+    "cerebrum_warnings": 0,
+    "stop_count": 2
+  }
+}
