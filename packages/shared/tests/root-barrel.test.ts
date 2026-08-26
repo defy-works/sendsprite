@@ -37,13 +37,19 @@ describe("root barrel", () => {
       expect(src, f).not.toMatch(/from "node:/);
     }
     expect(graph.has("api/webhook-signature.ts")).toBe(false);
+    expect(graph.has("api/unsubscribe-token.ts")).toBe(false);
     expect("signWebhook" in root).toBe(false);
+    expect("signUnsubscribeToken" in root).toBe(false);
   });
 
   it("exposes the signing helpers from the node entry", () => {
-    expect(importGraph("node.ts").has("api/webhook-signature.ts")).toBe(true);
+    const graph = importGraph("node.ts");
+    expect(graph.has("api/webhook-signature.ts")).toBe(true);
+    expect(graph.has("api/unsubscribe-token.ts")).toBe(true);
     expect(typeof node.signWebhook).toBe("function");
     expect(typeof node.verifyWebhookSignature).toBe("function");
+    expect(typeof node.signUnsubscribeToken).toBe("function");
+    expect(typeof node.verifyUnsubscribeToken).toBe("function");
     expect(node.SIGNATURE_HEADER).toBe("sendsprite-signature");
   });
 });
