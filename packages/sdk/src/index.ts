@@ -13,6 +13,7 @@ export type { Suppressions } from "./resources/suppressions";
 export type { Templates } from "./resources/templates";
 export type { ContactBooks } from "./resources/contact-books";
 export type { Contacts } from "./resources/contacts";
+export type { Campaigns } from "./resources/campaigns";
 export * from "./types";
 
 import {
@@ -21,6 +22,7 @@ import {
   type SendspriteOptions,
 } from "./client";
 import { ApiKeys } from "./resources/api-keys";
+import { Campaigns } from "./resources/campaigns";
 import { ContactBooks } from "./resources/contact-books";
 import { Contacts } from "./resources/contacts";
 import { Domains } from "./resources/domains";
@@ -41,6 +43,7 @@ export class Sendsprite {
   readonly templates: Templates;
   readonly contactBooks: ContactBooks;
   readonly contacts: Contacts;
+  readonly campaigns: Campaigns;
   private readonly http: HttpClient;
 
   constructor(options?: SendspriteOptions) {
@@ -53,6 +56,7 @@ export class Sendsprite {
     this.templates = new Templates(this.http);
     this.contactBooks = new ContactBooks(this.http);
     this.contacts = new Contacts(this.http);
+    this.campaigns = new Campaigns(this.http);
   }
 
   /** Instance origin with `/api/v1` not yet appended. */

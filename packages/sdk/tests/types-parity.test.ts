@@ -116,8 +116,39 @@ type Checks = [
     In<typeof shared.UnsubscribeContactInput>
   >,
   Mutual<sdk.UnsubscribeResult, Out<typeof shared.UnsubscribeResult>>,
+  Mutual<sdk.CampaignStatus, shared.CampaignStatus>,
+  // Blocks appear on both the create body and the returned campaign, and
+  // nothing in them defaults or transforms, so `In` and `Out` are the same
+  // shape — pinning the input side pins both.
+  Mutual<sdk.HeadingBlock, In<typeof shared.HeadingBlock>>,
+  Mutual<sdk.TextBlock, In<typeof shared.TextBlock>>,
+  Mutual<sdk.ButtonBlock, In<typeof shared.ButtonBlock>>,
+  Mutual<sdk.ImageBlock, In<typeof shared.ImageBlock>>,
+  Mutual<sdk.DividerBlock, In<typeof shared.DividerBlock>>,
+  Mutual<sdk.SpacerBlock, In<typeof shared.SpacerBlock>>,
+  Mutual<sdk.CampaignBlock, In<typeof shared.CampaignBlock>>,
+  Mutual<sdk.CreateCampaignInput, In<typeof shared.CreateCampaignInput>>,
+  Mutual<sdk.UpdateCampaignInput, In<typeof shared.UpdateCampaignInput>>,
+  Mutual<sdk.ScheduleCampaignInput, In<typeof shared.ScheduleCampaignInput>>,
+  Mutual<sdk.CampaignCounts, Out<typeof shared.CampaignCounts>>,
+  Mutual<sdk.CampaignObject, Out<typeof shared.CampaignObject>>,
+  Mutual<sdk.AudiencePreview, Out<typeof shared.AudiencePreview>>,
 ];
 const allTrue: Checks = [
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
   true,
   true,
   true,
@@ -264,6 +295,16 @@ describe("SDK types mirror @sendsprite/shared", () => {
     };
     expect(Object.keys(dnsKinds).sort()).toEqual(
       [...shared.DNS_RECORD_KINDS].sort(),
+    );
+    const campaignStatuses: Record<sdk.CampaignStatus, true> = {
+      draft: true,
+      scheduled: true,
+      sending: true,
+      sent: true,
+      cancelled: true,
+    };
+    expect(Object.keys(campaignStatuses).sort()).toEqual(
+      [...shared.CAMPAIGN_STATUSES].sort(),
     );
     const variableTypes: Record<sdk.TemplateVariableType, true> = {
       string: true,

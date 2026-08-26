@@ -507,3 +507,108 @@ describe("contactBooks and contacts", () => {
     expect(unsub.fetch).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("campaigns", () => {
+  const draft = {
+    name: "August",
+    bookId: "cb_1",
+    domainId: "dom_1",
+    from: "news@acme.test",
+    subject: "Hello",
+    blocks: [{ kind: "text", html: "<strong>hi</strong>" }],
+  } as const;
+
+  it("covers the whole REST surface", async () => {
+    const { ss, calls } = recorder();
+    await ss.campaigns.list({ status: "draft", limit: 10 });
+    await ss.campaigns.create({ ...draft, blocks: [...draft.blocks] });
+    await ss.campaigns.get("cmp_1");
+    await ss.campaigns.update("cmp_1", { name: "September" });
+    await ss.campaigns.audience("cmp_1");
+    await ss.campaigns.cancel("cmp_1");
+    await ss.campaigns.remove("cmp_1");
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+      "GET /campaigns?limit=10&status=draft",
+      "POST /campaigns",
+      "GET /campaigns/cmp_1",
+      "PATCH /campaigns/cmp_1",
+      "GET /campaigns/cmp_1/audience",
+      "POST /campaigns/cmp_1/cancel",
+      "DELETE /campaigns/cmp_1",
+    ]);
+    expect(calls[1]!.body).toMatchObject({ bookId: "cb_1" });
+  });
+
+  it("schedule sends the instant, from a Date or a string", async () => {
+    const { ss, calls } = recorder();
+    await ss.campaigns.schedule("cmp_1", new Date("2030-01-01T09:00:00.000Z"));
+    await ss.campaigns.schedule("cmp_1", "2030-01-01T10:00:00+01:00");
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+      "POST /campaigns/cmp_1/schedule",
+      "POST /campaigns/cmp_1/schedule",
+    ]);
+    expect(calls[0]!.body).toEqual({ scheduledAt: "2030-01-01T09:00:00.000Z" });
+    expect(calls[1]!.body).toEqual({
+      scheduledAt: "2030-01-01T10:00:00+01:00",
+    });
+  });
+
+  it("sendNow is the only call that posts an empty schedule body", async () => {
+    const { ss, calls } = recorder();
+    await ss.campaigns.sendNow("cmp_1");
+    expect(calls[0]).toMatchObject({
+      method: "POST",
+      path: "/campaigns/cmp_1/schedule",
+      body: {},
+    });
+  });
+
+  it("URL-encodes an id", async () => {
+    const { ss, calls } = recorder();
+    await ss.campaigns.audience("a/b");
+    expect(calls[0]!.path).toBe("/campaigns/a%2Fb/audience");
+  });
+
+  it("iterates every page, carrying the status filter", async () => {
+    const { ss, calls } = recorder((n) =>
+      n === 0
+        ? { body: { data: [{ id: "cmp_1" }], nextCursor: "c" } }
+        : { body: { data: [{ id: "cmp_2" }], nextCursor: null } },
+    );
+    const seen: string[] = [];
+    for await (const c of ss.campaigns.iterate({ status: "sent" }))
+      seen.push(c.id);
+    expect(seen).toEqual(["cmp_1", "cmp_2"]);
+    expect(calls.map((c) => c.path)).toEqual([
+      "/campaigns?status=sent",
+      "/campaigns?cursor=c&status=sent",
+    ]);
+  });
+
+  it("retries cancel but never a send", async () => {
+    const cancelled = recorder(
+      (n) => (n === 0 ? { status: 503 } : { body: { id: "cmp_1" } }),
+      1,
+    );
+    vi.useFakeTimers();
+    try {
+      const p = cancelled.ss.campaigns.cancel("cmp_1");
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(p).resolves.toMatchObject({ id: "cmp_1" });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(cancelled.fetch).toHaveBeenCalledTimes(2);
+
+    // A retried fan-out is a second campaign to the same list.
+    for (const send of [
+      (ss: Sendsprite) => ss.campaigns.sendNow("cmp_1"),
+      (ss: Sendsprite) =>
+        ss.campaigns.schedule("cmp_1", "2030-01-01T00:00:00Z"),
+    ]) {
+      const once = recorder(() => ({ status: 503 }), 1);
+      await expect(send(once.ss)).rejects.toMatchObject({ status: 503 });
+      expect(once.fetch).toHaveBeenCalledTimes(1);
+    }
+  });
+});

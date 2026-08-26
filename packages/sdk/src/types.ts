@@ -558,3 +558,158 @@ export interface UnsubscribeResult {
   /** Contact rows changed; 0 when the address was already out. */
   unsubscribed: number;
 }
+
+// ---- campaigns --------------------------------------------------------------
+
+export type CampaignStatus =
+  "draft" | "scheduled" | "sending" | "sent" | "cancelled";
+
+/** One of three sizes; the renderer maps each level to a fixed style. */
+export interface HeadingBlock {
+  kind: "heading";
+  level: 1 | 2 | 3;
+  text: string;
+}
+
+/**
+ * A paragraph, and the only campaign field that reaches an inbox as markup.
+ * It may carry `<strong>`, `<em>`, `<br>` and `<a href>` pointing at
+ * `http(s)`/`mailto` — every tag closed, no anchor inside an anchor. Anything
+ * else is a `validation_error`, not sanitised-away markup.
+ */
+export interface TextBlock {
+  kind: "text";
+  html: string;
+}
+
+/** A call to action, rendered as a button that survives Outlook. */
+export interface ButtonBlock {
+  kind: "button";
+  label: string;
+  /** Absolute `http(s)`/`mailto`. A URL carrying credentials is refused. */
+  url: string;
+}
+
+export interface ImageBlock {
+  kind: "image";
+  url: string;
+  /** Required: most clients block images until the reader asks for them. */
+  alt: string;
+  /** Wraps the image in a link. */
+  href?: string;
+}
+
+/** A horizontal rule. Carries nothing. */
+export interface DividerBlock {
+  kind: "divider";
+}
+
+/** Vertical whitespace, 4–96 pixels. */
+export interface SpacerBlock {
+  kind: "spacer";
+  size: number;
+}
+
+/** One block of a campaign body, discriminated on `kind`. */
+export type CampaignBlock =
+  | HeadingBlock
+  | TextBlock
+  | ButtonBlock
+  | ImageBlock
+  | DividerBlock
+  | SpacerBlock;
+
+/** `POST /campaigns`: a draft. Nothing here schedules or sends. */
+export interface CreateCampaignInput {
+  name: string;
+  /** The contact book the audience is drawn from. */
+  bookId: string;
+  /** The verified sending domain `from` must belong to. */
+  domainId: string;
+  from: string;
+  replyTo?: string;
+  subject: string;
+  /** 1–100 blocks, in the order they are rendered. */
+  blocks: CampaignBlock[];
+}
+
+/**
+ * At least one field. Accepted while a campaign is `draft` or `scheduled` and
+ * refused after that — the body of a send in flight cannot change under it.
+ */
+export interface UpdateCampaignInput {
+  name?: string;
+  bookId?: string;
+  domainId?: string;
+  from?: string;
+  /** `null` clears it; omitting it leaves it alone. */
+  replyTo?: string | null;
+  subject?: string;
+  blocks?: CampaignBlock[];
+}
+
+/**
+ * Body of `POST /campaigns/:id/schedule`. An absent `scheduledAt` means "start
+ * now" on the wire; in this SDK that case is `campaigns.sendNow()`, so
+ * `campaigns.schedule()` always fills this in.
+ */
+export interface ScheduleCampaignInput {
+  /** ISO 8601 with an offset, in the future. */
+  scheduledAt?: string;
+}
+
+/**
+ * Per-campaign tallies. Derived from the mail log rather than incremented per
+ * event, so they never drift from `emails` — and may trail a send by a moment.
+ */
+export interface CampaignCounts {
+  recipients: number;
+  sent: number;
+  delivered: number;
+  opened: number;
+  clicked: number;
+  unsubscribed: number;
+  bounced: number;
+  complained: number;
+  failed: number;
+}
+
+export interface CampaignObject {
+  id: string;
+  name: string;
+  bookId: string;
+  domainId: string;
+  from: string;
+  replyTo: string | null;
+  subject: string;
+  blocks: CampaignBlock[];
+  status: CampaignStatus;
+  scheduledAt: string | null;
+  /** When the fan-out finished, not when it started. */
+  sentAt: string | null;
+  counts: CampaignCounts;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Filters for `campaigns.list` / `campaigns.iterate`. */
+export interface ListCampaignsParams extends PageParams {
+  status?: CampaignStatus;
+}
+
+/**
+ * What `campaigns.audience()` reports: who a send would reach if it started
+ * now.
+ *
+ * `eligible` is the only number that will actually be mailed, and it is the
+ * intersection of the other two rules rather than either of them —
+ * `subscribed` is consent, `suppressed` is deliverability, and a contact has
+ * to clear both.
+ */
+export interface AudiencePreview {
+  contacts: number;
+  subscribed: number;
+  suppressed: number;
+  /** Subscribed **and** not suppressed. */
+  eligible: number;
+}
