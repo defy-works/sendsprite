@@ -1,0 +1,1 @@
+ALTER TABLE "team_settings" ADD COLUMN "retention_days" integer;

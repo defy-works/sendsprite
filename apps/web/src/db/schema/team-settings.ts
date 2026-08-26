@@ -18,6 +18,12 @@ export const teamSettings = pgTable("team_settings", {
     .references(() => organization.id, { onDelete: "cascade" }),
   dailyLimit: integer("daily_limit"),
   monthlyLimit: integer("monthly_limit"),
+  /**
+   * This team's own retention window. Null means "use the instance
+   * maximum". Always clamped by `instance_settings.retention_days`, which is
+   * a ceiling — a team may shorten its window, never extend it.
+   */
+  retentionDays: integer("retention_days"),
   trackOpens: boolean("track_opens").notNull().default(true),
   trackClicks: boolean("track_clicks").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true })
