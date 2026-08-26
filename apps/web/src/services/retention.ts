@@ -1,9 +1,10 @@
-import { and, inArray, isNull, lt } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt } from "drizzle-orm";
 import { db } from "@/db";
 import { emailAttachments, emails, webhookDeliveries } from "@/db/schema";
 
 /**
- * Nightly retention (spec §5): emails created more than `retentionDays` ago
+ * Nightly retention for one team (spec §5): emails created more than
+ * `retentionDays` ago
  * lose their bodies (`html`/`text`/`variables` nulled, attachment bytes
  * deleted, `bodyPurgedAt` stamped); the row, metadata and events stay. Webhook
  * deliveries older than the same window are deleted outright (their
@@ -12,6 +13,7 @@ import { emailAttachments, emails, webhookDeliveries } from "@/db/schema";
  * purged emails are excluded by `bodyPurgedAt`. Returns the counts.
  */
 export async function purgeOldBodies(
+  teamId: string,
   retentionDays: number,
   now = new Date(),
   batch = 500,
@@ -23,7 +25,13 @@ export async function purgeOldBodies(
       await db()
         .select({ id: emails.id })
         .from(emails)
-        .where(and(isNull(emails.bodyPurgedAt), lt(emails.createdAt, cutoff)))
+        .where(
+          and(
+            eq(emails.teamId, teamId),
+            isNull(emails.bodyPurgedAt),
+            lt(emails.createdAt, cutoff),
+          ),
+        )
         .orderBy(emails.createdAt)
         .limit(batch)
     ).map((r) => r.id);
@@ -44,7 +52,12 @@ export async function purgeOldBodies(
   }
   const deleted = await db()
     .delete(webhookDeliveries)
-    .where(lt(webhookDeliveries.createdAt, cutoff))
+    .where(
+      and(
+        eq(webhookDeliveries.teamId, teamId),
+        lt(webhookDeliveries.createdAt, cutoff),
+      ),
+    )
     .returning({ id: webhookDeliveries.id });
   return { emails: purged, deliveries: deleted.length };
 }

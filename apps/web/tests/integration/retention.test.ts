@@ -84,7 +84,7 @@ describe("retention purge", () => {
     await seedDelivery("whd_old", daysAgo(91));
     await seedDelivery("whd_new", daysAgo(1));
     const { purgeOldBodies } = await import("@/services/retention");
-    expect(await purgeOldBodies(90, now)).toEqual({ emails: 1, deliveries: 1 });
+    expect(await purgeOldBodies("org_1", 90, now)).toEqual({ emails: 1, deliveries: 1 });
 
     const old = await load("em_old");
     expect(old).toMatchObject({
@@ -107,14 +107,14 @@ describe("retention purge", () => {
     ).toEqual(["whd_new"]);
 
     // Second run: nothing left to purge.
-    expect(await purgeOldBodies(90, now)).toEqual({ emails: 0, deliveries: 0 });
+    expect(await purgeOldBodies("org_1", 90, now)).toEqual({ emails: 0, deliveries: 0 });
     expect((await load("em_old")).bodyPurgedAt).toEqual(now);
   });
 
   it("walks batches until none remain", async () => {
     for (let i = 0; i < 3; i++) await seedEmail(`em_b${i}`, daysAgo(100 + i));
     const { purgeOldBodies } = await import("@/services/retention");
-    expect(await purgeOldBodies(90, now, 2)).toEqual({
+    expect(await purgeOldBodies("org_1", 90, now, 2)).toEqual({
       emails: 3,
       deliveries: 0,
     });
@@ -135,7 +135,7 @@ describe("retention purge", () => {
       createdAt: daysAgo(400),
     });
     const { purgeOldBodies } = await import("@/services/retention");
-    await purgeOldBodies(90, now);
+    await purgeOldBodies("org_1", 90, now);
     const row = await load("em_vars");
     expect(row.html).toBeNull();
     // Variables hold whatever was substituted — names, order numbers,
@@ -157,5 +157,102 @@ describe("retention purge", () => {
     expect((await runRetentionPurge()).emails).toBe(1);
     expect((await load("em_45")).bodyPurgedAt).toBeInstanceOf(Date);
     expect((await load("em_new")).bodyPurgedAt).toBeNull();
+  });
+});
+
+/**
+ * Runs last: it adds a second organization, which would otherwise change the
+ * counts the instance-wide tests above assert.
+ */
+describe("per-team retention", () => {
+  it("purges each team at its own window", async () => {
+    const { instanceSettings, teamSettings } = await import("@/db/schema");
+    await pg.db
+      .insert(instanceSettings)
+      .values({ id: 1, retentionDays: 90 })
+      .onConflictDoUpdate({
+        target: instanceSettings.id,
+        set: { retentionDays: 90 },
+      });
+    await pg.db.execute(
+      `insert into "organization"(id,name,slug,created_at) values ('org_2','Beta','beta',now())`,
+    );
+    // org_1 keeps 7 days; org_2 has no row and inherits the 90-day ceiling.
+    await pg.db
+      .insert(teamSettings)
+      .values({ teamId: "org_1", retentionDays: 7, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: teamSettings.teamId,
+        set: { retentionDays: 7, updatedAt: new Date() },
+      });
+
+    const stamp = new Date();
+    const old = new Date(stamp.getTime() - 30 * 86_400_000);
+    for (const [id, teamId] of [
+      ["em_t1", "org_1"],
+      ["em_t2", "org_2"],
+    ] as const) {
+      await pg.db.insert(emails).values({
+        id,
+        teamId,
+        from: "a@mail.acme.com",
+        fromEmail: "a@mail.acme.com",
+        to: ["r@x.io"],
+        subject: "s",
+        html: "<p>body</p>",
+        text: "body",
+        attachmentsMeta: [],
+        status: "sent",
+        createdAt: old,
+      });
+    }
+
+    const { runRetentionPurge } = await import(
+      "@/jobs/handlers/retention-purge"
+    );
+    await runRetentionPurge(stamp);
+
+    const read = async (id: string) => {
+      const [row] = await pg.db.select().from(emails).where(eq(emails.id, id));
+      return row!;
+    };
+    // 30 days old against org_1's 7-day window -> purged.
+    expect((await read("em_t1")).html).toBeNull();
+    // 30 days old against org_2's inherited 90-day ceiling -> kept.
+    expect((await read("em_t2")).html).toBe("<p>body</p>");
+  });
+
+  it("clamps a team asking for more than the ceiling", async () => {
+    const { teamSettings } = await import("@/db/schema");
+    await pg.db
+      .insert(teamSettings)
+      .values({ teamId: "org_2", retentionDays: 3650, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: teamSettings.teamId,
+        set: { retentionDays: 3650, updatedAt: new Date() },
+      });
+    const stamp = new Date();
+    await pg.db.insert(emails).values({
+      id: "em_t3",
+      teamId: "org_2",
+      from: "a@mail.acme.com",
+      fromEmail: "a@mail.acme.com",
+      to: ["r@x.io"],
+      subject: "s",
+      html: "<p>body</p>",
+      attachmentsMeta: [],
+      status: "sent",
+      createdAt: new Date(stamp.getTime() - 120 * 86_400_000),
+    });
+    const { runRetentionPurge } = await import(
+      "@/jobs/handlers/retention-purge"
+    );
+    await runRetentionPurge(stamp);
+    const [row] = await pg.db
+      .select()
+      .from(emails)
+      .where(eq(emails.id, "em_t3"));
+    // 120 days old: the team asked for 3650 but the ceiling is 90.
+    expect(row?.html).toBeNull();
   });
 });
