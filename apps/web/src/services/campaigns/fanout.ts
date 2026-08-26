@@ -24,6 +24,7 @@ import { parseAddress } from "@/lib/email-address";
 import { injectPixel, wrapLinks } from "@/lib/tracking";
 import { Q } from "@/jobs/queues";
 import type { Enqueue } from "../domains";
+import { resolveSendingDomain } from "../emails";
 import { checkInstanceQuota, checkTeamCaps } from "../send-limits";
 import { unsubscribeLinks } from "../unsubscribe";
 import { selectEligible, type EligibleContact } from "./audience";
@@ -79,6 +80,13 @@ import { selectEligible, type EligibleContact } from "./audience";
  *    `selectEligible` filters it at materialisation and `sendQueuedEmail` now
  *    re-checks it per message immediately before SES, which is the only place
  *    that can catch a bounce or complaint arriving after this ran.
+ *
+ * 6. **The sending domain is a campaign-level fact, re-checked per chunk.**
+ *    `crud.ts` checks the domain at create and update time, and
+ *    `campaigns.domain_id` deliberately carries no foreign key, so between
+ *    authoring and the last chunk the domain can be deleted or fall out of
+ *    verification and nothing downstream notices per campaign — only per
+ *    message, 38 000 times. See {@link domainRefusal}.
  *
  * ## Crash windows, and what recovers each
  *
@@ -144,6 +152,28 @@ const DONE: FanoutResult = {
   done: true,
   completed: false,
 };
+
+/**
+ * A campaign-level refusal that stops a chunk without ending the campaign —
+ * the pair {@link capRefusal} and {@link domainRefusal} both return, and the
+ * pair {@link notePaused} audits.
+ */
+type Refusal = { code: ErrorCode; message: string };
+
+/**
+ * A tick that materialised nothing and left the campaign `sending`.
+ *
+ * Deliberately not {@link DONE}: the campaign still owes the rest of its
+ * audience, so the sweep must keep asking. What makes that not a spin is that
+ * every refusal is recorded once (see {@link notePaused}), never once a tick.
+ */
+const pausedResult = (paused: Refusal): FanoutResult => ({
+  materialised: 0,
+  skipped: 0,
+  done: false,
+  completed: false,
+  paused,
+});
 
 /**
  * One recipient's materialised row, or the reason there will not be one.
@@ -216,6 +246,16 @@ export async function fanoutChunk(
   // cursor and the next tick is what picks it up.
   if (!contacts.length) return finish(campaign, now);
 
+  // Checked here rather than above the empty-select test on purpose: a
+  // campaign whose book is walked out owes nobody anything, and pausing it
+  // for a domain it is no longer going to use would leave it `sending` for
+  // ever instead of letting it finish.
+  const domain = await domainRefusal(campaign, from.email);
+  if (domain.refusal) {
+    await notePaused(campaign, domain.refusal);
+    return pausedResult(domain.refusal);
+  }
+
   const [settings] = await db()
     .select({
       trackOpens: teamSettings.trackOpens,
@@ -250,7 +290,9 @@ export async function fanoutChunk(
         id: emailId,
         teamId: campaign.teamId,
         apiKeyId: null,
-        domainId: campaign.domainId,
+        // The domain that will actually carry this message, which is not
+        // always the one the campaign names — see {@link domainRefusal}.
+        domainId: domain.domainId,
         from: campaign.from,
         fromEmail: from.email,
         to: [to.email],
@@ -285,13 +327,7 @@ export async function fanoutChunk(
   const refusal = await capRefusal(campaign.teamId, wanted, now);
   if (refusal) {
     await notePaused(campaign, refusal);
-    return {
-      materialised: 0,
-      skipped: 0,
-      done: false,
-      completed: false,
-      paused: refusal,
-    };
+    return pausedResult(refusal);
   }
 
   // The chunk's last contact in `selectEligible`'s order. Every contact up to
@@ -429,8 +465,214 @@ export async function fanoutChunk(
   };
 }
 
-/** The audit action a capped campaign writes, once per campaign per cap. */
+export interface StartResult {
+  /** This call is the one that flipped `scheduled` → `sending`. */
+  started: boolean;
+  /**
+   * Why it did not start, when the campaign was left `scheduled` on purpose
+   * so a later tick can try again. Absent when another worker simply got
+   * there first, or when the campaign was edited out of `scheduled`.
+   */
+  deferred?: Refusal;
+}
+
+/**
+ * `scheduled` → `sending`: render once, store the render, stamp `startedAt`.
+ *
+ * This is the only thing `campaign.start-sweep` does per campaign, and it
+ * enqueues nothing — `campaign.fan-out-sweep` finds the campaign on its own
+ * next tick, because the fan-out's continuation is a cron and never a job
+ * that schedules itself (property 3 above).
+ *
+ * ## The flip is a conditional UPDATE, not a read-then-write
+ *
+ * The read above is for the refusals; the `where` is what makes the flip
+ * safe. Two things race it. A second sweep worker on the same tick would
+ * otherwise both render (CPU) and both stamp `startedAt` (two different
+ * answers to "when did this start?"). And `crud.ts` re-asserts the status in
+ * the `where` of its own writes for the mirror image of this reason — an edit
+ * landing between our read and our write is exactly the half-sent incoherence
+ * that check exists to prevent. Only the worker whose UPDATE returns a row
+ * has started the campaign; every other caller reports `started: false` and
+ * touches nothing.
+ *
+ * ## Why nothing here cancels
+ *
+ * A `scheduled` campaign that cannot be sent right now is left `scheduled`,
+ * audited once, and reconsidered next tick. It has mailed nobody, so there is
+ * no half-sent state to resolve, and `scheduled` is still editable
+ * (`EDITABLE_STATUSES`) — so the customer can fix the address, the blocks or
+ * the domain and the campaign goes out, where `cancelled` would be a terminal
+ * status they cannot edit their way out of. The refusals that end a campaign
+ * ({@link stopCampaign}) exist because it is already `sending`; that is not
+ * this situation.
+ *
+ * The cost of that choice is a campaign that sits `scheduled` past its time
+ * with only an audit row to say why, which is why the audit row is not
+ * optional.
+ */
+export async function startCampaign(
+  campaignId: string,
+  opts: { now?: Date } = {},
+): Promise<StartResult> {
+  const now = opts.now ?? new Date();
+  const [campaign] = await db()
+    .select()
+    .from(campaigns)
+    .where(eq(campaigns.id, campaignId))
+    .limit(1);
+  // Deleted, edited back to `draft`, or started by another worker between the
+  // sweep's select and this read.
+  if (!campaign || campaign.status !== "scheduled") return { started: false };
+
+  const from = parseAddress(campaign.from);
+  if (!from)
+    return defer(campaign, {
+      code: "validation_error",
+      message: `The from address ${campaign.from} is not a valid address.`,
+    });
+  // The defect this re-check exists for: `crud.ts` proved the domain was
+  // verified when the campaign was authored, and a campaign can be scheduled
+  // days ahead of its send. See {@link domainRefusal}.
+  const { refusal } = await domainRefusal(campaign, from.email);
+  if (refusal) return defer(campaign, refusal);
+
+  let rendered;
+  try {
+    // **Once per campaign, here** — property 4 above. Storing the result is
+    // what stops an edit to `blocks` mid-send giving the first and the last
+    // recipient different mail; `ensureRendered` is only the fallback for a
+    // campaign that reached `sending` without passing through here.
+    rendered = renderBlocks(campaign.blocks);
+  } catch (e) {
+    if (!(e instanceof InvalidCampaignBlockError)) throw e;
+    return defer(campaign, {
+      code: "validation_error",
+      message: `The body cannot be rendered — block ${e.index}: ${e.message}`,
+    });
+  }
+
+  const [row] = await db()
+    .update(campaigns)
+    .set({
+      status: "sending",
+      startedAt: now,
+      html: rendered.html,
+      text: rendered.text,
+    })
+    .where(
+      and(eq(campaigns.id, campaign.id), eq(campaigns.status, "scheduled")),
+    )
+    .returning({ id: campaigns.id });
+  if (!row) return { started: false };
+  console.info(`[campaigns] ${campaign.id} started`);
+  await recordAudit({
+    teamId: campaign.teamId,
+    actorUserId: null,
+    action: "campaigns.started",
+    targetType: "campaign",
+    targetId: campaign.id,
+    diff: { status: { from: "scheduled", to: "sending" } },
+  });
+  return { started: true };
+}
+
+/**
+ * Leave the campaign `scheduled`, record why once, and report it.
+ *
+ * {@link notePaused} is shared with the fan-out deliberately: a campaign the
+ * start sweep refuses is asked again every single minute until someone fixes
+ * it or deletes it, so without its per-reason de-duplication this would be
+ * the noisiest thing in the audit log.
+ */
+async function defer(
+  campaign: Campaign,
+  refusal: Refusal,
+): Promise<StartResult> {
+  await notePaused(campaign, refusal);
+  return { started: false, deferred: refusal };
+}
+
+/** The audit action a paused campaign writes, once per campaign per reason. */
 const PAUSED_ACTION = "campaigns.paused";
+
+/**
+ * The domain this chunk's messages will be sent from, or the reason there is
+ * none — checked **once per chunk, not once per recipient**.
+ *
+ * ## The hole this closes
+ *
+ * `crud.ts` proves the domain is verified when a campaign is created or
+ * edited, and `campaigns.domain_id` deliberately carries no foreign key, so
+ * nothing at all re-asserts it afterwards. Between authoring and the last
+ * chunk the domain can be deleted, or fail a re-verification (`domain.verify`
+ * demotes a `verified` domain the moment SES disagrees), and the fan-out will
+ * happily go on stamping its id onto rows that then fail **one at a time**:
+ * 38 000 individual `MessageRejected` responses, 38 000 `failed` rows, one
+ * ruined sender reputation, and no single place that says why.
+ *
+ * The deleted case is worse still and is the one that made this urgent:
+ * `emails.domain_id` *does* have a foreign key (`set null`), so inserting a
+ * chunk that names a deleted domain raises a foreign-key violation and takes
+ * the whole transaction with it — a campaign that throws on every sweep tick
+ * for ever, materialising nothing and explaining nothing.
+ *
+ * ## Why the question is "is there a verified domain for this address?"
+ *
+ * Not "is `campaigns.domain_id` still verified?". {@link resolveSendingDomain}
+ * is the notion `createEmail` uses before every API send — longest-suffix
+ * match over the team's `verified` domains — so asking it here means a
+ * campaign and an API send cannot disagree about whether this `from` is
+ * sendable right now, the same reasoning {@link capRefusal} gives for reusing
+ * `checkTeamCaps`.
+ *
+ * It also makes the answer *recoverable in both directions*, which is what
+ * lets this pause rather than stop (below). Re-adding a deleted domain mints
+ * a **new** id, so an id-based check could never be satisfied again; a
+ * name-based one is satisfied the moment the domain is verified again, under
+ * whatever id.
+ *
+ * The corollary is that the resolved domain is not always the campaign's:
+ * verifying a more specific subdomain mid-send moves the longest-suffix match
+ * onto it, and a campaign whose own domain was deleted can still resolve to a
+ * verified parent. Both send perfectly well — SES verifies identities, not
+ * our rows — so the resolved id is what goes on the `emails` row, which keeps
+ * the mail log pointing at the identity that actually carried the message and
+ * keeps that foreign key satisfiable.
+ *
+ * ## Why this pauses rather than cancels
+ *
+ * The reversibility test {@link notePaused} sets out, applied to this fact: a
+ * domain that has fallen out of verification is re-verified by
+ * `domain.verify-sweep` within minutes of the DNS being fixed, and a deleted
+ * one is recovered by re-adding it. So the campaign is left `sending` with
+ * its cursor where it is and resumes by itself from the exact recipient it
+ * stopped at — where `cancelled` is immutable (`crud.ts`), and the only route
+ * back would be a second campaign over the same book, mailing everyone who
+ * already received the first half a second time. Stopping a *reversible*
+ * refusal buys nothing and costs a duplicate send.
+ *
+ * That is the whole of the difference from the two refusals that do call
+ * {@link stopCampaign}: an unparseable `from` and blocks that no longer
+ * render are properties of the campaign's own stored data, and no amount of
+ * waiting makes them valid.
+ */
+async function domainRefusal(
+  campaign: Campaign,
+  fromEmail: string,
+): Promise<
+  | { refusal: Refusal; domainId?: undefined }
+  | { refusal: null; domainId: string }
+> {
+  const domain = await resolveSendingDomain(campaign.teamId, fromEmail);
+  if (domain) return { refusal: null, domainId: domain.id };
+  return {
+    refusal: {
+      code: "domain_not_verified",
+      message: `No verified sending domain for ${fromEmail}. The campaign resumes from where it stopped once the domain is verified again.`,
+    },
+  };
+}
 
 /**
  * The cap this chunk would breach, or null.
@@ -474,7 +716,7 @@ async function capRefusal(
   teamId: string,
   adding: number,
   now: Date,
-): Promise<{ code: ErrorCode; message: string } | null> {
+): Promise<Refusal | null> {
   if (adding <= 0) return null;
   const caps = await checkTeamCaps(teamId, adding, now);
   if (!caps.ok) return { code: caps.code, message: caps.message };
@@ -484,7 +726,12 @@ async function capRefusal(
 }
 
 /**
- * Record that a cap paused this campaign — once, not once a minute.
+ * Record that something paused this campaign — once, not once a minute.
+ *
+ * Two facts reach here: a send cap ({@link capRefusal}) and a sending domain
+ * that is no longer verified ({@link domainRefusal}). They pause for the same
+ * reason and are recorded the same way; the text below is written about the
+ * cap because it is the one whose alternative is tempting.
  *
  * ## Why a cap pauses rather than cancels
  *
@@ -526,11 +773,13 @@ async function capRefusal(
  * a campaign that later hits a *different* cap still records that; the
  * existence query runs only on the refusal path, which is the path that is
  * already not materialising anything.
+ *
+ * The `console.warn` sits **after** that existence check for the same reason:
+ * everything a paused tick would otherwise repeat — the audit row, the log
+ * line, and (in the sweep) the progress line — has to be de-duplicated here,
+ * because this is the only place that knows the refusal is not new.
  */
-async function notePaused(
-  campaign: Campaign,
-  refusal: { code: ErrorCode; message: string },
-): Promise<void> {
+async function notePaused(campaign: Campaign, refusal: Refusal): Promise<void> {
   const [existing] = await db()
     .select({ id: auditLog.id })
     .from(auditLog)

@@ -5,6 +5,7 @@ import "./ses-refresh-account";
 import "./domain-provision";
 import "./domain-verify";
 import "./email-send";
+import "./campaign-fanout";
 import "./webhook-deliver";
 import "./retention-purge";
 import "./billing-meter";
