@@ -3,6 +3,7 @@ import { useState } from "react";
 import { cn } from "@/lib/cn";
 import { Badge } from "@/components/ui/Badge";
 import { Card, CardBody } from "@/components/ui/Card";
+import { EmailPreview } from "@/components/ui/EmailPreview";
 
 /** Everything is pre-formatted on the server; this component only switches tabs. */
 export interface EventView {
@@ -62,13 +63,11 @@ export function EmailDetail({
         ) : tab === "Preview" ? (
           html ? (
             // No scripts, no same-origin: the message cannot touch the app.
+            // `wrap` is off — a sent message is a whole document, not a body
+            // fragment, and wrapping one in another `<html>` is what makes a
+            // preview disagree with what the recipient saw.
             <div className="flex flex-col gap-2">
-              <iframe
-                title="Email preview"
-                sandbox=""
-                srcDoc={html}
-                className="h-[32rem] w-full rounded-md border border-white/10 bg-white"
-              />
+              <EmailPreview title="Email preview" html={html} height="32rem" />
               <p className="text-xs text-white/50">
                 Tracking is stripped from this preview; links are live.
               </p>

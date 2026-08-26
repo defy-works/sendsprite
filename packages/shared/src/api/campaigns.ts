@@ -205,11 +205,53 @@ const InlineHtml = z
   )
   .refine(isWellNested, "Every tag must be closed, and links must not nest.");
 
+/**
+ * Presentation, as a small closed set rather than a style attribute.
+ *
+ * The alternative — letting a block carry CSS — would put author-supplied text
+ * inside a `style=""` attribute, which is a second unescapable position beside
+ * `href`, and would hand every mail client a different chance to mis-render.
+ * Every value below maps to a fixed string the renderer writes; nothing an
+ * author types reaches a stylesheet.
+ */
+export const BLOCK_ALIGNMENTS = ["left", "center", "right"] as const;
+export const BlockAlign = z.enum(BLOCK_ALIGNMENTS);
+export type BlockAlign = z.infer<typeof BlockAlign>;
+
+/**
+ * `#rrggbb`, lower or upper case, and nothing else.
+ *
+ * Not `z.string()` with a CSS colour parser: `red`, `rgb(...)` and `var(--x)`
+ * are all valid CSS and none of them are safe to interpolate into an email
+ * where the value came from a form. Six hex digits cannot express anything but
+ * a colour, which is the property worth having.
+ */
+export const HexColor = z
+  .string()
+  .regex(/^#[0-9a-fA-F]{6}$/, "A colour must be a hex value like #4f46e5.");
+export type HexColor = z.infer<typeof HexColor>;
+
+export const CORNER_STYLES = ["sharp", "soft", "pill"] as const;
+export const CornerStyle = z.enum(CORNER_STYLES);
+export type CornerStyle = z.infer<typeof CornerStyle>;
+
+/** Quarters. Arbitrary percentages break the fixed-width table maths. */
+export const IMAGE_WIDTHS = [25, 50, 75, 100] as const;
+export const ImageWidth = z.union([
+  z.literal(25),
+  z.literal(50),
+  z.literal(75),
+  z.literal(100),
+]);
+export type ImageWidth = z.infer<typeof ImageWidth>;
+
 /** One of three sizes; the renderer maps each to a fixed style. */
 export const HeadingBlock = z.object({
   kind: z.literal("heading"),
   level: z.union([z.literal(1), z.literal(2), z.literal(3)]),
   text: BlockText,
+  align: BlockAlign.optional(),
+  color: HexColor.optional(),
 });
 export type HeadingBlock = z.infer<typeof HeadingBlock>;
 
@@ -217,6 +259,8 @@ export type HeadingBlock = z.infer<typeof HeadingBlock>;
 export const TextBlock = z.object({
   kind: z.literal("text"),
   html: InlineHtml,
+  align: BlockAlign.optional(),
+  color: HexColor.optional(),
 });
 export type TextBlock = z.infer<typeof TextBlock>;
 
@@ -225,6 +269,12 @@ export const ButtonBlock = z.object({
   kind: z.literal("button"),
   label: BlockText.max(200),
   url: SafeUrl,
+  align: BlockAlign.optional(),
+  color: HexColor.optional(),
+  textColor: HexColor.optional(),
+  corners: CornerStyle.optional(),
+  /** Stretches to the container width. Useful in a narrow column. */
+  fullWidth: z.boolean().optional(),
 });
 export type ButtonBlock = z.infer<typeof ButtonBlock>;
 
@@ -239,11 +289,18 @@ export const ImageBlock = z.object({
   alt: BlockText.max(300),
   /** Optional wrapping link. */
   href: SafeUrl.optional(),
+  align: BlockAlign.optional(),
+  /** Percentage of the container. Defaults to the full width. */
+  width: ImageWidth.optional(),
+  corners: CornerStyle.optional(),
 });
 export type ImageBlock = z.infer<typeof ImageBlock>;
 
-/** A horizontal rule. Carries nothing, so there is nothing to validate. */
-export const DividerBlock = z.object({ kind: z.literal("divider") });
+/** A horizontal rule. */
+export const DividerBlock = z.object({
+  kind: z.literal("divider"),
+  color: HexColor.optional(),
+});
 export type DividerBlock = z.infer<typeof DividerBlock>;
 
 /** Vertical whitespace, in pixels. Bounded so one block cannot be a page. */
@@ -254,13 +311,16 @@ export const SpacerBlock = z.object({
 export type SpacerBlock = z.infer<typeof SpacerBlock>;
 
 /**
- * One block of a campaign body, discriminated on `kind`.
+ * A block that can sit inside a column.
  *
- * A discriminated union rather than a loose object: an unknown `kind` is a
- * refusal naming the field, not a block the renderer silently drops on its way
- * to thousands of inboxes.
+ * Everything except `columns` itself, which is what bounds the recursion at
+ * one level. That bound is deliberate and it is not only about the validator:
+ * nested column tables are where email layout stops being portable — the Word
+ * engine behind Outlook on Windows measures an inner table against the wrong
+ * containing block — and a body that renders differently in the client a third
+ * of recipients use is not a layout feature, it is a bug generator.
  */
-export const CampaignBlock = z.discriminatedUnion("kind", [
+export const LeafBlock = z.discriminatedUnion("kind", [
   HeadingBlock,
   TextBlock,
   ButtonBlock,
@@ -268,6 +328,74 @@ export const CampaignBlock = z.discriminatedUnion("kind", [
   DividerBlock,
   SpacerBlock,
 ]);
+export type LeafBlock = z.infer<typeof LeafBlock>;
+
+/**
+ * Column ratios, as presets.
+ *
+ * Free widths would be one number per column and a rounding argument on every
+ * render; the four presets below cover what an email actually needs and each
+ * maps to fixed pixel widths the renderer owns. The name is the ratio, so
+ * `"2-1"` is a wide column then a narrow one.
+ */
+export const COLUMN_LAYOUTS = ["1-1", "1-1-1", "2-1", "1-2"] as const;
+export const ColumnLayout = z.enum(COLUMN_LAYOUTS);
+export type ColumnLayout = z.infer<typeof ColumnLayout>;
+
+/** How many columns each preset has. */
+export const COLUMN_COUNT: Record<ColumnLayout, number> = {
+  "1-1": 2,
+  "1-1-1": 3,
+  "2-1": 2,
+  "1-2": 2,
+};
+
+/** Blocks in one column. A column is a slot in a layout, not a document. */
+export const MAX_BLOCKS_PER_COLUMN = 20;
+
+/**
+ * A row of two or three columns.
+ *
+ * `columns.length` must match the layout, checked rather than inferred: a
+ * stored body whose layout and column count disagree would otherwise render
+ * with a missing or orphaned cell, and the renderer is not the place to
+ * discover that.
+ */
+export const ColumnsBlock = z
+  .object({
+    kind: z.literal("columns"),
+    layout: ColumnLayout,
+    background: HexColor.optional(),
+    columns: z
+      .array(z.array(LeafBlock).max(MAX_BLOCKS_PER_COLUMN))
+      .min(2)
+      .max(3),
+  })
+  // `superRefine` rather than `refine`, because the message has to name both
+  // numbers to be worth reading, and a refinement message in zod is a constant.
+  .superRefine((b, ctx) => {
+    const want = COLUMN_COUNT[b.layout];
+    if (b.columns.length === want) return;
+    ctx.addIssue({
+      code: "custom",
+      path: ["columns"],
+      message: `The ${b.layout} layout has ${want} columns, but ${b.columns.length} were given.`,
+    });
+  });
+export type ColumnsBlock = z.infer<typeof ColumnsBlock>;
+
+/**
+ * One block of a campaign body.
+ *
+ * A leaf is still a discriminated union, so an unknown `kind` is a refusal
+ * naming the field rather than a block the renderer silently drops on its way
+ * to thousands of inboxes. The row cannot join that union: `ColumnsBlock`
+ * carries a `.refine`, and a refined object is not an object schema
+ * `discriminatedUnion` will accept as a member. A plain union of the two
+ * parses identically and keeps the leaf discrimination — which is the half
+ * that produces the good error messages — intact.
+ */
+export const CampaignBlock = z.union([LeafBlock, ColumnsBlock]);
 export type CampaignBlock = z.infer<typeof CampaignBlock>;
 
 /** A whole campaign body: at least one block, at most `MAX_BLOCKS`. */

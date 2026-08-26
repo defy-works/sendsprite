@@ -7,6 +7,8 @@ import {
   UNSUBSCRIBE_MARKER,
   escapeHtml,
   renderBlocks,
+  type ColumnLayout,
+  type LeafBlock,
 } from "@sendsprite/shared";
 
 /**
@@ -195,8 +197,10 @@ export function serializeInline(doc: InlineDocNode): string {
  * ------------------------------------------------------------------ */
 
 export type BlockKind = CampaignBlock["kind"];
+/** Everything that can sit inside a column, which is everything but a row. */
+export type LeafKind = LeafBlock["kind"];
 
-/** Insertion order of the "add block" menu, and the only kinds that exist. */
+/** Insertion order of the block palette, and the only leaf kinds that exist. */
 export const BLOCK_KINDS = [
   "heading",
   "text",
@@ -204,7 +208,7 @@ export const BLOCK_KINDS = [
   "image",
   "divider",
   "spacer",
-] as const satisfies readonly BlockKind[];
+] as const satisfies readonly LeafKind[];
 
 export const BLOCK_LABELS: Record<BlockKind, string> = {
   heading: "Heading",
@@ -213,6 +217,15 @@ export const BLOCK_LABELS: Record<BlockKind, string> = {
   image: "Image",
   divider: "Divider",
   spacer: "Spacer",
+  columns: "Columns",
+};
+
+/** What each layout is called in the palette, and what it looks like. */
+export const LAYOUT_LABELS: Record<ColumnLayout, string> = {
+  "1-1": "Two columns",
+  "1-1-1": "Three columns",
+  "2-1": "Wide + narrow",
+  "1-2": "Narrow + wide",
 };
 
 /**
@@ -226,7 +239,7 @@ export const BLOCK_LABELS: Record<BlockKind, string> = {
  * (`blockIssue`) reports a field left empty afterwards, and the service
  * refuses the save regardless, so the placeholder cannot reach a send silently.
  */
-export function blockDefaults(kind: BlockKind): CampaignBlock {
+export function blockDefaults(kind: LeafKind): LeafBlock {
   switch (kind) {
     case "heading":
       return { kind: "heading", level: 2, text: "Your headline" };
@@ -248,94 +261,24 @@ export function blockDefaults(kind: BlockKind): CampaignBlock {
 }
 
 /**
- * A block plus a key that survives reordering.
- *
- * dnd-kit identifies a sortable item by a stable id, and an array index is not
- * one: dragging block 3 above block 1 renumbers both, so React would reuse the
- * wrong DOM node and the drag would appear to edit the wrong block. The id is
- * editor-local and never stored — `blocksOf` strips it before the save.
- */
-export interface EditorBlock {
-  id: string;
-  block: CampaignBlock;
-}
-
-/**
  * One token per module instance, so the server and the browser cannot mint the
  * same id.
  *
- * The initial list is built on the server (it comes off a stored row and
+ * The initial tree is built on the server (it comes off a stored row and
  * arrives as a prop), and every block added afterwards is minted in the
  * browser. A bare counter would have the browser's first "add block" collide
  * with the server's first block — same React key, same dnd-kit id, and a drag
  * that edits the wrong card. The counter alone is not enough and a random id
  * per block is more than is needed.
+ *
+ * The tree itself lives in `tree.ts`; this stays here because it is the id
+ * scheme, not the structure, and `tree.ts` imports it.
  */
 const ID_PREFIX = Math.random().toString(36).slice(2, 8);
 let idCounter = 0;
 
 /** Unique within one editor session, which is the whole requirement. */
 export const newBlockId = (): string => `blk-${ID_PREFIX}-${++idCounter}`;
-
-export const editorBlock = (block: CampaignBlock): EditorBlock => ({
-  id: newBlockId(),
-  block,
-});
-
-/** A stored body as the editor holds it. */
-export const editorBlocksOf = (
-  blocks: readonly CampaignBlock[],
-): EditorBlock[] => blocks.map(editorBlock);
-
-/** The editor's list as the contract stores it. */
-export const blocksOf = (list: readonly EditorBlock[]): CampaignBlock[] =>
-  list.map((b) => b.block);
-
-/**
- * `from` moved to sit at `to`, as a new array.
- *
- * Out-of-range indices return an unchanged copy rather than throwing or
- * splicing an `undefined` in: a drag that ends over nothing is an ordinary
- * user action, not an error worth surfacing.
- */
-export function moveBlock<T>(
-  list: readonly T[],
-  from: number,
-  to: number,
-): T[] {
-  const next = [...list];
-  if (from === to) return next;
-  if (from < 0 || from >= next.length) return next;
-  if (to < 0 || to >= next.length) return next;
-  const [moved] = next.splice(from, 1);
-  if (moved === undefined) return [...list];
-  next.splice(to, 0, moved);
-  return next;
-}
-
-/** The same move addressed by dnd-kit's ids. An unknown id is a no-op. */
-export function moveBlockById(
-  list: readonly EditorBlock[],
-  activeId: string,
-  overId: string,
-): EditorBlock[] {
-  return moveBlock(
-    list,
-    list.findIndex((b) => b.id === activeId),
-    list.findIndex((b) => b.id === overId),
-  );
-}
-
-export const replaceBlock = (
-  list: readonly EditorBlock[],
-  id: string,
-  block: CampaignBlock,
-): EditorBlock[] => list.map((b) => (b.id === id ? { ...b, block } : b));
-
-export const removeBlock = (
-  list: readonly EditorBlock[],
-  id: string,
-): EditorBlock[] => list.filter((b) => b.id !== id);
 
 /**
  * Why one block would be refused, or `null`.

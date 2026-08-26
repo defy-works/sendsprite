@@ -9,13 +9,7 @@ import {
   BLOCK_KINDS,
   blockDefaults,
   blockIssue,
-  blocksOf,
-  editorBlocksOf,
-  moveBlock,
-  moveBlockById,
   previewCampaign,
-  removeBlock,
-  replaceBlock,
   serializeInline,
   type InlineDocNode,
 } from "@/app/app/campaigns/preview";
@@ -194,56 +188,6 @@ describe("blockDefaults", () => {
       "A URL is required.",
     );
     expect(blockIssue({ kind: "spacer", size: 2 })).not.toBeNull();
-  });
-});
-
-describe("moveBlock", () => {
-  const list = ["a", "b", "c", "d"];
-
-  it("moves an item to the index it was dropped on", () => {
-    expect(moveBlock(list, 0, 2)).toEqual(["b", "c", "a", "d"]);
-    expect(moveBlock(list, 3, 0)).toEqual(["d", "a", "b", "c"]);
-  });
-
-  it("copies rather than mutating", () => {
-    expect(moveBlock(list, 1, 2)).not.toBe(list);
-    expect(list).toEqual(["a", "b", "c", "d"]);
-  });
-
-  it("is a no-op for a drop that went nowhere or out of range", () => {
-    expect(moveBlock(list, 1, 1)).toEqual(list);
-    expect(moveBlock(list, -1, 2)).toEqual(list);
-    expect(moveBlock(list, 1, 9)).toEqual(list);
-  });
-});
-
-describe("the editor's block list", () => {
-  it("gives every block a distinct id and strips it again on the way out", () => {
-    const blocks = [blockDefaults("heading"), blockDefaults("text")];
-    const list = editorBlocksOf(blocks);
-    expect(new Set(list.map((b) => b.id)).size).toBe(2);
-    expect(blocksOf(list)).toEqual(blocks);
-  });
-
-  it("reorders by id, and ignores an id it does not hold", () => {
-    const list = editorBlocksOf([
-      blockDefaults("heading"),
-      blockDefaults("divider"),
-      blockDefaults("spacer"),
-    ]);
-    const ids = list.map((b) => b.id);
-    const moved = moveBlockById(list, ids[2] as string, ids[0] as string);
-    expect(moved.map((b) => b.id)).toEqual([ids[2], ids[0], ids[1]]);
-    expect(moveBlockById(list, "nope", ids[0] as string)).toEqual(list);
-  });
-
-  it("replaces and removes by id", () => {
-    const list = editorBlocksOf([blockDefaults("text"), blockDefaults("text")]);
-    const id = list[0]?.id as string;
-    const next = replaceBlock(list, id, { kind: "text", html: "changed" });
-    expect(next[0]?.block).toEqual({ kind: "text", html: "changed" });
-    expect(next[1]).toBe(list[1]);
-    expect(removeBlock(next, id).map((b) => b.id)).toEqual([list[1]?.id]);
   });
 });
 

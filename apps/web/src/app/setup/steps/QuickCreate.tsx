@@ -3,12 +3,15 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
+import { IconExternal } from "@/components/ui/icons";
 import { startQuickCreate } from "../actions";
 import { Alert, Notice } from "./shared";
 
 type StatusBody = {
   connected: boolean;
   pendingToken: boolean;
+  /** AWS called back; we are creating resources in the account right now. */
+  inFlight: boolean;
   lastFailure?: { at: string; reason: string } | null;
 };
 type StatusFetch =
@@ -36,8 +39,15 @@ const EXPIRED =
  * One-click flow. The popup is opened synchronously on click (before the
  * server action resolves) so popup blockers let it through; the URL is
  * assigned once the token is issued. If the popup was still blocked, the
- * link is rendered instead. Status is polled until the callback lands, the
- * token expires, the session dies, or the network stays down.
+ * link is rendered instead.
+ *
+ * Polling stops on exactly one of four things: the connection appears, the
+ * server reports a recorded failure, the token is gone *and* no callback is
+ * in flight, or the network stays down. That third condition is the fix for
+ * "the one-click always expires": the callback burns the token before it
+ * starts provisioning, so for the tens of seconds that provisioning takes,
+ * "no token" and "not connected" were both true and the old code read them as
+ * expiry. See `services/setup-tokens.ts`.
  */
 export function QuickCreate({
   region,
@@ -51,6 +61,8 @@ export function QuickCreate({
   const [error, setError] = useState<string | null>(null);
   const [fallbackUrl, setFallbackUrl] = useState<string | null>(null);
   const [polling, setPolling] = useState(false);
+  /** True once AWS has called back, so the copy can stop saying "click Create stack". */
+  const [provisioning, setProvisioning] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
 
   // Resume polling if the owner comes back with a callback still outstanding.
@@ -58,8 +70,10 @@ export function QuickCreate({
     let cancelled = false;
     fetchStatus().then((s) => {
       if (cancelled || s.kind !== "ok") return;
-      if (s.body.pendingToken) setPolling(true);
-      else if (s.body.lastFailure) setFailure(s.body.lastFailure.reason);
+      if (s.body.pendingToken || s.body.inFlight) {
+        setProvisioning(s.body.inFlight);
+        setPolling(true);
+      } else if (s.body.lastFailure) setFailure(s.body.lastFailure.reason);
     });
     return () => {
       cancelled = true;
@@ -72,6 +86,7 @@ export function QuickCreate({
     let failures = 0;
     const stop = (msg: string | null) => {
       setPolling(false);
+      setProvisioning(false);
       setFailure(msg);
     };
     const tick = async () => {
@@ -88,13 +103,18 @@ export function QuickCreate({
       const { body } = s;
       if (body.connected) {
         setPolling(false);
+        setProvisioning(false);
         router.refresh();
-      } else if (!body.pendingToken) {
-        // Whether the token is still live is the server's call: /status only
-        // reports one that is unconsumed AND unexpired per the database clock.
-        // Re-checking `expiresAt` against Date.now() here compared a server
-        // timestamp to the browser's clock, so any machine running ahead was
-        // told the link had expired while CloudFormation was still running.
+        return;
+      }
+      setProvisioning(body.inFlight);
+      if (!body.pendingToken && !body.inFlight) {
+        // Whether the link is still live is the server's call: /status reports
+        // an unconsumed, unexpired token per the database clock, and a
+        // consumed one whose callback is still running. Re-checking
+        // `expiresAt` against `Date.now()` here compared a server timestamp to
+        // the browser's, so any machine running fast was told the link had
+        // expired while CloudFormation was still going.
         stop(body.lastFailure?.reason ?? EXPIRED);
       }
     };
@@ -134,27 +154,46 @@ export function QuickCreate({
           locally.
         </Notice>
       )}
-      <div className="flex items-center gap-3">
-        <Button onClick={open} disabled={!available || pending || polling}>
-          {pending ? "Preparing…" : "Open AWS console"}
+      <div className="flex flex-wrap items-center gap-3">
+        <Button
+          onClick={open}
+          loading={pending}
+          disabled={!available || polling}
+          icon={<IconExternal />}
+        >
+          Open AWS console
         </Button>
         {polling && (
           <span className="flex items-center gap-2 text-sm text-white/65">
-            <Spinner size={14} /> Waiting for CloudFormation…
+            <Spinner size={14} />
+            {provisioning
+              ? "Setting up SES in your account…"
+              : "Waiting for CloudFormation…"}
           </span>
         )}
       </div>
       {polling && (
         <p className="text-sm text-white/65">
-          Click <strong>Create stack</strong> in the tab we opened and
-          acknowledge the IAM capability checkbox. This page updates on its own.
+          {provisioning ? (
+            <>
+              AWS has handed the keys back. We are creating the configuration
+              set, the events topic and its subscription — this takes under a
+              minute. Leave this page open.
+            </>
+          ) : (
+            <>
+              Click <strong>Create stack</strong> in the tab we opened and
+              acknowledge the IAM capability checkbox. This page updates on its
+              own.
+            </>
+          )}
         </p>
       )}
       {fallbackUrl && (
         <p className="text-sm text-white/65">
           Your browser blocked the popup.{" "}
           <a
-            className="text-indigo-300 underline"
+            className="text-indigo-300 underline underline-offset-2"
             href={fallbackUrl}
             target="_blank"
             rel="noopener noreferrer"

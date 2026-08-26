@@ -1,48 +1,74 @@
 "use client";
 import {
   DndContext,
+  DragOverlay,
   KeyboardSensor,
   PointerSensor,
-  closestCenter,
+  pointerWithin,
+  rectIntersection,
   useSensor,
   useSensors,
+  type CollisionDetection,
   type DragEndEvent,
+  type DragStartEvent,
 } from "@dnd-kit/core";
-import {
-  SortableContext,
-  sortableKeyboardCoordinates,
-  verticalListSortingStrategy,
-} from "@dnd-kit/sortable";
+import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState, useTransition } from "react";
-import type { CampaignStatus } from "@sendsprite/shared";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useTransition,
+} from "react";
+import type {
+  CampaignStatus,
+  ColumnLayout,
+  LeafBlock,
+} from "@sendsprite/shared";
 import { Alert } from "@/components/ui/Alert";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/Card";
+import { EmailPreview } from "@/components/ui/EmailPreview";
+import { Field } from "@/components/ui/Field";
 import { Input } from "@/components/ui/Input";
-import { Label } from "@/components/ui/Label";
-import { Link } from "@/components/ui/Link";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { Select } from "@/components/ui/Select";
+import { IconEye, IconSend } from "@/components/ui/icons";
+import { useToast } from "@/components/ui/toast";
+import { TestSendDialog } from "@/components/app/TestSendDialog";
 import {
   createCampaign,
+  sendCampaignTestAction,
   updateCampaign,
   type CampaignDraft,
   type Result,
 } from "../actions";
 import {
-  BLOCK_KINDS,
   BLOCK_LABELS,
   blockDefaults,
-  blocksOf,
-  editorBlock,
-  moveBlockById,
   previewCampaign,
-  removeBlock,
-  replaceBlock,
-  type EditorBlock,
+  type LeafKind,
 } from "../preview";
-import { BlockCard } from "./blocks/BlockCard";
+import {
+  blocksOfTree,
+  editorLeaf,
+  editorRow,
+  insertNode,
+  itemsIn,
+  locate,
+  moveItem,
+  parseContainer,
+  removeNode,
+  replaceLeaf,
+  updateRow,
+  type ContainerId,
+  type EditorNode,
+} from "../tree";
+import { Canvas, RootDropZone } from "./blocks/Canvas";
+import { LeafInspector, RowInspector } from "./blocks/Inspector";
+import { Palette, parsePaletteId } from "./blocks/Palette";
 
 export interface BookOption {
   id: string;
@@ -54,7 +80,7 @@ export interface DomainOption {
   name: string;
 }
 
-/** Everything the form holds. `blocks` carry editor-local ids; see `preview.ts`. */
+/** Everything the form holds. `nodes` carry editor-local ids; see `tree.ts`. */
 export interface EditorCampaign {
   name: string;
   bookId: string;
@@ -63,7 +89,7 @@ export interface EditorCampaign {
   /** `""` is "no reply-to"; the actions module translates it per path. */
   replyTo: string;
   subject: string;
-  blocks: EditorBlock[];
+  nodes: EditorNode[];
 }
 
 const STATUS_VARIANT: Record<CampaignStatus, BadgeVariant> = {
@@ -102,6 +128,20 @@ const LOCKED: Record<CampaignStatus, string | null> = {
 const NO_PERMISSION =
   "Read-only — creating and editing campaigns needs the admin role.";
 
+/**
+ * Drops land where the pointer is, and fall back to rectangles.
+ *
+ * `pointerWithin` alone cannot resolve a keyboard drag, which has no pointer;
+ * `rectIntersection` alone picks the container with the largest overlap, which
+ * for a small block hovering over a wide row is the row rather than the column
+ * under the cursor. Trying the pointer first and falling back is what makes
+ * both the mouse and the keyboard land where the user meant.
+ */
+const collisionDetection: CollisionDetection = (args) => {
+  const hits = pointerWithin(args);
+  return hits.length > 0 ? hits : rectIntersection(args);
+};
+
 export function CampaignEditor({
   mode,
   campaignId,
@@ -110,6 +150,8 @@ export function CampaignEditor({
   canManage,
   books,
   domains,
+  userEmail,
+  sesSandbox,
 }: {
   mode: "create" | "edit";
   /** Absent while creating. */
@@ -120,25 +162,35 @@ export function CampaignEditor({
   books: BookOption[];
   /** Verified domains only — an unverified one would fail for every recipient. */
   domains: DomainOption[];
+  userEmail: string;
+  /** SES is still in the sandbox, so a test only reaches verified addresses. */
+  sesSandbox: boolean;
 }) {
   const router = useRouter();
+  const toast = useToast();
   const [c, setC] = useState(campaign);
   const [liveStatus, setLiveStatus] = useState(status);
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [dragging, setDragging] = useState<string | null>(null);
+  const [testOpen, setTestOpen] = useState(false);
   /** The last state written to the database, as a string, so edits are detectable. */
-  const [committed, setCommitted] = useState(() => JSON.stringify(campaign));
+  const [committed, setCommitted] = useState(() =>
+    JSON.stringify(serialisable(campaign)),
+  );
 
-  const dirty = JSON.stringify(c) !== committed;
+  const dirty = JSON.stringify(serialisable(c)) !== committed;
   const locked = mode === "edit" ? LOCKED[liveStatus] : null;
   const readOnly = !canManage || locked !== null;
 
-  const set = <K extends keyof EditorCampaign>(k: K, v: EditorCampaign[K]) => {
-    setSaved(false);
+  const set = <K extends keyof EditorCampaign>(k: K, v: EditorCampaign[K]) =>
     setC((prev) => ({ ...prev, [k]: v }));
-  };
-  const setBlocks = (blocks: EditorBlock[]) => set("blocks", blocks);
+  const setNodes = useCallback(
+    (fn: (nodes: EditorNode[]) => EditorNode[]) =>
+      setC((prev) => ({ ...prev, nodes: fn(prev.nodes) })),
+    [],
+  );
 
   /**
    * A campaign body is an hour of work and a tab close is one keystroke. The
@@ -155,16 +207,90 @@ export function CampaignEditor({
   const sensors = useSensors(
     // A few pixels of travel before a drag starts, so a click into a text
     // field inside a card is still a click.
-    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, {
       coordinateGetter: sortableKeyboardCoordinates,
     }),
   );
 
+  /**
+   * Resolves what a drag ended over into a container and an index.
+   *
+   * dnd-kit reports the id it collided with, which is either a container
+   * (`root`, `row:…:0`) or another item. An item means "put it next to this
+   * one", so the container is that item's container and the index is its
+   * position — computed against the tree *before* the move, which `moveItem`
+   * accounts for by removing first and inserting second.
+   */
+  const resolveDrop = (
+    nodes: EditorNode[],
+    overId: string,
+  ): { container: ContainerId; index: number } | null => {
+    if (parseContainer(overId)) {
+      const container = overId as ContainerId;
+      return { container, index: itemsIn(nodes, container).length };
+    }
+    const over = locate(nodes, overId);
+    return over ? { container: over.container, index: over.index } : null;
+  };
+
+  const onDragStart = (e: DragStartEvent) => setDragging(String(e.active.id));
+
   const onDragEnd = (e: DragEndEvent) => {
-    const over = e.over;
-    if (!over || over.id === e.active.id) return;
-    setBlocks(moveBlockById(c.blocks, String(e.active.id), String(over.id)));
+    setDragging(null);
+    const overId = e.over ? String(e.over.id) : null;
+    if (!overId) return;
+    const activeId = String(e.active.id);
+
+    setNodes((nodes) => {
+      const drop = resolveDrop(nodes, overId);
+      if (!drop) return nodes;
+
+      // A palette drag creates a block rather than moving one.
+      const fresh = parsePaletteId(activeId);
+      if (fresh) {
+        const node =
+          fresh.kind === "leaf"
+            ? editorLeaf(blockDefaults(fresh.leaf))
+            : editorRow(fresh.layout);
+        const next = insertNode(nodes, drop.container, drop.index, node);
+        // Select what was just dropped, so the inspector is already on it.
+        if (next !== nodes) queueMicrotask(() => setSelectedId(node.id));
+        return next;
+      }
+
+      if (activeId === overId) return nodes;
+      return moveItem(nodes, activeId, drop.container, drop.index);
+    });
+  };
+
+  /** Click-to-add: appends to the root, or into the selected block's container. */
+  const addLeaf = (kind: LeafKind) => {
+    const node = editorLeaf(blockDefaults(kind));
+    setNodes((nodes) => {
+      const target = selectedId ? locate(nodes, selectedId) : null;
+      const container: ContainerId = target?.container ?? "root";
+      return insertNode(
+        nodes,
+        container,
+        itemsIn(nodes, container).length,
+        node,
+      );
+    });
+    setSelectedId(node.id);
+  };
+
+  const addRow = (layout: ColumnLayout) => {
+    const node = editorRow(layout);
+    // Always at the root: a row cannot nest, so "next to the selection" is
+    // only meaningful when the selection is itself at the root.
+    setNodes((nodes) => insertNode(nodes, "root", nodes.length, node));
+    setSelectedId(node.id);
+  };
+
+  const removeById = (id: string) => {
+    setNodes((nodes) => removeNode(nodes, id));
+    setSelectedId((current) => (current === id ? null : current));
   };
 
   /**
@@ -172,10 +298,11 @@ export function CampaignEditor({
    * no React renderer for blocks anywhere in this app, deliberately — see
    * `preview.ts`.
    */
-  const preview = useMemo(
-    () => previewCampaign(blocksOf(c.blocks)),
-    [c.blocks],
-  );
+  const blocks = useMemo(() => blocksOfTree(c.nodes), [c.nodes]);
+  const preview = useMemo(() => previewCampaign(blocks), [blocks]);
+
+  const selected = selectedId ? locate(c.nodes, selectedId) : null;
+  const selectedNode = selected?.node ?? null;
 
   const bookMissing = c.bookId !== "" && !books.some((b) => b.id === c.bookId);
   const domainMissing =
@@ -188,7 +315,7 @@ export function CampaignEditor({
     from: state.from,
     replyTo: state.replyTo,
     subject: state.subject,
-    blocks: blocksOf(state.blocks),
+    blocks: blocksOfTree(state.nodes),
   });
 
   const save = () => {
@@ -208,8 +335,8 @@ export function CampaignEditor({
           draftOf(state),
         );
         if (!res.ok) return setError(res.error);
-        setCommitted(JSON.stringify(state));
-        setSaved(true);
+        setCommitted(JSON.stringify(serialisable(state)));
+        toast({ tone: "success", title: "Campaign saved" });
         // An edit to a scheduled campaign reverts it to a draft and drops the
         // send time; the badge has to move with it.
         setLiveStatus(res.data.status);
@@ -221,286 +348,382 @@ export function CampaignEditor({
   };
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div className="flex flex-col gap-2">
-          <Link href="/app/campaigns" className="num-stamp no-underline">
-            ← Campaigns
-          </Link>
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-lg font-medium">
-              {mode === "create" ? "New campaign" : c.name || "Untitled"}
-            </h1>
+    // Clicking the page background clears the selection, which is what makes
+    // the inspector feel like it belongs to the canvas rather than to the URL.
+    <div className="flex flex-col gap-6" onClick={() => setSelectedId(null)}>
+      <PageHeader
+        back={{ href: "/app/campaigns", label: "Campaigns" }}
+        title={
+          <span className="flex flex-wrap items-center gap-3">
+            {mode === "create" ? "New campaign" : c.name || "Untitled"}
             {mode === "edit" && (
               <Badge variant={STATUS_VARIANT[liveStatus]}>{liveStatus}</Badge>
             )}
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
-          {dirty && !readOnly && (
-            <Badge variant="warning">Unsaved changes</Badge>
-          )}
-          {saved && !dirty && (
-            <span className="text-sm text-white/60">Saved.</span>
-          )}
-          {readOnly ? (
+            {dirty && !readOnly && (
+              <Badge variant="warning">Unsaved changes</Badge>
+            )}
+          </span>
+        }
+        actions={
+          readOnly ? (
             <span className="max-w-md text-right text-sm text-white/60">
               {locked ?? NO_PERMISSION}
             </span>
           ) : (
-            <Button
-              disabled={pending || (mode === "edit" && !dirty)}
-              onClick={save}
-            >
-              {pending ? "Saving…" : mode === "create" ? "Create" : "Save"}
-            </Button>
-          )}
-        </div>
-      </div>
+            <>
+              <Button
+                variant="subtle"
+                icon={<IconSend />}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setTestOpen(true);
+                }}
+              >
+                Send a test
+              </Button>
+              <Button
+                loading={pending}
+                disabled={mode === "edit" && !dirty}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  save();
+                }}
+              >
+                {mode === "create" ? "Create" : "Save"}
+              </Button>
+            </>
+          )
+        }
+      />
 
       {error && <Alert>{error}</Alert>}
 
       {liveStatus === "scheduled" && !readOnly && (
-        <p className="text-sm text-amber-300">
+        <p className="rounded-md border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-sm text-amber-200">
           This campaign is scheduled. Saving an edit returns it to a draft and
           clears the send time, so nobody ships an unreviewed change on the old
           timer — reschedule it when you are done.
         </p>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <div className="flex flex-col gap-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>Settings</CardTitle>
-            </CardHeader>
-            <CardBody className="flex flex-col gap-4">
-              <div>
-                <Label htmlFor="cmp-name">Name</Label>
-                <Input
+      <DndContext
+        sensors={sensors}
+        collisionDetection={collisionDetection}
+        onDragStart={onDragStart}
+        onDragEnd={onDragEnd}
+        onDragCancel={() => setDragging(null)}
+      >
+        <div className="grid gap-6 xl:grid-cols-[15rem_minmax(0,1fr)_minmax(0,26rem)]">
+          {/* Left rail: what can be added, and how the selection looks. It is
+              inside the DndContext so a palette tile can be dragged onto the
+              canvas, which is two grid columns away. */}
+          <div
+            className="flex flex-col gap-4 xl:sticky xl:top-20 xl:self-start"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Card className="p-4">
+              <Palette
+                disabled={readOnly}
+                onAddLeaf={addLeaf}
+                onAddRow={addRow}
+              />
+            </Card>
+            <Card className="p-4">
+              <p className="num-stamp mb-3">
+                {selectedNode
+                  ? selectedNode.type === "row"
+                    ? "Row style"
+                    : `${BLOCK_LABELS[selectedNode.block.kind]} style`
+                  : "Style"}
+              </p>
+              {selectedNode === null ? (
+                <p className="text-sm text-white/50">
+                  Select a block on the canvas to change how it looks.
+                </p>
+              ) : selectedNode.type === "row" ? (
+                <RowInspector
+                  row={selectedNode}
+                  readOnly={readOnly}
+                  onChange={(patch) =>
+                    setNodes((nodes) =>
+                      updateRow(nodes, selectedNode.id, patch),
+                    )
+                  }
+                />
+              ) : (
+                <LeafInspector
+                  block={selectedNode.block}
+                  readOnly={readOnly}
+                  onChange={(block) =>
+                    setNodes((nodes) =>
+                      replaceLeaf(nodes, selectedNode.id, block),
+                    )
+                  }
+                />
+              )}
+            </Card>
+          </div>
+
+          {/* Middle: settings, then the canvas. */}
+          <div
+            className="flex min-w-0 flex-col gap-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Card>
+              <CardHeader>
+                <CardTitle>Settings</CardTitle>
+              </CardHeader>
+              <CardBody className="grid gap-4 sm:grid-cols-2">
+                <Field
                   id="cmp-name"
-                  value={c.name}
-                  maxLength={200}
-                  disabled={readOnly}
-                  onChange={(e) => set("name", e.target.value)}
-                />
-                <p className="mt-1 text-xs text-white/50">
-                  Internal only. Recipients never see it.
-                </p>
-              </div>
+                  label="Name"
+                  hint="Internal only. Recipients never see it."
+                >
+                  <Input
+                    id="cmp-name"
+                    value={c.name}
+                    maxLength={200}
+                    disabled={readOnly}
+                    onChange={(e) => set("name", e.target.value)}
+                  />
+                </Field>
 
-              <div>
-                <Label htmlFor="cmp-book">Contact book</Label>
-                <Select
+                <Field id="cmp-subject" label="Subject">
+                  <Input
+                    id="cmp-subject"
+                    value={c.subject}
+                    disabled={readOnly}
+                    onChange={(e) => set("subject", e.target.value)}
+                  />
+                </Field>
+
+                <Field
                   id="cmp-book"
-                  value={c.bookId}
-                  disabled={readOnly}
-                  placeholder="Choose a book…"
-                  onChange={(v) => set("bookId", v)}
-                  options={[
-                    /* A campaign outlives its book: `book_id` carries no
-                       foreign key, so the stored id can point at nothing.
-                       Kept as an option so the row still renders what it
-                       says, with a warning telling the author to repoint it. */
-                    ...(bookMissing
-                      ? [
-                          {
-                            value: c.bookId,
-                            label: "Deleted book",
-                            hint: c.bookId,
-                          },
-                        ]
-                      : []),
-                    ...books.map((b) => ({
-                      value: b.id,
-                      label: b.name,
-                      hint: `${b.contactCount.toLocaleString("en-US")} contacts`,
-                    })),
-                  ]}
-                />
-                {bookMissing && (
-                  <p className="mt-1 text-xs text-amber-300">
-                    The book this campaign was drawn from has been deleted. Pick
-                    another before saving.
-                  </p>
-                )}
-                <p className="mt-1 text-xs text-white/50">
-                  Everyone in it who is subscribed and not suppressed — consent
-                  and deliverability are separate, and both have to say yes.
-                </p>
-              </div>
+                  label="Contact book"
+                  error={
+                    bookMissing
+                      ? "The book this campaign was drawn from has been deleted. Pick another before saving."
+                      : undefined
+                  }
+                  hint="Everyone in it who is subscribed and not suppressed — consent and deliverability are separate, and both have to say yes."
+                >
+                  <Select
+                    id="cmp-book"
+                    value={c.bookId}
+                    disabled={readOnly}
+                    placeholder="Choose a book…"
+                    onChange={(v) => set("bookId", v)}
+                    options={[
+                      /* A campaign outlives its book: `book_id` carries no
+                         foreign key, so the stored id can point at nothing.
+                         Kept as an option so the row still renders what it
+                         says, with a warning telling the author to repoint it. */
+                      ...(bookMissing
+                        ? [
+                            {
+                              value: c.bookId,
+                              label: "Deleted book",
+                              hint: c.bookId,
+                            },
+                          ]
+                        : []),
+                      ...books.map((b) => ({
+                        value: b.id,
+                        label: b.name,
+                        hint: `${b.contactCount.toLocaleString("en-US")} contacts`,
+                      })),
+                    ]}
+                  />
+                </Field>
 
-              <div>
-                <Label htmlFor="cmp-domain">Sending domain</Label>
-                <Select
+                <Field
                   id="cmp-domain"
-                  value={c.domainId}
-                  disabled={readOnly}
-                  placeholder="Choose a domain…"
-                  onChange={(v) => set("domainId", v)}
-                  options={[
-                    ...(domainMissing
-                      ? [
-                          {
-                            value: c.domainId,
-                            label: "Deleted or unverified",
-                            hint: c.domainId,
-                          },
-                        ]
-                      : []),
-                    ...domains.map((d) => ({ value: d.id, label: d.name })),
-                  ]}
-                />
-                {domainMissing && (
-                  <p className="mt-1 text-xs text-amber-300">
-                    This domain is gone or no longer verified. A campaign sent
-                    from it would fail for every recipient.
-                  </p>
-                )}
-              </div>
+                  label="Sending domain"
+                  error={
+                    domainMissing
+                      ? "This domain is gone or no longer verified. A campaign sent from it would fail for every recipient."
+                      : undefined
+                  }
+                >
+                  <Select
+                    id="cmp-domain"
+                    value={c.domainId}
+                    disabled={readOnly}
+                    placeholder="Choose a domain…"
+                    onChange={(v) => set("domainId", v)}
+                    options={[
+                      ...(domainMissing
+                        ? [
+                            {
+                              value: c.domainId,
+                              label: "Deleted or unverified",
+                              hint: c.domainId,
+                            },
+                          ]
+                        : []),
+                      ...domains.map((d) => ({ value: d.id, label: d.name })),
+                    ]}
+                  />
+                </Field>
 
-              <div>
-                <Label htmlFor="cmp-from">From</Label>
-                <Input
+                <Field
                   id="cmp-from"
-                  value={c.from}
-                  placeholder="hello@yourdomain.com"
-                  disabled={readOnly}
-                  onChange={(e) => set("from", e.target.value)}
-                />
-                <p className="mt-1 text-xs text-white/50">
-                  Must be an address at the domain above.
-                </p>
-              </div>
+                  label="From"
+                  hint="Must be an address at the domain above."
+                >
+                  <Input
+                    id="cmp-from"
+                    value={c.from}
+                    placeholder="hello@yourdomain.com"
+                    disabled={readOnly}
+                    onChange={(e) => set("from", e.target.value)}
+                  />
+                </Field>
 
-              <div>
-                <Label htmlFor="cmp-replyto">Reply-to (optional)</Label>
-                <Input
-                  id="cmp-replyto"
-                  value={c.replyTo}
-                  placeholder="none"
-                  disabled={readOnly}
-                  onChange={(e) => set("replyTo", e.target.value)}
-                />
-              </div>
+                <Field id="cmp-replyto" label="Reply-to (optional)">
+                  <Input
+                    id="cmp-replyto"
+                    value={c.replyTo}
+                    placeholder="none"
+                    disabled={readOnly}
+                    onChange={(e) => set("replyTo", e.target.value)}
+                  />
+                </Field>
+              </CardBody>
+            </Card>
 
-              <div>
-                <Label htmlFor="cmp-subject">Subject</Label>
-                <Input
-                  id="cmp-subject"
-                  value={c.subject}
-                  disabled={readOnly}
-                  onChange={(e) => set("subject", e.target.value)}
+            <Card>
+              <CardHeader>
+                <CardTitle>Body</CardTitle>
+                <span className="text-xs text-white/40">
+                  {c.nodes.length} block{c.nodes.length === 1 ? "" : "s"}
+                </span>
+              </CardHeader>
+              <CardBody className="flex flex-col gap-2.5">
+                <Canvas
+                  nodes={c.nodes}
+                  readOnly={readOnly}
+                  selectedId={selectedId}
+                  invalidIndex={preview.ok ? null : preview.index}
+                  onSelect={setSelectedId}
+                  onChangeLeaf={(id, block: LeafBlock) =>
+                    setNodes((nodes) => replaceLeaf(nodes, id, block))
+                  }
+                  onRemove={removeById}
                 />
-              </div>
-            </CardBody>
-          </Card>
+                {!readOnly && <RootDropZone empty={c.nodes.length === 0} />}
+              </CardBody>
+            </Card>
+          </div>
 
-          <Card>
+          {/* Right: the preview, which is what the whole page is for. */}
+          <Card
+            className="xl:sticky xl:top-20 xl:self-start"
+            onClick={(e) => e.stopPropagation()}
+          >
             <CardHeader>
-              <CardTitle>Body</CardTitle>
-              <span className="text-xs text-white/40">
-                {c.blocks.length} block{c.blocks.length === 1 ? "" : "s"}
-              </span>
+              <CardTitle>Preview</CardTitle>
+              <IconEye className="text-white/30" />
             </CardHeader>
             <CardBody className="flex flex-col gap-3">
-              {c.blocks.length === 0 && (
-                <p className="text-sm text-white/60">
-                  Nothing in the body yet. Add a heading, then some text.
-                </p>
+              <p className="text-sm break-words text-white/65">
+                <span className="text-white/40">Subject </span>
+                {c.subject || <span className="text-white/40">(none)</span>}
+              </p>
+              {preview.ok ? (
+                <>
+                  <EmailPreview
+                    title="Campaign preview"
+                    html={preview.html}
+                    height="30rem"
+                  />
+                  <details>
+                    <summary className="cursor-pointer text-xs text-white/50">
+                      Plain-text part
+                    </summary>
+                    <pre className="mt-2 max-h-64 overflow-auto rounded-md bg-white/4 p-3 font-mono text-xs whitespace-pre-wrap text-white/75">
+                      {preview.text}
+                    </pre>
+                  </details>
+                </>
+              ) : (
+                <Alert>{preview.error}</Alert>
               )}
-              <DndContext
-                sensors={sensors}
-                collisionDetection={closestCenter}
-                onDragEnd={onDragEnd}
-              >
-                <SortableContext
-                  items={c.blocks.map((b) => b.id)}
-                  strategy={verticalListSortingStrategy}
-                >
-                  <ul className="flex list-none flex-col gap-3">
-                    {c.blocks.map((b, i) => (
-                      <BlockCard
-                        key={b.id}
-                        item={b}
-                        index={i}
-                        count={c.blocks.length}
-                        readOnly={readOnly}
-                        invalid={!preview.ok && preview.index === i}
-                        onChange={(block) =>
-                          setBlocks(replaceBlock(c.blocks, b.id, block))
-                        }
-                        onRemove={() => setBlocks(removeBlock(c.blocks, b.id))}
-                      />
-                    ))}
-                  </ul>
-                </SortableContext>
-              </DndContext>
-
-              {!readOnly && (
-                <div className="flex flex-wrap gap-2 border-t border-white/8 pt-3">
-                  {BLOCK_KINDS.map((kind) => (
-                    <Button
-                      key={kind}
-                      size="sm"
-                      variant="subtle"
-                      onClick={() =>
-                        setBlocks([
-                          ...c.blocks,
-                          editorBlock(blockDefaults(kind)),
-                        ])
-                      }
-                    >
-                      + {BLOCK_LABELS[kind]}
-                    </Button>
-                  ))}
-                </div>
-              )}
+              <p className="text-xs text-white/50">
+                The unsubscribe footer is added per recipient.
+              </p>
             </CardBody>
           </Card>
         </div>
 
-        <Card className="lg:sticky lg:top-6 lg:self-start">
-          <CardHeader>
-            <CardTitle>Preview</CardTitle>
-          </CardHeader>
-          <CardBody className="flex flex-col gap-3">
-            <p className="text-sm break-words text-white/65">
-              <span className="text-white/40">Subject </span>
-              {c.subject || <span className="text-white/40">(none)</span>}
-            </p>
-            {preview.ok ? (
-              <>
-                {/* The same empty sandbox as the mail-log detail view and the
-                    template preview. The block contract refuses `javascript:`
-                    URLs, so this is defence in depth — but the frame renders
-                    customer-authored content inside a dashboard session, and
-                    one bug in the URL check must not become account takeover. */}
-                <iframe
-                  title="Campaign preview"
-                  sandbox=""
-                  srcDoc={preview.html}
-                  className="h-[36rem] w-full rounded-lg border border-white/10 bg-white"
-                />
-                <details>
-                  <summary className="cursor-pointer text-xs text-white/50">
-                    Plain-text part
-                  </summary>
-                  <pre className="mt-2 max-h-64 overflow-auto rounded-md bg-white/4 p-3 font-mono text-xs whitespace-pre-wrap text-white/75">
-                    {preview.text}
-                  </pre>
-                </details>
-              </>
-            ) : (
-              <Alert>{preview.error}</Alert>
-            )}
-            <p className="text-xs text-white/50">
-              Rendered by the same code the send uses, inside a sandboxed frame
-              that runs nothing. The unsubscribe footer is added per recipient.
-            </p>
-          </CardBody>
-        </Card>
-      </div>
+        <DragOverlay dropAnimation={null}>
+          {dragging && <DragChip id={dragging} nodes={c.nodes} />}
+        </DragOverlay>
+      </DndContext>
+
+      <TestSendDialog
+        open={testOpen}
+        onDismiss={() => setTestOpen(false)}
+        defaultTo={userEmail}
+        sandbox={sesSandbox}
+        onSend={(to) =>
+          sendCampaignTestAction(
+            {
+              from: c.from,
+              replyTo: c.replyTo,
+              subject: c.subject,
+              blocks: blocksOfTree(c.nodes),
+            },
+            to,
+          )
+        }
+      >
+        <p className="text-sm text-white/65">
+          Sent from <strong>{c.from || "(no From address)"}</strong> with the
+          body exactly as it is now — unsaved edits included.
+        </p>
+      </TestSendDialog>
     </div>
+  );
+}
+
+/**
+ * The campaign minus its editor ids, for the dirty check.
+ *
+ * Comparing the tree directly would compare ids, and an id changes whenever a
+ * block is added — including when a drag is cancelled and the tree ends up
+ * identical. Stripping them makes "dirty" a statement about the content, which
+ * is what the word means to whoever reads the badge.
+ */
+function serialisable(c: EditorCampaign) {
+  return {
+    name: c.name,
+    bookId: c.bookId,
+    domainId: c.domainId,
+    from: c.from,
+    replyTo: c.replyTo,
+    subject: c.subject,
+    blocks: blocksOfTree(c.nodes),
+  };
+}
+
+/** What follows the cursor during a drag. */
+function DragChip({ id, nodes }: { id: string; nodes: EditorNode[] }) {
+  const fresh = parsePaletteId(id);
+  const label = fresh
+    ? fresh.kind === "leaf"
+      ? BLOCK_LABELS[fresh.leaf]
+      : `Columns ${fresh.layout}`
+    : (() => {
+        const found = locate(nodes, id);
+        if (!found) return "Block";
+        return found.node.type === "row"
+          ? `Columns ${found.node.layout}`
+          : BLOCK_LABELS[found.node.block.kind];
+      })();
+  return (
+    <span className="glass-strong pointer-events-none inline-flex items-center gap-2 px-3 py-2 text-xs text-white shadow-glass">
+      {label}
+    </span>
   );
 }

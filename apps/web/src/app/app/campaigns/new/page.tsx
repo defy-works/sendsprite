@@ -6,7 +6,9 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { requireTeam } from "@/lib/session";
 import { listBooks } from "@/services/contacts";
 import { listDomains } from "@/services/domains";
-import { blockDefaults, editorBlocksOf } from "../preview";
+import { getTeamAws } from "@/services/team-aws";
+import { blockDefaults } from "../preview";
+import { editorLeaf } from "../tree";
 import { CampaignEditor } from "../[id]/CampaignEditor";
 
 export const metadata = { title: "New campaign" };
@@ -17,9 +19,10 @@ export default async function NewCampaignPage() {
   // than the list, which explains what a campaign is.
   if (!can(ctx.role, "campaigns.manage")) redirect("/app/campaigns");
 
-  const [books, allDomains] = await Promise.all([
+  const [books, allDomains, aws] = await Promise.all([
     listBooks(ctx.team.id),
     listDomains(ctx.team.id),
+    getTeamAws(ctx.team.id),
   ]);
   const domains = allDomains.filter((d) => d.status === "verified");
 
@@ -57,6 +60,8 @@ export default async function NewCampaignPage() {
     <CampaignEditor
       mode="create"
       canManage
+      userEmail={ctx.session.user.email}
+      sesSandbox={aws?.sesAccountStatus !== "production"}
       books={books.map((b) => ({
         id: b.id,
         name: b.name,
@@ -75,10 +80,10 @@ export default async function NewCampaignPage() {
         subject: "",
         // A starter rather than a blank page — the preview is the thing worth
         // seeing first, and it has nothing to show until a block exists.
-        blocks: editorBlocksOf([
-          blockDefaults("heading"),
-          blockDefaults("text"),
-        ]),
+        nodes: [
+          editorLeaf(blockDefaults("heading")),
+          editorLeaf(blockDefaults("text")),
+        ],
       }}
     />
   );

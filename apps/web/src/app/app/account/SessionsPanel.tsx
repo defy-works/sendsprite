@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState, useTransition } from "react";
+import { useCallback, useEffect, useState, useTransition } from "react";
 import { Alert } from "@/components/ui/Alert";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -65,19 +65,21 @@ export function SessionsPanel({ currentToken }: { currentToken: string }) {
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
 
-  const load = async () => {
+  const load = useCallback(async () => {
     const res = await authClient.listSessions();
     if (res.error)
       return setError(res.error.message ?? "Could not list your sessions.");
     setRows(res.data as Row[]);
-  };
-
-  useEffect(() => {
-    void load();
-    // Once, on mount: sessions do not change while this page is open unless
-    // this panel is what changed them, and those paths reload explicitly.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Once, on mount. Sessions do not change while this page is open unless this
+  // panel is what changed them, and those paths call `load()` themselves.
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    if (loaded) return;
+    setLoaded(true);
+    void load();
+  }, [loaded, load]);
 
   const revokeOthers = async () => {
     const ok = await confirm({

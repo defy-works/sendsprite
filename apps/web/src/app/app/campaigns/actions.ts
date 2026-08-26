@@ -10,6 +10,7 @@ import { requestMeta } from "@/lib/audit";
 import type { Result } from "@/lib/result";
 import { requireTeam } from "@/lib/session";
 import * as campaigns from "@/services/campaigns/crud";
+import { sendCampaignTest } from "@/services/test-send";
 import { confirmationMatches } from "./send";
 
 export type { Result } from "@/lib/result";
@@ -192,4 +193,37 @@ export async function cancelCampaign(
   revalidatePath(`/app/campaigns/${id}`);
   revalidatePath("/app/campaigns");
   return { ok: true, data: { status: res.data.status } };
+}
+
+/**
+ * Sends one copy of the campaign currently in the editor.
+ *
+ * It takes the draft rather than a campaign id on purpose: the point of a test
+ * is to look at what you are working on, and requiring a save first would make
+ * "check this before I commit it" impossible for a campaign that is already
+ * scheduled — saving one reverts it to a draft and drops its send time.
+ *
+ * Permission is `campaigns.manage`, the same as editing: a test send is a
+ * send, and the role that may not change the body may not put it in an inbox
+ * either.
+ */
+export async function sendCampaignTestAction(
+  draft: Pick<CampaignDraft, "from" | "replyTo" | "subject" | "blocks">,
+  to: string[],
+): Promise<Result<{ emailId: string }>> {
+  const a = await actor();
+  if (!can(a.role, "campaigns.manage"))
+    return { ok: false, error: "You don't have permission to do that." };
+  const res = await sendCampaignTest(
+    { teamId: a.teamId, userId: a.userId },
+    {
+      to,
+      from: draft.from,
+      replyTo: draft.replyTo.trim() === "" ? undefined : draft.replyTo,
+      subject: draft.subject,
+      blocks: draft.blocks,
+    },
+  );
+  if (res.ok) revalidatePath("/app/emails");
+  return res.ok ? { ok: true, data: { emailId: res.data.emailId } } : res;
 }

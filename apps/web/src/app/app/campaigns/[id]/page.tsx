@@ -8,7 +8,8 @@ import { campaignCounts } from "@/services/campaigns/stats";
 import { listBooks } from "@/services/contacts";
 import { listDomains } from "@/services/domains";
 import { usageSnapshot } from "@/services/send-limits";
-import { editorBlocksOf } from "../preview";
+import { getTeamAws } from "@/services/team-aws";
+import { editorNodesOf } from "../tree";
 import { STATUS_PLAN, capPreflight } from "../send";
 import { AudienceCard } from "./AudienceCard";
 import { CampaignEditor } from "./CampaignEditor";
@@ -46,6 +47,7 @@ export default async function CampaignPage({
   const c = await getCampaignDetail(ctx.team.id, id);
   if (!c) notFound();
   const canManage = can(ctx.role, "campaigns.manage");
+  const aws = await getTeamAws(ctx.team.id);
   const bookExists = c.book !== null;
   const [books, domains, audience, counts, usage] = await Promise.all([
     listBooks(ctx.team.id),
@@ -79,6 +81,8 @@ export default async function CampaignPage({
         campaignId={c.id}
         status={c.status}
         canManage={canManage}
+        userEmail={ctx.session.user.email}
+        sesSandbox={aws?.sesAccountStatus !== "production"}
         books={books.map((b) => ({
           id: b.id,
           name: b.name,
@@ -98,7 +102,7 @@ export default async function CampaignPage({
           from: c.from,
           replyTo: c.replyTo ?? "",
           subject: c.subject,
-          blocks: editorBlocksOf(c.blocks),
+          nodes: editorNodesOf(c.blocks),
         }}
       />
 

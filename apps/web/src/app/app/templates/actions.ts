@@ -6,6 +6,7 @@ import { requestMeta } from "@/lib/audit";
 import type { Result } from "@/lib/result";
 import { requireTeam } from "@/lib/session";
 import * as templates from "@/services/templates";
+import { sendTemplateTest } from "@/services/test-send";
 
 export type { Result } from "@/lib/result";
 
@@ -131,4 +132,27 @@ export async function restoreVersion(
       variablesSchema: res.data.variablesSchema,
     },
   };
+}
+
+/**
+ * Sends one copy of a saved template.
+ *
+ * Unlike the campaign version this needs the template to exist: `createEmail`
+ * reads the row itself so the mail log records which template and which
+ * version produced the message. Testing an unsaved edit would mean inventing a
+ * second render path whose output nothing else uses — the editor asks for a
+ * save first instead.
+ */
+export async function sendTemplateTestAction(
+  slug: string,
+  input: { to: string[]; from: string; variables: Record<string, unknown> },
+): Promise<Result<{ emailId: string }>> {
+  const a = await actor();
+  if (!can(a.role, "templates.manage")) return DENIED;
+  const res = await sendTemplateTest(
+    { teamId: a.teamId, userId: a.userId },
+    { to: input.to, from: input.from, slug, variables: input.variables },
+  );
+  if (res.ok) revalidatePath("/app/emails");
+  return res.ok ? { ok: true, data: { emailId: res.data.emailId } } : res;
 }
