@@ -3,7 +3,12 @@ import { Extension } from "@tiptap/core";
 import Link from "@tiptap/extension-link";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit, { type StarterKitOptions } from "@tiptap/starter-kit";
-import { useEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import { SafeUrl } from "@sendsprite/shared";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
@@ -169,6 +174,42 @@ export function InlineEditor({
       <div className={cn(CONTENT_CLASS, "text-white/40")}>Loading editor…</div>
     );
 
+  /**
+   * Keep the caret in the document while a toolbar button is used.
+   *
+   * A button steals focus on `mousedown`, before its own `click` handler ever
+   * runs, and `chain().focus()` does not put it back in time: Tiptap defers
+   * `view.focus()` into a `requestAnimationFrame` on purpose — for React, see
+   * `@tiptap/core` `commands/focus.ts` and ueberdosis/tiptap#1520. So when the
+   * click handler returns, `document.activeElement` is still the button, and a
+   * keystroke that arrives before the next frame is delivered to a `<button>`,
+   * which silently drops it. Clicking **Bold** and typing at ordinary speed is
+   * inside that window; the result is not an error but an email body missing
+   * its first letter, discovered by the recipients.
+   *
+   * Preventing the default of `mousedown` is the fix rather than a shorter
+   * wait: the editor never loses focus, so nothing has to be given back and no
+   * frame has to elapse. It only covers a pointer, though — activating a
+   * focused button with Enter or Space fires `click` with no `mousedown` at
+   * all, and there focus really is on the button and really must move.
+   */
+  const keepCaret = (e: ReactMouseEvent<HTMLButtonElement>) =>
+    e.preventDefault();
+
+  /**
+   * Move focus into the document synchronously, for the keyboard path above.
+   *
+   * ProseMirror's `hasFocus()` is `activeElement === view.dom` and its
+   * `focus()` sets that immediately, so the editor is focused by the time this
+   * returns — which is what the deferred command could not promise. It also
+   * means the `focus()` that used to head each chain below would now be a
+   * no-op, so the chains no longer carry one: focus is arranged here, once,
+   * before the command runs.
+   */
+  const focusEditor = () => {
+    if (!editor.view.hasFocus()) editor.view.focus();
+  };
+
   const applyLink = () => {
     setLinkError(null);
     const current = editor.getAttributes("link").href;
@@ -179,7 +220,8 @@ export function InlineEditor({
     if (answer === null) return;
     const raw = answer.trim();
     if (raw === "") {
-      editor.chain().focus().extendMarkRange("link").unsetLink().run();
+      focusEditor();
+      editor.chain().extendMarkRange("link").unsetLink().run();
       return;
     }
     const parsed = SafeUrl.safeParse(raw);
@@ -189,12 +231,8 @@ export function InlineEditor({
       setLinkError(parsed.error.issues[0]?.message ?? "That URL is not valid.");
       return;
     }
-    editor
-      .chain()
-      .focus()
-      .extendMarkRange("link")
-      .setLink({ href: parsed.data })
-      .run();
+    focusEditor();
+    editor.chain().extendMarkRange("link").setLink({ href: parsed.data }).run();
   };
 
   const mark = (active: boolean) =>
@@ -209,7 +247,11 @@ export function InlineEditor({
             variant="ghost"
             className={mark(editor.isActive("bold"))}
             aria-pressed={editor.isActive("bold")}
-            onClick={() => editor.chain().focus().toggleBold().run()}
+            onMouseDown={keepCaret}
+            onClick={() => {
+              focusEditor();
+              editor.chain().toggleBold().run();
+            }}
           >
             Bold
           </Button>
@@ -218,7 +260,11 @@ export function InlineEditor({
             variant="ghost"
             className={mark(editor.isActive("italic"))}
             aria-pressed={editor.isActive("italic")}
-            onClick={() => editor.chain().focus().toggleItalic().run()}
+            onMouseDown={keepCaret}
+            onClick={() => {
+              focusEditor();
+              editor.chain().toggleItalic().run();
+            }}
           >
             Italic
           </Button>
@@ -227,6 +273,7 @@ export function InlineEditor({
             variant="ghost"
             className={mark(editor.isActive("link"))}
             aria-pressed={editor.isActive("link")}
+            onMouseDown={keepCaret}
             onClick={applyLink}
           >
             Link

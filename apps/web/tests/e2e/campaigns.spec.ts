@@ -170,21 +170,6 @@ const rowFor = (page: Page, text: string) =>
 const blockCard = (page: Page, position: number, kind: string) =>
   page.locator("li").filter({ hasText: `${position}. ${kind}` });
 
-/**
- * Click a mark in the text block's toolbar and wait until the editor has it.
- *
- * Both halves matter. `aria-pressed` says the mark is on, and focus back on
- * the contenteditable says the *next* keystroke will reach the document — a
- * `page.keyboard.type` issued before that lands on the button instead and the
- * first character is simply lost, which is a silently wrong assertion rather
- * than a failing one.
- */
-async function toggleMark(page: Page, button: Locator, on: boolean) {
-  await button.click();
-  await expect(button).toHaveAttribute("aria-pressed", String(on));
-  await expect(page.getByLabel("Campaign text block")).toBeFocused();
-}
-
 /** The token out of either unsubscribe URL. They must be the same one. */
 function tokenOf(url: string): string {
   const token = /\/unsubscribe\/([A-Za-z0-9_-]+)/.exec(url)?.[1];
@@ -301,16 +286,54 @@ test("a campaign reaches one eligible contact, and unsubscribing needs a POST", 
   const bold = page.getByRole("button", { name: "Bold", exact: true });
   await body.click();
   await expect(body).toBeFocused();
+
+  // The toolbar must leave the caret in the document *before its click
+  // handler returns*, and that is asserted here rather than by typing,
+  // because no Playwright assertion can see it. Tiptap's `focus()` command
+  // defers `view.focus()` into a `requestAnimationFrame`, so the gap is one
+  // frame wide: by the time a retrying `toBeFocused()` looks, or a
+  // `keyboard.type` has crossed the wire, the frame has run and the bug has
+  // healed itself — while a person typing at speed loses the character. The
+  // only way to catch it is to dispatch the click and read
+  // `document.activeElement` in the same task, inside the page.
+  //
+  // `click()` on a focused button is also the keyboard path exactly: Enter or
+  // Space on a toolbar button fires `click` with no `mousedown` to prevent,
+  // which is the half that `preventDefault` cannot cover. Bold is toggled on
+  // and straight back off, so the body is left as it was found.
+  const caretStayedInTheDocument = await page.evaluate(() => {
+    const button = [...document.querySelectorAll("button")].find(
+      (b) => b.textContent?.trim() === "Bold",
+    );
+    const editor = document.querySelector('[aria-label="Campaign text block"]');
+    if (!button || !editor) return "the toolbar or the editor is not there";
+    const press = () => {
+      button.focus();
+      button.click();
+      return document.activeElement === editor;
+    };
+    const on = press();
+    const off = press();
+    return on && off
+      ? true
+      : `focus was still on the button after ${on ? "the second" : "the first"} click`;
+  });
+  expect(caretStayedInTheDocument).toBe(true);
+
   await page.keyboard.press("ControlOrMeta+a");
   await page.keyboard.type("Read the ");
-  // The toolbar puts focus back in the editor itself (`chain().focus()`), and
-  // the next keystroke has to land there rather than on the button — so wait
-  // for both halves of that to have happened. Typing straight after the click
-  // loses the first character.
-  await toggleMark(page, bold, true);
+  // Click, then type — with nothing awaited in between, which is the point.
+  // The toolbar button never takes focus off the contenteditable, so the very
+  // next keystroke lands in the document. A spec that waited here for focus to
+  // come back would be asserting on its own patience: the first character
+  // would go missing for every real author typing at speed, and this would
+  // still pass. The marks are checked after the text, never before it.
+  await bold.click();
   await page.keyboard.type("August notes");
-  await toggleMark(page, bold, false);
+  await expect(bold).toHaveAttribute("aria-pressed", "true");
+  await bold.click();
   await page.keyboard.type(", or visit the blog");
+  await expect(bold).toHaveAttribute("aria-pressed", "false");
   // Select "the blog" and link it. The editor asks for the URL with a
   // `window.prompt`, so the URL arrives the way a person would give it.
   for (let i = 0; i < "the blog".length; i++)
@@ -365,9 +388,11 @@ test("a campaign reaches one eligible contact, and unsubscribing needs a POST", 
   await expect(stat("Subscribed")).toContainText("2");
   await expect(stat("Suppressed")).toContainText("1");
   await expect(stat("Eligible")).toContainText("1");
-  // The sentence above them, whose verb agrees with the number.
+  // The sentence above them — one element, so the count and the words that
+  // give it meaning reach a screen reader together rather than as a fragment
+  // beginning "person receives…". Its verb agrees with the number too.
   await expect(
-    page.getByText("person receives this campaign, of 3 in Newsletter."),
+    page.getByText("1 person receives this campaign, of 3 in Newsletter."),
   ).toBeVisible();
   // Both exclusions are named, and both are somebody different: the
   // suppressed contact still consents, the unsubscribed one is deliverable.

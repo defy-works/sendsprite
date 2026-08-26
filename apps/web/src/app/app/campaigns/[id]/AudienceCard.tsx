@@ -62,15 +62,23 @@ export function AudienceCard({
         </Link>
       </CardHeader>
       <CardBody className="flex flex-col gap-4">
-        <div>
-          <p className="text-3xl font-medium tabular-nums">
+        {/* One sentence in one element. The number and the words that give
+            it meaning used to be two siblings, which reads correctly down the
+            page and reaches anything consuming text — a screen reader above
+            all — as the fragment "person receives this campaign, of 3 in
+            Newsletter". This is the line that says how many real people are
+            about to be mailed; it is the last one that should arrive without
+            its subject. A `block` span keeps the number on its own line at its
+            own size, so the paragraph reads as one sentence and still looks
+            like a headline number over a caption. Nothing is duplicated and
+            nothing is hidden: what is read out is exactly what is on screen. */}
+        <p className="text-sm text-white/65">
+          <span className="block text-3xl font-medium text-white tabular-nums">
             {formatCount(a.eligible)}
-          </p>
-          <p className="text-sm text-white/65">
-            {a.eligible === 1 ? "person receives" : "people receive"} this
-            campaign, of {formatCount(a.contacts)} in {bookName}.
-          </p>
-        </div>
+          </span>{" "}
+          {a.eligible === 1 ? "person receives" : "people receive"} this
+          campaign, of {formatCount(a.contacts)} in {bookName}.
+        </p>
 
         {/* Four views of one population, not four buckets that sum to it:
             `eligible` is a subset of `subscribed`, and `suppressed` overlaps
