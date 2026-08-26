@@ -33,6 +33,18 @@ import {
   TemplateVersionObject,
   UpdateTemplateInput,
 } from "./api/templates";
+import {
+  ContactBookObject,
+  ContactObject,
+  CreateContactBookInput,
+  CreateContactInput,
+  ImportContactsInput,
+  ImportContactsResult,
+  UnsubscribeContactInput,
+  UnsubscribeResult,
+  UpdateContactBookInput,
+  UpdateContactInput,
+} from "./api/contacts";
 import { SendStatsObject } from "./api/stats";
 import { MeObject } from "./api/me";
 import { StreamChange } from "./api/stream";
@@ -112,6 +124,12 @@ const inputSchemas = {
   CreateTemplateInput,
   UpdateTemplateInput,
   RenderTemplateInput,
+  CreateContactBookInput,
+  UpdateContactBookInput,
+  CreateContactInput,
+  UpdateContactInput,
+  ImportContactsInput,
+  UnsubscribeContactInput,
 };
 /** Response bodies: emitted with `io: "output"`. */
 const outputSchemas = {
@@ -137,6 +155,12 @@ const outputSchemas = {
   TemplateDetail,
   TemplatePage: pageOf(TemplateObject),
   RenderedTemplateObject,
+  ContactBookObject,
+  ContactBookPage: pageOf(ContactBookObject),
+  ContactObject,
+  ContactPage: pageOf(ContactObject),
+  ImportContactsResult,
+  UnsubscribeResult,
   SendStatsObject,
   MeObject,
   // Registered only so `/stream`'s description can name it; no operation refers to it.
@@ -611,6 +635,135 @@ export function buildOpenApiDocument(opts: OpenApiOptions) {
         },
       }),
     },
+    "/contact-books": {
+      get: op("Contacts", "listContactBooks", "List contact books", {
+        description: "Newest first, each with its contact counts.",
+        parameters: pageParams,
+        responses: {
+          "200": json(ref("ContactBookPage"), "Page of contact books"),
+          ...errors(...common, "validation_error"),
+        },
+      }),
+      post: op("Contacts", "createContactBook", "Create a contact book", {
+        requestBody: body("CreateContactBookInput"),
+        responses: {
+          "201": json(ref("ContactBookObject"), "Contact book"),
+          ...errors(...common, "validation_error"),
+        },
+      }),
+    },
+    "/contact-books/{id}": {
+      get: op("Contacts", "getContactBook", "Get a contact book", {
+        parameters: [idParam()],
+        responses: {
+          "200": json(ref("ContactBookObject"), "Contact book"),
+          ...errors(...common, "not_found"),
+        },
+      }),
+      patch: op("Contacts", "updateContactBook", "Update a contact book", {
+        parameters: [idParam()],
+        requestBody: body("UpdateContactBookInput"),
+        responses: {
+          "200": json(ref("ContactBookObject"), "Updated contact book"),
+          ...errors(...common, "validation_error", "not_found"),
+        },
+      }),
+      delete: op("Contacts", "deleteContactBook", "Delete a contact book", {
+        description:
+          "Deletes every contact in the book. There is no undo, so this needs a key whose team role can manage settings.",
+        parameters: [idParam()],
+        responses: {
+          "204": { description: "Deleted" },
+          ...errors(...common, "not_found"),
+        },
+      }),
+    },
+    "/contact-books/{id}/contacts": {
+      get: op("Contacts", "listContacts", "List contacts in a book", {
+        description:
+          "Newest first. `q` matches an address prefix or either name.",
+        parameters: [
+          idParam(),
+          ...pageParams,
+          { name: "q", in: "query", schema: { type: "string" } },
+          {
+            name: "subscribed",
+            in: "query",
+            description: "Filter by consent.",
+            schema: { type: "string", enum: ["true", "false"] },
+          },
+        ],
+        responses: {
+          "200": json(ref("ContactPage"), "Page of contacts"),
+          ...errors(...common, "validation_error"),
+        },
+      }),
+      post: op("Contacts", "createContact", "Add a contact to a book", {
+        parameters: [idParam()],
+        requestBody: body("CreateContactInput"),
+        responses: {
+          "201": json(ref("ContactObject"), "Contact"),
+          ...errors(...common, "validation_error", "not_found", "conflict"),
+        },
+      }),
+    },
+    "/contact-books/{id}/contacts/{contactId}": {
+      get: op("Contacts", "getContact", "Get a contact", {
+        parameters: [idParam(), idParam("contactId")],
+        responses: {
+          "200": json(ref("ContactObject"), "Contact"),
+          ...errors(...common, "not_found"),
+        },
+      }),
+      patch: op("Contacts", "updateContact", "Update a contact", {
+        description:
+          "`subscribed: false` records consent withdrawal and stamps `unsubscribedAt`; `true` clears both. This is not the suppression list.",
+        parameters: [idParam(), idParam("contactId")],
+        requestBody: body("UpdateContactInput"),
+        responses: {
+          "200": json(ref("ContactObject"), "Updated contact"),
+          ...errors(...common, "validation_error", "not_found"),
+        },
+      }),
+      delete: op("Contacts", "deleteContact", "Delete a contact", {
+        parameters: [idParam(), idParam("contactId")],
+        responses: {
+          "204": { description: "Deleted" },
+          ...errors(...common, "not_found"),
+        },
+      }),
+    },
+    "/contact-books/{id}/contacts/import": {
+      post: op("Contacts", "importContacts", "Import contacts from CSV", {
+        description:
+          "The CSV needs an `email` column; `first_name`, `last_name`, `subscribed` and `unsubscribe_reason` are recognised, `created_at` is ignored, and every other column becomes a property. Up to 2 MB and 10 000 rows per call — import a bigger list in chunks. **Partial success is the normal outcome and answers `200`**: bad rows are counted in `skipped`, listed in `errors` (first 100) and do not fail the import, and duplicate addresses inside one file collapse to the last occurrence. Only a document that cannot be read at all is a `400`. A `subscribed` column is honoured for new contacts; an import never resubscribes an address that opted out, and never writes a suppression.",
+        parameters: [idParam()],
+        requestBody: body("ImportContactsInput"),
+        responses: {
+          "200": json(
+            ref("ImportContactsResult"),
+            "Import counts and per-row errors",
+          ),
+          ...errors(
+            ...common,
+            "validation_error",
+            "not_found",
+            "payload_too_large",
+          ),
+        },
+      }),
+    },
+    "/contacts/unsubscribe": {
+      post: op("Contacts", "unsubscribeContact", "Unsubscribe an address", {
+        description:
+          "Records consent withdrawal for an address across every book of the team, or one book with `bookId`. Idempotent: an address that is already out answers `200` with `unsubscribed: 0`. **This is not the suppression list**: it does not stop transactional mail — use `POST /suppressions` for that.",
+        requestBody: body("UnsubscribeContactInput"),
+        responses: {
+          "200": json(ref("UnsubscribeResult"), "How many contacts changed"),
+          ...errors(...common, "validation_error"),
+        },
+      }),
+    },
     "/stats": {
       get: op("Account", "getSendStats", "Sending stats", {
         description: "Send counts, 30-day rates and SES account-health alerts.",
@@ -669,6 +822,7 @@ export function buildOpenApiDocument(opts: OpenApiOptions) {
       { name: "Webhooks" },
       { name: "Suppressions" },
       { name: "Templates" },
+      { name: "Contacts" },
       { name: "Account" },
     ],
     components: {
