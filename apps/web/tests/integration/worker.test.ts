@@ -27,6 +27,16 @@ describe("worker", () => {
 
   beforeAll(async () => {
     pg = await startPg();
+    // `startWorker()` imports every handler module, and `billing-meter.ts`
+    // decides at import time whether to register its cron — which validates
+    // the whole env schema. Without these the import throws on APP_SECRET and
+    // every worker assertion below fails as "disabled". This file used to
+    // inherit them from whichever test ran earlier in the same vitest worker
+    // process; nothing may depend on that ordering.
+    process.env.APP_SECRET = "x".repeat(40);
+    process.env.APP_URL = "http://localhost:3000";
+    const { resetEnvCache } = await import("@/env.schema");
+    resetEnvCache();
     boss = await import("@/jobs/boss");
     health = await import("@/lib/health");
   });

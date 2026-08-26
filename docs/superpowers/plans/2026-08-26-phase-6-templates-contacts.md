@@ -8486,8 +8486,8 @@ sendsprite templates push ./emails --dry-run
 ```
 ````
 
-
 **Amendment (recorded after Task 12 shipped as `c684d42`).** The `/docs/templates` page must document the CLI directory layout as built — flat, three files per template: `<slug>.json` (`name`, `subject`, `variablesSchema`), `<slug>.html`, and `<slug>.txt` present only when the template has a text body. Two behaviours need saying plainly because they are safety properties, not incidentals: **`push` never deletes a remote template** because a local file is missing (it reports and leaves it), and a **missing `<slug>.txt` means "no opinion", not "clear the text body"** — there is currently no CLI path to clear it (Phase 7 opener 17). Also tell the reader to add `* text=auto eol=lf` to a `.gitattributes` in their template directory: on Windows with `core.autocrlf=true` a checked-out body becomes CRLF, and `push` will correctly — but confusingly — see that as a change.
+
 - [ ] **Step 4: Write `/docs/contacts`**
 
 `apps/web/src/app/docs/contacts/page.mdx`:

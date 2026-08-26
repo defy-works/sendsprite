@@ -222,13 +222,19 @@ test("MCP: get_send_stats, list_domains and send_email over an in-memory transpo
 
   try {
     const tools = (await mcp.listTools()).tools.map((t) => t.name);
+    // Exact and ordered on purpose: `tools/list` order is what a model reads
+    // first, and a tool appearing or vanishing unnoticed is the failure this
+    // catches. Adding a tool means updating this list deliberately.
     expect(tools).toEqual([
       "send_email",
       "get_email_status",
       "list_emails",
       "search_emails",
       "list_domains",
+      "list_templates",
+      "render_template",
       "get_send_stats",
+      "add_contact",
     ]);
 
     const stats = await mcp.callTool({ name: "get_send_stats", arguments: {} });

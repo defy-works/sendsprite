@@ -6,7 +6,7 @@ import type { Sendsprite } from "sendsprite";
  *
  * Every tool is a function of `(server, client)` rather than a data structure
  * so the MCP SDK can infer each handler's argument type from its own input
- * schema. Adding a tool — the Phase 5 `list_templates`, `render_template` and
+ * schema. Adding a tool — the Phase 6 `list_templates`, `render_template` and
  * `add_contact` — means writing one of these and appending it to the array.
  */
 export type ToolRegistration = (server: McpServer, client: Sendsprite) => void;
