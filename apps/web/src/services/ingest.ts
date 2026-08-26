@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { WebhookEventType } from "@sendsprite/shared";
 import { db } from "@/db";
 import { emails, type EmailEventType } from "@/db/schema";
@@ -40,13 +40,22 @@ export type IngestResult =
 
 /**
  * One SES event (the parsed SNS `Message`) → timeline event, status,
- * suppressions, webhook fan-out. Attribution is by the `ss_email` tag,
- * then by `ses_message_id`. Idempotent per SNS message id (SNS delivers
- * at least once): a redelivery reports `recorded: false` and does nothing
- * else. Open/Click from SES are acknowledged but ignored — our own
- * tracking endpoints are the one source for those.
+ * suppressions, webhook fan-out. Attribution is by the `ss_email` tag, then
+ * by `ses_message_id`, and **always within `teamId`** — the team whose SNS
+ * topic the event arrived on.
+ *
+ * The team predicate is load-bearing, not defensive. Every tenant runs its
+ * own AWS account and can put whatever it likes in an `ss_email` tag, so
+ * without it tenant A could name tenant B's email id and write events,
+ * status changes and suppressions into B's timeline.
+ *
+ * Idempotent per SNS message id (SNS delivers at least once): a redelivery
+ * reports `recorded: false` and does nothing else. Open/Click from SES are
+ * acknowledged but ignored — our own tracking endpoints are the one source
+ * for those.
  */
 export async function ingestSesEvent(
+  teamId: string,
   raw: unknown,
   snsMessageId: string,
   deps: { enqueue: Enqueue },
@@ -56,11 +65,19 @@ export async function ingestSesEvent(
   if (ev.type === "opened" || ev.type === "clicked")
     return { ok: true, recorded: false };
   const [e] = ev.emailId
-    ? await db().select().from(emails).where(eq(emails.id, ev.emailId))
+    ? await db()
+        .select()
+        .from(emails)
+        .where(and(eq(emails.teamId, teamId), eq(emails.id, ev.emailId)))
     : await db()
         .select()
         .from(emails)
-        .where(eq(emails.sesMessageId, ev.sesMessageId));
+        .where(
+          and(
+            eq(emails.teamId, teamId),
+            eq(emails.sesMessageId, ev.sesMessageId),
+          ),
+        );
   if (!e) return { ok: false, reason: "unknown_email" };
   const row = await recordEvent({
     emailId: e.id,

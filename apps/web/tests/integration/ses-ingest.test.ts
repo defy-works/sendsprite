@@ -14,9 +14,10 @@ const TOPIC = "arn:aws:sns:us-east-1:1:sendsprite-events";
 vi.mock("@/lib/sns-message", () => ({
   verifySnsMessage: async (raw: unknown) => raw,
 }));
-vi.mock("@/services/instance-settings", () => ({
-  getInstanceSettings: async () => ({ snsTopicArn: TOPIC }),
-  updateInstanceSettings: async () => undefined,
+vi.mock("@/services/team-aws", () => ({
+  getTeamAws: async (teamId: string) =>
+    teamId === "org_1" ? { snsTopicArn: TOPIC } : null,
+  updateTeamAws: async () => undefined,
 }));
 const routeEnqueue = vi.fn(async () => "");
 vi.mock("@/jobs/enqueue", () => ({ enqueue: routeEnqueue }));
@@ -101,9 +102,9 @@ const delivery = (sesMessageId: string, emailId: string | null) =>
       smtpResponse: "250 ok",
     },
   });
-const ingest = async (raw: unknown, snsId: string) => {
+const ingest = async (raw: unknown, snsId: string, teamId = "org_1") => {
   const { ingestSesEvent } = await import("@/services/ingest");
-  return ingestSesEvent(raw, snsId, { enqueue });
+  return ingestSesEvent(teamId, raw, snsId, { enqueue });
 };
 const enqueue = vi.fn(async () => "");
 
@@ -296,12 +297,12 @@ describe("ingestSesEvent", () => {
     ).toMatchObject([{ reason: "complaint" }]);
   });
 
-  it("POST /api/webhooks/ses ingests a Notification and always acks", async () => {
+  it("POST /api/webhooks/ses/[teamId] ingests a Notification and always acks", async () => {
     const id = await seed("ses-9");
-    const { POST } = await import("@/app/api/webhooks/ses/route");
-    const post = (Message: string, MessageId: string) =>
+    const { POST } = await import("@/app/api/webhooks/ses/[teamId]/route");
+    const post = (Message: string, MessageId: string, teamId = "org_1") =>
       POST(
-        new Request("https://mail.acme.com/api/webhooks/ses", {
+        new Request(`https://mail.acme.com/api/webhooks/ses/${teamId}`, {
           method: "POST",
           headers: { "x-amz-sns-message-type": "Notification" },
           body: JSON.stringify({
@@ -312,6 +313,7 @@ describe("ingestSesEvent", () => {
             Timestamp: "2026-08-25T00:00:00Z",
           }),
         }),
+        { params: Promise.resolve({ teamId }) },
       );
     expect(
       (await post(JSON.stringify(delivery("ses-9", id)), "m1")).status,
@@ -323,5 +325,47 @@ describe("ingestSesEvent", () => {
     ).toBe(200);
     expect((await post("not json", "m3")).status).toBe(200);
     expect(await eventsOf(id)).toHaveLength(1);
+  });
+});
+
+/**
+ * Every tenant runs its own AWS account and posts to its own webhook path.
+ * Without a team predicate on the attribution lookup, tenant A could name
+ * tenant B's email id in an `ss_email` tag and write events, status changes
+ * and suppressions into B's timeline.
+ */
+describe("cross-tenant attribution", () => {
+  it("refuses an event naming another team's email", async () => {
+    await pg.db.execute(
+      `insert into "organization"(id,name,slug,created_at) values ('org_2','Beta','beta',now()) on conflict do nothing`,
+    );
+    const victim = await seed("ses-victim");
+    const before = await eventsOf(victim);
+
+    // org_2 posts an event tagged with org_1's email id.
+    expect(
+      await ingest(bounce("ses-victim", victim), "sns-cross-1", "org_2"),
+    ).toEqual({ ok: false, reason: "unknown_email" });
+
+    expect(await eventsOf(victim)).toHaveLength(before.length);
+    expect((await load(victim)).status).toBe("sent");
+  });
+
+  it("refuses an untagged event matched only by ses_message_id", async () => {
+    const victim = await seed("ses-victim-2");
+    expect(
+      await ingest(bounce("ses-victim-2", null), "sns-cross-2", "org_2"),
+    ).toEqual({ ok: false, reason: "unknown_email" });
+    expect((await load(victim)).status).toBe("sent");
+  });
+
+  it("writes no suppression for the other team", async () => {
+    const victim = await seed("ses-victim-3");
+    await ingest(bounce("ses-victim-3", victim), "sns-cross-3", "org_2");
+    const rows = await pg.db
+      .select()
+      .from(suppressions)
+      .where(eq(suppressions.teamId, "org_2"));
+    expect(rows).toHaveLength(0);
   });
 });

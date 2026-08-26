@@ -5,10 +5,7 @@ import { resolveAwsContext } from "@/lib/aws/credentials";
 import { verifySnsMessage } from "@/lib/sns-message";
 import { enqueue } from "@/jobs/enqueue";
 import { ingestSesEvent } from "@/services/ingest";
-import {
-  getInstanceSettings,
-  updateInstanceSettings,
-} from "@/services/instance-settings";
+import { getTeamAws, updateTeamAws } from "@/services/team-aws";
 
 export const dynamic = "force-dynamic";
 
@@ -30,12 +27,15 @@ type Confirm = { arn: string | null } | { error: string; status: number };
  * documents), host-guarded, redirect-free and time-limited: a subscription
  * that never confirms is worse than one without the unsubscribe guard.
  */
-async function confirmSubscription(msg: {
-  TopicArn: string;
-  Token: string;
-  SubscribeURL: string;
-}): Promise<Confirm> {
-  const ctx = await resolveAwsContext().catch(() => null);
+async function confirmSubscription(
+  teamId: string,
+  msg: {
+    TopicArn: string;
+    Token: string;
+    SubscribeURL: string;
+  },
+): Promise<Confirm> {
+  const ctx = await resolveAwsContext(teamId).catch(() => null);
   if (ctx) {
     try {
       const r = await makeSns(ctx).send(
@@ -67,11 +67,18 @@ async function confirmSubscription(msg: {
 }
 
 /**
- * SNS → Sendsprite: verify signature, confirm subscription, ingest events.
+ * SNS → Sendsprite for one team: verify signature, confirm subscription,
+ * ingest events. The path names the team because every tenant subscribes its
+ * own AWS account's topic to its own endpoint.
+ *
  * Notifications are always acknowledged (200): SNS would otherwise retry a
  * message we can never process, so non-ok outcomes are logged instead.
  */
-export async function POST(req: Request) {
+export async function POST(
+  req: Request,
+  { params }: { params: Promise<{ teamId: string }> },
+) {
+  const { teamId } = await params;
   if (Number(req.headers.get("content-length") ?? 0) > MAX_BODY_BYTES)
     return NextResponse.json({ error: "too_large" }, { status: 413 });
   const text = await req.text();
@@ -89,24 +96,26 @@ export async function POST(req: Request) {
   } catch {
     return NextResponse.json({ error: "bad_signature" }, { status: 403 });
   }
-  const settings = await getInstanceSettings();
-  if (!settings.snsTopicArn || msg.TopicArn !== settings.snsTopicArn)
+  // Two independent checks. The path alone is guessable, and a topic ARN
+  // alone says nothing about which tenant the message is for; both must hold.
+  const aws = await getTeamAws(teamId);
+  if (!aws?.snsTopicArn || msg.TopicArn !== aws.snsTopicArn)
     return NextResponse.json({ error: "unknown_topic" }, { status: 403 });
 
   if (msg.Type === "SubscriptionConfirmation") {
-    const r = await confirmSubscription(msg);
+    const r = await confirmSubscription(teamId, msg);
     if ("error" in r)
       return NextResponse.json({ error: r.error }, { status: r.status });
     // Never replace a real ARN with a sentinel; a later reconnect fills it in.
     if (r.arn)
-      await updateInstanceSettings({ snsSubscriptionArn: r.arn }, undefined, {
+      await updateTeamAws(teamId, { snsSubscriptionArn: r.arn }, undefined, {
         audit: false,
       });
     else console.warn("[ses] subscription confirmed but no ARN was returned");
     return NextResponse.json({ ok: true });
   }
   if (msg.Type === "UnsubscribeConfirmation") {
-    await updateInstanceSettings({ snsSubscriptionArn: null }, undefined, {
+    await updateTeamAws(teamId, { snsSubscriptionArn: null }, undefined, {
       audit: false,
     });
     return NextResponse.json({ ok: true });
@@ -118,7 +127,7 @@ export async function POST(req: Request) {
     console.warn("[ses] notification is not JSON", msg.MessageId);
     return NextResponse.json({ ok: true });
   }
-  const r = await ingestSesEvent(event, msg.MessageId, { enqueue });
+  const r = await ingestSesEvent(teamId, event, msg.MessageId, { enqueue });
   if (!r.ok)
     console.warn("[ses] notification ignored", msg.MessageId, r.reason);
   return NextResponse.json({ ok: true });
