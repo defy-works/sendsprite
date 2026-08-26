@@ -46,6 +46,26 @@ async function until<T>(
     await new Promise((r) => setTimeout(r, 250));
   }
 }
+/**
+ * Wait until no `domain.verify` job is queued or running.
+ *
+ * `sweepDomainVerification()` enqueues under an exclusive policy, so it
+ * answers 0 while a job with the same key is still `created` or `active`.
+ * Observing `lastCheckedAt` is not enough: the handler writes that row and
+ * then returns, and the job stays `active` until pg-boss settles it. The gap
+ * is small on a quiet machine and wide on a loaded CI runner — and Phase 7
+ * added three more crons to the same worker, which widened it further.
+ */
+const verifyJobsSettled = async () => {
+  const rows = await pg.db.execute(
+    sql`select count(*)::int as n from pgboss.job where name = 'domain.verify' and state in ('created','active')`,
+  );
+  const row = (
+    Array.isArray(rows) ? rows[0] : (rows as { rows: unknown[] }).rows[0]
+  ) as { n: number };
+  return row.n;
+};
+
 const load = async (id: string) => {
   const [d] = await pg.db.select().from(domains).where(eq(domains.id, id));
   if (!d) throw new Error("domain missing");
@@ -147,8 +167,10 @@ describe("domain verification through pg-boss", () => {
     );
     expect(first.status).toBe("pending");
 
-    // Sweep #1: the previous verify job is completed, so the exclusive key
-    // is free and the send goes through.
+    // Sweep #1: wait for the previous verify job to actually settle — not just
+    // for the row it wrote — so the exclusive key is free and the send goes
+    // through.
+    await until("first verify settled", verifyJobsSettled, (n) => n === 0);
     await pg.db
       .update(domains)
       .set({ lastCheckedAt: new Date(Date.now() - 200_000) })
@@ -161,6 +183,7 @@ describe("domain verification through pg-boss", () => {
     );
 
     // Sweep #2: same again — the loop keeps going.
+    await until("second verify settled", verifyJobsSettled, (n) => n === 0);
     await pg.db
       .update(domains)
       .set({ lastCheckedAt: new Date(Date.now() - 200_000) })
