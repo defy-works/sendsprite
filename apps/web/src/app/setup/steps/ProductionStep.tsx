@@ -111,10 +111,23 @@ export function ProductionStep({ settings, mode = "wizard" }: WizardProps) {
           </div>
           <div>
             <Label htmlFor="mailType">Mail type</Label>
-            <Select id="mailType" name="mailType" defaultValue="TRANSACTIONAL">
-              <option value="TRANSACTIONAL">Transactional</option>
-              <option value="MARKETING">Marketing</option>
-            </Select>
+            <Select
+              id="mailType"
+              name="mailType"
+              defaultValue="TRANSACTIONAL"
+              options={[
+                {
+                  value: "TRANSACTIONAL",
+                  label: "Transactional",
+                  hint: "Receipts, password resets, notifications",
+                },
+                {
+                  value: "MARKETING",
+                  label: "Marketing",
+                  hint: "Newsletters and campaigns to a list",
+                },
+              ]}
+            />
           </div>
           <div>
             <Label htmlFor="useCase">Use case</Label>
@@ -148,7 +161,7 @@ export function ProductionStep({ settings, mode = "wizard" }: WizardProps) {
             </Button>
           ) : (
             <Button
-              variant="ghost"
+              variant="subtle"
               onClick={() => router.push("/setup?step=cloudflare")}
             >
               Skip for now

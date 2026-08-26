@@ -295,23 +295,29 @@ export function CampaignEditor({
                   id="cmp-book"
                   value={c.bookId}
                   disabled={readOnly}
-                  onChange={(e) => set("bookId", e.target.value)}
-                >
-                  <option value="">Choose a book…</option>
-                  {/* A campaign outlives its book: `book_id` carries no
-                      foreign key, so the stored id can point at nothing.
-                      Kept as an option so the row still renders what it
-                      says, with a warning telling the author to repoint it. */}
-                  {bookMissing && (
-                    <option value={c.bookId}>Deleted book ({c.bookId})</option>
-                  )}
-                  {books.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.name} — {b.contactCount.toLocaleString("en-US")}{" "}
-                      contacts
-                    </option>
-                  ))}
-                </Select>
+                  placeholder="Choose a book…"
+                  onChange={(v) => set("bookId", v)}
+                  options={[
+                    /* A campaign outlives its book: `book_id` carries no
+                       foreign key, so the stored id can point at nothing.
+                       Kept as an option so the row still renders what it
+                       says, with a warning telling the author to repoint it. */
+                    ...(bookMissing
+                      ? [
+                          {
+                            value: c.bookId,
+                            label: "Deleted book",
+                            hint: c.bookId,
+                          },
+                        ]
+                      : []),
+                    ...books.map((b) => ({
+                      value: b.id,
+                      label: b.name,
+                      hint: `${b.contactCount.toLocaleString("en-US")} contacts`,
+                    })),
+                  ]}
+                />
                 {bookMissing && (
                   <p className="mt-1 text-xs text-amber-300">
                     The book this campaign was drawn from has been deleted. Pick
@@ -330,20 +336,21 @@ export function CampaignEditor({
                   id="cmp-domain"
                   value={c.domainId}
                   disabled={readOnly}
-                  onChange={(e) => set("domainId", e.target.value)}
-                >
-                  <option value="">Choose a domain…</option>
-                  {domainMissing && (
-                    <option value={c.domainId}>
-                      Deleted or unverified ({c.domainId})
-                    </option>
-                  )}
-                  {domains.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.name}
-                    </option>
-                  ))}
-                </Select>
+                  placeholder="Choose a domain…"
+                  onChange={(v) => set("domainId", v)}
+                  options={[
+                    ...(domainMissing
+                      ? [
+                          {
+                            value: c.domainId,
+                            label: "Deleted or unverified",
+                            hint: c.domainId,
+                          },
+                        ]
+                      : []),
+                    ...domains.map((d) => ({ value: d.id, label: d.name })),
+                  ]}
+                />
                 {domainMissing && (
                   <p className="mt-1 text-xs text-amber-300">
                     This domain is gone or no longer verified. A campaign sent
@@ -436,7 +443,7 @@ export function CampaignEditor({
                     <Button
                       key={kind}
                       size="sm"
-                      variant="ghost"
+                      variant="subtle"
                       onClick={() =>
                         setBlocks([
                           ...c.blocks,

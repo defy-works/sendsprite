@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { resubscribeConfirmation } from "@/app/app/contacts/resubscribe";
 
-const prompt = (reason: string | null) =>
-  resubscribeConfirmation({
+/** The dialog shows title and body together; assert on the pair. */
+const prompt = (reason: string | null) => {
+  const copy = resubscribeConfirmation({
     email: "ada@example.com",
     reason,
     unsubscribedWhen: "Aug 26, 10:40 AM UTC",
   });
+  return `${copy.title}
+${copy.body}`;
+};
 
 /**
  * The wording *is* the deliverable here: the service will happily resubscribe

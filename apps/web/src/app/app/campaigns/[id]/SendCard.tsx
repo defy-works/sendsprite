@@ -400,7 +400,7 @@ function ArmDialog({
           onChange={(e) => setTyped(e.target.value)}
         />
         <div className="mt-2 flex flex-wrap justify-end gap-3">
-          <Button variant="ghost" onClick={onDismiss} disabled={pending}>
+          <Button variant="subtle" onClick={onDismiss} disabled={pending}>
             Cancel
           </Button>
           <Button type="submit" disabled={!confirmed || pending}>
@@ -439,7 +439,7 @@ function CancelDialog({
       <p className="text-sm text-white/75">{copy.body}</p>
       {error && <Alert>{error}</Alert>}
       <div className="flex flex-wrap justify-end gap-3">
-        <Button variant="ghost" onClick={onDismiss} disabled={pending}>
+        <Button variant="subtle" onClick={onDismiss} disabled={pending}>
           {copy.dismiss}
         </Button>
         <Button

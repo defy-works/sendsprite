@@ -16,6 +16,7 @@ import {
   setSubscribed,
   type Result,
 } from "../actions";
+import { useConfirm } from "@/components/ui/confirm";
 import { resubscribeConfirmation } from "../resubscribe";
 
 /** Dates are pre-formatted on the server so SSR and hydration agree. */
@@ -74,6 +75,7 @@ export function ContactsPanel({
     async (_prev: unknown, fd: FormData) => addContact(bookId, fd),
     null,
   );
+  const confirm = useConfirm();
   const [busy, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [imported, setImported] = useState<string | null>(null);
@@ -95,18 +97,21 @@ export function ContactsPanel({
    * and the recorded reason, because those are the two facts that separate
    * "they asked to come back" from "somebody clicked the wrong row".
    */
-  const toggle = (c: ContactRow) => {
-    if (
-      c.subscribed ||
-      window.confirm(
-        resubscribeConfirmation({
-          email: c.email,
-          reason: c.reason,
-          unsubscribedWhen: c.unsubscribed,
-        }),
-      )
-    )
-      act(() => setSubscribed(bookId, c.id, !c.subscribed));
+  const toggle = async (c: ContactRow) => {
+    if (!c.subscribed) {
+      const copy = resubscribeConfirmation({
+        email: c.email,
+        reason: c.reason,
+        unsubscribedWhen: c.unsubscribed,
+      });
+      const ok = await confirm({
+        title: copy.title,
+        body: copy.body,
+        confirmLabel: "Resubscribe",
+      });
+      if (!ok) return;
+    }
+    act(() => setSubscribed(bookId, c.id, !c.subscribed));
   };
 
   const onFile = async (file: File) => {
@@ -165,7 +170,7 @@ export function ContactsPanel({
             placeholder="address or name"
           />
         </div>
-        <Button type="submit" variant="ghost">
+        <Button type="submit" variant="subtle">
           Search
         </Button>
       </form>
@@ -280,7 +285,7 @@ export function ContactsPanel({
                       <>
                         <Button
                           size="sm"
-                          variant="ghost"
+                          variant="subtle"
                           disabled={busy}
                           onClick={() => toggle(c)}
                         >
@@ -288,9 +293,17 @@ export function ContactsPanel({
                         </Button>
                         <Button
                           size="sm"
-                          variant="ghost"
+                          variant="subtle"
                           disabled={busy}
-                          onClick={() => act(() => removeContact(bookId, c.id))}
+                          onClick={async () => {
+                            const ok = await confirm({
+                              title: `Delete ${c.email}?`,
+                              body: "They are removed from this book. Their suppression status, if any, is separate and is left alone.",
+                              confirmLabel: "Delete contact",
+                              tone: "danger",
+                            });
+                            if (ok) act(() => removeContact(bookId, c.id));
+                          }}
                         >
                           Delete
                         </Button>

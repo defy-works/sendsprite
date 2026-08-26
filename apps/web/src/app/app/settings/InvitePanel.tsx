@@ -30,10 +30,16 @@ export function InvitePanel({ invites }: { invites: Invite[] }) {
         </div>
         <div>
           <Label htmlFor="invite-role">Role</Label>
-          <Select id="invite-role" name="role" defaultValue="member">
-            <option value="member">member</option>
-            <option value="admin">admin</option>
-          </Select>
+          <Select
+            id="invite-role"
+            name="role"
+            defaultValue="member"
+            className="w-40"
+            options={[
+              { value: "member", label: "Member" },
+              { value: "admin", label: "Admin" },
+            ]}
+          />
         </div>
         <Button type="submit" disabled={pending}>
           {pending ? "Inviting…" : "Invite"}
@@ -67,7 +73,7 @@ export function InvitePanel({ invites }: { invites: Invite[] }) {
               </span>
               <Button
                 size="sm"
-                variant="ghost"
+                variant="subtle"
                 disabled={cancelling}
                 onClick={() =>
                   start(async () => {

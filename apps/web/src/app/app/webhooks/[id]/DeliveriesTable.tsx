@@ -97,7 +97,7 @@ export function DeliveriesTable({
                   <td className="px-4 py-3 text-right">
                     <Button
                       size="sm"
-                      variant="ghost"
+                      variant="subtle"
                       disabled={busy}
                       onClick={() => replay(d)}
                     >

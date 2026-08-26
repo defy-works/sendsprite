@@ -53,6 +53,12 @@ function reasonLine(reason: string | null): string {
   }
 }
 
+/** Title and body, so the dialog can typeset them rather than print a blob. */
+export interface ResubscribeCopy {
+  title: string;
+  body: string;
+}
+
 export interface ResubscribePrompt {
   email: string;
   /** `unsubscribe_reason` exactly as stored. */
@@ -69,12 +75,12 @@ export interface ResubscribePrompt {
  * campaigns, and it is not the suppression list, so putting them back here
  * neither checks nor changes whether their address is suppressed.
  */
-export function resubscribeConfirmation(p: ResubscribePrompt): string {
-  return [
-    `Resubscribe ${p.email}?`,
-    "",
-    `They unsubscribed on ${p.unsubscribedWhen}. ${reasonLine(p.reason)}`,
-    "",
-    "Only do this if they asked to come back. Campaigns to this book will include them again, and the record of when they left is cleared.",
-  ].join("\n");
+export function resubscribeConfirmation(p: ResubscribePrompt): ResubscribeCopy {
+  return {
+    title: `Resubscribe ${p.email}?`,
+    body: [
+      `They unsubscribed on ${p.unsubscribedWhen}. ${reasonLine(p.reason)}`,
+      "Only do this if they asked to come back. Campaigns to this book will include them again, and the record of when they left is cleared.",
+    ].join(" "),
+  };
 }

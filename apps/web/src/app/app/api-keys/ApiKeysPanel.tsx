@@ -10,6 +10,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
 import { Label } from "@/components/ui/Label";
 import { Select } from "@/components/ui/Select";
+import { useConfirm } from "@/components/ui/confirm";
 
 /** Dates are pre-formatted on the server so SSR and hydration agree. */
 export type KeyRow = {
@@ -44,11 +45,17 @@ export function ApiKeysPanel({
     },
     null,
   );
+  const confirm = useConfirm();
   const [revoking, start] = useTransition();
   const [revokeError, setRevokeError] = useState<string | null>(null);
-  const revoke = (k: KeyRow) => {
-    if (!window.confirm(`Revoke "${k.name}"? Requests using it will fail.`))
-      return;
+  const revoke = async (k: KeyRow) => {
+    const ok = await confirm({
+      title: `Revoke "${k.name}"?`,
+      body: "Every request still using this key starts failing immediately. Revoking cannot be undone — issue a new key instead.",
+      confirmLabel: "Revoke key",
+      tone: "danger",
+    });
+    if (!ok) return;
     start(async () => {
       setRevokeError(null);
       try {
@@ -77,7 +84,7 @@ export function ApiKeysPanel({
                 <div>
                   <Button
                     size="sm"
-                    variant="ghost"
+                    variant="subtle"
                     onClick={() => setSecret(null)}
                   >
                     Done
@@ -103,21 +110,31 @@ export function ApiKeysPanel({
                     id="key-permission"
                     name="permission"
                     defaultValue="full"
-                  >
-                    <option value="full">full</option>
-                    <option value="sending_only">sending only</option>
-                  </Select>
+                    options={[
+                      {
+                        value: "full",
+                        label: "Full",
+                        hint: "Every endpoint this team can reach",
+                      },
+                      {
+                        value: "sending_only",
+                        label: "Sending only",
+                        hint: "Send mail; cannot read logs or override suppressions",
+                      },
+                    ]}
+                  />
                 </div>
                 <div>
                   <Label htmlFor="key-domain">Domain</Label>
-                  <Select id="key-domain" name="domainId" defaultValue="">
-                    <option value="">any</option>
-                    {domains.map((d) => (
-                      <option key={d.id} value={d.id}>
-                        {d.name}
-                      </option>
-                    ))}
-                  </Select>
+                  <Select
+                    id="key-domain"
+                    name="domainId"
+                    defaultValue=""
+                    options={[
+                      { value: "", label: "Any domain" },
+                      ...domains.map((d) => ({ value: d.id, label: d.name })),
+                    ]}
+                  />
                 </div>
                 <Button type="submit" disabled={pending}>
                   {pending ? "Creating…" : "Create key"}
@@ -187,7 +204,7 @@ export function ApiKeysPanel({
                       canRevoke && (
                         <Button
                           size="sm"
-                          variant="ghost"
+                          variant="dangerSubtle"
                           disabled={revoking}
                           onClick={() => revoke(k)}
                         >

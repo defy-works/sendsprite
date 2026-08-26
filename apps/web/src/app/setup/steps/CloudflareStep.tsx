@@ -77,7 +77,7 @@ export function CloudflareStep({
               </Button>
             )}
             <Button
-              variant="ghost"
+              variant="dangerSubtle"
               disabled={disconnecting}
               onClick={() =>
                 start(async () => {
@@ -101,7 +101,7 @@ export function CloudflareStep({
           </Button>
           {mode === "wizard" && (
             <Button
-              variant="ghost"
+              variant="subtle"
               onClick={() => router.push("/setup?step=done")}
             >
               Skip

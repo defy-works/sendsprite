@@ -3,7 +3,8 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { Button } from "@/components/ui/Button";
 import { CopyField } from "@/components/ui/CopyField";
-import { Alert } from "@/app/setup/steps/shared";
+import { Alert } from "@/components/ui/Alert";
+import { useConfirm } from "@/components/ui/confirm";
 import {
   deleteWebhook,
   rotateSecret,
@@ -22,6 +23,7 @@ export function WebhookActions({
   enabled: boolean;
 }) {
   const router = useRouter();
+  const confirm = useConfirm();
   const [busy, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -70,13 +72,13 @@ export function WebhookActions({
         <Button
           variant="secondary"
           disabled={busy}
-          onClick={() => {
-            if (
-              !window.confirm(
-                "Rotate the signing secret? Deliveries from now on are signed with the new one.",
-              )
-            )
-              return;
+          onClick={async () => {
+            const ok = await confirm({
+              title: "Rotate the signing secret?",
+              body: "Every delivery from now on is signed with the new secret. Your receiver keeps rejecting deliveries until it holds the new one, so have somewhere to paste it.",
+              confirmLabel: "Rotate secret",
+            });
+            if (!ok) return;
             run(
               async () => {
                 const res = await rotateSecret(id);
@@ -90,10 +92,16 @@ export function WebhookActions({
           Rotate secret
         </Button>
         <Button
-          variant="ghost"
+          variant="dangerSubtle"
           disabled={busy}
-          onClick={() => {
-            if (!window.confirm(`Delete the endpoint ${url}?`)) return;
+          onClick={async () => {
+            const ok = await confirm({
+              title: "Delete this endpoint?",
+              body: `Events stop being delivered to ${url}. Its delivery history goes with it.`,
+              confirmLabel: "Delete endpoint",
+              tone: "danger",
+            });
+            if (!ok) return;
             run(
               () => deleteWebhook(id),
               () => router.push("/app/webhooks"),
@@ -110,7 +118,7 @@ export function WebhookActions({
           </p>
           <CopyField value={secret} />
           <div>
-            <Button size="sm" variant="ghost" onClick={() => setSecret(null)}>
+            <Button size="sm" variant="subtle" onClick={() => setSecret(null)}>
               Done
             </Button>
           </div>

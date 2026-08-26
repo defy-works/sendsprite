@@ -7,6 +7,7 @@ import { Divider } from "@/components/ui/Divider";
 import { Input } from "@/components/ui/Input";
 import { Label } from "@/components/ui/Label";
 import { Select } from "@/components/ui/Select";
+import { useConfirm } from "@/components/ui/confirm";
 import type { WizardProps } from "../types";
 import { connectKeys, disconnectAws, type Result } from "../actions";
 import { QuickCreate } from "./QuickCreate";
@@ -36,6 +37,7 @@ function ConnectedPanel({
   mode,
 }: Pick<WizardProps, "settings"> & { mode: "wizard" | "settings" }) {
   const router = useRouter();
+  const confirm = useConfirm();
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
   return (
@@ -64,10 +66,16 @@ function ConnectedPanel({
           </Button>
         )}
         <Button
-          variant="ghost"
+          variant="dangerSubtle"
           disabled={pending}
-          onClick={() => {
-            if (!window.confirm("Disconnect AWS? Sending will stop.")) return;
+          onClick={async () => {
+            const ok = await confirm({
+              title: "Disconnect AWS?",
+              body: "Sending stops for this team the moment the connection goes. Domains, campaigns and logs are kept, but nothing leaves until an AWS account is connected again.",
+              confirmLabel: "Disconnect",
+              tone: "danger",
+            });
+            if (!ok) return;
             start(async () => {
               setError(null);
               const res = await disconnectAws();
@@ -121,14 +129,9 @@ function ConnectPanels({
         <Select
           id="region"
           value={region}
-          onChange={(e) => setRegion(e.target.value)}
-        >
-          {regions.map((r) => (
-            <option key={r} value={r}>
-              {r}
-            </option>
-          ))}
-        </Select>
+          onChange={setRegion}
+          options={regions.map((r) => ({ value: r, label: r }))}
+        />
       </div>
 
       <Panel title="One-click (recommended)">
@@ -142,7 +145,7 @@ function ConnectPanels({
       <Divider label="or" />
       {!manual ? (
         <div>
-          <Button variant="ghost" onClick={() => setManual(true)}>
+          <Button variant="subtle" onClick={() => setManual(true)}>
             Paste keys manually
           </Button>
         </div>

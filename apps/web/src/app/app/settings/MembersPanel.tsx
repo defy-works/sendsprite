@@ -5,6 +5,7 @@ import { changeRole, removeMember, type Result } from "./actions";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
+import { useConfirm } from "@/components/ui/confirm";
 
 type Member = {
   id: string;
@@ -23,6 +24,7 @@ export function MembersPanel({
   me: string;
   myRole: TeamRole;
 }) {
+  const confirm = useConfirm();
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const canEdit = can(myRole, "members.changeRole");
@@ -60,23 +62,16 @@ export function MembersPanel({
                 {canEdit && editable ? (
                   <Select
                     aria-label={`Role for ${m.email}`}
-                    className="h-8 w-auto text-xs"
+                    className="w-32"
                     value={m.role}
                     disabled={pending}
-                    onChange={(e) =>
-                      run(() => changeRole(m.id, e.target.value))
-                    }
-                  >
-                    {TEAM_ROLES.map((r) => (
-                      <option
-                        key={r}
-                        value={r}
-                        disabled={r === "owner" && myRole !== "owner"}
-                      >
-                        {r}
-                      </option>
-                    ))}
-                  </Select>
+                    onChange={(role) => run(() => changeRole(m.id, role))}
+                    options={TEAM_ROLES.map((r) => ({
+                      value: r,
+                      label: r[0]!.toUpperCase() + r.slice(1),
+                      disabled: r === "owner" && myRole !== "owner",
+                    }))}
+                  />
                 ) : (
                   <Badge variant={m.role === "owner" ? "indigo" : "muted"}>
                     {m.role}
@@ -85,11 +80,16 @@ export function MembersPanel({
                 {canRemove && editable && (
                   <Button
                     size="sm"
-                    variant="ghost"
+                    variant="dangerSubtle"
                     disabled={pending}
-                    onClick={() => {
-                      if (window.confirm(`Remove ${m.email} from the team?`))
-                        run(() => removeMember(m.id));
+                    onClick={async () => {
+                      const ok = await confirm({
+                        title: `Remove ${m.email}?`,
+                        body: "They lose access to this team immediately. Anything they created stays, and they can be invited back.",
+                        confirmLabel: "Remove member",
+                        tone: "danger",
+                      });
+                      if (ok) run(() => removeMember(m.id));
                     }}
                   >
                     Remove

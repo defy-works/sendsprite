@@ -69,14 +69,14 @@ export default async function EmailsPage({
       >
         <label className="flex flex-col gap-1 text-xs text-white/60">
           Status
-          <Select name="status" defaultValue={filters.status ?? ""}>
-            <option value="">Any</option>
-            {EMAIL_STATUS.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </Select>
+          <Select
+            name="status"
+            defaultValue={filters.status ?? ""}
+            options={[
+              { value: "", label: "Any" },
+              ...EMAIL_STATUS.map((s) => ({ value: s, label: s })),
+            ]}
+          />
         </label>
         <label className="flex flex-col gap-1 text-xs text-white/60">
           To
@@ -89,14 +89,14 @@ export default async function EmailsPage({
         </label>
         <label className="flex flex-col gap-1 text-xs text-white/60">
           Domain
-          <Select name="domainId" defaultValue={filters.domainId ?? ""}>
-            <option value="">Any</option>
-            {domains.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name}
-              </option>
-            ))}
-          </Select>
+          <Select
+            name="domainId"
+            defaultValue={filters.domainId ?? ""}
+            options={[
+              { value: "", label: "Any" },
+              ...domains.map((d) => ({ value: d.id, label: d.name })),
+            ]}
+          />
         </label>
         <label className="flex flex-col gap-1 text-xs text-white/60">
           Tag

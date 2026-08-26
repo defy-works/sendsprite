@@ -83,7 +83,7 @@ export function WebhooksPanel({
                 <div>
                   <Button
                     size="sm"
-                    variant="ghost"
+                    variant="subtle"
                     onClick={() => setSecret(null)}
                   >
                     Done

@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { useConfirm } from "@/components/ui/confirm";
 import { deleteTemplate, type Result } from "./actions";
 
 /** Dates are pre-formatted on the server so SSR and hydration agree. */
@@ -22,18 +23,21 @@ export function TemplateList({
   templates: TemplateRow[];
   canManage: boolean;
 }) {
+  const confirm = useConfirm();
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
 
-  const remove = (t: TemplateRow) => {
+  const remove = async (t: TemplateRow) => {
     // The warning is the point: a slug is what a live `POST /emails` names,
     // and deleting one breaks those sends rather than degrading them.
-    if (
-      !window.confirm(
-        `Delete the template "${t.slug}"? Sends that name it will fail.`,
-      )
-    )
-      return;
+    const ok = await confirm({
+      title: `Delete the template "${t.slug}"?`,
+      body: `Any live send that names template: "${t.slug}" starts failing, not falling back. Every version goes with it.`,
+      confirmLabel: "Delete template",
+      tone: "danger",
+      typeToConfirm: t.slug,
+    });
+    if (!ok) return;
     start(async () => {
       setError(null);
       try {
@@ -99,7 +103,7 @@ export function TemplateList({
                   {canManage && (
                     <Button
                       size="sm"
-                      variant="ghost"
+                      variant="dangerSubtle"
                       disabled={pending}
                       onClick={() => remove(t)}
                     >

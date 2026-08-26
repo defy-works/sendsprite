@@ -47,16 +47,12 @@ function BlockFields({
               id={`${id}-level`}
               value={String(block.level)}
               disabled={readOnly}
-              onChange={(e) =>
-                onChange({ ...block, level: headingLevelOf(e.target.value) })
-              }
-            >
-              {HEADING_LEVELS.map((l) => (
-                <option key={l} value={l}>
-                  H{l}
-                </option>
-              ))}
-            </Select>
+              onChange={(v) => onChange({ ...block, level: headingLevelOf(v) })}
+              options={HEADING_LEVELS.map((l) => ({
+                value: String(l),
+                label: `H${l}`,
+              }))}
+            />
           </div>
           <div className="min-w-60 flex-1">
             <Label htmlFor={`${id}-text`}>Text</Label>
@@ -251,7 +247,7 @@ export function BlockCard({
           </span>
         </div>
         {!readOnly && (
-          <Button size="sm" variant="ghost" onClick={onRemove}>
+          <Button size="sm" variant="subtle" onClick={onRemove}>
             Remove
           </Button>
         )}

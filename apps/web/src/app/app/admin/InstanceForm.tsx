@@ -32,12 +32,25 @@ export function InstanceForm({
       )}
       <div>
         <Label htmlFor="signupMode">Signup mode</Label>
-        <Select id="signupMode" name="signupMode" defaultValue={signupMode}>
-          <option value="auto">Auto (invite-only once a user exists)</option>
-          <option value="open">Open</option>
-          <option value="invite">Invite only</option>
-          <option value="closed">Closed</option>
-        </Select>
+        <Select
+          id="signupMode"
+          name="signupMode"
+          defaultValue={signupMode}
+          options={[
+            {
+              value: "auto",
+              label: "Auto",
+              hint: "Open until the first account exists, invite-only after",
+            },
+            { value: "open", label: "Open", hint: "Anyone may sign up" },
+            {
+              value: "invite",
+              label: "Invite only",
+              hint: "A pending invitation is required",
+            },
+            { value: "closed", label: "Closed", hint: "No new accounts" },
+          ]}
+        />
       </div>
       <label className="flex items-center gap-2 text-sm text-white/75">
         <input

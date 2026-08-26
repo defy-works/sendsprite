@@ -2,7 +2,9 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 import { Button } from "@/components/ui/Button";
-import { Alert } from "@/app/setup/steps/shared";
+import { Alert } from "@/components/ui/Alert";
+import { useConfirm } from "@/components/ui/confirm";
+import { useToast } from "@/components/ui/toast";
 import { deleteDomain, retryProvisioning, reverifyDomain } from "./actions";
 
 const REFRESH_MS = 15_000;
@@ -23,6 +25,8 @@ export function DomainActions({
   retryable: boolean;
 }) {
   const router = useRouter();
+  const confirm = useConfirm();
+  const toast = useToast();
   const [verifying, startVerify] = useTransition();
   const [retrying, startRetry] = useTransition();
   const [deleting, startDelete] = useTransition();
@@ -76,15 +80,17 @@ export function DomainActions({
           </Button>
         )}
         <Button
-          variant="ghost"
+          variant="dangerSubtle"
           disabled={busy}
-          onClick={() => {
-            if (
-              !window.confirm(
-                `Delete ${name}? The SES identity and any records we created are removed.`,
-              )
-            )
-              return;
+          onClick={async () => {
+            const ok = await confirm({
+              title: `Delete ${name}?`,
+              body: "The SES identity and any DNS records we created for it are removed. Mail cannot be sent from this domain again until it is re-added and re-verified.",
+              confirmLabel: "Delete domain",
+              tone: "danger",
+              typeToConfirm: name,
+            });
+            if (!ok) return;
             startDelete(async () => {
               setError(null);
               const res = await deleteDomain(id);
@@ -93,9 +99,12 @@ export function DomainActions({
                 return;
               }
               if (res.data.leftoverDnsRecords > 0)
-                window.alert(
-                  `${name} removed. ${res.data.leftoverDnsRecords} Cloudflare record(s) could not be deleted; remove them by hand.`,
-                );
+                toast({
+                  tone: "error",
+                  title: `${name} removed, with leftovers`,
+                  body: `${res.data.leftoverDnsRecords} Cloudflare record(s) could not be deleted. Remove them by hand or the zone keeps advertising a domain we no longer send for.`,
+                });
+              else toast({ tone: "success", title: `${name} removed` });
               router.push("/app/domains");
             });
           }}

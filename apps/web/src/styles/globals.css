@@ -232,6 +232,56 @@ table {
   font-size: clamp(2.25rem, 5vw, 3.5rem);
 }
 
+/* ========== OVERLAY / ENTRY MOTION ==========
+ *
+ * Declared at the top level rather than inside a `@utility`, because these are
+ * referenced from `animate-[...]` arbitrary values in components. All of them
+ * are wrapped in `motion-safe:` at the call site, and the
+ * `prefers-reduced-motion` block above collapses anything that is not.
+ */
+
+@keyframes modal-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes modal-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+}
+
+/* Menus and listboxes: a short, small rise from the trigger's edge. */
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.97);
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px) scale(0.98);
+  }
+}
+
+/* Row/card entry, staggered by an inline `animation-delay`. Distinct from
+ * `rise-in`: shorter and shallower, because a table of forty rows animating
+ * 20px each reads as the page failing to settle. */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@utility fade-up {
+  animation: fade-up var(--duration-normal) var(--ease-out-soft) backwards;
+}
+
 /* Indeterminate shimmer for loading surfaces. */
 @utility shimmer {
   position: relative;

@@ -6,6 +6,7 @@ import { Alert } from "@/components/ui/Alert";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { useConfirm } from "@/components/ui/confirm";
 import { deleteCampaign, type Result } from "./actions";
 
 /** Dates are pre-formatted on the server so SSR and hydration agree. */
@@ -52,18 +53,24 @@ export function CampaignList({
   /** Without a contact book there is no audience, so no campaign to make. */
   hasBook: boolean;
 }) {
+  const confirm = useConfirm();
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
 
-  const remove = (c: CampaignRow) => {
+  const remove = async (c: CampaignRow) => {
     // Honest about what a delete does and does not undo: the `emails` rows
     // stay in the mail log, because deleting a campaign is "stop listing
     // this", not "forget having mailed anyone".
-    const warning =
-      c.status === "sent" || c.status === "cancelled"
-        ? `Delete "${c.name}"? Its stats and body go; the messages already sent stay in the mail log.`
-        : `Delete "${c.name}"?`;
-    if (!window.confirm(warning)) return;
+    const ok = await confirm({
+      title: `Delete "${c.name}"?`,
+      body:
+        c.status === "sent" || c.status === "cancelled"
+          ? "Its stats and body go with it. The messages already sent stay in the mail log — this stops listing the campaign, it does not un-send anything."
+          : "This draft and its body are removed. It cannot be undone.",
+      confirmLabel: "Delete campaign",
+      tone: "danger",
+    });
+    if (!ok) return;
     start(async () => {
       setError(null);
       try {
@@ -146,7 +153,7 @@ export function CampaignList({
                   {canManage && (
                     <Button
                       size="sm"
-                      variant="ghost"
+                      variant="dangerSubtle"
                       // A campaign mid-fan-out cannot be deleted — the sweep
                       // would go on materialising rows for a row that is
                       // gone. Disabled with the reason rather than offered

@@ -8,6 +8,7 @@ import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
 import { Label } from "@/components/ui/Label";
+import { useConfirm } from "@/components/ui/confirm";
 import { createBook, deleteBook, type Result } from "./actions";
 
 /** Dates are pre-formatted on the server so SSR and hydration agree. */
@@ -40,16 +41,19 @@ export function BooksPanel({
     async (_prev: unknown, fd: FormData) => createBook(fd),
     null,
   );
+  const confirm = useConfirm();
   const [busy, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
 
-  const remove = (b: BookRow) => {
-    if (
-      !window.confirm(
-        `Delete "${b.name}" and its ${b.contactCount} contacts? This cannot be undone.`,
-      )
-    )
-      return;
+  const remove = async (b: BookRow) => {
+    const ok = await confirm({
+      title: `Delete "${b.name}"?`,
+      body: `Its ${b.contactCount.toLocaleString("en-US")} contacts go with it, and there is no history to restore them from.`,
+      confirmLabel: "Delete book",
+      tone: "danger",
+      typeToConfirm: b.name,
+    });
+    if (!ok) return;
     start(async () => {
       setError(null);
       try {
@@ -137,7 +141,7 @@ export function BooksPanel({
                     {canDelete && (
                       <Button
                         size="sm"
-                        variant="ghost"
+                        variant="dangerSubtle"
                         disabled={busy}
                         onClick={() => remove(b)}
                       >

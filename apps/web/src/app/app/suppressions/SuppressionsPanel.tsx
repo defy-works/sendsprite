@@ -11,6 +11,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
 import { Label } from "@/components/ui/Label";
 import { Select } from "@/components/ui/Select";
+import { useConfirm } from "@/components/ui/confirm";
 
 /** Dates are pre-formatted on the server so SSR and hydration agree. */
 export type SuppressionRow = {
@@ -42,10 +43,17 @@ export function SuppressionsPanel({
     async (_prev: unknown, fd: FormData) => addSuppression(fd),
     null,
   );
+  const confirm = useConfirm();
   const [removing, start] = useTransition();
   const [removeError, setRemoveError] = useState<string | null>(null);
-  const remove = (s: SuppressionRow) => {
-    if (!window.confirm(`Remove ${s.email} from the suppression list?`)) return;
+  const remove = async (s: SuppressionRow) => {
+    const ok = await confirm({
+      title: `Remove ${s.email} from the suppression list?`,
+      body: "Mail to this address will be attempted again. If it was suppressed by a hard bounce or a complaint, sending to it again is what damages the domain reputation the list exists to protect.",
+      confirmLabel: "Remove suppression",
+      tone: "danger",
+    });
+    if (!ok) return;
     start(async () => {
       setRemoveError(null);
       try {
@@ -79,10 +87,16 @@ export function SuppressionsPanel({
               </div>
               <div>
                 <Label htmlFor="sup-reason">Reason</Label>
-                <Select id="sup-reason" name="reason" defaultValue="manual">
-                  <option value="manual">manual</option>
-                  <option value="unsubscribe">unsubscribe</option>
-                </Select>
+                <Select
+                  id="sup-reason"
+                  name="reason"
+                  defaultValue="manual"
+                  className="w-44"
+                  options={[
+                    { value: "manual", label: "Manual" },
+                    { value: "unsubscribe", label: "Unsubscribe" },
+                  ]}
+                />
               </div>
               <div className="min-w-48 flex-1">
                 <Label htmlFor="sup-note">Note</Label>
@@ -150,7 +164,7 @@ export function SuppressionsPanel({
                     {canRemove && (
                       <Button
                         size="sm"
-                        variant="ghost"
+                        variant="dangerSubtle"
                         disabled={removing}
                         onClick={() => remove(s)}
                       >

@@ -11,6 +11,10 @@ import {
 } from "react";
 import { SafeUrl } from "@sendsprite/shared";
 import { Button } from "@/components/ui/Button";
+import { Field } from "@/components/ui/Field";
+import { Input } from "@/components/ui/Input";
+import { Modal } from "@/components/ui/Modal";
+import { IconBold, IconItalic, IconLink } from "@/components/ui/icons";
 import { cn } from "@/lib/cn";
 import { serializeInline } from "../../preview";
 
@@ -144,6 +148,8 @@ export function InlineEditor({
   onChange: (html: string) => void;
 }) {
   const [linkError, setLinkError] = useState<string | null>(null);
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [linkDraft, setLinkDraft] = useState("");
   // `useEditor` builds its instance once, so its `onUpdate` closes over the
   // first `onChange`. A ref is what keeps it pointing at the current one.
   const emit = useRef(onChange);
@@ -210,16 +216,25 @@ export function InlineEditor({
     if (!editor.view.hasFocus()) editor.view.focus();
   };
 
-  const applyLink = () => {
+  /**
+   * Opens the link dialog seeded with whatever the caret is already inside.
+   *
+   * `window.prompt` used to do this. Besides being unstyled, it could not show
+   * the contract's rejection message next to the field that caused it — a bad
+   * URL closed the prompt, printed the error under the toolbar, and made the
+   * author retype the whole thing from memory. The dialog keeps the value.
+   */
+  const openLink = () => {
     setLinkError(null);
     const current = editor.getAttributes("link").href;
-    const answer = window.prompt(
-      "Link to (http://, https:// or mailto:). Leave empty to remove the link.",
-      typeof current === "string" ? current : "",
-    );
-    if (answer === null) return;
-    const raw = answer.trim();
+    setLinkDraft(typeof current === "string" ? current : "");
+    setLinkOpen(true);
+  };
+
+  const commitLink = () => {
+    const raw = linkDraft.trim();
     if (raw === "") {
+      setLinkOpen(false);
       focusEditor();
       editor.chain().extendMarkRange("link").unsetLink().run();
       return;
@@ -231,6 +246,7 @@ export function InlineEditor({
       setLinkError(parsed.error.issues[0]?.message ?? "That URL is not valid.");
       return;
     }
+    setLinkOpen(false);
     focusEditor();
     editor.chain().extendMarkRange("link").setLink({ href: parsed.data }).run();
   };
@@ -241,10 +257,12 @@ export function InlineEditor({
   return (
     <div className="flex flex-col gap-2">
       {!readOnly && (
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1">
           <Button
-            size="sm"
+            size="iconSm"
             variant="ghost"
+            title="Bold"
+            aria-label="Bold"
             className={mark(editor.isActive("bold"))}
             aria-pressed={editor.isActive("bold")}
             onMouseDown={keepCaret}
@@ -253,11 +271,13 @@ export function InlineEditor({
               editor.chain().toggleBold().run();
             }}
           >
-            Bold
+            <IconBold />
           </Button>
           <Button
-            size="sm"
+            size="iconSm"
             variant="ghost"
+            title="Italic"
+            aria-label="Italic"
             className={mark(editor.isActive("italic"))}
             aria-pressed={editor.isActive("italic")}
             onMouseDown={keepCaret}
@@ -266,30 +286,71 @@ export function InlineEditor({
               editor.chain().toggleItalic().run();
             }}
           >
-            Italic
+            <IconItalic />
           </Button>
           <Button
-            size="sm"
+            size="iconSm"
             variant="ghost"
+            title="Link"
+            aria-label="Link"
             className={mark(editor.isActive("link"))}
             aria-pressed={editor.isActive("link")}
             onMouseDown={keepCaret}
-            onClick={applyLink}
+            onClick={openLink}
           >
-            Link
+            <IconLink />
           </Button>
-          <span className="text-xs text-white/40">
-            Bold, italic and links only — a campaign body has no other
+          <span className="ml-1 text-xs text-white/40">
+            Bold, italic and links — a campaign body has no other inline
             formatting.
           </span>
         </div>
       )}
       <EditorContent editor={editor} />
-      {linkError && (
+      {linkError && !linkOpen && (
         <p role="alert" className="text-xs text-red-300">
           {linkError}
         </p>
       )}
+      <Modal
+        open={linkOpen}
+        onDismiss={() => setLinkOpen(false)}
+        title="Link"
+        description="http://, https:// or mailto:. Clear the field to remove the link."
+        size="sm"
+        dismissOnBackdrop
+        footer={
+          <>
+            <Button variant="subtle" onClick={() => setLinkOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={commitLink}>
+              {linkDraft.trim() === "" ? "Remove link" : "Apply"}
+            </Button>
+          </>
+        }
+      >
+        <Field id="inline-link" label="Destination" error={linkError}>
+          <Input
+            id="inline-link"
+            value={linkDraft}
+            data-autofocus
+            spellCheck={false}
+            autoComplete="off"
+            placeholder="https://example.com"
+            onChange={(e) => {
+              setLinkDraft(e.target.value);
+              setLinkError(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitLink();
+              }
+            }}
+          />
+        </Field>
+      </Modal>
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { Providers } from "@/components/ui/Providers";
 import "@/styles/globals.css";
 
 // Per-instance app: every route depends on runtime env, so nothing is
@@ -16,7 +17,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
       <body className="min-h-dvh bg-ink font-sans text-white antialiased">
-        {children}
+        <Providers>{children}</Providers>
       </body>
     </html>
   );

@@ -14,6 +14,7 @@ import { Label } from "@/components/ui/Label";
 import { Link } from "@/components/ui/Link";
 import { Select } from "@/components/ui/Select";
 import { Textarea } from "@/components/ui/Textarea";
+import { useConfirm } from "@/components/ui/confirm";
 import {
   createTemplate,
   restoreVersion,
@@ -79,6 +80,7 @@ export function TemplateEditor({
 }) {
   const router = useRouter();
   const [t, setT] = useState(template);
+  const confirm = useConfirm();
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -191,15 +193,15 @@ export function TemplateEditor({
     });
   };
 
-  const restore = (v: VersionRow) => {
-    if (
-      !window.confirm(
-        dirty
-          ? `Restore v${v.version}? Your unsaved changes are discarded, and the restore is saved as a new version.`
-          : `Restore v${v.version}? It is saved as a new version, so this can be undone.`,
-      )
-    )
-      return;
+  const restore = async (v: VersionRow) => {
+    const ok = await confirm({
+      title: `Restore v${v.version}?`,
+      body: dirty
+        ? "Your unsaved changes are discarded. The restore is saved as a new version, so the restore itself can be undone."
+        : "It is saved as a new version rather than rewinding, so this can be undone.",
+      confirmLabel: `Restore v${v.version}`,
+    });
+    if (!ok) return;
     start(async () => {
       setError(null);
       try {
@@ -368,7 +370,7 @@ export function TemplateEditor({
                     <Button
                       key={n}
                       size="sm"
-                      variant="ghost"
+                      variant="subtle"
                       disabled={readOnly}
                       onClick={() => insert(n)}
                       title="Insert at the cursor of the last field you were typing in"
@@ -409,18 +411,14 @@ export function TemplateEditor({
                       id={`var-type-${i}`}
                       value={v.type}
                       disabled={readOnly}
-                      onChange={(e) =>
-                        editVariable(i, {
-                          type: variableTypeOf(e.target.value),
-                        })
+                      onChange={(value) =>
+                        editVariable(i, { type: variableTypeOf(value) })
                       }
-                    >
-                      {TEMPLATE_VARIABLE_TYPES.map((k) => (
-                        <option key={k} value={k}>
-                          {k}
-                        </option>
-                      ))}
-                    </Select>
+                      options={TEMPLATE_VARIABLE_TYPES.map((k) => ({
+                        value: k,
+                        label: k,
+                      }))}
+                    />
                   </div>
                   <div className="min-w-40 flex-1">
                     <Label htmlFor={`var-default-${i}`}>Default</Label>
@@ -449,7 +447,7 @@ export function TemplateEditor({
                   </div>
                   <Button
                     size="sm"
-                    variant="ghost"
+                    variant="subtle"
                     disabled={readOnly}
                     onClick={() =>
                       setVariables(t.variables.filter((_, j) => j !== i))
@@ -463,7 +461,7 @@ export function TemplateEditor({
               <div className="flex flex-wrap gap-2">
                 <Button
                   size="sm"
-                  variant="ghost"
+                  variant="subtle"
                   disabled={readOnly}
                   onClick={() =>
                     setVariables([...t.variables, emptyVariableRow()])
@@ -474,7 +472,7 @@ export function TemplateEditor({
                 {undeclared.length > 0 && (
                   <Button
                     size="sm"
-                    variant="ghost"
+                    variant="subtle"
                     disabled={readOnly}
                     onClick={() =>
                       setVariables([
@@ -558,7 +556,7 @@ export function TemplateEditor({
                   {i > 0 && canManage && (
                     <Button
                       size="sm"
-                      variant="ghost"
+                      variant="subtle"
                       disabled={pending}
                       onClick={() => restore(v)}
                     >
