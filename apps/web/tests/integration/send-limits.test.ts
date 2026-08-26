@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startPg } from "./_pg";
+import { connectTeamAws } from "./helpers";
 
 let pg: Awaited<ReturnType<typeof startPg>>;
 beforeAll(async () => {
@@ -42,49 +43,43 @@ const emailRow = (id: string, extra: Record<string, unknown> = {}) => ({
 
 describe("send limits", () => {
   it("takeSesToken refills at MaxSendRate and refuses when empty", async () => {
-    const { updateInstanceSettings } =
-      await import("@/services/instance-settings");
-    await updateInstanceSettings(
-      { sesMaxSendRate: 2, sesDailyQuota: 200 },
-      undefined,
-      { audit: false },
-    );
+    await connectTeamAws("org_1", { sesMaxSendRate: 2, sesDailyQuota: 200 });
     const { takeSesToken, resetRateForTests } =
       await import("@/services/send-limits");
-    await resetRateForTests(at(0));
-    expect(await takeSesToken(at(1))).toEqual({ ok: true }); // 2 tokens accrued, burst cap 2
-    expect(await takeSesToken(at(1))).toEqual({ ok: true });
-    const empty = await takeSesToken(at(1));
+    await resetRateForTests("org_1", at(0));
+    expect(await takeSesToken("org_1", at(1))).toEqual({ ok: true }); // 2 tokens accrued, burst cap 2
+    expect(await takeSesToken("org_1", at(1))).toEqual({ ok: true });
+    const empty = await takeSesToken("org_1", at(1));
     expect(empty).toMatchObject({ ok: false, retryInMs: expect.any(Number) });
     if (empty.ok) throw new Error("unreachable");
     expect(empty.retryInMs).toBeGreaterThan(0);
     expect(empty.retryInMs).toBeLessThanOrEqual(500); // 1 token / 2 per s
-    expect(await takeSesToken(at(2))).toEqual({ ok: true }); // refilled
+    expect(await takeSesToken("org_1", at(2))).toEqual({ ok: true }); // refilled
     // Burst never exceeds the rate, however long the bucket sat idle.
-    expect(await takeSesToken(at(60))).toEqual({ ok: true });
-    expect(await takeSesToken(at(60))).toEqual({ ok: true });
-    expect(await takeSesToken(at(60))).toMatchObject({ ok: false });
+    expect(await takeSesToken("org_1", at(60))).toEqual({ ok: true });
+    expect(await takeSesToken("org_1", at(60))).toEqual({ ok: true });
+    expect(await takeSesToken("org_1", at(60))).toMatchObject({ ok: false });
   });
 
   it("takeSesToken never rewinds the stamp for a lagging clock", async () => {
     const { takeSesToken, resetRateForTests } =
       await import("@/services/send-limits");
-    await resetRateForTests(at(200));
-    expect(await takeSesToken(at(201))).toEqual({ ok: true });
-    expect(await takeSesToken(at(201))).toEqual({ ok: true }); // bucket empty, stamp = 201
+    await resetRateForTests("org_1", at(200));
+    expect(await takeSesToken("org_1", at(201))).toEqual({ ok: true });
+    expect(await takeSesToken("org_1", at(201))).toEqual({ ok: true }); // bucket empty, stamp = 201
     // A worker whose clock is behind earns nothing and must not move the stamp back...
-    expect(await takeSesToken(at(200.5))).toMatchObject({ ok: false });
+    expect(await takeSesToken("org_1", at(200.5))).toMatchObject({ ok: false });
     // ...otherwise this taker would be credited 200.5→201.5 (2 tokens) instead of 201→201.5 (1).
-    expect(await takeSesToken(at(201.5))).toEqual({ ok: true });
-    expect(await takeSesToken(at(201.5))).toMatchObject({ ok: false });
+    expect(await takeSesToken("org_1", at(201.5))).toEqual({ ok: true });
+    expect(await takeSesToken("org_1", at(201.5))).toMatchObject({ ok: false });
   });
 
   it("takeSesToken serialises concurrent takers on the row lock", async () => {
     const { takeSesToken, resetRateForTests } =
       await import("@/services/send-limits");
-    await resetRateForTests(at(100));
+    await resetRateForTests("org_1", at(100));
     const results = await Promise.all(
-      Array.from({ length: 6 }, () => takeSesToken(at(101))),
+      Array.from({ length: 6 }, () => takeSesToken("org_1", at(101))),
     );
     expect(results.filter((r) => r.ok)).toHaveLength(2);
   });
@@ -140,14 +135,10 @@ describe("send limits", () => {
   it("sesDailyQuota is enforced instance-wide from sends in the last 24 h", async () => {
     const { db } = await import("@/db");
     const { emails } = await import("@/db/schema");
-    const { checkInstanceQuota } = await import("@/services/send-limits");
+    const { checkAccountQuota } = await import("@/services/send-limits");
     const now = new Date("2026-08-25T12:00:00Z");
-    expect(await checkInstanceQuota(1, now)).toEqual({ ok: true });
-    const { updateInstanceSettings } =
-      await import("@/services/instance-settings");
-    await updateInstanceSettings({ sesDailyQuota: 2 }, undefined, {
-      audit: false,
-    });
+    expect(await checkAccountQuota("org_1", 1, now)).toEqual({ ok: true });
+    await connectTeamAws("org_1", { sesDailyQuota: 2 });
     await db()
       .insert(emails)
       .values([
@@ -156,14 +147,12 @@ describe("send limits", () => {
         // Older than 24 h: outside the SES window.
         emailRow("em_q3", { sentAt: new Date("2026-08-24T11:00:00Z") }),
       ]);
-    expect(await checkInstanceQuota(1, now)).toMatchObject({
+    expect(await checkAccountQuota("org_1", 1, now)).toMatchObject({
       ok: false,
       code: "daily_quota_exceeded",
     });
     // Unset quota (sandbox not yet checked) means no instance cap.
-    await updateInstanceSettings({ sesDailyQuota: null }, undefined, {
-      audit: false,
-    });
-    expect(await checkInstanceQuota(1000, now)).toEqual({ ok: true });
+    await connectTeamAws("org_1", { sesDailyQuota: null });
+    expect(await checkAccountQuota("org_1", 1000, now)).toEqual({ ok: true });
   });
 });

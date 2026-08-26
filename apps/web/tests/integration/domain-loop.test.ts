@@ -9,6 +9,7 @@ import {
 import { eq, sql } from "drizzle-orm";
 import { domains } from "@/db/schema";
 import { startPg, type TestPg } from "./_pg";
+import { connectTeamAws } from "./helpers";
 
 /**
  * The verify loop through a real pg-boss: provisioning runs as a job, the
@@ -82,19 +83,10 @@ beforeAll(async () => {
   await pg.db.execute(
     `insert into "organization"(id,name,slug,created_at) values ('org_1','Acme','acme',now())`,
   );
-  const { updateInstanceSettings } =
-    await import("@/services/instance-settings");
-  await updateInstanceSettings(
-    {
-      awsMode: "keys",
-      awsRegion: "eu-west-1",
-      awsAccessKey: "AKIAEXAMPLE",
-      awsSecret: "s3cr3t",
-      sesConfigSet: "sendsprite",
-    },
-    undefined,
-    { audit: false },
-  );
+  await connectTeamAws("org_1", {
+    region: "eu-west-1",
+    configSet: "sendsprite",
+  });
   ses.on(CreateEmailIdentityCommand).resolves({
     DkimAttributes: { Tokens: ["t1", "t2", "t3"], Status: "PENDING" },
   });

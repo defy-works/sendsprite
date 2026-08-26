@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startPg } from "./_pg";
-import { seedTeamWithKey } from "./helpers";
+import { connectTeamAws, seedTeamWithKey } from "./helpers";
 
 /**
  * The fan-out is the most consequential code in the campaigns phase: get it
@@ -850,8 +850,6 @@ describe("campaign fan-out", () => {
     const { db } = await import("@/db");
     const { emails } = await import("@/db/schema");
     const { newId } = await import("@sendsprite/shared");
-    const { updateInstanceSettings } =
-      await import("@/services/instance-settings");
     // One send already accepted by SES inside the trailing 24 h.
     await db()
       .insert(emails)
@@ -866,9 +864,7 @@ describe("campaign fan-out", () => {
         status: "sent",
         sentAt: new Date(),
       });
-    await updateInstanceSettings({ sesDailyQuota: 2 }, undefined, {
-      audit: false,
-    });
+    await connectTeamAws(team.id, { sesDailyQuota: 2 });
     try {
       const q = recorder();
       const res = await (await fanout()).fanoutChunk(campaignId, q);
@@ -877,9 +873,7 @@ describe("campaign fan-out", () => {
       expect(await emailCount(campaignId)).toBe(0);
       expect((await campaignRow(campaignId)).status).toBe("sending");
     } finally {
-      await updateInstanceSettings({ sesDailyQuota: null }, undefined, {
-        audit: false,
-      });
+      await connectTeamAws(team.id, { sesDailyQuota: null });
     }
   });
 

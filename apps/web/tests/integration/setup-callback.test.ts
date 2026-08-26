@@ -22,6 +22,7 @@ import {
 import { STSClient, GetCallerIdentityCommand } from "@aws-sdk/client-sts";
 import { user } from "@/db/schema";
 import { startPg } from "./_pg";
+import { disconnectTeamAwsForTests, seedTeamWithKey } from "./helpers";
 
 const ses = mockClient(SESv2Client);
 const sns = mockClient(SNSClient);
@@ -33,8 +34,10 @@ const KEYS = {
 };
 
 let pg: Awaited<ReturnType<typeof startPg>>;
+let TEAM: string;
 beforeAll(async () => {
   pg = await startPg();
+  TEAM = (await seedTeamWithKey()).team.id;
   process.env.APP_SECRET = "x".repeat(40);
   process.env.APP_URL = "https://mail.acme.com";
   const { resetEnvCache } = await import("@/env.schema");
@@ -53,11 +56,7 @@ afterEach(() => {
 });
 /** Connecting over a live connection is refused, so start each test disconnected. */
 beforeEach(async () => {
-  const { updateInstanceSettings } =
-    await import("@/services/instance-settings");
-  await updateInstanceSettings({ awsMode: "none" }, undefined, {
-    audit: false,
-  });
+  await disconnectTeamAwsForTests(TEAM);
 });
 
 function happyMocks() {
@@ -85,6 +84,7 @@ async function issue(region: string) {
     await issueSetupToken({
       purpose: "aws_callback",
       issuedBy: "u1",
+      teamId: TEAM,
       region,
       ttlMs: 60_000,
     })
@@ -114,12 +114,11 @@ describe("POST /api/setup/aws/callback", () => {
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, warning: null });
-    const { getInstanceSettings } =
-      await import("@/services/instance-settings");
-    expect(await getInstanceSettings()).toMatchObject({
-      awsMode: "keys",
-      awsAccountId: "123456789012",
-      awsRegion: "us-east-1",
+    const { getTeamAws } = await import("@/services/team-aws");
+    // Connected on the team the token named, not on the instance.
+    expect(await getTeamAws(TEAM)).toMatchObject({
+      accountId: "123456789012",
+      region: "us-east-1",
     });
     expect((await post({ token, ...KEYS, region: "us-east-1" })).status).toBe(
       403,
@@ -144,7 +143,7 @@ describe("POST /api/setup/aws/callback", () => {
       403,
     );
     const { lastSetupFailure } = await import("@/services/setup-tokens");
-    expect(await lastSetupFailure("aws_callback", "u1")).toMatchObject({
+    expect(await lastSetupFailure("aws_callback", "u1", TEAM)).toMatchObject({
       reason: expect.stringMatching(/already connected/i),
     });
   });
@@ -169,7 +168,7 @@ describe("POST /api/setup/aws/callback", () => {
     expect(res.status).toBe(400);
     expect(sts.commandCalls(GetCallerIdentityCommand)).toHaveLength(0);
     const { lastSetupFailure } = await import("@/services/setup-tokens");
-    expect(await lastSetupFailure("aws_callback", "u1")).toMatchObject({
+    expect(await lastSetupFailure("aws_callback", "u1", TEAM)).toMatchObject({
       at: expect.any(Date),
       reason: expect.stringContaining("eu-west-1"),
     });
@@ -227,7 +226,7 @@ describe("POST /api/setup/aws/callback", () => {
       403,
     );
     const { lastSetupFailure } = await import("@/services/setup-tokens");
-    expect(await lastSetupFailure("aws_callback", "u1")).toMatchObject({
+    expect(await lastSetupFailure("aws_callback", "u1", TEAM)).toMatchObject({
       reason: expect.stringContaining("not authorized"),
     });
   });
@@ -246,11 +245,22 @@ describe("POST /api/setup/aws/callback", () => {
       ok: true,
       warning: expect.stringContaining("SES event subscription"),
     });
-    const { getInstanceSettings } =
-      await import("@/services/instance-settings");
-    expect(await getInstanceSettings()).toMatchObject({
-      awsMode: "keys",
+    const { getTeamAws } = await import("@/services/team-aws");
+    expect(await getTeamAws(TEAM)).toMatchObject({
       snsSubscriptionArn: null,
     });
   });
+  it("connects only the team named on the token", async () => {
+    happyMocks();
+    const other = (await seedTeamWithKey()).team.id;
+    const token = await issue("us-east-1");
+    expect(
+      (await post({ token, ...KEYS, region: "us-east-1" })).status,
+    ).toBe(200);
+    const { getTeamAws } = await import("@/services/team-aws");
+    expect(await getTeamAws(TEAM)).not.toBeNull();
+    // A stack created for one team cannot connect into another.
+    expect(await getTeamAws(other)).toBeNull();
+  });
 });
+

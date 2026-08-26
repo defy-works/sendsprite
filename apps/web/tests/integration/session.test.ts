@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { member, organization, user } from "@/db/schema";
-import { listOwnerEmails, resolveTeam } from "@/lib/team";
+import { listTeamAdminEmails, resolveTeam } from "@/lib/team";
 import { startPg } from "./_pg";
 
 let pg: Awaited<ReturnType<typeof startPg>>;
@@ -73,20 +73,14 @@ describe("resolveTeam", () => {
   });
 });
 
-describe("listOwnerEmails", () => {
-  it("returns only the owners of the caller's teams", async () => {
-    expect(await listOwnerEmails("u4")).toEqual(["three@example.com"]);
+describe("listTeamAdminEmails", () => {
+  it("returns the owners and admins of the given team", async () => {
+    expect(await listTeamAdminEmails("org2")).toEqual(["three@example.com"]);
   });
-  it("covers every team the caller belongs to", async () => {
-    expect(await listOwnerEmails("u1")).toEqual([
-      "one@example.com",
-      "three@example.com",
-    ]);
+  it("covers a team whose only elevated member is its owner", async () => {
+    expect(await listTeamAdminEmails("org1")).toEqual(["one@example.com"]);
   });
-  it("falls back to all owners for a user with no memberships", async () => {
-    expect(await listOwnerEmails("u2")).toEqual([
-      "one@example.com",
-      "three@example.com",
-    ]);
+  it("returns nothing for a team that does not exist", async () => {
+    expect(await listTeamAdminEmails("org_missing")).toEqual([]);
   });
 });

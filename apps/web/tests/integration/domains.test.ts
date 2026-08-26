@@ -21,6 +21,12 @@ import type { FetchLike } from "@/lib/cloudflare/client";
 import type { Resolver } from "@/lib/dns/check";
 import { auditLog, domains } from "@/db/schema";
 import { startPg } from "./_pg";
+import {
+  connectTeamAws,
+  connectTeamCloudflare,
+  disconnectTeamAwsForTests,
+  forgetTeamCloudflare,
+} from "./helpers";
 
 const ses = mockClient(SESv2Client);
 let pg: Awaited<ReturnType<typeof startPg>>;
@@ -83,32 +89,14 @@ afterAll(async () => {
 });
 /** Every test starts with AWS (keys) and Cloudflare connected. */
 beforeEach(async () => {
-  const { updateInstanceSettings } =
-    await import("@/services/instance-settings");
-  await updateInstanceSettings(
-    {
-      awsMode: "keys",
-      awsRegion: "eu-west-1",
-      awsAccessKey: "AKIAEXAMPLE",
-      awsSecret: "s3cr3t",
-      sesConfigSet: "sendsprite",
-    },
-    undefined,
-    { audit: false },
-  );
+  await connectTeamAws("org_1", {
+    region: "eu-west-1",
+    configSet: "sendsprite",
+  });
   // Seed a live OAuth grant directly: the consent round trip is covered in
   // cloudflare-connect.test.ts, and going through it here would mean faking
   // Cloudflare's token endpoint in every domains test.
-  await updateInstanceSettings(
-    {
-      cloudflareAccessToken: "cf-access-token",
-      cloudflareRefreshToken: "cf-refresh-token",
-      cloudflareTokenExpiresAt: new Date(Date.now() + 3600_000),
-      cloudflareConnectedAt: new Date(),
-    },
-    undefined,
-    { audit: false },
-  );
+  await connectTeamCloudflare("org_1");
   cfCalls.length = 0;
 });
 afterEach(() => {
@@ -165,18 +153,7 @@ async function byName(name: string) {
   return d;
 }
 async function disconnectCloudflare() {
-  const { updateInstanceSettings } =
-    await import("@/services/instance-settings");
-  await updateInstanceSettings(
-    {
-      cloudflareAccessToken: null,
-      cloudflareRefreshToken: null,
-      cloudflareTokenExpiresAt: null,
-      cloudflareConnectedAt: null,
-    },
-    undefined,
-    { audit: false },
-  );
+  await forgetTeamCloudflare("org_1");
 }
 function happyProvision() {
   ses.on(CreateEmailIdentityCommand).resolves({
@@ -270,11 +247,7 @@ describe("domains", () => {
         )
       ).ok,
     ).toBe(false);
-    const { updateInstanceSettings } =
-      await import("@/services/instance-settings");
-    await updateInstanceSettings({ awsMode: "none" }, undefined, {
-      audit: false,
-    });
+    await disconnectTeamAwsForTests("org_1");
     const res = await createDomain(actor, { name: "y.acme.com" }, noop);
     expect(res).toMatchObject({ ok: false, error: /Connect AWS/ });
     expect(await pg.db.select().from(domains)).toHaveLength(1);
@@ -825,11 +798,7 @@ describe("domains", () => {
     await pg.db.delete(domains).where(eq(domains.id, res.data.id));
   });
   it("verifyDomain records the error without throwing when AWS is disconnected", async () => {
-    const { updateInstanceSettings } =
-      await import("@/services/instance-settings");
-    await updateInstanceSettings({ awsMode: "none" }, undefined, {
-      audit: false,
-    });
+    await disconnectTeamAwsForTests("org_1");
     const { verifyDomain } = await import("@/services/domains");
     const d = await byName("slow.acme.com");
     await verifyDomain(d.id, { resolver: emptyDns, enqueue: noop.enqueue });
@@ -942,11 +911,7 @@ describe("domains", () => {
       enqueue: noop.enqueue,
       fetch: cfFetch,
     });
-    const { updateInstanceSettings } =
-      await import("@/services/instance-settings");
-    await updateInstanceSettings({ awsMode: "none" }, undefined, {
-      audit: false,
-    });
+    await disconnectTeamAwsForTests("org_1");
     ses.reset();
     cfCalls.length = 0;
     expect(await deleteDomain(actor, res.data.id, { fetch: cfFetch })).toEqual({

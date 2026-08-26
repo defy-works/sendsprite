@@ -12,6 +12,7 @@ import { mockClient } from "aws-sdk-client-mock";
 import { SESv2Client, SendEmailCommand } from "@aws-sdk/client-sesv2";
 import { eq } from "drizzle-orm";
 import { startPg } from "./_pg";
+import { connectTeamAws } from "./helpers";
 
 const ses = mockClient(SESv2Client);
 /**
@@ -24,9 +25,9 @@ vi.mock("@/services/send-limits", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/services/send-limits")>();
   return {
     ...mod,
-    takeSesToken: async (now?: Date) => {
+    takeSesToken: async (teamId: string, now?: Date) => {
       if (gate.delayMs) await new Promise((r) => setTimeout(r, gate.delayMs));
-      return mod.takeSesToken(now);
+      return mod.takeSesToken(teamId, now);
     },
   };
 });
@@ -51,20 +52,11 @@ beforeAll(async () => {
     mailFromDomain: "bounce.mail.acme.com",
     status: "verified",
   });
-  const { updateInstanceSettings } =
-    await import("@/services/instance-settings");
-  await updateInstanceSettings(
-    {
-      awsMode: "keys",
-      awsRegion: "eu-west-1",
-      awsAccessKey: "AKIAEXAMPLE",
-      awsSecret: "s3cr3t",
-      sesConfigSet: "sendsprite",
-      sesMaxSendRate: 1,
-    },
-    undefined,
-    { audit: false },
-  );
+  await connectTeamAws("org_1", {
+    region: "eu-west-1",
+    configSet: "sendsprite",
+    sesMaxSendRate: 1,
+  });
 });
 afterAll(async () => {
   await pg.stop();
@@ -73,7 +65,7 @@ afterAll(async () => {
 beforeEach(async () => {
   ses.reset();
   const { resetRateForTests } = await import("@/services/send-limits");
-  await resetRateForTests(new Date(Date.now() - 10_000));
+  await resetRateForTests("org_1", new Date(Date.now() - 10_000));
 });
 afterEach(() => {
   ses.reset();
@@ -186,7 +178,7 @@ describe("sendQueuedEmail", () => {
   it("waits for a rate token: re-enqueues with startAfter and does not call SES", async () => {
     const now = new Date();
     const { resetRateForTests } = await import("@/services/send-limits");
-    await resetRateForTests(now);
+    await resetRateForTests("org_1", now);
     const created = await create();
     const enqueue = vi.fn(async () => "");
     const { sendQueuedEmail } = await import("@/services/ses-send");
@@ -490,13 +482,9 @@ describe("sendQueuedEmail", () => {
 
   it("two concurrent attempts: exactly one SES call, one sent event, the loser is skipped: not_claimed", async () => {
     ses.on(SendEmailCommand).resolves({ MessageId: "ses-race" });
-    const { updateInstanceSettings } =
-      await import("@/services/instance-settings");
-    await updateInstanceSettings({ sesMaxSendRate: 2 }, undefined, {
-      audit: false,
-    });
+    await connectTeamAws("org_1", { sesMaxSendRate: 2 });
     const { resetRateForTests } = await import("@/services/send-limits");
-    await resetRateForTests(new Date(Date.now() - 10_000));
+    await resetRateForTests("org_1", new Date(Date.now() - 10_000));
     const created = await create();
     const { sendQueuedEmail } = await import("@/services/ses-send");
     const deps = { enqueue: vi.fn(async () => "") };
@@ -522,9 +510,7 @@ describe("sendQueuedEmail", () => {
       status: "sent",
       attempts: 1,
     });
-    await updateInstanceSettings({ sesMaxSendRate: 1 }, undefined, {
-      audit: false,
-    });
+    await connectTeamAws("org_1", { sesMaxSendRate: 1 });
   });
 });
 
@@ -658,7 +644,7 @@ describe("sweepQueuedEmails", () => {
         .set({ updatedAt: new Date(now.getTime() - 10 * 60_000), ...extra })
         .where(eq(emails.id, id));
     // Empty bucket: the attempt is throttled.
-    await resetRateForTests(now);
+    await resetRateForTests("org_1", now);
     const throttled = await create();
     await stale(throttled.id);
     expect(await sendQueuedEmail(throttled.id, { enqueue, now })).toMatchObject(

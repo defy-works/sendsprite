@@ -110,7 +110,7 @@ describe("plan entitlements feed the existing caps", () => {
     const u = await usageSnapshot(team.id, NOW);
     expect(u).toMatchObject({ dailyLimit: null, monthlyLimit: null });
     // The instance-wide branch is still the one that runs when nothing caps.
-    expect(u.instanceUsed).toBe(0); // no `sent_at` on the seeded rows
+    expect(u.accountUsed).toBe(0); // no `sent_at` on the seeded rows
   });
 
   it("billing off: the rate headers are exactly what they are today", async () => {

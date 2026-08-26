@@ -150,8 +150,8 @@ describe("connectWithKeys", () => {
       sesDailyQuota: 200,
       sesMaxSendRate: 1,
     });
-    expect(s.connectedAt).toBeInstanceOf(Date);
-    expect(s.accessKeyEnc).toMatch(/^v1\./);
+    expect(s?.connectedAt).toBeInstanceOf(Date);
+    expect(s?.accessKeyEnc).toMatch(/^v1\./);
     expect(await getTeamAwsSecrets(TEAM)).toMatchObject({
       accessKey: KEYS.accessKeyId,
       secret: KEYS.secretAccessKey,
@@ -189,7 +189,7 @@ describe("connectWithKeys", () => {
     const { connectWithKeys } = await import("@/services/aws-connect");
     expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(true);
     expect(sns.commandCalls(SubscribeCommand)).toHaveLength(1);
-    expect((await conn()).snsSubscriptionArn).toBe(SUB_ARN);
+    expect((await conn())?.snsSubscriptionArn).toBe(SUB_ARN);
   });
   it("waits out IAM propagation: STS rejects twice, then connects", async () => {
     happyMocks();

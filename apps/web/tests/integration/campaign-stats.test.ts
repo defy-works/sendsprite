@@ -399,6 +399,7 @@ describe("the ingest nudge", () => {
     await seedWebhook(team.id);
     const { ingestSesEvent } = await import("@/services/ingest");
     const res = await ingestSesEvent(
+      team.id,
       {
         eventType: "Delivery",
         mail: {
@@ -439,6 +440,7 @@ describe("the ingest nudge", () => {
     });
     const { ingestSesEvent } = await import("@/services/ingest");
     const res = await ingestSesEvent(
+      team.id,
       {
         eventType: "Delivery",
         mail: {

@@ -31,8 +31,8 @@ const allowance = (p: Partial<TeamAllowance> = {}): TeamAllowance => ({
   monthlyLimit: null,
   monthlyUsed: 0,
   monthlyUntil: new Date("2026-09-01T00:00:00.000Z"),
-  instanceQuota: null,
-  instanceUsed: 0,
+  accountQuota: null,
+  accountUsed: 0,
   ...p,
 });
 
@@ -179,29 +179,40 @@ describe("capPreflight", () => {
 
   /**
    * `usageSnapshot` skips the instance-wide scan whenever the team has a cap
-   * of its own and reports `instanceUsed: 0`. Believing that would print a
+   * of its own and reports `accountUsed: 0`. Believing that would print a
    * confidently wrong "0 of 50 000 used" on a busy instance.
    */
-  it("ignores the instance quota when the snapshot did not measure it", () => {
+  /**
+   * The account quota used to be dropped whenever a team cap was set, because
+   * the snapshot reported 0 for it in that case. Scoped to the team it is
+   * always measured, so it is always shown — and it can be the binding one
+   * even when a roomier team cap exists.
+   */
+  it("always reports the account quota, alongside a team cap", () => {
     const pre = capPreflight(
       100,
       allowance({
         monthlyLimit: 10_000,
         monthlyUsed: 0,
-        instanceQuota: 50,
-        instanceUsed: 0,
+        accountQuota: 50,
+        accountUsed: 0,
       }),
     );
-    expect(pre.allowances.map((a) => a.kind)).toEqual(["monthly"]);
-    expect(pre.exceeded).toBeNull();
+    expect(pre.allowances.map((a) => a.kind).sort()).toEqual([
+      "account",
+      "monthly",
+    ]);
+    // 100 eligible against 50 left on the AWS account.
+    expect(pre.exceeded?.kind).toBe("account");
+    expect(pre.exceeded?.remaining).toBe(50);
   });
 
-  it("uses the instance quota when no team cap displaced it", () => {
+  it("uses the account quota when it is the only limit", () => {
     const pre = capPreflight(
       100,
-      allowance({ instanceQuota: 120, instanceUsed: 90 }),
+      allowance({ accountQuota: 120, accountUsed: 90 }),
     );
-    expect(pre.exceeded?.kind).toBe("instance");
+    expect(pre.exceeded?.kind).toBe("account");
     expect(pre.exceeded?.remaining).toBe(30);
   });
 

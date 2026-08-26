@@ -15,7 +15,7 @@ import {
 } from "@/db/schema";
 import { Q } from "@/jobs/queues";
 import { startPg, type TestPg } from "./_pg";
-import { seedTeamWithKey } from "./helpers";
+import { connectTeamAws, seedTeamWithKey } from "./helpers";
 
 /**
  * The campaign loop through a real pg-boss: the sweeps are attached to their
@@ -120,6 +120,15 @@ async function seed({
   render = status === "sending",
 }: SeedOpts = {}) {
   const { team } = await seedTeamWithKey();
+  // Every seed() makes a fresh team, and each team sends through its own AWS
+  // account now — so the connection is made here, not once in beforeAll.
+  await connectTeamAws(team.id, {
+    region: "eu-west-1",
+    configSet: "sendsprite",
+    // The default (1/s) would spend most of this file's wall clock waiting
+    // for send tokens for mail no assertion looks at.
+    sesMaxSendRate: 50,
+  });
   const suffix = randomBytes(4).toString("hex");
   const domainName = `${suffix}.loop.test`;
   const domainId = `dom_${suffix}`;
@@ -219,22 +228,6 @@ beforeAll(async () => {
   // The fan-out enqueues real `email.send` jobs and the worker runs them;
   // SES is mocked so those sends succeed quietly instead of throwing an
   // unconfigured-account error a minute at a time.
-  const { updateInstanceSettings } =
-    await import("@/services/instance-settings");
-  await updateInstanceSettings(
-    {
-      awsMode: "keys",
-      awsRegion: "eu-west-1",
-      awsAccessKey: "AKIAEXAMPLE",
-      awsSecret: "s3cr3t",
-      sesConfigSet: "sendsprite",
-      // The default (1/s) would spend most of this file's wall clock waiting
-      // for send tokens for mail no assertion looks at.
-      sesMaxSendRate: 50,
-    },
-    undefined,
-    { audit: false },
-  );
   // A *different* message id per call: `emails.ses_message_id` is unique, so
   // a fixed one lets exactly one send in the file succeed and reverts every
   // other row to `queued` on a constraint violation.
