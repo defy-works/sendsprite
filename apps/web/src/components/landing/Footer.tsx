@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Logo } from "@/components/ui/Logo";
 
 export const GITHUB_URL = "https://github.com/defy-works/sendsprite";
 
@@ -12,9 +13,7 @@ export function Footer() {
         <div className="hairline" aria-hidden />
         <div className="flex flex-col gap-8 pt-8 sm:flex-row sm:items-end sm:justify-between">
           <div className="flex flex-col gap-3">
-            <p className="font-display text-xl font-bold tracking-[-0.03em]">
-              Sendsprite
-            </p>
+            <Logo height={28} />
             <p className="font-mono text-[11px] tracking-[0.08em] text-white/40">
               AGPL server, MIT SDK. Self-host it, fork it, ship it.
             </p>

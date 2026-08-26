@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Logo } from "@/components/ui/Logo";
 import { GITHUB_URL } from "./Footer";
 
 const LINK =
@@ -10,11 +11,8 @@ export function TopNav() {
       aria-label="Primary"
       className="flex items-center justify-between px-5 py-5 sm:px-12 lg:px-20"
     >
-      <Link
-        href="/"
-        className="font-display text-base font-bold tracking-[-0.02em] text-white"
-      >
-        Sendsprite
+      <Link href="/" aria-label="Sendsprite">
+        <Logo height={22} />
       </Link>
       <ul className="flex items-center gap-6 sm:gap-8">
         <li className="hidden sm:block">
