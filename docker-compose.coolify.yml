@@ -25,8 +25,20 @@ services:
       # URL. It must end up https:// — the one-click AWS setup refuses to start
       # otherwise, because the HTTP->HTTPS redirect would drop the callback POST
       # body. Coolify issues a certificate automatically for a real domain.
-      - SERVICE_FQDN_APP_3000
-      - APP_URL=${SERVICE_URL_APP_3000}
+      #
+      # Two Coolify rules meet here, and getting either wrong yields an empty
+      # APP_URL that only surfaces as a boot-time validation error:
+      #   - the port suffix belongs on the *declaration*, where it tells the
+      #     proxy which container port to route to. A reference never carries
+      #     it: `${SERVICE_URL_APP_3000}` is not a variable Coolify generates,
+      #     so it expands to the empty string.
+      #   - `URL` renders with the scheme (https://app-xxxx.example.com) and
+      #     `FQDN` renders bare (app-xxxx.example.com), so this one has to be
+      #     the URL form.
+      # The scheme follows the domain set on the resource in Coolify, which
+      # therefore has to be entered there as https://.
+      - SERVICE_URL_APP_3000
+      - APP_URL=${SERVICE_URL_APP}
       # Generated once, then stored by Coolify. Every AWS and Cloudflare
       # credential in the database is encrypted with a key derived from it, so
       # changing it later makes those unreadable — rotate it only deliberately.
