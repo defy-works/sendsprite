@@ -13,7 +13,7 @@ export function Footer() {
         <div className="hairline" aria-hidden />
         <div className="flex flex-col gap-8 pt-8 sm:flex-row sm:items-end sm:justify-between">
           <div className="flex flex-col gap-3">
-            <Logo height={28} />
+            <Logo scale={2} />
             <p className="font-mono text-[11px] tracking-[0.08em] text-white/40">
               AGPL server, MIT SDK. Self-host it, fork it, ship it.
             </p>

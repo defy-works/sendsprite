@@ -12,7 +12,7 @@ export function TopNav() {
       className="flex items-center justify-between px-5 py-5 sm:px-12 lg:px-20"
     >
       <Link href="/" aria-label="Sendsprite">
-        <Logo height={22} />
+        <Logo scale={2} />
       </Link>
       <ul className="flex items-center gap-6 sm:gap-8">
         <li className="hidden sm:block">

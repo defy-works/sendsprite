@@ -33,7 +33,7 @@ export function AppShell(p: {
     <div className="flex min-h-dvh">
       <aside className="hidden w-60 shrink-0 flex-col gap-6 border-r border-white/10 p-4 md:flex">
         <Link href="/app" aria-label="Sendsprite" className="w-fit">
-          <Logo height={20} />
+          <Logo scale={2} />
         </Link>
         <TeamSwitcher activeId={p.teamId} />
         <nav className="flex flex-col gap-1">
@@ -65,7 +65,7 @@ export function AppShell(p: {
               </nav>
             </MobileNav>
             <Link href="/app" aria-label="Sendsprite" className="md:hidden">
-              <MarkTile size={24} />
+              <MarkTile scale={1} />
             </Link>
             <span className="text-sm text-white/60">{p.teamName}</span>
           </div>
