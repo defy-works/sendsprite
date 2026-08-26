@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { NO_CONTROL_CHARS } from "../template";
 import { TemplateVariablesPayload } from "./templates";
 
 /**
@@ -10,9 +11,15 @@ import { TemplateVariablesPayload } from "./templates";
 // are handled server-side (`@/lib/email-address`).
 const ADDR_SPEC = '[^\\s@<>"]+@[^\\s@<>"]+\\.[^\\s@<>"]+';
 const ADDR_RE = new RegExp(`^(?:[^<>]*<${ADDR_SPEC}>|${ADDR_SPEC})$`);
-const NO_CRLF = /^[^\r\n]*$/;
+// The renderer's rule, imported rather than restated: a rendered subject is
+// checked by `renderTemplate` and an authored one here, and if the two rules
+// drift the header-injection guard has a hole in whichever direction is looser.
+// It covers every C0 control and DEL, not just CR/LF — ESC leads RFC 2047
+// charset switching, NUL truncates the value downstream.
 const noCrlf = (s: z.ZodString) =>
-  s.regex(NO_CRLF, { message: "must not contain line breaks" });
+  s.regex(NO_CONTROL_CHARS, {
+    message: "must not contain line breaks or control characters",
+  });
 const addr = noCrlf(z.string().trim().min(3).max(320)).regex(ADDR_RE, {
   message: "invalid email address",
 });

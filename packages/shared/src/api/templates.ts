@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { MAX_PLACEHOLDERS, MAX_SUBJECT_CHARS } from "../template";
+import {
+  MAX_PLACEHOLDERS,
+  MAX_SUBJECT_CHARS,
+  NO_CONTROL_CHARS,
+} from "../template";
 
 /**
  * Contracts for `/api/v1/templates` (spec §7). Shared with the SDK and the
@@ -201,13 +205,18 @@ export const TemplateVariablesSchema = z.object({
 });
 export type TemplateVariablesSchema = z.infer<typeof TemplateVariablesSchema>;
 
-const NO_CRLF = /^[^\r\n]*$/;
+// The renderer's rule, imported rather than restated, so the authored subject
+// and the rendered one cannot be judged by two rules that drift apart. Covers
+// every C0 control and DEL, not only CR/LF.
 const subject = z
   .string()
   .trim()
   .min(1, "Subject is required.")
   .max(MAX_SUBJECT_CHARS)
-  .regex(NO_CRLF, "Subject must not contain line breaks.");
+  .regex(
+    NO_CONTROL_CHARS,
+    "Subject must not contain line breaks or control characters.",
+  );
 
 /** 5 MB, the same bound `SendEmailInput` puts on `html`/`text`. */
 const body = z.string().max(5_000_000);
