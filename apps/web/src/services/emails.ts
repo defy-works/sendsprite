@@ -122,6 +122,18 @@ export async function resolveSendingDomain(
 }
 
 /**
+ * Provenance carried onto a new row without re-rendering.
+ *
+ * Only `resendEmail` supplies it: a resend copies the bytes of the original
+ * message, so it must not run the template again, but the new row still came
+ * from that template and the mail log has to say so.
+ */
+export interface TemplateProvenance {
+  templateId: string | null;
+  variables: Record<string, unknown> | null;
+}
+
+/**
  * Validate, resolve the sending domain, apply suppressions/caps/tracking,
  * store the row (+ attachment bytes) and enqueue `email.send`. Every
  * refusal is a typed `SendFailure`; only infrastructure errors throw.
@@ -129,7 +141,7 @@ export async function resolveSendingDomain(
 export async function createEmail(
   ctx: SendContext,
   raw: unknown,
-  deps: { enqueue: Enqueue; now?: Date },
+  deps: { enqueue: Enqueue; now?: Date; provenance?: TemplateProvenance },
 ): Promise<CreateResult> {
   const parsed = SendEmailInput.safeParse(raw);
   if (!parsed.success)
@@ -159,8 +171,13 @@ export async function createEmail(
   // papered over, a retry issued after the template changed would silently
   // return an email whose body no longer matches the request. The order is
   // the guarantee.
-  let templateId: string | null = null;
-  let variables: Record<string, unknown> | null = null;
+  // A resend hands these in: it copies the source row's bytes rather than
+  // rendering again, and without them the log would claim a template-derived
+  // email came from nowhere. The `input.template` branch below overwrites
+  // both, so a real render always wins.
+  let templateId: string | null = deps.provenance?.templateId ?? null;
+  let variables: Record<string, unknown> | null =
+    deps.provenance?.variables ?? null;
   // Trimmed so a whitespace-only subject counts as absent and the template's
   // own subject wins, rather than a blank header reaching the MIME message.
   let subject = input.subject?.trim() ?? "";
@@ -619,6 +636,16 @@ export async function resendEmail(
         content: Buffer.from(a.bytes).toString("base64"),
       })),
     },
-    deps,
+    // Provenance travels; the render does not. A resend is of *that message*,
+    // so re-rendering could change the bytes under a customer who asked for
+    // the same mail again — but the copy is still template-derived, and a row
+    // with `template_id: null` beside a body full of substituted values is the
+    // mail log lying about where the message came from. Retention cannot leak
+    // through this: a purged row is refused above, and a purged row's
+    // `variables` are `null` anyway, so the copy could only inherit the null.
+    {
+      ...deps,
+      provenance: { templateId: e.templateId, variables: e.variables },
+    },
   );
 }

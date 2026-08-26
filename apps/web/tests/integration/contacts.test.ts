@@ -572,3 +572,47 @@ describe("CSV import", () => {
     );
   });
 });
+
+describe("contact webhook payloads", () => {
+  it("names its object, as every other event does", async () => {
+    const { actor, book: b, svc } = await book();
+    const { createWebhook } = await import("@/services/webhooks");
+    const { webhookDeliveries } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    const w = await createWebhook(actor, {
+      url: "https://hooks.acme.com/contacts",
+      events: ["contact.created"],
+    });
+    if (!w.ok) throw new Error(w.error);
+
+    const c = await svc.createContact(
+      actor,
+      b.id,
+      { email: "ada@example.com", firstName: "Ada" },
+      deps,
+    );
+    if (!c.ok) throw new Error("create failed");
+    const [row] = await pg.db
+      .select()
+      .from(webhookDeliveries)
+      .where(eq(webhookDeliveries.webhookId, w.data.id));
+    // `data.contact`, matching `data.email` and `data.domain`: a subscriber
+    // narrows one payload shape, not two.
+    expect(row!.payload).toMatchObject({
+      type: "contact.created",
+      data: {
+        contact: {
+          id: c.data.id,
+          email: "ada@example.com",
+          firstName: "Ada",
+          subscribed: true,
+        },
+      },
+    });
+    // Dates are strings on the wire, not Date objects.
+    const payload = row!.payload as {
+      data: { contact: Record<string, unknown> };
+    };
+    expect(typeof payload.data.contact.createdAt).toBe("string");
+  });
+});

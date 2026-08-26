@@ -705,3 +705,89 @@ describe("sending with a template", () => {
     ).toMatchObject({ ok: false, code: "idempotency_conflict" });
   });
 });
+
+describe("resending a template-derived email", () => {
+  const sendCtx = (teamId: string) => ({
+    teamId,
+    source: "api" as const,
+    apiKeyId: null,
+    actorUserId: null,
+  });
+
+  it("copies the template id and the variables forward without re-rendering", async () => {
+    const enqueue = vi.fn(async () => "job");
+    const { createEmail, resendEmail } = await import("@/services/emails");
+    const { createTemplate, updateTemplate } =
+      await import("@/services/templates");
+    const { emails } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    const { actor, team, from } = await seedVerifiedDomain();
+    const t = await createTemplate(actor, {
+      slug: "welcome",
+      name: "W",
+      subject: "Hi {{name}}",
+      bodyHtml: "<p>Hello {{name}}</p>",
+      bodyText: "Hello {{name}}",
+    });
+    if (!t.ok) throw new Error("seed failed");
+    const first = await createEmail(
+      sendCtx(team.id),
+      { from, to: "c@d.io", template: "welcome", variables: { name: "Ada" } },
+      { enqueue },
+    );
+    if (!first.ok) throw new Error(`send failed: ${first.error}`);
+
+    // A resend is only allowed once the original has finished, and the
+    // template is edited in between: the resend must ignore the new version.
+    await pg.db
+      .update(emails)
+      .set({ status: "sent" })
+      .where(eq(emails.id, first.data.id));
+    expect(
+      (
+        await updateTemplate(actor, "welcome", {
+          bodyHtml: "<p>Bye {{name}}</p>",
+        })
+      ).ok,
+    ).toBe(true);
+
+    const again = await resendEmail(sendCtx(team.id), first.data.id, {
+      enqueue,
+    });
+    if (!again.ok) throw new Error(`resend failed: ${again.error}`);
+    expect(again.data.id).not.toBe(first.data.id);
+    // The message that was sent, not the template as it now stands: a resend
+    // is of *that* email. (The tracking pixel is keyed to the new row's id, so
+    // the bodies are identical everywhere except there.)
+    expect(again.data.html).toContain("<p>Hello Ada</p>");
+    expect(again.data.html).not.toContain("Bye");
+    expect(again.data.text).toBe("Hello Ada");
+    // ...and the log still says where those bytes came from.
+    expect(again.data.templateId).toBe(t.data.id);
+    expect(again.data.variables).toEqual({ name: "Ada" });
+  });
+
+  it("leaves an ordinary resend with no template provenance", async () => {
+    const enqueue = vi.fn(async () => "job");
+    const { createEmail, resendEmail } = await import("@/services/emails");
+    const { emails } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    const { team, from } = await seedVerifiedDomain();
+    const first = await createEmail(
+      sendCtx(team.id),
+      { from, to: "c@d.io", subject: "Plain", html: "<p>hi</p>" },
+      { enqueue },
+    );
+    if (!first.ok) throw new Error(`send failed: ${first.error}`);
+    await pg.db
+      .update(emails)
+      .set({ status: "sent" })
+      .where(eq(emails.id, first.data.id));
+    const again = await resendEmail(sendCtx(team.id), first.data.id, {
+      enqueue,
+    });
+    if (!again.ok) throw new Error(`resend failed: ${again.error}`);
+    expect(again.data.templateId).toBeNull();
+    expect(again.data.variables).toBeNull();
+  });
+});

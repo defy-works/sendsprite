@@ -11,6 +11,8 @@ export const DOCS_NAV: DocsNavItem[] = [
   { title: "Self-hosting", href: "/docs/self-hosting" },
   { title: "Domains", href: "/docs/domains" },
   { title: "Sending", href: "/docs/sending" },
+  { title: "Templates", href: "/docs/templates" },
+  { title: "Contacts", href: "/docs/contacts" },
   { title: "API keys", href: "/docs/api-keys" },
   { title: "Webhooks", href: "/docs/webhooks" },
   { title: "Billing", href: "/docs/billing" },

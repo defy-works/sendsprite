@@ -122,6 +122,51 @@ test("owner verifies a domain, sends via REST and SMTP, sees the log", async ({
   await expect(page.getByRole("link", { name: apiSubject })).toBeVisible();
   await expectQueuedAndSent(page, id);
 
+  // Sending *with a template*, over the real API: the whole point is that the
+  // subject and bodies stored on the row are the rendered ones, and that the
+  // escaping is decided by the field rather than by the caller. Nothing else
+  // in the suite drives that path end to end — the templates spec never sends,
+  // and the integration tests call the service rather than the route.
+  const slug = `welcome-${suffix}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+  const tpl = await page.request.post("/api/v1/templates", {
+    headers: { authorization },
+    data: {
+      slug,
+      name: "Welcome",
+      subject: `E2E {{ name }} ${suffix}`,
+      bodyHtml: "<p>Hello {{ name }}, welcome.</p>",
+      bodyText: "Hello {{ name }}, welcome.",
+    },
+  });
+  expect(tpl.status(), await tpl.text()).toBe(201);
+
+  const templated = await page.request.post("/api/v1/emails", {
+    headers: { authorization },
+    data: {
+      from: `hello@${domain}`,
+      to: "t@example.com",
+      template: slug,
+      variables: { name: "<Ada>" },
+    },
+  });
+  expect(templated.status(), await templated.text()).toBe(201);
+  const { id: templatedId } = (await templated.json()) as { id: string };
+
+  // The mail log lists the *rendered* subject, not the template's source.
+  const renderedSubject = `E2E <Ada> ${suffix}`;
+  await page.goto("/app/emails");
+  await expect(page.getByRole("link", { name: renderedSubject })).toBeVisible();
+
+  // The stored bodies are the rendered ones, and the value is escaped in the
+  // HTML body and raw in the text body.
+  await page.goto(`/app/emails/${templatedId}`);
+  await page.getByRole("button", { name: "Text" }).click();
+  await expect(page.getByText("Hello <Ada>, welcome.")).toBeVisible();
+  await page.getByRole("button", { name: "Preview" }).click();
+  const sentPreview = page.frameLocator('iframe[title="Email preview"]');
+  await expect(sentPreview.locator("p")).toContainText("Hello <Ada>, welcome.");
+  await expectQueuedAndSent(page, templatedId);
+
   // SMTP relay: any username, API key as password, plain connection (the
   // server has SMTP_ALLOW_INSECURE_AUTH=true; the cert is self-signed).
   const smtpSubject = `E2E SMTP ${suffix}`;

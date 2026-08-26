@@ -17,12 +17,12 @@ job is queued, and the timeline fills in as SES reports back.
 | `from`                      | string               | Required. `a@b.com` or `Name <a@b.com>`. Must be on a verified domain of this team.  |
 | `to`                        | string or string[]   | Required, at least one address.                                                      |
 | `cc`, `bcc`, `replyTo`      | string or string[]   | Optional; a bare string is accepted and wrapped.                                     |
-| `subject`                   | string               | 1–998 characters, no line breaks. Required unless `template` supplies one.           |
+| `subject`                   | string               | 1–998 characters, no control characters. Required unless `template` supplies one.    |
 | `html`                      | string               | Up to 5 MB.                                                                          |
 | `text`                      | string               | Up to 5 MB.                                                                          |
 | `template`                  | string               | Slug of a stored template, rendered server-side. Not combinable with `html`/`text`.  |
 | `variables`                 | object               | Values for the template's `{{placeholders}}`; only valid with `template`.            |
-| `headers`                   | object               | Custom headers, `[A-Za-z0-9-]{1,80}` names, values ≤ 1000 chars without line breaks. |
+| `headers`                   | object               | Custom headers, `[A-Za-z0-9-]{1,80}` names, values ≤ 1000 chars, no control chars.   |
 | `attachments`               | object[]             | Up to 20; see below.                                                                 |
 | `tags`                      | object               | Up to 20 key/value pairs.                                                            |
 | `scheduledAt`               | ISO 8601 with offset | Send later.                                                                          |
@@ -39,9 +39,26 @@ A send naming a `template` renders it server-side with the supplied
 previewed is what is sent — and stores the rendered subject and body. The
 template's subject is used unless the request carries its own. A missing
 template, or a variable with no value and no declared default, is a
-`validation_error` naming what is wrong.
+`validation_error` naming what is wrong. See [Templates](/docs/templates) for
+the syntax, the escaping rules and how versions work.
 
 `to`, `cc` and `bcc` together may not exceed **50** recipients.
+
+**No control characters, anywhere that reaches a header.** `subject`, every
+address field, an attachment's `filename` and `contentType`, custom header
+values and tag values all refuse every C0 control character and DEL — not just
+CR and LF. That includes the **tab**, which RFC 5322 permits as whitespace in
+an unstructured header: it is the folding-continuation character and therefore
+the second half of a header-injection primitive. NUL truncates the value in
+whatever C-string-based agent handles the message downstream, and ESC is
+RFC 2047's charset-switching lead-in. A value carrying one is a
+`validation_error` saying it "must not contain line breaks or control
+characters"; strip it, or send it in the body.
+
+`subject` is trimmed before it is stored, so `"  Hello  "` is stored and sent
+as `"Hello"`, and a subject of nothing but whitespace is a `validation_error`
+rather than a blank header. When a template supplies a subject, a
+whitespace-only request subject counts as absent and the template's wins.
 
 Headers that Sendsprite or SES set themselves are rejected: `to`, `cc`,
 `bcc`, `from`, `subject`, `reply-to`, `content-type`, `mime-version`, `date`,
@@ -64,7 +81,7 @@ everything before it is already queued.
 }
 ```
 
-`filename` is 1–255 characters with no path separators and no line breaks.
+`filename` is 1–255 characters with no path separators and no control characters.
 `content` is base64 (whitespace is stripped before validation).
 `contentType` defaults to `application/octet-stream`. At most 20 attachments
 and **10 MB** of decoded bytes across all of them. The request body as a
@@ -73,7 +90,7 @@ whole is capped at 25 MB.
 ## Tags
 
 Up to **20** tags. Keys are 1–64 characters of `[A-Za-z0-9_-]`; values are up
-to 256 characters without line breaks. Tags are stored with the email and are
+to 256 characters, with no control characters. Tags are stored with the email and are
 filterable: `GET /api/v1/emails?tag=env:production` matches one `key:value`
 pair (the value may itself contain `:`).
 

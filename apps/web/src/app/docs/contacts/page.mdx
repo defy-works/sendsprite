@@ -1,0 +1,171 @@
+export const metadata = {
+  title: "Contacts",
+  description:
+    "Sendsprite contact books, CSV import and export, subscription status, and why unsubscribing is not suppression.",
+};
+
+# Contacts
+
+A **contact book** is an audience; a **contact** is one person in one book,
+with a subscription status and any custom properties you attach.
+
+```bash
+curl -X POST "$APP_URL/api/v1/contact-books" \
+  -H "Authorization: Bearer ss_live_..." \
+  -H "Content-Type: application/json" \
+  -d '{ "name": "Newsletter" }'
+# → 201 {"id":"cb_…","contactCount":0,"subscribedCount":0}
+```
+
+Every route under `/contact-books` and `/contacts` needs a **`full`** API key.
+In the dashboard, any team member can add, edit and import contacts; deleting a
+whole book is an admin or owner action, because it is an irreversible bulk
+cascade.
+
+A contact holds `email`, an optional `firstName` and `lastName`, and up to
+**20 properties** — free-form strings, keys up to 64 characters and values up
+to 500. Addresses are trimmed and lower-cased on the way in, so a book cannot
+hold the same person twice under different capitalisation.
+
+## Unsubscribing is not suppression
+
+These are two different things and Sendsprite keeps them apart on purpose:
+
+|           | Suppression list                                     | Contact subscription                                      |
+| --------- | ---------------------------------------------------- | --------------------------------------------------------- |
+| Question  | "Can this address receive mail at all?"              | "Does this person want this kind of mail?"                |
+| Scope     | The whole team                                       | One contact book                                          |
+| Filled by | SES bounces and complaints, and `POST /suppressions` | `POST /contacts/unsubscribe`, the dashboard, CSV import   |
+| Effect    | **Blocks every send**, transactional included        | Excludes the contact from campaigns. Blocks nothing else. |
+
+Unsubscribing a contact never writes a suppression, and suppressing an address
+never unsubscribes a contact. If it did, someone who left your newsletter would
+stop receiving their password resets and their receipts. When you want mail to
+an address to stop entirely, use the suppression list.
+
+Campaigns ship in a later release, so today a `subscribed: false` contact
+blocks nothing on its own — it is the record of consent that campaign
+recipient selection will read.
+
+```bash
+curl -X POST "$APP_URL/api/v1/contacts/unsubscribe" \
+  -H "Authorization: Bearer ss_live_..." \
+  -H "Content-Type: application/json" \
+  -d '{ "email": "ada@example.com", "reason": "link" }'
+# → 200 {"unsubscribed": 2}   (every book of the team; add "bookId" to narrow)
+```
+
+It is idempotent: an address that is already out — or in no book at all —
+returns `{"unsubscribed": 0}` with a 200, not a 404. A link clicked twice, or
+prefetched by a mail client, is not an error.
+
+## CSV import
+
+`POST /api/v1/contact-books/:id/contacts/import` with `{ "csv": "…" }`, or the
+**Import CSV** control in the dashboard.
+
+The file needs an `email` column. A small set of headers is read as contact
+**fields**, and **every other column becomes a property**:
+
+| Header                                       | Read as                                                     |
+| -------------------------------------------- | ------------------------------------------------------------ |
+| `email`, `email_address`, `e-mail`           | The address. Required.                                      |
+| `first_name`, `firstname`, `first`           | `firstName`                                                 |
+| `last_name`, `lastname`, `last`              | `lastName`                                                  |
+| `subscribed`                                 | Consent — see below.                                        |
+| `unsubscribe_reason`, `unsubscribereason`    | The reason stored beside an unsubscribed row (≤ 200 chars). |
+| `created_at`, `createdat`                    | Recognised and **ignored** — when a row was created is ours to assign. |
+| anything else                                | A property, named by the header.                            |
+
+Header matching is case-insensitive. That reserved list is load-bearing rather
+than incidental: without it, re-importing this product's own export would turn
+`subscribed`, `unsubscribe_reason` and `created_at` into three junk properties,
+and for a contact already at the 20-property cap it would fail every row.
+Export → edit in a spreadsheet → re-import is the most common thing anyone does
+with a contact list, so it round-trips clean.
+
+```csv
+email,first_name,last_name,plan
+ada@example.com,Ada,Lovelace,pro
+grace@example.com,Grace,Hopper,free
+```
+
+```json
+{ "imported": 2, "updated": 0, "skipped": 0, "duplicates": 0, "errors": [] }
+```
+
+### Consent travels in one direction
+
+A **new** row takes the consent the file gives it. `subscribed` is honoured
+when the column is present — `false`, `0`, `no`, `n`, `f`, `off` and
+`unsubscribed` all mean "out"; `true`, `1`, `yes`, `y`, `t`, `on` and
+`subscribed` mean "in", case-insensitively — and defaults to subscribed only
+when the column is absent. A list exported from another provider routinely
+carries people who opted out, and importing them as subscribed is a consent
+failure that surfaces as a spam complaint rather than as a bug report. A value
+in that column that means nothing recognisable holds the row back rather than
+defaulting it in.
+
+An **existing** row keeps the consent it already has. No import can resubscribe
+anyone: the upsert never touches `subscribed`, `unsubscribed_at` or
+`unsubscribe_reason`. Someone who asked to leave comes back only through the
+dashboard or the API, where a human is present.
+
+### Limits and behaviour
+
+- **2 MB and 10 000 rows per call**, at most **32 columns**, and at most **500
+  characters per cell**. Split a larger list; the endpoint is an upsert, so
+  re-importing a chunk is safe and every part lands in the same book.
+- **A bad row does not fail the import.** It is counted in `skipped` and
+  described in `errors` with its line number. That list is capped at 100
+  entries; when there are more, the last entry says how many were left out.
+- **A row with more values than the header is dropped, not truncated.** A stray
+  comma shifts every later value one column left, which would land one person's
+  data in another person's field.
+- **A structurally broken file is refused whole.** In practice that means an
+  unterminated quote: after it, nothing that follows can be read reliably.
+- **A duplicate address inside one file collapses to the last row**, counted in
+  `duplicates`.
+- **A blank cell is an absent property, not an empty one.** Templates treat an
+  empty string as a missing value, so storing `""` would only hide the gap.
+- `updateExisting: false` leaves addresses already in the book exactly as they
+  are; they are counted in `skipped`.
+
+A UTF-8 BOM, CRLF or LF line endings, blank lines, and rows shorter than the
+header are all tolerated — they are what real exporters emit.
+
+## CSV export
+
+**Export CSV** on a book in the dashboard downloads every contact, properties
+included. It is a session-authenticated download rather than a REST endpoint,
+and it streams, so a book of half a million rows does not have to fit in
+memory. Nothing is truncated.
+
+The columns are `email`, `first_name`, `last_name`, `subscribed`,
+`unsubscribe_reason`, `created_at`, then one column per property key. A book
+whose contacts between them use more distinct keys than the format has room for
+gets a final `properties_json` column holding the remainder as JSON, so no value
+is ever silently dropped.
+
+Cells that a spreadsheet would evaluate as a formula — anything starting `=`,
+`+`, `-`, `@`, a tab or a carriage return — are prefixed with an apostrophe, so
+a contact whose "first name" is `=HYPERLINK(…)` opens as text rather than
+running. RFC 4180 quoting alone does not do this: a spreadsheet strips the
+quotes and evaluates what is inside.
+
+The prefix is an **escape, not a rewrite**: the import reverses it, so a file
+Sendsprite wrote re-imports as the values it started with. A `-1234` phone
+number does not gain an apostrophe every time it goes round the loop.
+
+## Webhooks
+
+Subscribe to `contact.created`, `contact.updated`, `contact.unsubscribed` and
+`contact.resubscribed` to mirror consent into your own system. The payload is
+`data.contact`, the same public contact object the REST API returns.
+
+Two gaps worth knowing before you build on them:
+
+- **CSV import fires nothing.** Ten thousand deliveries from one button press
+  would take your endpoint down. Poll the book, or re-import from your own
+  source of truth.
+- **Deleting a contact fires nothing.** There is no `contact.deleted` event.

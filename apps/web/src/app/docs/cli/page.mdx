@@ -1,7 +1,7 @@
 export const metadata = {
   title: "CLI",
   description:
-    "npx sendsprite — login, whoami, domains list, emails send and emails tail.",
+    "npx sendsprite — login, whoami, domains list, emails send, emails tail and templates pull/push.",
 };
 
 # CLI
@@ -107,3 +107,35 @@ em_5a1…  bounced    grace@example.com Hello
 Subscribes to the instance's change stream and prints each email as it moves.
 Needs a `full` key. `--json` prints the raw objects; Ctrl-C closes the
 stream.
+
+## templates pull / push
+
+```bash
+npx sendsprite templates pull ./emails    # write every template to ./emails
+npx sendsprite templates push ./emails    # create what is missing, update the rest
+```
+
+Templates as files in your repository: three files per template, named by the
+slug — `<slug>.json` (`name`, `subject`, `variablesSchema`), `<slug>.html`, and
+`<slug>.txt` when there is a text body. Needs a `full` key.
+
+| Flag        | Meaning                                                    |
+| ----------- | ---------------------------------------------------------- |
+| `--dry-run` | Report what would change and write (or send) nothing.      |
+
+Both directions are conservative about what they will not do:
+
+- **`push` never deletes.** A template on the instance with no file in the
+  directory is reported and left alone.
+- **A missing `<slug>.txt` means "no opinion", not "clear the text body".** An
+  absent file is ambiguous, so `push` reports the difference and leaves the
+  stored text body as it is.
+- **`pull` refuses a slug it did not expect.** A file name comes from the
+  server, so it is checked against the slug rule before anything is written.
+- **`pull` leaves local-only templates alone** and tells you `push` would
+  create them.
+
+Put `* text=auto eol=lf` in a `.gitattributes` beside the files: on Windows with
+`core.autocrlf=true` a checked-out body becomes CRLF, and `push` will correctly
+— but confusingly — see that as a change to every template. Full reference:
+[Templates](/docs/templates).

@@ -61,10 +61,10 @@ yet, so the install lines below will not resolve until it happens; build them
 from the repository in the meantime (`bun run --filter sendsprite build`,
 `bun run --filter @sendsprite/mcp build`).
 
-| Package                           | Install                       | What it is                                                                                                                                 |
-| --------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| [`sendsprite`](packages/sdk)      | `npm install sendsprite`      | Typed API client (`emails`, `domains`, `apiKeys`, `webhooks`, `suppressions`, `stats`, `me`, SSE `stream`), plus three extra entry points. |
-| [`@sendsprite/mcp`](packages/mcp) | `npm install @sendsprite/mcp` | Model Context Protocol server — `send_email`, `get_email_status`, `list_emails`, `search_emails`, `list_domains`, `get_send_stats`.        |
+| Package                           | Install                       | What it is                                                                                                                                                                              |
+| --------------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`sendsprite`](packages/sdk)      | `npm install sendsprite`      | Typed API client (`emails`, `templates`, `contactBooks`, `contacts`, `domains`, `apiKeys`, `webhooks`, `suppressions`, `stats`, `me`, SSE `stream`), plus three extra entry points.     |
+| [`@sendsprite/mcp`](packages/mcp) | `npm install @sendsprite/mcp` | Model Context Protocol server — `send_email`, `get_email_status`, `list_emails`, `search_emails`, `list_domains`, `get_send_stats`, `list_templates`, `render_template`, `add_contact`. |
 
 - `sendsprite/react` re-exports the React Email primitives and `renderEmail`,
   and `emails.send({ react: <Email /> })` renders an element for you.
@@ -72,7 +72,7 @@ from the repository in the meantime (`bun run --filter sendsprite build`,
 - `sendsprite/next` has `verifyWebhook` and `createWebhookHandler` for a
   Next.js route handler.
 - `npx sendsprite` is the same package's binary: `login`, `whoami`,
-  `domains list`, `emails send`, `emails tail`.
+  `domains list`, `emails send`, `emails tail`, `templates pull|push <dir>`.
 - `npx sendsprite-mcp` speaks MCP over stdio, or `--http [port]` for the
   streamable HTTP transport (loopback-bound; it holds an API key and
   authenticates nobody).
@@ -83,8 +83,8 @@ package or `zod` into your dependency tree.
 ## Docs
 
 Every instance serves its own documentation at `/docs` — getting started,
-self-hosting, domains, sending, API keys, webhooks, billing, SDK, CLI,
-MCP server —
+self-hosting, domains, sending, templates, contacts, API keys, webhooks,
+billing, SDK, CLI, MCP server —
 with an interactive API reference at `/docs/api` rendered from
 `/api/v1/openapi.json` (OpenAPI 3.1, generated from the same zod contracts the
 server validates with). The pages live in
@@ -208,10 +208,14 @@ curl -X POST "$APP_URL/api/v1/emails" \
 # → 201 {"id":"em_…"}  (200 with the earlier id on an idempotent replay)
 ```
 
-- **Content:** `html` and/or `text` (≤ 5 MB each). `template`/`variables` are
-  accepted by the schema but templates ship in Phase 5. Up to 50 recipients
-  across `to`/`cc`/`bcc`; custom headers may not set the envelope headers
-  (`From`, `To`, `Return-Path`, `DKIM-Signature`, …); at most 20 tags.
+- **Content:** `html` and/or `text` (≤ 5 MB each), **or** `template` (+
+  `variables`), which renders a stored template server-side and is mutually
+  exclusive with `html`/`text`; `subject` is optional when a template supplies
+  one. Up to 50 recipients across `to`/`cc`/`bcc`; custom headers may not set
+  the envelope headers (`From`, `To`, `Return-Path`, `DKIM-Signature`, …); at
+  most 20 tags. `subject`, addresses, attachment `filename`/`contentType`,
+  header values and tag values refuse every control character (tab included),
+  and `subject` is trimmed.
 - **Batch:** `POST /api/v1/emails/batch` with an array of ≤ 100 messages →
   `201 { "data": [{ "id" }] }`. Items are created in order; on the first
   failure the response is that item's error with `details.index`, and the
@@ -231,6 +235,27 @@ curl -X POST "$APP_URL/api/v1/emails" \
   is disabled so each count has one source.
 - **Read back:** `GET /api/v1/emails/:id` (includes `events`),
   `GET /api/v1/emails?limit&cursor&status&to&domainId&tag`.
+
+### Templates and contacts
+
+- **Templates** (Templates in the sidebar; `GET/POST /api/v1/templates`,
+  `GET/PATCH/DELETE /api/v1/templates/:slug`,
+  `POST /api/v1/templates/:slug/render`): a stored subject and body with
+  `{{ variable }}` placeholders, rendered server-side at send time. Values are
+  HTML-escaped into the HTML body, left raw in the text body, and a rendered
+  subject carrying a control character is refused — the header-injection guard
+  runs on the output, not only on what you sent. There is no unescaped form and
+  no expression language, deliberately. Every content change bumps `version`
+  and appends a snapshot; `slug` is immutable, because a live send names a
+  template by slug. `sendsprite templates pull|push <dir>` keeps them in your
+  repository.
+- **Contacts** (Contacts in the sidebar; `/api/v1/contact-books`,
+  `/api/v1/contact-books/:id/contacts`, `POST /api/v1/contacts/unsubscribe`):
+  contact books, CSV import (2 MB / 10 000 rows, per-row error report) and
+  export, search, and a per-address unsubscribe. Subscription is **consent**,
+  not deliverability: it excludes a contact from campaigns and never blocks a
+  transactional send. The suppression list is what stops mail to an address
+  entirely, and no import can resubscribe someone who opted out.
 
 ### Webhooks
 
@@ -425,8 +450,10 @@ Phase 1: foundation — done. Phase 2: AWS one-click connect, Cloudflare,
 domains — done. Phase 3: sending API, events, webhooks, tracking, SMTP relay —
 done. Phase 4: SDK, CLI, MCP, OpenAPI, `/docs`, landing page, release
 pipeline — done. Phase 5: billing — plans, usage metering, entitlements,
-`BILLING_ENABLED` — done. Phase 6 (next): templates, preview, contacts,
-campaigns, audit UI.
+`BILLING_ENABLED` — done. Phase 6: templates and contacts — versioned templates
+with a server-side render, contact books with CSV import/export and
+unsubscribe — done. Phase 7 (next): campaigns and the block editor, preview,
+audit UI, analytics.
 Design: `docs/superpowers/specs/2026-08-24-sendsprite-design.md`.
 
 ## Licensing

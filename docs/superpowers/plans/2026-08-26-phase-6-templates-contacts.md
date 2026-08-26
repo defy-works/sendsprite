@@ -8681,7 +8681,7 @@ Append a `## Phase 6 status: COMPLETE` section to this file in the shape Phase 5
 16. **`format: "email"` is lost in the advertised MCP schema.** `z.string().trim().toLowerCase().max(320).pipe(z.email())` emits only `{ type: "string", maxLength: 320 }` through `z.toJSONSchema`. Runtime validation still refuses a bad address; only the hint the model reads is thinner than the check it will meet.
 17. **The CLI cannot remove a template's text body.** `push` treats a missing `<slug>.txt` as "no opinion" rather than "delete", because an absent file is ambiguous — never pulled, gitignored, or lost. That is the safe reading, but it leaves no CLI path to clear `bodyText`; today the answer is the dashboard. The fix is an explicit `"bodyText": null` in the manifest, not inferring deletion from absence.
 18. **`push` fetches every template body to push one file.** It lists the whole remote once to diff and to build minimal patches. Bounded and small at present, but it is O(all templates) per invocation.
-19. **One handler module can take out the whole worker at import time.** `jobs/handlers/index.ts` imports every handler, and `billing-meter.ts` calls `billingConfig()` at module scope — which validates the *entire* env schema — just to read one boolean. Any env fault therefore stops sending, domain verification and webhook retries together, with an error naming `APP_SECRET` rather than billing. Boot already validates the env in a real deployment, so the practical exposure is small; the fix is to decide registration on the single flag, or to register inside `startWorker()` where the env is known good. Found because `worker.test.ts` had been passing on env leaked from another test file in the same vitest worker process (fixed in `589645b`).
+19. **One handler module can take out the whole worker at import time.** `jobs/handlers/index.ts` imports every handler, and `billing-meter.ts` calls `billingConfig()` at module scope — which validates the _entire_ env schema — just to read one boolean. Any env fault therefore stops sending, domain verification and webhook retries together, with an error naming `APP_SECRET` rather than billing. Boot already validates the env in a real deployment, so the practical exposure is small; the fix is to decide registration on the single flag, or to register inside `startWorker()` where the env is known good. Found because `worker.test.ts` had been passing on env leaked from another test file in the same vitest worker process (fixed in `589645b`).
 
 Then, and only then:
 
@@ -8738,3 +8738,254 @@ Run after writing the plan, before executing it.
 - The `allTrue` array is 35 entries before Task 11 and **55** after; the plan says so explicitly, and `tsc` enforces it.
 
 **4. Ordering.** Nothing references a symbol from a later task: the renderer (1) precedes the contracts that import `placeholderNames` (2), which precede the schema that types `variables_schema` (4), which precedes the services (6, 7), which precede the send path (8) and the routes (9, 10), which precede the SDK (11), CLI (12), MCP (13) and the dashboard (14, 15). Task 5 (CSV) sits before Task 7, its only consumer.
+
+---
+
+## Phase 6 status: COMPLETE
+
+Shipped on `master`, `1ea1e0a`..`phase-6-complete` — 35 commits, the plan itself
+included. Every gate green at the tagged commit; counts below.
+
+### What shipped, per task
+
+| Task                            | Commits                                                                                                                            | Notes                                                                                                                                                                                    |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Plan                            | `1ea1e0a`, `8c1e826`, `9e1b303`, `f9599e6`, `63d1413`, `a0b6588`, `aacf375`, `dfec53b`, `e9ad66a`, `468597b`, `7d3bbd8`, `e5c6bfc` | Amended eleven times while it was being executed; every amendment is above this block.                                                                                                   |
+| 1. The renderer                 | `7843090`, `917aa9c`                                                                                                               | `917aa9c`: escape `` ` `` and `=` as well (unquoted attributes are ordinary in email HTML), and resolve each variable exactly once so a hostile getter cannot differ between two fields. |
+| 2. Shared contracts — templates | `33b9209`, `4822392`, `90803c6`, `1713d5d`                                                                                         | `90803c6`/`1713d5d`: `required` removed from the variables schema before any SDK types shipped. See opener 6 — it must not come back.                                                    |
+| 3. Shared contracts — contacts  | `4f2087e`                                                                                                                          | Email normalised identically to `AddSuppressionInput`, so `(book_id, email)` uniqueness and unsubscribe idempotency agree.                                                               |
+| 4. Schema                       | `a546722`                                                                                                                          | Migration `0013`; `emails.template_id` is `set null` on delete, `emails.variables` is purged with the body.                                                                              |
+| 5. CSV parser and guard         | `a8ea7fb`, `ab7e6cd`                                                                                                               | `ab7e6cd`: column cap raised to 32 — at 24, an export with many property keys was a file this product could not re-import.                                                               |
+| 6. Templates service            | `825c18c`                                                                                                                          | Version bump computed by Postgres on the locked row, so two concurrent edits get 2 and 3 rather than colliding.                                                                          |
+| 7. Contacts service             | `9f5b91c`, `c7b60a5`                                                                                                               | `c7b60a5`: reserved header set, and a `subscribed` column is honoured on insert. An import can never resubscribe.                                                                        |
+| 8. `template` on `POST /emails` | `2b3f329`                                                                                                                          | Rendered **before** the idempotency lookup, so a replay's fingerprint is over the same bytes the first send stored.                                                                      |
+| 9. REST — templates + OpenAPI   | `357f136`                                                                                                                          | Every route needs a `full` key, `render` included: it returns template content.                                                                                                          |
+| 10. REST — contacts             | `9a7c8e1`                                                                                                                          | Nothing under `/contact-books` or `/contacts` writes a suppression, and the route comments say why an "also suppress" flag is not a convenience.                                         |
+| 11. SDK                         | `615d713`                                                                                                                          | `templates`, `contactBooks`, `contacts`; types-parity tuple grown to 55.                                                                                                                 |
+| 12. CLI                         | `c684d42`                                                                                                                          | `templates pull                                                                                                                                                                          | push <dir>`, flat, three files per template. `push` never deletes. |
+| 13. MCP                         | `97abbd2`                                                                                                                          | `list_templates`, `render_template`, `add_contact`. `add_contact` never guesses a book and never resubscribes.                                                                           |
+| 14. Templates dashboard         | `fa344be`                                                                                                                          | Live preview through the same renderer, in a sandboxed iframe; append-only version history with Restore.                                                                                 |
+| 15. Contacts dashboard          | `8ae23d5`, `589645b`                                                                                                               | `589645b`: `worker.test.ts` had been passing on env leaked from another file in the same vitest worker — see opener 19.                                                                  |
+| 16. Docs, README, changeset     | this commit                                                                                                                        | Also: the resend provenance fix, the `contact.*` payload shape, and four docs pages the plan did not list. See deviations.                                                               |
+
+### Gates at the tag
+
+| Gate                       | Result                                  |
+| -------------------------- | --------------------------------------- |
+| `bun run typecheck`        | 4 packages, clean                       |
+| `bun run lint`             | clean                                   |
+| `bun run format`           | clean (README + the plan reflowed only) |
+| `bun run test` (unit)      | **55 files, 680 tests** passed          |
+| — `@sendsprite/shared`     | 12 files, 180                           |
+| — `sendsprite` (SDK + CLI) | 8 files, 145                            |
+| — `@sendsprite/web`        | 32 files, 308                           |
+| — `@sendsprite/mcp`        | 3 files, 47                             |
+| `bun run test:integration` | **45 files, 372 tests** passed (126 s)  |
+| `bun run test:e2e`         | **9 files, 17 tests** passed (57 s)     |
+
+Integration went 369 → 372: two tests for the resend provenance fix and one for
+the `contact.*` payload shape. Unit and e2e counts are unchanged; the e2e work
+this task did extended an existing spec rather than adding one. No flakes.
+
+**The e2e needs a Postgres on `localhost:5432`** — `bun run db:dev` from
+`apps/web` (embedded-postgres, persistent in `apps/web/.pgdata`; no Docker on
+this machine), stopped with `pg_ctl -D apps/web/.pgdata -m fast stop`. The suite
+builds and runs a production server, not `next dev` (`6b0006a`).
+
+### Deviations from the plan worth knowing
+
+- **Task 16 Step 1 was already done, twice over.** Tasks 14 and 15 shipped
+  `templates.spec.ts` and `contacts.spec.ts`, which between them cover
+  everything the plan's drafted spec asserted — creation, the undeclared-variable
+  warning, the sandboxed preview, versioning, Restore, delete, the CSV import
+  report, consent, and the formula-neutralised export. Writing the plan's spec
+  would have duplicated two green specs. What **nothing** covered was the plan's
+  actual intent — a send _through_ a template over the real HTTP API — so that
+  went into `send.spec.ts`, which already has a verified domain and an API key:
+  create a template over REST, send with `template` + `variables`, and assert the
+  mail log lists the rendered subject and the stored bodies are the rendered ones,
+  escaped in HTML and raw in text. The integration suite only ever called the
+  service; the route had never been driven with a template.
+- **The control-character message needed no fixing.** The plan expected to find
+  "must not contain line breaks" and to have to widen it. The contracts already
+  say "must not contain line breaks or control characters"
+  (`api/emails.ts`), "Subject must not contain line breaks or control
+  characters." (`api/templates.ts`) and "The rendered subject must not contain
+  line breaks or control characters." (`template.ts`) — `a0b6588`/`917aa9c` got
+  there first. The only place still saying "no line breaks" was
+  `/docs/sending`, which is now corrected in four rows and carries a paragraph
+  naming the tab, NUL and ESC explicitly.
+- **Resend provenance shipped as a `provenance` field on `createEmail`'s deps**
+  (`TemplateProvenance`), set only by `resendEmail`. The render still does not
+  re-run — a resend is of _that_ message — but `template_id` and `variables` are
+  copied forward, so the mail log no longer claims a template-derived email came
+  from nowhere. The retention interaction the plan asked about is moot in both
+  directions: `resendEmail` refuses a purged row outright, and a purged row's
+  `variables` are `null` anyway, so the copy could only ever inherit the null.
+- **`contact.*` webhooks now carry `data.contact`.** They were fanning out the
+  contact's fields at the top of `data`, while `email.*` sends `data.email` and
+  `domain.*` sends `data.domain`. A subscriber would have had to special-case one
+  event family. Nothing is published, so the cost of fixing it was zero today and
+  would have been non-zero for ever after — the same reasoning as the
+  control-character tightening. `/docs/webhooks` says so.
+- **The plan's drafted docs were wrong in five places, and the code won each
+  time.** The escaping table omitted `` ` `` and `=`; the reserved-header rule was
+  drafted as "`first_name` and `last_name` are recognised (`firstName`/`first`
+  too)" when the real alias sets are `email`/`email_address`/`e-mail`,
+  `first_name`/`firstname`/`first`, `last_name`/`lastname`/`last`, plus
+  `subscribed`, `unsubscribe_reason`/`unsubscribereason` and
+  `created_at`/`createdat`; the export section did not mention the
+  `properties_json` overflow column, which is the thing that keeps a wide book's
+  values in the file at all; the CSV caps needed the 32-column and
+  500-character-per-cell bounds beside the 2 MB and 10 000 rows; and the webhook
+  table's replacement rows still carried "(Phase 7)", which is our numbering, not
+  a customer's.
+- **Four more docs pages were stale and are fixed.** `/docs/mcp` ended with
+  "Template rendering and contacts tools are planned for a later release" — they
+  shipped in `97abbd2` — and its tools table was missing all three, as was its
+  advice to use a `sending_only` key (the new tools need `full`). `/docs/cli` had
+  no `templates` section and a metadata description that listed the old commands.
+  `/docs/sdk` documented six namespaces of nine and claimed emails were the only
+  resource with an iterator. `/docs/sending` is covered above.
+- **Two stale "(Phase 3)" claims in app code went too**, since the brief asked
+  for any stale phase claim: the retention hint under Settings → Instance was
+  user-visible copy citing an internal phase number for a feature that has
+  shipped, and `DomainActions` carried "Until SSE lands (Phase 3)" beside a
+  polling loop that is still correct for a different reason — the change stream
+  carries email and webhook events, not domain status.
+- **The changeset describes behaviour, not tasks.** It leads with what a reader
+  can now do, then names the three changes that can break an existing caller:
+  control characters (tab included), `subject` trimming (including the
+  idempotency-retry consequence), and the removal of `required`.
+
+---
+
+## Phase 7 openers
+
+**The body of Phase 7** is campaigns and the block editor. `AppShell`'s `NAV`
+still links `/app/campaigns` at a page that does not exist — the last of the
+three placeholders Phase 1 left; `/app/templates` and `/app/contacts` were filled
+in by `fa344be` and `8ae23d5`.
+
+**Carried forward unchanged from Phases 3–5:** the audit log UI and its
+companions, `sending_only` and `GET /emails`, the per-key stream connection cap,
+the MCP host allowlist, `workspace:*` publishing, the CLI polish items, and the
+operational openers. See the Phase 5 status block for the full list.
+
+### New, created or discovered by this phase
+
+1. **The block editor and campaigns are the whole of Phase 7.** `AppShell`'s
+   `NAV` still links `/app/campaigns` at a page that does not exist — the last of
+   the three placeholders Phase 1 left.
+2. **Campaign recipient selection must skip suppressed contacts.** This is the
+   one place consent and deliverability legitimately meet, and it is a read-time
+   join at send time, not a write anywhere in Phase 6. Getting it wrong sends to
+   an address SES already refused, which is a reputation cost.
+3. **A public `/unsubscribe/:token` page and `List-Unsubscribe` headers.**
+   Deferred deliberately: one-click unsubscribe (RFC 8058) needs
+   `List-Unsubscribe-Post` on a send that knows which campaign it belongs to.
+   `POST /contacts/unsubscribe` is the API a customer's own page calls in the
+   meantime.
+4. **No URL-scheme filter on interpolated values.** `<a href="{{link}}">` with a
+   `javascript:` value survives HTML escaping. Every preview surface is
+   `<iframe sandbox="">` and mail clients do not execute it, so the exposure is
+   low — but a scheme allow-list for values that land inside an `href`/`src`
+   attribute is a real hardening step.
+5. **No inline variable autocomplete.** The editor offers insert-at-cursor chips
+   and an undeclared-placeholder warning; true completion inside the body needs a
+   code-editor component the UI kit does not have (and §10 says the kit is
+   fixed).
+6. **`variables_schema` is enforced on two of its three fields.** `type` is
+   checked against a supplied value at render time and against a declared
+   `default` at authoring time, and duplicate names are refused; `description` is
+   still shown only in the editor. **`required` was considered and deliberately
+   removed** (Task 2, before the SDK types shipped): the renderer refuses _every_
+   unresolved placeholder, so `required: true` was a no-op, and the only thing
+   `required: false` could have meant is a placeholder that renders as nothing —
+   the silent empty string Decision 2 exists to prevent. A `default` already makes
+   a variable optional, visibly, with a value the editor can preview; a flag
+   beside it would be a third way to express optionality layered on the other
+   two. Do not add it back. An unknown `required` key from an older client is
+   stripped, not rejected.
+7. **CSV import is JSON-only.** `curl --data-binary @file.csv` with
+   `content-type: text/csv` would be the natural shape for a shell user and is one
+   branch in the import route.
+8. **Import fires no webhook.** A summary `contacts.imported` event carrying the
+   counts would let a customer mirror a bulk change without polling.
+9. **The contacts dashboard shows the first 100 and stops.** Search narrows;
+   there is no paging control, and no way to page a book of 50 000 in the UI.
+   Export is the escape hatch.
+10. **Template bodies are not deduplicated across versions.** Every version
+    snapshot stores the whole body, so a 200 KB template edited 50 times is
+    10 MB. Bounded by hand-editing speed, but `template_versions` should
+    eventually join the retention sweep.
+11. **A template delete is not blocked by live sends.** Deleting a slug a
+    scheduled email names makes that send fail at render time. A "used by N
+    scheduled emails" check before deleting would be cheap.
+12. **`emails.variables` is stored in full and purged with the body.** That is
+    right for retention, but it means a send's variables outlive the body's
+    retention window by exactly zero days — there is no separate, shorter window
+    for what may be the most personal data in the row.
+13. **`/app/templates/new` shadows a template whose slug is literally `new`.**
+    Next resolves the static segment before the dynamic one, so such a template is
+    editable over REST, the SDK and the CLI, but the dashboard opens the create
+    form instead. Either reserve the slug in `TemplateSlug` or move the create
+    form to a query parameter.
+14. **There is no `list_contact_books` MCP tool.** `add_contact` requires a
+    `cb_…` id and deliberately will not guess which list an address lands on, so
+    an agent depends on the operator pasting the id. A read-only listing tool is
+    the natural completion, and it is read-only, so it costs nothing to add.
+15. **MCP `list_templates` returns `nextCursor` but accepts no `limit` or
+    `cursor`.** A team past one page hands the model a cursor it cannot use.
+    `list_domains` has the identical shape, so this is a consistent gap rather
+    than a new one — fix both together.
+16. **`format: "email"` is lost in the advertised MCP schema.**
+    `z.string().trim().toLowerCase().max(320).pipe(z.email())` emits only
+    `{ type: "string", maxLength: 320 }` through `z.toJSONSchema`. Runtime
+    validation still refuses a bad address; only the hint the model reads is
+    thinner than the check it will meet.
+17. **The CLI cannot remove a template's text body.** `push` treats a missing
+    `<slug>.txt` as "no opinion" rather than "delete", because an absent file is
+    ambiguous — never pulled, gitignored, or lost. That is the safe reading, but
+    it leaves no CLI path to clear `bodyText`; today the answer is the dashboard.
+    The fix is an explicit `"bodyText": null` in the manifest, not inferring
+    deletion from absence.
+18. **`push` fetches every template body to push one file.** It lists the whole
+    remote once to diff and to build minimal patches. Bounded and small at
+    present, but it is O(all templates) per invocation.
+19. **One handler module can take out the whole worker at import time.**
+    `jobs/handlers/index.ts` imports every handler, and `billing-meter.ts` calls
+    `billingConfig()` at module scope — which validates the _entire_ env schema —
+    just to read one boolean. Any env fault therefore stops sending, domain
+    verification and webhook retries together, with an error naming `APP_SECRET`
+    rather than billing. Boot already validates the env in a real deployment, so
+    the practical exposure is small; the fix is to decide registration on the
+    single flag, or to register inside `startWorker()` where the env is known
+    good. Found because `worker.test.ts` had been passing on env leaked from
+    another test file in the same vitest worker process (fixed in `589645b`).
+
+Found while writing Task 16:
+
+20. **The contact export has no REST endpoint.** `/app/contacts/:bookId/export`
+    is session-authenticated and lives under `/app`, so it is not in the OpenAPI
+    surface and an API client cannot pull a book as CSV — it has to page
+    `contacts.list` and rebuild the file, including the formula guard, itself.
+    The streaming route already exists; exposing it under `/api/v1` is mostly an
+    auth decision.
+21. **A wide book's export does not round-trip its _shape_.** When a book uses
+    more distinct property keys than the format has columns, the tail is folded
+    into a `properties_json` cell — no value is lost, which was the point — but
+    re-importing that file creates a single property literally named
+    `properties_json` holding JSON, rather than expanding it back out. Worse, that
+    cell can exceed the 500-character cell cap, and the import then **drops the
+    row** with a message about column width. Either the import should recognise
+    `properties_json` as a reserved header and expand it, or the export should
+    say in the header that the file is lossy on re-import.
+22. **There is no `contact.deleted` event.** `contact.created`, `.updated`,
+    `.unsubscribed` and `.resubscribed` all fire, so a subscriber mirroring
+    consent sees every state change except the one that removes the row.
+23. **A resend cannot re-render.** Provenance is now copied forward, which is
+    what the mail log needed, but "send this again with these variables" is still
+    a fresh `POST /emails`. That is the right default — a resend is of _that_
+    message — and a `rerender: true` option is the natural place to put the other
+    behaviour if it is ever wanted.

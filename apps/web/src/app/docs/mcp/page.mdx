@@ -1,7 +1,7 @@
 export const metadata = {
   title: "MCP server",
   description:
-    "@sendsprite/mcp — send email, check delivery and read stats from an AI agent over the Model Context Protocol.",
+    "@sendsprite/mcp — send email, render templates, check delivery and read stats from an AI agent over the Model Context Protocol.",
 };
 
 # MCP server
@@ -20,7 +20,8 @@ delivery stats. It talks to the same REST API with the same API key, so an
 agent can never do more than the key you gave it.
 
 Point it at a `sending_only` key unless the agent genuinely needs to manage
-domains and webhooks.
+domains and webhooks, or to use the template and contact tools — those need a
+`full` key (see [Tools](#tools)).
 
 ## Claude Desktop / Claude Code (stdio)
 
@@ -75,6 +76,9 @@ when you do. Request bodies are capped at 20 MB.
 | `search_emails`    | The same list filtered by `to`, `status`, `tag` or `domainId`, with `limit` and `cursor`.            |
 | `list_domains`     | Sending domains and their verification status.                                                       |
 | `get_send_stats`   | Sends today / 7 days / 30 days, delivery, bounce and complaint rates, and any account-health alerts. |
+| `list_templates`   | Every template, with the `slug` to pass as `template` and the `{{ variable }}` placeholders it expects. |
+| `render_template`  | Render a template with a set of variables. Nothing is sent or stored; the variables are not echoed back. |
+| `add_contact`      | Add one person to one contact book. `bookId` is required and never guessed; an address already there is a conflict. |
 
 Input is validated against the same schemas the REST API uses, so a bad
 argument comes back as a tool error rather than a failed send. API failures
@@ -87,4 +91,15 @@ tools return the same `{ data, nextCursor }` envelope as the REST API.
 Structured output schemas are open, so a field added to the REST API reaches
 the client rather than failing its validation.
 
-Template rendering and contacts tools are planned for a later release.
+`list_templates`, `render_template` and `add_contact` need a **`full`** key —
+the first two return template content, and the third writes to a contact list.
+The six email and domain tools work with a `sending_only` key.
+
+`add_contact` is the only tool here that writes into a customer's list, and it
+is deliberately narrow. There is no default book and no "the only book"
+fallback, so a model cannot decide whose list a person lands on. An address
+already in the book is a `conflict` and is left untouched — including someone
+who unsubscribed, who is never put back on a list by any tool here. There is no
+`subscribed` argument: consent is asserted by the operator calling the tool,
+not reasoned about by the model. Adding a contact sends nothing and does not
+affect transactional email.

@@ -1,7 +1,7 @@
 export const metadata = {
   title: "SDK",
   description:
-    "The sendsprite npm package: typed client, React email templates, Next.js webhook handler and the live change stream.",
+    "The sendsprite npm package: typed client for emails, templates and contacts, React email templates, Next.js webhook handler and the live change stream.",
 };
 
 # SDK
@@ -86,6 +86,61 @@ await sendsprite.suppressions.list();
 await sendsprite.suppressions.remove("bounce@example.com");
 ```
 
+## templates
+
+```ts
+await sendsprite.templates.create({
+  slug: "welcome",
+  name: "Welcome",
+  subject: "Hi {{ name }}",
+  bodyHtml: "<p>Hello {{ name }}</p>",
+  bodyText: "Hello {{ name }}",
+  variablesSchema: { variables: [{ name: "name", default: "there" }] },
+});
+await sendsprite.templates.list();
+await sendsprite.templates.get("welcome"); // + its recent versions
+await sendsprite.templates.update("welcome", { subject: "Hey {{ name }}" });
+await sendsprite.templates.render("welcome", { name: "Ada" }); // no send
+await sendsprite.templates.remove("welcome");
+
+// Sending with one:
+await sendsprite.emails.send({
+  from: "Acme <hello@mail.acme.com>",
+  to: "ada@example.com",
+  template: "welcome",
+  variables: { name: "Ada" },
+});
+```
+
+`render` is byte-identical to what a send would store, so it is a safe preview.
+`get` takes a slug or a `tpl_…` id. `slug` is immutable, so `update` does not
+accept it. See [Templates](/docs/templates).
+
+## contactBooks, contacts
+
+```ts
+const book = await sendsprite.contactBooks.create({ name: "Newsletter" });
+await sendsprite.contactBooks.list();
+await sendsprite.contactBooks.import(book.id, { csv });
+// → { imported, updated, skipped, duplicates, errors }
+
+await sendsprite.contacts.create(book.id, {
+  email: "ada@example.com",
+  firstName: "Ada",
+  properties: { plan: "pro" },
+});
+await sendsprite.contacts.list(book.id, { q: "ada", subscribed: true });
+await sendsprite.contacts.update(book.id, "ct_...", { subscribed: false });
+await sendsprite.contacts.remove(book.id, "ct_...");
+
+// By address, across every book of the team unless `bookId` narrows it.
+await sendsprite.contacts.unsubscribe({ email: "ada@example.com" });
+```
+
+Unsubscribing a contact is **consent**, not deliverability: it never writes a
+suppression, so the address still receives transactional mail. See
+[Contacts](/docs/contacts).
+
 Plus two top-level calls: `sendsprite.stats()` for send counts and 30-day
 rates, and `sendsprite.me()` for the team and key behind the current
 credentials.
@@ -96,11 +151,15 @@ for anything without a helper; `path` is relative to `/api/v1`.
 ## Pagination
 
 Every `list()` returns `{ data, nextCursor }` and takes `{ limit, cursor }`.
-For emails there is an iterator that walks every page for you:
+`emails`, `templates` and `contacts` have an iterator that walks every page for
+you:
 
 ```ts
 for await (const email of sendsprite.emails.iterate({ status: "bounced" })) {
   console.log(email.id, email.to);
+}
+for await (const contact of sendsprite.contacts.iterate(bookId)) {
+  console.log(contact.email, contact.subscribed);
 }
 ```
 

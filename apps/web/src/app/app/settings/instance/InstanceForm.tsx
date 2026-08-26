@@ -63,8 +63,8 @@ export function InstanceForm({
           className="max-w-40"
         />
         <p className="mt-1 text-xs text-white/50">
-          How long email logs are kept (1–3650). Used by the retention job
-          (Phase 3).
+          How long email logs are kept (1–3650). Bodies and attachments are
+          purged nightly after this; metadata and events stay.
         </p>
       </div>
       <div className="flex items-center gap-3">

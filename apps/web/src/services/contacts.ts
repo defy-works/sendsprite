@@ -316,7 +316,10 @@ async function emitContact(
       teamId,
       type,
       newId("evt"),
-      publicContactAsJson(contact),
+      // `{ contact: … }`, not the fields at the top of `data`: every other
+      // event names its object (`data.email`, `data.domain`), and a payload
+      // that disagreed would force a subscriber to special-case contacts.
+      { contact: publicContactAsJson(contact) },
       {
         enqueue: deps.enqueue,
         createdAt: deps.now,

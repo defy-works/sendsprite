@@ -50,8 +50,8 @@ Subscribe to any non-empty subset of:
 | `email.failed`                                                                       | SES rejected it, or the send failed for good.                                                                                                                         |
 | `domain.verified`                                                                    | A domain became verified.                                                                                                                                             |
 | `domain.failed`                                                                      | A verified domain was demoted, or verification failed for good.                                                                                                       |
-| `contact.created`, `contact.updated`, `contact.unsubscribed`, `contact.resubscribed` | Reserved for contacts (Phase 5).                                                                                                                                      |
-| `campaign.sent`, `campaign.completed`                                                | Reserved for campaigns (Phase 5).                                                                                                                                     |
+| `contact.created`, `contact.updated`, `contact.unsubscribed`, `contact.resubscribed` | A contact was added, changed, unsubscribed or resubscribed. CSV import fires none of these — see [Contacts](/docs/contacts).                                          |
+| `campaign.sent`, `campaign.completed`                                                | Reserved for campaigns; nothing fires them yet.                                                                                                                       |
 
 ## Payload
 
@@ -77,7 +77,8 @@ Subscribe to any non-empty subset of:
 `data.email` is the same public email object the REST API returns;
 `data.event` carries the timeline entry and whatever SES reported with it
 (bounce type, complaint feedback type, recipients, the clicked url, and so
-on). Domain events carry `data.domain` instead.
+on). Domain events carry `data.domain` instead, and contact events carry
+`data.contact` — every event names its object.
 
 ## Headers
 

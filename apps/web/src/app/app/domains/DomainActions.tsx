@@ -29,7 +29,9 @@ export function DomainActions({
   const [error, setError] = useState<string | null>(null);
   const busy = verifying || retrying || deleting;
 
-  // Until SSE lands (Phase 3) a pending domain re-renders from the server.
+  // A pending domain re-renders from the server on a timer: the change stream
+  // carries email and webhook events, not domain status, so there is nothing
+  // here to subscribe to.
   useEffect(() => {
     if (status !== "pending") return;
     // A background tab does not need to re-render.
