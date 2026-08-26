@@ -1,6 +1,6 @@
 import { SendspriteError, type SendspriteErrorCode } from "./errors";
 
-export const SDK_VERSION = "0.1.0"; // kept in sync with package.json by the release pipeline
+export const SDK_VERSION = "0.2.0"; // kept in sync with package.json by the release pipeline
 
 export interface SendspriteOptions {
   /** `ss_live_…` key; defaults to `SENDSPRITE_API_KEY`. */
