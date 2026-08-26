@@ -3,3 +3,7 @@ apps/web/next-env.d.ts
 **/node_modules/
 **/.pgdata/
 **/dist/
+.wolf/
+.opencode/
+.claude/
+CLAUDE.md

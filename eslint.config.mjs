@@ -13,6 +13,13 @@ export default tseslint.config(
       // would otherwise lint its bundled trace-viewer bundle (~3.9k errors).
       "**/playwright-report/**",
       "**/test-results/**",
+      // Local agent tooling, untracked (see .gitignore). `.wolf/hooks/*.js`
+      // is written by the OpenWolf CLI and `.opencode/plugin/**` by opencode,
+      // and both are regenerated on update — fixing their `no-empty` and
+      // `no-explicit-any` errors would be undone by the next install. Listed
+      // here because eslint walks the working tree, not the index.
+      ".wolf/**",
+      ".opencode/**",
     ],
   },
   js.configs.recommended,
