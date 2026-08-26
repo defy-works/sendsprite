@@ -245,6 +245,16 @@ README.md                                  + templates/contacts paragraphs, road
 
 ---
 
+## Resend should carry template provenance (small follow-up, before Task 16)
+
+`resendEmail` deliberately does not re-render — a resend is of _that message_, and re-rendering
+could change the bytes. Correct. But it currently stores `template_id: null` and
+`variables: null` on the new row, so the mail log says a template-derived email came from
+nowhere. Copy both forward from the source email without re-rendering: the content stays
+byte-identical and the log keeps the provenance. Whoever picks this up should check the
+retention interaction — a purged source row has `variables: null` already, so the copy simply
+inherits that.
+
 ## Behaviour change to announce in Task 16's changeset
 
 `NO_CONTROL_CHARS` replaced the two `NO_CRLF` copies, so the whole email API now refuses **any**
@@ -262,6 +272,13 @@ It must be **announced**, not shipped silently: name it in the changeset and in 
 and make sure the validation message says "line breaks or control characters" rather than
 "line breaks" — otherwise a customer with a tab is told their subject contains a line break,
 which is both wrong and unactionable.
+
+Also in the same changeset: **`subject` is now trimmed on every send path**, not only the
+template one. That is what lets a whitespace-only request subject yield to a template's own
+subject, but it is a real change for ordinary sends — `"  s  "` stores as `"s"`, a
+whitespace-only subject is now a 422, and an idempotent retry of a row created before this
+change can fingerprint-mismatch. Nothing in the repo depended on the old behaviour, but
+customers' retries might.
 
 ## Import must honour consent, and round-trip its own export
 
