@@ -1895,14 +1895,24 @@ itself included. Every gate green at the tagged commit; counts below.
 Against the baseline entering the phase (`c6b39b4`: 680 unit, 372 integration,
 17 e2e) that is +167 unit, +135 integration and +1 e2e.
 
-**The e2e is flaky on a cold build.** The first run of this task's gate lost
-three tests — `send.spec.ts` (a `POST /emails` that answered something other
-than 201), `sdk.spec.ts` and `campaigns.spec.ts` — and two more never ran; an
-immediate re-run passed all 18 with nothing changed in between. The suite
-builds and runs a production server against a shared Postgres with eight
-Playwright workers, so the first pass after a rebuild is the one that loses the
-race. `609136e` had already widened one timeout for the same reason. Worth a
-retry policy before CI starts failing on unrelated PRs.
+**One e2e run failed and passed on retry; the cause is almost certainly the
+SES quota, not a cold build.** The first run of this task's gate lost three
+tests — `send.spec.ts` (a `POST /emails` that answered something other than
+201), `sdk.spec.ts` and `campaigns.spec.ts` — and an immediate re-run passed
+all 18 with nothing changed.
+
+It was initially recorded here as worker contention on a cold build. That
+diagnosis does not survive checking. The symptom — a send not answering 201 —
+is precisely what `daily_quota_exceeded` produces (opener 19), and is not what
+worker contention produces, which is timeouts. Measured afterwards: a cold run
+with quota headroom passes 18/18 in 48 s, and one run consumes about seven
+emails against a 200-per-24-h instance cap, so the ceiling is roughly 28 runs —
+which a long session of repeated gates does reach. The rows had accumulated
+across the whole session.
+
+Recorded this way deliberately: the contention theory leads to a retry policy
+or fewer workers, which would mask the real cause and make the suite slower for
+nothing. Fix opener 19 first, then see whether any flake remains.
 
 **The e2e needs a Postgres on `localhost:5432`** — `bun run db:dev` from
 `apps/web` (embedded-postgres, persistent in `apps/web/.pgdata`; no Docker on
@@ -2147,11 +2157,12 @@ closed** and reappear below as 7 and 16.
     applies here with much more force. If it is ever added, the safe shape is
     read-only (`list_campaigns`, `campaign_audience`) plus, at most, a test
     send — never `schedule` and never `sendNow`.
-18. **The e2e suite is flaky on a cold build.** Three tests lost on the first
-    run of this task's gate and all 18 green on an immediate re-run with
-    nothing changed. Eight Playwright workers against one production build and
-    one shared Postgres. A retry policy, or fewer workers for the app project,
-    before CI starts failing on unrelated PRs.
+18. **No confirmed cold-build e2e flake — do not add a retry policy yet.** The
+    one observed failure (see the status block) matches opener 19's signature,
+    not worker contention, and a cold run with quota headroom passes 18/18. If
+    a flake survives fixing 19, characterise it before reaching for retries: a
+    retry policy on a suite whose real fault is a shared counter converts a
+    reproducible red build into an intermittent one, which is worse.
 19. **The e2e suite exhausts the instance SES quota after about four runs, and
     the failure looks exactly like a product bug.** The fake AWS client reports
     `Max24HourSend: 200` (`lib/aws/fake-client.ts`), `aws-connect` stores that
