@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/Button";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { Label } from "@/components/ui/Label";
+import { DateTimePicker } from "@/components/ui/DateTimePicker";
 import { armCampaign, cancelCampaign } from "../actions";
 import {
   STATUS_PLAN,
@@ -81,8 +82,16 @@ export function SendCard({
   const [live, setLive] = useState(status);
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
-  /** `""` means "as soon as possible"; anything else is a `datetime-local`. */
-  const [at, setAt] = useState("");
+  /** `null` means "as soon as possible". */
+  const [at, setAt] = useState<Date | null>(null);
+  /**
+   * Frozen when the card mounts, and used as the picker's floor.
+   *
+   * A `new Date()` computed during render would change on every keystroke
+   * elsewhere in the card, which would re-disable whichever minute the author
+   * had just selected while they were still looking at it.
+   */
+  const [now] = useState(() => new Date());
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [typed, setTyped] = useState("");
 
@@ -100,21 +109,18 @@ export function SendCard({
 
   const openArm = () => {
     setError(null);
-    let when: Date | null = null;
-    if (at !== "") {
-      when = new Date(at);
-      if (Number.isNaN(when.getTime()))
-        return setError("That is not a valid date and time.");
-      // Refused rather than clamped to now, exactly as the service refuses it:
-      // a past time is a timezone mistake far more often than a stale clock,
-      // and clamping a timezone mistake mails the list immediately.
-      if (when.getTime() <= Date.now())
-        return setError(
-          "That time has already passed. Pick a future time, or send as soon as possible.",
-        );
-    }
+    // The picker cannot produce an invalid date and will not offer a past day,
+    // but the check stays: this card can sit open for an hour, and a time that
+    // was future when it was chosen is not necessarily future when it is
+    // confirmed. Refused rather than clamped to now, exactly as the service
+    // refuses it — a past time is a timezone mistake far more often than a
+    // stale clock, and clamping a timezone mistake mails the list immediately.
+    if (at !== null && at.getTime() <= Date.now())
+      return setError(
+        "That time has already passed. Pick a future time, or send as soon as possible.",
+      );
     setTyped("");
-    setDialog({ kind: "arm", at: when });
+    setDialog({ kind: "arm", at });
   };
 
   const arm = (when: Date | null) => {
@@ -174,21 +180,21 @@ export function SendCard({
           <div className="flex flex-col gap-3 border-t border-white/8 pt-4">
             <div>
               <Label htmlFor="cmp-when">When</Label>
-              <Input
+              <DateTimePicker
                 id="cmp-when"
-                type="datetime-local"
                 value={at}
+                min={now}
                 disabled={pending}
-                onChange={(e) => setAt(e.target.value)}
+                placeholder="As soon as possible"
+                onChange={setAt}
               />
               <p className="mt-1 text-xs text-white/50">
-                Leave empty to send as soon as possible — within a minute. Times
-                are in your own time zone.
+                Leave it unset to send as soon as possible — within a minute.
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
               <Button onClick={openArm} disabled={pending}>
-                {at === ""
+                {at === null
                   ? `Send to ${people(audience.eligible)}…`
                   : "Schedule…"}
               </Button>

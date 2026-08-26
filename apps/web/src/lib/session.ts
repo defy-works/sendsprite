@@ -65,3 +65,34 @@ export async function requireInstanceAdmin() {
   if (!isInstanceAdmin({ email: s.user.email, flag }, admins)) redirect("/app");
   return s;
 }
+
+/**
+ * The same resolution as {@link requireTeam}, as a value rather than a
+ * redirect.
+ *
+ * A route handler must not `redirect()`: its caller is `fetch`, and a 307 to
+ * `/login` arrives at the editor as an HTML page where JSON was expected. This
+ * returns the refusal so the handler can send a status, which is the only
+ * difference between the two.
+ */
+export async function requireApiSession(): Promise<
+  | { ok: true; userId: string; teamId: string; role: TeamContext["role"] }
+  | { ok: false; response: Response }
+> {
+  const s = await getSession();
+  if (!s)
+    return {
+      ok: false,
+      response: Response.json({ error: "unauthorized" }, { status: 401 }),
+    };
+  const ctx = await cachedResolveTeam(
+    s.user.id,
+    s.session.activeOrganizationId ?? null,
+  );
+  if (!ctx)
+    return {
+      ok: false,
+      response: Response.json({ error: "no_team" }, { status: 403 }),
+    };
+  return { ok: true, userId: ctx.userId, teamId: ctx.team.id, role: ctx.role };
+}

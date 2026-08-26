@@ -10,6 +10,7 @@ import {
   CAMPAIGN_STATUSES,
   type CampaignBlock,
   type CampaignCounts,
+  type CampaignTheme,
 } from "@sendsprite/shared";
 import { contacts } from "./contacts";
 import { emails } from "./emails";
@@ -86,6 +87,13 @@ export const campaigns = pgTable(
     replyTo: text("reply_to"),
     /** The authored block list; the only stored representation of the body. */
     blocks: jsonb("blocks").$type<CampaignBlock[]>().notNull(),
+    /**
+     * What the body as a whole looks like: page and card colours, width, font,
+     * link colour. Null means the renderer's defaults, which is what every
+     * campaign written before themes existed rendered with — so this needed no
+     * backfill and an old row is not a special case anywhere.
+     */
+    theme: jsonb("theme").$type<CampaignTheme>(),
     /**
      * Rendered once when sending starts, then reused for every recipient.
      * Stored so a later edit of `blocks` cannot change what a half-sent

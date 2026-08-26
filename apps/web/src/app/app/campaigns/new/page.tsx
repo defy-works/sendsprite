@@ -84,6 +84,7 @@ export default async function NewCampaignPage() {
           editorLeaf(blockDefaults("heading")),
           editorLeaf(blockDefaults("text")),
         ],
+        theme: {},
       }}
     />
   );

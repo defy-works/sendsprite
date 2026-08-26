@@ -7,7 +7,7 @@ import {
   useState,
   useTransition,
 } from "react";
-import type { CampaignStatus } from "@sendsprite/shared";
+import type { CampaignStatus, CampaignTheme } from "@sendsprite/shared";
 import { Alert } from "@/components/ui/Alert";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -51,6 +51,8 @@ export interface EditorCampaign {
   replyTo: string;
   subject: string;
   nodes: EditorNode[];
+  /** `{}` is "the renderer's defaults", which is what a null column means. */
+  theme: CampaignTheme;
 }
 
 const STATUS_VARIANT: Record<CampaignStatus, BadgeVariant> = {
@@ -155,8 +157,8 @@ export function CampaignEditor({
    * `preview.ts`.
    */
   const preview = useMemo(
-    () => previewCampaign(blocksOfTree(c.nodes)),
-    [c.nodes],
+    () => previewCampaign(blocksOfTree(c.nodes), c.theme),
+    [c.nodes, c.theme],
   );
 
   const bookMissing = c.bookId !== "" && !books.some((b) => b.id === c.bookId);
@@ -171,6 +173,7 @@ export function CampaignEditor({
     replyTo: state.replyTo,
     subject: state.subject,
     blocks: blocksOfTree(state.nodes),
+    theme: state.theme,
   });
 
   const save = () => {
@@ -256,6 +259,8 @@ export function CampaignEditor({
       <BlockDesigner
         nodes={c.nodes}
         onChange={setNodes}
+        theme={c.theme}
+        onThemeChange={(theme) => set("theme", theme)}
         readOnly={readOnly}
         invalidIndex={preview.ok ? null : preview.index}
         settings={
@@ -432,6 +437,7 @@ export function CampaignEditor({
               replyTo: c.replyTo,
               subject: c.subject,
               blocks: blocksOfTree(c.nodes),
+              theme: c.theme,
             },
             to,
           )
@@ -463,5 +469,6 @@ function serialisable(c: EditorCampaign) {
     replyTo: c.replyTo,
     subject: c.subject,
     blocks: blocksOfTree(c.nodes),
+    theme: c.theme,
   };
 }

@@ -1,9 +1,11 @@
 import {
   CampaignBlock,
   COLUMN_COUNT,
+  type CampaignTheme,
   type ColumnLayout,
   type ColumnsBlock,
   type CornerStyle,
+  type FontFamily,
   type LeafBlock,
 } from "./api/campaigns";
 import { escapeHtml } from "./template";
@@ -105,13 +107,66 @@ export class InvalidCampaignBlockError extends Error {
  */
 export const UNSUBSCRIBE_MARKER = "\u0001SENDSPRITE_UNSUBSCRIBE\u0001";
 
-const FONT =
-  "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif";
-const INK = "#111111";
+/**
+ * The three system stacks a `font` names.
+ *
+ * Every one ends in a generic family, because the second name in each list is
+ * the one that actually renders somewhere: Outlook on Windows has no
+ * `-apple-system`, and Gmail on Android has neither Georgia nor Menlo.
+ */
+const FONT_STACKS: Record<FontFamily, string> = {
+  sans: "-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif",
+  serif: "Georgia,Cambria,'Times New Roman',Times,serif",
+  mono: "'SF Mono',Menlo,Consolas,'Liberation Mono',monospace",
+};
+
 const MUTED = "#6b7280";
 const ACCENT = "#4f46e5";
-/** The page behind the 600px card. Named because three places now emit it. */
-const PAGE_BG = "#f3f4f6";
+
+/**
+ * What a body looks like when its theme says nothing.
+ *
+ * Spelled out as a value rather than scattered through the renderer as `??`
+ * fallbacks: these are the numbers every campaign written before themes
+ * existed was rendered with, and keeping them in one place is what makes
+ * "an absent theme renders exactly what it always did" checkable.
+ */
+const DEFAULT_THEME = {
+  pageBackground: "#f3f4f6",
+  cardBackground: "#ffffff",
+  contentWidth: 600,
+  font: "sans" as FontFamily,
+  textColor: "#111111",
+  linkColor: null as string | null,
+  cardCorners: "soft" as CornerStyle,
+};
+
+/** A theme with every gap filled, so the renderer never reads an `undefined`. */
+interface Resolved {
+  pageBackground: string;
+  cardBackground: string;
+  cardWidth: number;
+  /** The usable width inside the card: `cardWidth` minus 24px each side. */
+  contentWidth: number;
+  fontCss: string;
+  textColor: string;
+  linkColor: string | null;
+  cardRadius: string;
+}
+
+function resolveTheme(theme?: CampaignTheme): Resolved {
+  const cardWidth = theme?.contentWidth ?? DEFAULT_THEME.contentWidth;
+  return {
+    pageBackground: theme?.pageBackground ?? DEFAULT_THEME.pageBackground,
+    cardBackground: theme?.cardBackground ?? DEFAULT_THEME.cardBackground,
+    cardWidth,
+    contentWidth: cardWidth - 2 * CARD_PADDING,
+    fontCss: `font-family:${FONT_STACKS[theme?.font ?? DEFAULT_THEME.font]}`,
+    textColor: theme?.textColor ?? DEFAULT_THEME.textColor,
+    linkColor: theme?.linkColor ?? DEFAULT_THEME.linkColor,
+    cardRadius: RADIUS[theme?.cardCorners ?? DEFAULT_THEME.cardCorners],
+  };
+}
 
 const HEADING_SIZE: Record<1 | 2 | 3, string> = {
   1: "28px",
@@ -125,8 +180,8 @@ const RADIUS: Record<CornerStyle, string> = {
   pill: "999px",
 };
 
-/** The card is 600px wide with 24px of padding on each side. */
-const CONTENT_WIDTH = 552;
+/** Horizontal padding inside the card, each side. */
+const CARD_PADDING = 24;
 /** Gutter between columns, as a fixed pixel spacer cell. */
 const GUTTER = 16;
 
@@ -140,9 +195,9 @@ const GUTTER = 16;
  * plus the gutters always total {@link CONTENT_WIDTH} exactly — a row that
  * totals one pixel more is a row Outlook wraps.
  */
-function columnWidths(layout: ColumnLayout): number[] {
+function columnWidths(layout: ColumnLayout, content: number): number[] {
   const gaps = COLUMN_COUNT[layout] - 1;
-  const usable = CONTENT_WIDTH - gaps * GUTTER;
+  const usable = content - gaps * GUTTER;
   switch (layout) {
     case "1-1": {
       const half = Math.floor(usable / 2);
@@ -176,16 +231,31 @@ function columnWidths(layout: ColumnLayout): number[] {
  * every other client is reading, and an inline style beats a stylesheet
  * without it.
  */
-const RESPONSIVE_CSS =
-  "@media only screen and (max-width:620px){" +
-  ".ss-col{display:block!important;width:100%!important;max-width:100%!important}" +
-  ".ss-gutter{display:none!important;width:0!important}" +
-  ".ss-card{width:100%!important}" +
-  "}";
+function responsiveCss(t: Resolved): string {
+  // The breakpoint follows the card: a 720px body has to stack sooner than a
+  // 480px one, and a fixed 620px would leave the wide layout scrolling
+  // sideways on a tablet while stacking the narrow one that fits.
+  const at = t.cardWidth + 20;
+  const link = t.linkColor
+    ? `a{color:${t.linkColor}!important}` +
+      // Gmail and Apple Mail auto-link addresses, dates and phone numbers and
+      // then colour them themselves; without this the theme applies to the
+      // links an author wrote and not to the ones the client invented.
+      `a[x-apple-data-detectors]{color:inherit!important;text-decoration:none!important}`
+    : "";
+  return (
+    link +
+    `@media only screen and (max-width:${at}px){` +
+    ".ss-col{display:block!important;width:100%!important;max-width:100%!important}" +
+    ".ss-gutter{display:none!important;width:0!important}" +
+    ".ss-card{width:100%!important}" +
+    "}"
+  );
+}
 
 /** One full-width row wrapping a block's own markup. */
 function row(inner: string): string {
-  return `<tr><td style="padding:0 24px">${inner}</td></tr>`;
+  return `<tr><td style="padding:0 ${CARD_PADDING}px">${inner}</td></tr>`;
 }
 
 /**
@@ -197,10 +267,10 @@ function row(inner: string): string {
  * contains it, which is what lets an image inside a narrow column be sized
  * against that column rather than against the card.
  */
-function renderLeaf(b: LeafBlock, width: number): string {
+function renderLeaf(b: LeafBlock, width: number, t: Resolved): string {
   switch (b.kind) {
     case "heading":
-      return `<h${b.level} style="${FONT};font-size:${HEADING_SIZE[b.level]};line-height:1.3;color:${b.color ?? INK};margin:24px 0 8px;text-align:${b.align ?? "left"}">${escapeHtml(b.text)}</h${b.level}>`;
+      return `<h${b.level} style="${t.fontCss};font-size:${HEADING_SIZE[b.level]};line-height:1.3;color:${b.color ?? t.textColor};margin:24px 0 8px;text-align:${b.align ?? "left"}">${escapeHtml(b.text)}</h${b.level}>`;
     case "text":
       // Not escaped: `InlineHtml` in the contract restricts this to
       // <strong>, <em>, <br> and http(s)/mailto anchors, and requires them
@@ -208,7 +278,7 @@ function renderLeaf(b: LeafBlock, width: number): string {
       // The value reaching this line has been re-checked against that schema
       // by `renderBlocks` — see the file comment for why that is not
       // redundant.
-      return `<p style="${FONT};font-size:16px;line-height:1.6;color:${b.color ?? INK};margin:0 0 16px;text-align:${b.align ?? "left"}">${b.html}</p>`;
+      return `<p style="${t.fontCss};font-size:16px;line-height:1.6;color:${b.color ?? t.textColor};margin:0 0 16px;text-align:${b.align ?? "left"}">${b.html}</p>`;
     case "button": {
       // A table around the anchor: Outlook ignores padding on inline elements,
       // so the cell has to provide the hit area. The outer table is aligned
@@ -230,7 +300,7 @@ function renderLeaf(b: LeafBlock, width: number): string {
       const attrs = margin
         ? `align="${align}" style="${margin}"`
         : `align="${align}" ${table}`;
-      return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" ${attrs}><tr><td align="center" style="background:${bg};border-radius:${radius}"><a href="${escapeHtml(b.url)}" style="${FONT};display:inline-block;padding:12px 24px;font-size:16px;color:${fg};text-decoration:none;border-radius:${radius}">${escapeHtml(b.label)}</a></td></tr></table>`;
+      return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" ${attrs}><tr><td align="center" style="background:${bg};border-radius:${radius}"><a href="${escapeHtml(b.url)}" style="${t.fontCss};display:inline-block;padding:12px 24px;font-size:16px;color:${fg};text-decoration:none;border-radius:${radius}">${escapeHtml(b.label)}</a></td></tr></table>`;
     }
     case "image": {
       const pct = b.width ?? 100;
@@ -269,15 +339,15 @@ function renderLeaf(b: LeafBlock, width: number): string {
  * would be *added* to the width, and the row would overflow the card by
  * exactly the padding. A spacer cell cannot do that.
  */
-function renderColumns(b: ColumnsBlock): string {
-  const widths = columnWidths(b.layout);
+function renderColumns(b: ColumnsBlock, t: Resolved): string {
+  const widths = columnWidths(b.layout, t.contentWidth);
   const cells = b.columns
     .map((column, i) => {
       const width = widths[i] ?? 0;
       const inner =
         column.length === 0
           ? "&nbsp;"
-          : column.map((leaf) => renderLeaf(leaf, width)).join("");
+          : column.map((leaf) => renderLeaf(leaf, width, t)).join("");
       return `<td class="ss-col" width="${width}" valign="top" style="width:${width}px;vertical-align:top">${inner}</td>`;
     })
     .join(
@@ -285,15 +355,15 @@ function renderColumns(b: ColumnsBlock): string {
     );
   const bg = b.background ? `background:${b.background};` : "";
   return (
-    `<tr><td style="padding:0 24px;${bg}">` +
+    `<tr><td style="padding:0 ${CARD_PADDING}px;${bg}">` +
     `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%">` +
     `<tr>${cells}</tr></table></td></tr>`
   );
 }
 
-function renderBlock(b: CampaignBlock): string {
-  if (b.kind === "columns") return renderColumns(b);
-  return row(renderLeaf(b, CONTENT_WIDTH));
+function renderBlock(b: CampaignBlock, t: Resolved): string {
+  if (b.kind === "columns") return renderColumns(b, t);
+  return row(renderLeaf(b, t.contentWidth, t));
 }
 
 /**
@@ -420,6 +490,12 @@ export interface RenderOptions {
    * template that carried one would ship a U+0001 to the inbox.
    */
   unsubscribe?: boolean;
+  /**
+   * What the body as a whole looks like. Every field of it is optional, and
+   * an absent theme renders byte-for-byte what a body rendered before themes
+   * existed — which is what makes this safe to add to a live table.
+   */
+  theme?: CampaignTheme;
 }
 
 export function renderBlocks(
@@ -428,8 +504,9 @@ export function renderBlocks(
 ): RenderedCampaign {
   const safe = validate(blocks);
   const unsubscribe = options.unsubscribe ?? true;
+  const t = resolveTheme(options.theme);
 
-  const body = safe.map(renderBlock).join("");
+  const body = safe.map((b) => renderBlock(b, t)).join("");
   // `background` on `<html>` as well as `<body>`, and `color-scheme: light`.
   //
   // Both are about the same failure: a document shorter than its viewport
@@ -446,21 +523,21 @@ export function renderBlocks(
   // background for you; naming `color-scheme: light` here says this document
   // has its own palette and should not be re-coloured.
   const html =
-    `<!doctype html><html style="background:${PAGE_BG};color-scheme:light"><head><meta charset="utf-8" />` +
+    `<!doctype html><html style="background:${t.pageBackground};color-scheme:light"><head><meta charset="utf-8" />` +
     `<meta name="color-scheme" content="light" />` +
     `<meta name="supported-color-schemes" content="light" />` +
     `<meta name="viewport" content="width=device-width,initial-scale=1" />` +
-    `<style>${RESPONSIVE_CSS}</style></head>` +
-    `<body style="margin:0;padding:0;background:${PAGE_BG};min-height:100%">` +
-    `<table role="presentation" width="100%" height="100%" cellpadding="0" cellspacing="0" border="0" style="background:${PAGE_BG};height:100%">` +
+    `<style>${responsiveCss(t)}</style></head>` +
+    `<body style="margin:0;padding:0;background:${t.pageBackground};min-height:100%">` +
+    `<table role="presentation" width="100%" height="100%" cellpadding="0" cellspacing="0" border="0" style="background:${t.pageBackground};height:100%">` +
     `<tr><td align="center" valign="top" style="padding:24px 12px">` +
-    `<table role="presentation" class="ss-card" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px;max-width:100%;background:#ffffff;border-radius:8px">` +
+    `<table role="presentation" class="ss-card" width="${t.cardWidth}" cellpadding="0" cellspacing="0" border="0" style="width:${t.cardWidth}px;max-width:100%;background:${t.cardBackground};border-radius:${t.cardRadius}">` +
     body +
     (unsubscribe
-      ? `<tr><td style="padding:8px 24px 24px">` +
-        `<p style="${FONT};font-size:12px;line-height:1.5;color:${MUTED};margin:0">${UNSUBSCRIBE_MARKER}</p>` +
+      ? `<tr><td style="padding:8px ${CARD_PADDING}px ${CARD_PADDING}px">` +
+        `<p style="${t.fontCss};font-size:12px;line-height:1.5;color:${MUTED};margin:0">${UNSUBSCRIBE_MARKER}</p>` +
         `</td></tr>`
-      : `<tr><td style="padding:0 24px 24px">&nbsp;</td></tr>`) +
+      : `<tr><td style="padding:0 ${CARD_PADDING}px ${CARD_PADDING}px">&nbsp;</td></tr>`) +
     `</table></td></tr></table></body></html>`;
 
   const text = safe

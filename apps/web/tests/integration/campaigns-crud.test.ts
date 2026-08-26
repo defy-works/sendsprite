@@ -598,6 +598,10 @@ describe("campaign CRUD", () => {
         "sentAt",
         "status",
         "subject",
+        // The body theme is part of the public shape: an API client that
+        // sends one must be able to read it back, and it is authored data
+        // rather than a rendered artefact.
+        "theme",
         "updatedAt",
       ].sort(),
     );

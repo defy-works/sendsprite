@@ -121,6 +121,75 @@ inline-HTML field, 200 for a button label, 300 for image alt text, **2 048**
 for a URL, and 998 for the subject (the same rule a transactional send's
 subject gets, imported rather than restated).
 
+### The body theme
+
+`theme` sits beside `blocks` and describes the body as a whole rather than any
+one part of it:
+
+```json
+{
+  "theme": {
+    "pageBackground": "#0b1020",
+    "cardBackground": "#111827",
+    "contentWidth": 720,
+    "font": "serif",
+    "textColor": "#e5e7eb",
+    "linkColor": "#93c5fd",
+    "cardCorners": "sharp"
+  }
+}
+```
+
+Every field is optional, and **an absent theme renders exactly what a body
+rendered before themes existed** — so nothing had to be backfilled and an older
+campaign is not a special case. A block that sets its own `color` still wins
+over `textColor`: the theme is the default, not an override.
+
+`contentWidth` is one of `480`, `600` or `720`. 600 is what almost every email
+template uses, because it is what fits an Outlook reading pane at 96 dpi. The
+column arithmetic follows the width, and so does the breakpoint at which
+columns stack.
+
+`font` names a system stack — `sans`, `serif` or `mono` — not a font. A webfont
+in an email is a webfont most clients will not load, so the only honest choice
+is which fallback to specify.
+
+`linkColor` is the one field applied through a `<style>` rule rather than
+inline, because `text.html` may not carry a `style` attribute — that
+restriction is exactly what makes the field safe to emit unescaped. Gmail,
+Apple Mail and Outlook.com honour it; **Outlook on Windows keeps its default
+blue.**
+
+### Images
+
+An `image` block takes a URL, and it always has: mail clients fetch images with
+no credentials, so it must be public and absolute. What is new is that you no
+longer have to find somewhere to put it.
+
+The dashboard editor uploads to the instance and gives you a URL of the form
+`https://<APP_URL>/a/<token>`, served with a year of cache headers and no
+authentication — because the reader is a mail client in someone else's inbox.
+PNG, JPEG, GIF and WebP, up to 2 MB. **SVG is refused**: it is an image format
+that can contain a script, and these bytes are served from the app's own
+origin.
+
+The type is decided from the file's own header, not from its name or the
+`Content-Type` the browser guessed. Re-uploading the same bytes returns the
+same URL rather than storing a second copy.
+
+Nothing about this is required. An image already on your own CDN works exactly
+as well, and the API only ever sees a URL either way.
+
+### Layouts
+
+The dashboard ships a handful of block arrangements — announcement, hero, two-
+and three-column feature rows, an image-and-text row, a footer — and a team can
+save its own. Inserting one appends its blocks, which you then edit like any
+others; a layout that carries a theme _offers_ it rather than applying it.
+
+Layouts are a dashboard convenience and are **not** part of the API. They
+produce nothing `POST /campaigns` could not have been sent directly.
+
 ### What `text.html` may contain
 
 Only what the editor emits: `<strong>`, `<em>`, `<br>`, and anchors whose

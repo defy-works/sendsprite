@@ -14,7 +14,12 @@ import {
 } from "@dnd-kit/core";
 import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { useState, type ReactNode } from "react";
-import type { ColumnLayout, LeafBlock } from "@sendsprite/shared";
+import type {
+  CampaignBlock,
+  CampaignTheme,
+  ColumnLayout,
+  LeafBlock,
+} from "@sendsprite/shared";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/Card";
 import {
   BLOCK_LABELS,
@@ -22,7 +27,9 @@ import {
   type LeafKind,
 } from "@/lib/editor/blocks";
 import {
+  blocksOfTree,
   editorLeaf,
+  editorNodesOf,
   editorRow,
   insertNode,
   itemsIn,
@@ -37,7 +44,9 @@ import {
 } from "@/lib/editor/tree";
 import { Canvas, RootDropZone } from "./Canvas";
 import { LeafInspector, RowInspector } from "./Inspector";
+import { LayoutPicker } from "./LayoutPicker";
 import { Palette, parsePaletteId } from "./Palette";
+import { ThemePanel } from "./ThemePanel";
 
 /**
  * The visual email editor: palette, canvas, inspector, and the drag logic that
@@ -70,6 +79,8 @@ const collisionDetection: CollisionDetection = (args) => {
 export function BlockDesigner({
   nodes,
   onChange,
+  theme,
+  onThemeChange,
   readOnly,
   invalidIndex = null,
   settings,
@@ -78,6 +89,9 @@ export function BlockDesigner({
 }: {
   nodes: EditorNode[];
   onChange: (fn: (nodes: EditorNode[]) => EditorNode[]) => void;
+  /** What the body as a whole looks like. `{}` is "the defaults". */
+  theme: CampaignTheme;
+  onThemeChange: (next: CampaignTheme) => void;
   readOnly: boolean;
   /** Index in `nodes` the preview blamed, which is the louder signal. */
   invalidIndex?: number | null;
@@ -167,6 +181,13 @@ export function BlockDesigner({
     setSelectedId(node.id);
   };
 
+  /** Appends a layout's blocks, selecting the first so the eye lands on it. */
+  const insertLayout = (blocks: CampaignBlock[]) => {
+    const added = editorNodesOf(blocks);
+    onChange((tree) => [...tree, ...added]);
+    if (added[0]) setSelectedId(added[0].id);
+  };
+
   const removeById = (id: string) => {
     onChange((tree) => removeNode(tree, id));
     setSelectedId((current) => (current === id ? null : current));
@@ -202,17 +223,30 @@ export function BlockDesigner({
             />
           </Card>
           <Card className="p-4">
+            <LayoutPicker
+              disabled={readOnly}
+              onInsert={insertLayout}
+              onApplyTheme={onThemeChange}
+              currentBlocks={blocksOfTree(nodes)}
+              currentTheme={Object.keys(theme).length > 0 ? theme : null}
+            />
+          </Card>
+          <Card className="p-4">
             <p className="num-stamp mb-3">
               {selectedNode
                 ? selectedNode.type === "row"
                   ? "Row style"
                   : `${BLOCK_LABELS[selectedNode.block.kind]} style`
-                : "Style"}
+                : "Body style"}
             </p>
+            {/* Nothing selected means the author is looking at the email, not
+                at a paragraph — so the panel offers the email. */}
             {selectedNode === null ? (
-              <p className="text-sm text-white/50">
-                Select a block on the canvas to change how it looks.
-              </p>
+              <ThemePanel
+                theme={theme}
+                readOnly={readOnly}
+                onChange={onThemeChange}
+              />
             ) : selectedNode.type === "row" ? (
               <RowInspector
                 row={selectedNode}

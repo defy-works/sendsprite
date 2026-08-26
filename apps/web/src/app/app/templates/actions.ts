@@ -4,6 +4,7 @@ import { headers } from "next/headers";
 import {
   can,
   type CampaignBlock,
+  type CampaignTheme,
   type TemplateVariablesSchema,
 } from "@sendsprite/shared";
 import { requestMeta } from "@/lib/audit";
@@ -50,6 +51,8 @@ export interface TemplateDraft {
    * and ignores `bodyHtml` — the two cannot be allowed to disagree.
    */
   design?: CampaignBlock[] | null;
+  /** The body theme the design is drawn with. Same three-way meaning. */
+  theme?: CampaignTheme | null;
 }
 
 /** The fields a restore put back, so the open editor can adopt them without a reload. */
@@ -61,12 +64,13 @@ export interface RestoredTemplate {
   variablesSchema: TemplateVariablesSchema;
   /** `null` when that version was authored as HTML. */
   design: CampaignBlock[] | null;
+  theme: CampaignTheme | null;
 }
 
 export async function createTemplate(
   draft: TemplateDraft,
 ): Promise<Result<{ slug: string }>> {
-  const { design, ...fields } = draft;
+  const { design, theme, ...fields } = draft;
   const res = await templates.createTemplate(
     await actor(),
     {
@@ -75,6 +79,7 @@ export async function createTemplate(
       bodyText: draft.bodyText.trim() ? draft.bodyText : undefined,
     },
     design,
+    theme,
   );
   if (!res.ok) return res;
   revalidatePath("/app/templates");
@@ -97,6 +102,7 @@ export async function updateTemplate(
       variablesSchema: draft.variablesSchema,
     },
     draft.design,
+    draft.theme,
   );
   if (!res.ok) return res;
   revalidatePath(`/app/templates/${slug}`);
@@ -150,6 +156,7 @@ export async function restoreVersion(
     slug,
     found.snapshot,
     found.snapshot.design ?? null,
+    found.snapshot.theme ?? null,
   );
   if (!res.ok) return res;
   revalidatePath(`/app/templates/${slug}`);
@@ -165,6 +172,7 @@ export async function restoreVersion(
       bodyText: res.data.bodyText,
       variablesSchema: res.data.variablesSchema,
       design: res.data.design ?? null,
+      theme: res.data.theme ?? null,
     },
   };
 }

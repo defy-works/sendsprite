@@ -181,6 +181,26 @@ that has chosen nothing inherits the ceiling, and lowering the ceiling
 shortens every team that had asked for more. Metadata and events are never
 purged — only bodies, attachments and old webhook deliveries.
 
+## Uploaded images
+
+Images an author uploads in the editor are stored **in Postgres**, in
+`team_assets`, and served from `/a/<token>` — public, uncached-by-session, with
+a year of cache headers.
+
+That is a deliberate trade and it is worth knowing about before your database
+grows. The alternatives were S3 in the tenant's own account, which would mean
+widening the CloudFormation IAM user from "send mail" to "create and write a
+public bucket" and would leave self-hosters without an AWS connection unable to
+use images at all; and the local filesystem, which breaks the moment a
+deployment runs two containers, as the Compose file does. The database is the
+one place every deployment already has and already backs up.
+
+The bound is 2 MB per image, four raster formats, and one row per distinct file
+per team. A hundred teams with fifty images each is single-digit gigabytes.
+Nothing purges them — an image may be referenced by mail that was delivered
+years ago and is still being fetched — so deleting one is a deliberate act in
+the editor, and the dialog says what it cannot check.
+
 ## Connect AWS
 
 **Each team connects its own AWS account.** The deployment itself holds no

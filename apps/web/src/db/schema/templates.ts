@@ -9,6 +9,7 @@ import {
 } from "drizzle-orm/pg-core";
 import type {
   CampaignBlock,
+  CampaignTheme,
   TemplateVariablesSchema,
 } from "@sendsprite/shared";
 import { organization } from "./auth";
@@ -41,6 +42,13 @@ export const templates = pgTable(
      * no design: it would silently overwrite the hand edit on the next save.
      */
     design: jsonb("design").$type<CampaignBlock[]>(),
+    /**
+     * The body theme the design was drawn with. Its own column rather than a
+     * field inside `design`, so it is symmetric with `campaigns.theme` and so
+     * a template written as HTML can still carry one later without the design
+     * column having to hold a shape that is half-used.
+     */
+    theme: jsonb("theme").$type<CampaignTheme>(),
     variablesSchema: jsonb("variables_schema")
       .$type<TemplateVariablesSchema>()
       .notNull()
@@ -75,6 +83,8 @@ export interface TemplateSnapshot {
    * and is what an older row looks like.
    */
   design?: CampaignBlock[] | null;
+  /** The body theme, when the snapshot has one. Same optionality as `design`. */
+  theme?: CampaignTheme | null;
 }
 
 /**

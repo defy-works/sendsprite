@@ -13,6 +13,7 @@ import {
   renderBlocks,
   slugifyTemplateName,
   type CampaignBlock,
+  type CampaignTheme,
   type TemplateVariableType,
 } from "@sendsprite/shared";
 import { Alert } from "@/components/ui/Alert";
@@ -68,6 +69,8 @@ export interface EditorTemplate extends DraftFields {
   name: string;
   /** The visual editor's tree, when this template is authored that way. */
   nodes: EditorNode[] | null;
+  /** `{}` is "the renderer's defaults". Only meaningful in design mode. */
+  theme: CampaignTheme;
 }
 
 /**
@@ -82,6 +85,7 @@ const STARTER: EditorTemplate = {
   bodyText: "",
   variables: [],
   nodes: null,
+  theme: {},
 };
 
 /** The three fields a variable chip can be inserted into. */
@@ -183,6 +187,7 @@ export function TemplateEditor({
     try {
       const { html, text } = renderBlocks(blocksOfTree(t.nodes), {
         unsubscribe: false,
+        theme: t.theme,
       });
       return { ok: true as const, html, text };
     } catch (e) {
@@ -192,7 +197,7 @@ export function TemplateEditor({
           e instanceof Error ? e.message : "This design cannot be rendered.",
       };
     }
-  }, [t.nodes]);
+  }, [t.nodes, t.theme]);
 
   /** What the placeholder scan and the preview read, whichever mode this is. */
   const effective: DraftFields = useMemo(
@@ -268,6 +273,9 @@ export function TemplateEditor({
     // `undefined`: the service reads that as "leave it alone", and a template
     // switched to HTML would keep compiling from blocks nobody can see.
     design: state.nodes === null ? null : blocksOfTree(state.nodes),
+    // Cleared with the design: a theme on an HTML-authored template would
+    // never be applied to anything, because the body is no longer compiled.
+    theme: state.nodes === null ? null : state.theme,
   });
 
   /**
@@ -310,6 +318,7 @@ export function TemplateEditor({
         editorLeaf(blockDefaults("heading")),
         editorLeaf(blockDefaults("text")),
       ],
+      theme: {},
     }));
   };
 
@@ -359,6 +368,7 @@ export function TemplateEditor({
           bodyText: res.data.bodyText ?? "",
           variables: variableRowsOf(res.data.variablesSchema),
           nodes: res.data.design ? editorNodesOf(res.data.design) : null,
+          theme: res.data.theme ?? {},
         };
         setT(next);
         setCommitted(JSON.stringify(serialisable(next)));
@@ -677,6 +687,8 @@ export function TemplateEditor({
         <BlockDesigner
           nodes={t.nodes}
           onChange={setNodes}
+          theme={t.theme}
+          onThemeChange={(theme) => set("theme", theme)}
           readOnly={readOnly}
           bodyTitle="Body"
           settings={
@@ -829,5 +841,6 @@ function serialisable(t: EditorTemplate) {
     variables: t.variables,
     design:
       t.nodes === null ? null : (blocksOfTree(t.nodes) as CampaignBlock[]),
+    theme: t.nodes === null ? null : t.theme,
   };
 }

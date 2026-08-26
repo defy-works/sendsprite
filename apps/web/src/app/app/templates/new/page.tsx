@@ -41,6 +41,7 @@ export default async function NewTemplatePage() {
           editorLeaf({ kind: "heading", level: 2, text: "Hello {{name}}" }),
           editorLeaf(blockDefaults("text")),
         ],
+        theme: {},
       }}
     />
   );

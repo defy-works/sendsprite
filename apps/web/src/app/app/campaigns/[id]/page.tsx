@@ -103,6 +103,7 @@ export default async function CampaignPage({
           replyTo: c.replyTo ?? "",
           subject: c.subject,
           nodes: editorNodesOf(c.blocks),
+          theme: c.theme ?? {},
         }}
       />
 

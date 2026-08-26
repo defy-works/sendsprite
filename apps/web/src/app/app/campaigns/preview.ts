@@ -3,6 +3,7 @@ import {
   UNSUBSCRIBE_MARKER,
   renderBlocks,
   type CampaignBlock,
+  type CampaignTheme,
 } from "@sendsprite/shared";
 
 /**
@@ -52,9 +53,10 @@ const PREVIEW_UNSUBSCRIBE_TEXT = "Unsubscribe: a link unique to each recipient";
  */
 export function previewCampaign(
   blocks: readonly CampaignBlock[],
+  theme?: CampaignTheme,
 ): CampaignPreview {
   try {
-    const rendered = renderBlocks(blocks);
+    const rendered = renderBlocks(blocks, { theme });
     return {
       ok: true,
       html: rendered.html.replaceAll(

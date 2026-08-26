@@ -125,6 +125,7 @@ export const publicCampaign = (c: Campaign) => ({
   replyTo: c.replyTo,
   subject: c.subject,
   blocks: c.blocks,
+  theme: c.theme,
   status: c.status,
   scheduledAt: c.scheduledAt,
   sentAt: c.sentAt,
@@ -349,6 +350,7 @@ export async function createCampaign(
       from: p.data.from,
       replyTo: p.data.replyTo ?? null,
       blocks: p.data.blocks,
+      theme: p.data.theme ?? null,
       // `status`, `counts` and the timestamps take their column defaults: a
       // campaign is always born a `draft` with an all-zero count cache.
       createdBy: actor.userId,
@@ -380,6 +382,10 @@ const EDITABLE_FIELDS = [
   "replyTo",
   "subject",
   "blocks",
+  // Compared structurally like `blocks`, and for the same jsonb reason: an
+  // unchanged theme re-sent on every save must not read as an edit, because
+  // an edit reverts a scheduled campaign to a draft.
+  "theme",
 ] as const;
 
 type EditableField = (typeof EDITABLE_FIELDS)[number];
@@ -447,6 +453,9 @@ export async function updateCampaign(
     replyTo: p.data.replyTo === undefined ? current.replyTo : p.data.replyTo,
     subject: p.data.subject ?? current.subject,
     blocks: p.data.blocks ?? current.blocks,
+    // `null` is a real value here — "reset to the defaults" — so only
+    // `undefined` means "leave it alone".
+    theme: p.data.theme === undefined ? current.theme : p.data.theme,
   };
   const fields = changedFields(current, next);
   // Nothing moved: no write, no audit row, and — the reason this check is

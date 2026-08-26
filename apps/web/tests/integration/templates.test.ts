@@ -163,6 +163,7 @@ describe("templates service", () => {
       // Null, not absent: this template was written as HTML, and a snapshot
       // has to say so or a restore cannot tell "no design" from "unchanged".
       design: null,
+      theme: null,
     });
   });
 
@@ -211,6 +212,7 @@ describe("templates service", () => {
       bodyText: changed.data.bodyText,
       variablesSchema: changed.data.variablesSchema,
       design: null,
+      theme: null,
     });
   });
 

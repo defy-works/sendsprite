@@ -55,6 +55,7 @@ export default async function TemplatePage({
         // Present means this template was built in the visual editor and
         // reopens there; null means it was written as HTML.
         nodes: t.design ? editorNodesOf(t.design) : null,
+        theme: t.theme ?? {},
       }}
       versions={versions.map((v) => ({
         version: v.version,

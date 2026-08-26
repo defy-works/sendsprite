@@ -5,6 +5,7 @@ import {
   can,
   type CampaignBlock,
   type CampaignStatus,
+  type CampaignTheme,
 } from "@sendsprite/shared";
 import { requestMeta } from "@/lib/audit";
 import type { Result } from "@/lib/result";
@@ -54,6 +55,8 @@ export interface CampaignDraft {
   replyTo: string;
   subject: string;
   blocks: CampaignBlock[];
+  /** `{}` renders the defaults, which is what an absent theme has always done. */
+  theme: CampaignTheme;
 }
 
 export async function createCampaign(
@@ -208,7 +211,10 @@ export async function cancelCampaign(
  * either.
  */
 export async function sendCampaignTestAction(
-  draft: Pick<CampaignDraft, "from" | "replyTo" | "subject" | "blocks">,
+  draft: Pick<
+    CampaignDraft,
+    "from" | "replyTo" | "subject" | "blocks" | "theme"
+  >,
   to: string[],
 ): Promise<Result<{ emailId: string }>> {
   const a = await actor();
@@ -222,6 +228,7 @@ export async function sendCampaignTestAction(
       replyTo: draft.replyTo.trim() === "" ? undefined : draft.replyTo,
       subject: draft.subject,
       blocks: draft.blocks,
+      theme: draft.theme,
     },
   );
   if (res.ok) revalidatePath("/app/emails");

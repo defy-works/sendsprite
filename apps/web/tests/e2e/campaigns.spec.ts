@@ -437,7 +437,24 @@ test("a campaign reaches one eligible contact, and unsubscribing needs a POST", 
     page.getByText("are both unsubscribed and suppressed"),
   ).toHaveCount(0);
 
-  /* ---- 5. send it, typing the name to confirm ---- */
+  /* ---- 5. the scheduler, then send it, typing the name to confirm ---- */
+
+  // The "when" control is the app's own picker, not `datetime-local`: a
+  // calendar grid with one tab stop, a real `<input type=time>`, and
+  // shortcuts. Exercised here because this is the only page it appears on,
+  // and because "the button changes what it says" is the behaviour that
+  // matters — arming and scheduling are different actions.
+  await expect(page.locator('input[type="datetime-local"]')).toHaveCount(0);
+  await page.locator("#cmp-when").click();
+  const when = page.getByRole("dialog", { name: "Choose a date and time" });
+  await expect(when).toBeVisible();
+  await when.getByRole("button", { name: "Tomorrow 9am" }).click();
+  await expect(when).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Schedule…" })).toBeVisible();
+
+  // Cleared again: this campaign is sent immediately, and the rest of the
+  // spec depends on that. Clearing is the path back from a mis-click.
+  await page.getByRole("button", { name: "Clear the scheduled time" }).click();
 
   await page.getByRole("button", { name: "Send to 1 person…" }).click();
   const dialog = page.getByRole("dialog");

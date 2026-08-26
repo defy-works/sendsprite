@@ -2,6 +2,7 @@ import { and, desc, eq, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   CampaignBlock,
+  CampaignTheme,
   MAX_BLOCKS,
   renderBlocks,
   CreateTemplateInput,
@@ -23,6 +24,7 @@ import {
   type TemplateVersion,
 } from "@/db/schema";
 import { recordAudit } from "@/lib/audit";
+import { pgCode } from "@/lib/pg";
 import { canonicalJson } from "@/lib/canonical-json";
 import type { Result } from "@/lib/result";
 import type { TeamActor } from "./team";
@@ -70,6 +72,7 @@ export const publicTemplate = (t: Template) => ({
 export const publicTemplateVersion = (v: TemplateVersion) => {
   const snapshot = { ...v.snapshot };
   delete snapshot.design;
+  delete snapshot.theme;
   return {
     version: v.version,
     snapshot,
@@ -158,6 +161,7 @@ const snapshotOf = (t: Template): TemplateSnapshot => ({
   bodyText: t.bodyText,
   variablesSchema: t.variablesSchema,
   design: t.design ?? null,
+  theme: t.theme ?? null,
 });
 
 const SNAPSHOT_FIELDS = [
@@ -167,6 +171,7 @@ const SNAPSHOT_FIELDS = [
   "bodyText",
   "variablesSchema",
   "design",
+  "theme",
 ] as const;
 
 /**
@@ -186,6 +191,7 @@ const SNAPSHOT_FIELDS = [
  */
 function compileDesign(
   design: CampaignBlock[],
+  theme?: CampaignTheme | null,
 ): Result<{ bodyHtml: string; bodyText: string | null }> {
   const parsed = z.array(CampaignBlock).max(MAX_BLOCKS).safeParse(design);
   if (!parsed.success)
@@ -196,7 +202,10 @@ function compileDesign(
         "This design contains a block that is not valid.",
     };
   try {
-    const { html, text } = renderBlocks(parsed.data, { unsubscribe: false });
+    const { html, text } = renderBlocks(parsed.data, {
+      unsubscribe: false,
+      theme: theme ?? undefined,
+    });
     return { ok: true, data: { bodyHtml: html, bodyText: text || null } };
   } catch (e) {
     return {
@@ -217,6 +226,8 @@ function compileDesign(
  * by hand means; an array replaces it *and* the body compiled from it.
  */
 export type DesignPatch = CampaignBlock[] | null | undefined;
+/** Same three-way meaning as {@link DesignPatch}, for the body theme. */
+export type ThemePatch = CampaignTheme | null | undefined;
 
 /**
  * Substitutes the compiled body into the input **before** it is parsed.
@@ -277,9 +288,10 @@ export async function createTemplate(
   actor: TeamActor,
   raw: unknown,
   design?: DesignPatch,
+  theme?: ThemePatch,
 ): Promise<Result<Template>> {
   if (!can(actor.role, "templates.manage")) return DENIED;
-  const compiled = design ? compileDesign(design) : null;
+  const compiled = design ? compileDesign(design, theme) : null;
   if (compiled && !compiled.ok) return compiled;
   const p = CreateTemplateInput.safeParse(
     compiled ? withCompiledBody(raw, compiled.data, "omit") : raw,
@@ -296,6 +308,7 @@ export async function createTemplate(
     bodyText: p.data.bodyText ?? null,
     variablesSchema: p.data.variablesSchema,
     design: design ?? null,
+    theme: theme ?? null,
     version: 1,
     updatedBy: actor.userId,
   };
@@ -348,9 +361,10 @@ export async function updateTemplate(
   key: string,
   raw: unknown,
   design?: DesignPatch,
+  theme?: ThemePatch,
 ): Promise<Result<Template>> {
   if (!can(actor.role, "templates.manage")) return DENIED;
-  const compiled = design ? compileDesign(design) : null;
+  const compiled = design ? compileDesign(design, theme) : null;
   if (compiled && !compiled.ok) return compiled;
   const p = UpdateTemplateInput.safeParse(
     compiled ? withCompiledBody(raw, compiled.data, "null") : raw,
@@ -367,6 +381,7 @@ export async function updateTemplate(
       p.data.bodyText === undefined ? current.bodyText : p.data.bodyText,
     variablesSchema: p.data.variablesSchema ?? current.variablesSchema,
     design: design === undefined ? (current.design ?? null) : design,
+    theme: theme === undefined ? (current.theme ?? null) : theme,
   };
   const fields = changedFields(snapshotOf(current), next);
   if (!fields.length) return { ok: true, data: current };
@@ -496,9 +511,3 @@ export function renderTemplateRow(
     };
   return { ok: true, data: r.data };
 }
-
-/** Postgres SQLSTATE, on the driver error or (drizzle) its `cause`. */
-const pgCode = (e: unknown): string | undefined => {
-  const o = e as { code?: string; cause?: { code?: string } } | null;
-  return o?.code ?? o?.cause?.code;
-};

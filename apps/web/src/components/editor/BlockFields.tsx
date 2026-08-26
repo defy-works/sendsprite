@@ -3,6 +3,7 @@ import type { LeafBlock } from "@sendsprite/shared";
 import { Field } from "@/components/ui/Field";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
+import { ImagePicker } from "./ImagePicker";
 import { InlineEditor } from "./InlineEditor";
 
 /**
@@ -101,17 +102,29 @@ export function BlockFields({
         <div className="flex flex-col gap-3">
           <Field
             id={`${id}-src`}
-            label="Image URL"
-            hint="Hosted somewhere public. Mail clients do not fetch anything behind a login."
+            label="Image"
+            hint="Upload one, or point at a URL of your own. Mail clients do not fetch anything behind a login."
           >
-            <Input
-              id={`${id}-src`}
+            <ImagePicker
               value={block.url}
-              placeholder="https://example.com/banner.png"
               disabled={readOnly}
-              onChange={(e) => onChange({ ...block, url: e.target.value })}
+              onChange={(url) => onChange({ ...block, url })}
             />
           </Field>
+          {block.url && (
+            <div className="overflow-hidden rounded-md border border-white/10 bg-white/4">
+              {/* Shown at the size the block will render, so "50% width" is a
+                  thing you can see rather than a number you have to imagine.
+                  A plain <img>: the source is arbitrary and often remote. */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={block.url}
+                alt=""
+                className="mx-auto max-h-40 bg-white object-contain"
+                style={{ width: `${block.width ?? 100}%` }}
+              />
+            </div>
+          )}
           <Field
             id={`${id}-alt`}
             label="Alt text"

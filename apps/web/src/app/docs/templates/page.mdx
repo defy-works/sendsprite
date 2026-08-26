@@ -178,6 +178,12 @@ footer**, whichever way it was written. Campaigns are bulk mail to a list and
 always append one; a template is the body of a transactional send, and a
 password reset with an unsubscribe link under it is not a thing anyone wants.
 
+A template built in Design mode carries a **theme** too — the page and card
+colours, the width, the font — stored beside the blocks and compiled into
+`body_html` on every save. As with campaigns, an absent theme is the renderer's
+defaults, and neither the theme nor the block tree appears in the REST
+response: the API deals in HTML.
+
 ## Sending yourself a test
 
 **Send a test** on a saved template mails one copy through the ordinary send

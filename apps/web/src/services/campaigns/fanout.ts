@@ -578,7 +578,9 @@ export async function startCampaign(
     // what stops an edit to `blocks` mid-send giving the first and the last
     // recipient different mail; `ensureRendered` is only the fallback for a
     // campaign that reached `sending` without passing through here.
-    rendered = renderBlocks(campaign.blocks);
+    rendered = renderBlocks(campaign.blocks, {
+      theme: campaign.theme ?? undefined,
+    });
   } catch (e) {
     if (!(e instanceof InvalidCampaignBlockError)) throw e;
     return defer(campaign, {
@@ -977,7 +979,9 @@ async function ensureRendered(campaign: Campaign): Promise<Campaign | null> {
   if (campaign.html !== null && campaign.text !== null) return campaign;
   let rendered;
   try {
-    rendered = renderBlocks(campaign.blocks);
+    rendered = renderBlocks(campaign.blocks, {
+      theme: campaign.theme ?? undefined,
+    });
   } catch (e) {
     if (!(e instanceof InvalidCampaignBlockError)) throw e;
     // **A campaign that cannot render is stopped, not retried.** It is

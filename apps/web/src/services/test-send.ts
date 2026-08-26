@@ -3,6 +3,7 @@ import {
   escapeHtml,
   renderBlocks,
   type CampaignBlock,
+  type CampaignTheme,
 } from "@sendsprite/shared";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
@@ -136,6 +137,7 @@ export async function sendCampaignTest(
     replyTo?: string;
     subject: string;
     blocks: CampaignBlock[];
+    theme?: CampaignTheme;
   },
 ): Promise<Result<TestSendResult>> {
   const to = recipients(input.to);
@@ -150,7 +152,7 @@ export async function sendCampaignTest(
     // The same call the send makes. A body that fails the contract fails here
     // too, which is the point: a test send that renders something the real
     // send would refuse is worse than no test send.
-    rendered = renderBlocks(input.blocks);
+    rendered = renderBlocks(input.blocks, { theme: input.theme });
   } catch (e) {
     return {
       ok: false,

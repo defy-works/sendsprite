@@ -19,3 +19,5 @@ export * from "./team-cloudflare";
 export * from "./send-rate";
 export * from "./worker-heartbeats";
 export * from "./billing";
+export * from "./assets";
+export * from "./layouts";

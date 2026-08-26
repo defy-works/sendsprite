@@ -384,6 +384,73 @@ export const ColumnsBlock = z
   });
 export type ColumnsBlock = z.infer<typeof ColumnsBlock>;
 
+/* ------------------------------------------------------------------ *
+ * The body theme
+ * ------------------------------------------------------------------ */
+
+/**
+ * The card width, in pixels, as three presets.
+ *
+ * 600 is the number every email template on the internet uses, because it is
+ * what fits an Outlook reading pane at 96 dpi without a horizontal scrollbar.
+ * 480 and 720 are the two useful departures from it — a narrow announcement
+ * and a wide newsletter — and everything between them is a number somebody
+ * would have to justify per client.
+ */
+export const CONTENT_WIDTHS = [480, 600, 720] as const;
+export const ContentWidth = z.union([
+  z.literal(480),
+  z.literal(600),
+  z.literal(720),
+]);
+export type ContentWidth = z.infer<typeof ContentWidth>;
+
+/**
+ * A font *family*, not a font.
+ *
+ * A webfont in an email is a webfont most clients will not load — Outlook,
+ * Gmail on Android and every desktop client fall back — so the only honest
+ * choice is which system stack to fall back *to*. Three names, three stacks
+ * the renderer owns; nothing an author types reaches a `font-family`.
+ */
+export const FONT_FAMILIES = ["sans", "serif", "mono"] as const;
+export const FontFamily = z.enum(FONT_FAMILIES);
+export type FontFamily = z.infer<typeof FontFamily>;
+
+/**
+ * What the whole body looks like, as opposed to one block in it.
+ *
+ * Every field is optional and every one has a default in the renderer, so an
+ * absent theme renders exactly what a body rendered before themes existed —
+ * which is what lets this be added to a live table without a data migration.
+ *
+ * The same rule as block presentation applies and for the same reason: a
+ * closed set or `#rrggbb`, never a CSS string. These values are interpolated
+ * into `style` attributes and a `<style>` block, where escaping is no defence.
+ */
+export const CampaignTheme = z.object({
+  /** Behind the card. Defaults to a light grey. */
+  pageBackground: HexColor.optional(),
+  /** The card itself. Defaults to white. */
+  cardBackground: HexColor.optional(),
+  contentWidth: ContentWidth.optional(),
+  font: FontFamily.optional(),
+  /** Body and heading text. Defaults to near-black. */
+  textColor: HexColor.optional(),
+  /**
+   * Links inside `text` blocks.
+   *
+   * Applied through a `<style>` rule rather than inline, because `text.html`
+   * is a validated string that may not carry a `style` attribute — that
+   * restriction is the whole reason the field can be emitted unescaped. Gmail,
+   * Apple Mail and Outlook.com honour it; Outlook on Windows keeps its default
+   * blue, which is a colour, not a broken layout.
+   */
+  linkColor: HexColor.optional(),
+  cardCorners: CornerStyle.optional(),
+});
+export type CampaignTheme = z.infer<typeof CampaignTheme>;
+
 /**
  * One block of a campaign body.
  *
@@ -444,6 +511,12 @@ export const CreateCampaignInput = z.object({
   replyTo: EmailAddressField.optional(),
   subject: Subject,
   blocks: Blocks,
+  /**
+   * Optional, and absent means the renderer's defaults — which is exactly what
+   * every campaign written before themes existed rendered with. An API client
+   * that never sends one is not opting out of anything.
+   */
+  theme: CampaignTheme.optional(),
 });
 export type CreateCampaignInput = z.infer<typeof CreateCampaignInput>;
 
@@ -467,6 +540,8 @@ export const UpdateCampaignInput = z.object({
   replyTo: EmailAddressField.nullable().optional(),
   subject: Subject.optional(),
   blocks: Blocks.optional(),
+  /** `null` resets to the defaults; omitting it leaves the theme alone. */
+  theme: CampaignTheme.nullable().optional(),
 });
 export type UpdateCampaignInput = z.infer<typeof UpdateCampaignInput>;
 
