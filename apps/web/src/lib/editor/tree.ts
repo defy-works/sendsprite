@@ -5,7 +5,7 @@ import {
   type ColumnLayout,
   type LeafBlock,
 } from "@sendsprite/shared";
-import { newBlockId } from "./preview";
+import { newBlockId } from "./blocks";
 
 /**
  * The campaign body as the editor holds it: a tree, not a list.

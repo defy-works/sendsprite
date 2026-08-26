@@ -7,7 +7,10 @@ import {
   timestamp,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
-import type { TemplateVariablesSchema } from "@sendsprite/shared";
+import type {
+  CampaignBlock,
+  TemplateVariablesSchema,
+} from "@sendsprite/shared";
 import { organization } from "./auth";
 
 /** The current state of a template. Its history is `template_versions`. */
@@ -24,6 +27,20 @@ export const templates = pgTable(
     subject: text("subject").notNull(),
     bodyHtml: text("body_html").notNull(),
     bodyText: text("body_text"),
+    /**
+     * The block tree the visual editor authored, when it was used.
+     *
+     * `body_html` stays the source of truth for *sending* — the public API
+     * accepts and returns HTML, the SDK types say HTML, and a template written
+     * by an API client has no design and never will. This is the editor's
+     * source, kept so that reopening a template built in the designer shows
+     * the blocks rather than the HTML they compiled to.
+     *
+     * Null means "authored as HTML". Editing the HTML by hand clears it,
+     * because a design that no longer produces the stored HTML is worse than
+     * no design: it would silently overwrite the hand edit on the next save.
+     */
+    design: jsonb("design").$type<CampaignBlock[]>(),
     variablesSchema: jsonb("variables_schema")
       .$type<TemplateVariablesSchema>()
       .notNull()
@@ -52,6 +69,12 @@ export interface TemplateSnapshot {
   bodyHtml: string;
   bodyText: string | null;
   variablesSchema: TemplateVariablesSchema;
+  /**
+   * Optional so every snapshot written before the designer existed still
+   * parses as one. `null` is "authored as HTML"; absent means the same thing
+   * and is what an older row looks like.
+   */
+  design?: CampaignBlock[] | null;
 }
 
 /**

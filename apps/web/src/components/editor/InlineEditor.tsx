@@ -16,7 +16,7 @@ import { Input } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 import { IconBold, IconItalic, IconLink } from "@/components/ui/icons";
 import { cn } from "@/lib/cn";
-import { serializeInline } from "../../preview";
+import { serializeInline } from "@/lib/editor/inline";
 
 /**
  * The inside of a `text` block: Tiptap, scoped to three inline marks

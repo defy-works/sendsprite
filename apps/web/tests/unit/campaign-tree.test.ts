@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MAX_BLOCKS_PER_COLUMN, type LeafBlock } from "@sendsprite/shared";
-import { blockDefaults } from "@/app/app/campaigns/preview";
+import { blockDefaults } from "@/lib/editor/blocks";
 import {
   blocksOfTree,
   columnContainer,
@@ -18,7 +18,7 @@ import {
   updateRow,
   type EditorNode,
   type EditorRow,
-} from "@/app/app/campaigns/tree";
+} from "@/lib/editor/tree";
 
 /**
  * The tree is where a drag actually happens, and a drag is the one interaction

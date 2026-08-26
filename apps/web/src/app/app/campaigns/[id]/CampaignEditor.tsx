@@ -1,18 +1,4 @@
 "use client";
-import {
-  DndContext,
-  DragOverlay,
-  KeyboardSensor,
-  PointerSensor,
-  pointerWithin,
-  rectIntersection,
-  useSensor,
-  useSensors,
-  type CollisionDetection,
-  type DragEndEvent,
-  type DragStartEvent,
-} from "@dnd-kit/core";
-import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { useRouter } from "next/navigation";
 import {
   useCallback,
@@ -21,11 +7,7 @@ import {
   useState,
   useTransition,
 } from "react";
-import type {
-  CampaignStatus,
-  ColumnLayout,
-  LeafBlock,
-} from "@sendsprite/shared";
+import type { CampaignStatus } from "@sendsprite/shared";
 import { Alert } from "@/components/ui/Alert";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -37,7 +19,9 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { Select } from "@/components/ui/Select";
 import { IconEye, IconSend } from "@/components/ui/icons";
 import { useToast } from "@/components/ui/toast";
+import { BlockDesigner } from "@/components/editor/BlockDesigner";
 import { TestSendDialog } from "@/components/app/TestSendDialog";
+import { blocksOfTree, type EditorNode } from "@/lib/editor/tree";
 import {
   createCampaign,
   sendCampaignTestAction,
@@ -45,30 +29,7 @@ import {
   type CampaignDraft,
   type Result,
 } from "../actions";
-import {
-  BLOCK_LABELS,
-  blockDefaults,
-  previewCampaign,
-  type LeafKind,
-} from "../preview";
-import {
-  blocksOfTree,
-  editorLeaf,
-  editorRow,
-  insertNode,
-  itemsIn,
-  locate,
-  moveItem,
-  parseContainer,
-  removeNode,
-  replaceLeaf,
-  updateRow,
-  type ContainerId,
-  type EditorNode,
-} from "../tree";
-import { Canvas, RootDropZone } from "./blocks/Canvas";
-import { LeafInspector, RowInspector } from "./blocks/Inspector";
-import { Palette, parsePaletteId } from "./blocks/Palette";
+import { previewCampaign } from "../preview";
 
 export interface BookOption {
   id: string;
@@ -128,20 +89,6 @@ const LOCKED: Record<CampaignStatus, string | null> = {
 const NO_PERMISSION =
   "Read-only — creating and editing campaigns needs the admin role.";
 
-/**
- * Drops land where the pointer is, and fall back to rectangles.
- *
- * `pointerWithin` alone cannot resolve a keyboard drag, which has no pointer;
- * `rectIntersection` alone picks the container with the largest overlap, which
- * for a small block hovering over a wide row is the row rather than the column
- * under the cursor. Trying the pointer first and falling back is what makes
- * both the mouse and the keyboard land where the user meant.
- */
-const collisionDetection: CollisionDetection = (args) => {
-  const hits = pointerWithin(args);
-  return hits.length > 0 ? hits : rectIntersection(args);
-};
-
 export function CampaignEditor({
   mode,
   campaignId,
@@ -172,8 +119,6 @@ export function CampaignEditor({
   const [liveStatus, setLiveStatus] = useState(status);
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [dragging, setDragging] = useState<string | null>(null);
   const [testOpen, setTestOpen] = useState(false);
   /** The last state written to the database, as a string, so edits are detectable. */
   const [committed, setCommitted] = useState(() =>
@@ -204,105 +149,15 @@ export function CampaignEditor({
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
 
-  const sensors = useSensors(
-    // A few pixels of travel before a drag starts, so a click into a text
-    // field inside a card is still a click.
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    }),
-  );
-
-  /**
-   * Resolves what a drag ended over into a container and an index.
-   *
-   * dnd-kit reports the id it collided with, which is either a container
-   * (`root`, `row:…:0`) or another item. An item means "put it next to this
-   * one", so the container is that item's container and the index is its
-   * position — computed against the tree *before* the move, which `moveItem`
-   * accounts for by removing first and inserting second.
-   */
-  const resolveDrop = (
-    nodes: EditorNode[],
-    overId: string,
-  ): { container: ContainerId; index: number } | null => {
-    if (parseContainer(overId)) {
-      const container = overId as ContainerId;
-      return { container, index: itemsIn(nodes, container).length };
-    }
-    const over = locate(nodes, overId);
-    return over ? { container: over.container, index: over.index } : null;
-  };
-
-  const onDragStart = (e: DragStartEvent) => setDragging(String(e.active.id));
-
-  const onDragEnd = (e: DragEndEvent) => {
-    setDragging(null);
-    const overId = e.over ? String(e.over.id) : null;
-    if (!overId) return;
-    const activeId = String(e.active.id);
-
-    setNodes((nodes) => {
-      const drop = resolveDrop(nodes, overId);
-      if (!drop) return nodes;
-
-      // A palette drag creates a block rather than moving one.
-      const fresh = parsePaletteId(activeId);
-      if (fresh) {
-        const node =
-          fresh.kind === "leaf"
-            ? editorLeaf(blockDefaults(fresh.leaf))
-            : editorRow(fresh.layout);
-        const next = insertNode(nodes, drop.container, drop.index, node);
-        // Select what was just dropped, so the inspector is already on it.
-        if (next !== nodes) queueMicrotask(() => setSelectedId(node.id));
-        return next;
-      }
-
-      if (activeId === overId) return nodes;
-      return moveItem(nodes, activeId, drop.container, drop.index);
-    });
-  };
-
-  /** Click-to-add: appends to the root, or into the selected block's container. */
-  const addLeaf = (kind: LeafKind) => {
-    const node = editorLeaf(blockDefaults(kind));
-    setNodes((nodes) => {
-      const target = selectedId ? locate(nodes, selectedId) : null;
-      const container: ContainerId = target?.container ?? "root";
-      return insertNode(
-        nodes,
-        container,
-        itemsIn(nodes, container).length,
-        node,
-      );
-    });
-    setSelectedId(node.id);
-  };
-
-  const addRow = (layout: ColumnLayout) => {
-    const node = editorRow(layout);
-    // Always at the root: a row cannot nest, so "next to the selection" is
-    // only meaningful when the selection is itself at the root.
-    setNodes((nodes) => insertNode(nodes, "root", nodes.length, node));
-    setSelectedId(node.id);
-  };
-
-  const removeById = (id: string) => {
-    setNodes((nodes) => removeNode(nodes, id));
-    setSelectedId((current) => (current === id ? null : current));
-  };
-
   /**
    * The live preview runs the **same** `renderBlocks` the send runs. There is
    * no React renderer for blocks anywhere in this app, deliberately — see
    * `preview.ts`.
    */
-  const blocks = useMemo(() => blocksOfTree(c.nodes), [c.nodes]);
-  const preview = useMemo(() => previewCampaign(blocks), [blocks]);
-
-  const selected = selectedId ? locate(c.nodes, selectedId) : null;
-  const selectedNode = selected?.node ?? null;
+  const preview = useMemo(
+    () => previewCampaign(blocksOfTree(c.nodes)),
+    [c.nodes],
+  );
 
   const bookMissing = c.bookId !== "" && !books.some((b) => b.id === c.bookId);
   const domainMissing =
@@ -348,9 +203,7 @@ export function CampaignEditor({
   };
 
   return (
-    // Clicking the page background clears the selection, which is what makes
-    // the inspector feel like it belongs to the canvas rather than to the URL.
-    <div className="flex flex-col gap-6" onClick={() => setSelectedId(null)}>
+    <div className="flex flex-col gap-6">
       <PageHeader
         back={{ href: "/app/campaigns", label: "Campaigns" }}
         title={
@@ -374,20 +227,14 @@ export function CampaignEditor({
               <Button
                 variant="subtle"
                 icon={<IconSend />}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setTestOpen(true);
-                }}
+                onClick={() => setTestOpen(true)}
               >
                 Send a test
               </Button>
               <Button
                 loading={pending}
                 disabled={mode === "edit" && !dirty}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  save();
-                }}
+                onClick={save}
               >
                 {mode === "create" ? "Create" : "Save"}
               </Button>
@@ -406,221 +253,137 @@ export function CampaignEditor({
         </p>
       )}
 
-      <DndContext
-        sensors={sensors}
-        collisionDetection={collisionDetection}
-        onDragStart={onDragStart}
-        onDragEnd={onDragEnd}
-        onDragCancel={() => setDragging(null)}
-      >
-        <div className="grid gap-6 xl:grid-cols-[15rem_minmax(0,1fr)_minmax(0,26rem)]">
-          {/* Left rail: what can be added, and how the selection looks. It is
-              inside the DndContext so a palette tile can be dragged onto the
-              canvas, which is two grid columns away. */}
-          <div
-            className="flex flex-col gap-4 xl:sticky xl:top-20 xl:self-start"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <Card className="p-4">
-              <Palette
-                disabled={readOnly}
-                onAddLeaf={addLeaf}
-                onAddRow={addRow}
-              />
-            </Card>
-            <Card className="p-4">
-              <p className="num-stamp mb-3">
-                {selectedNode
-                  ? selectedNode.type === "row"
-                    ? "Row style"
-                    : `${BLOCK_LABELS[selectedNode.block.kind]} style`
-                  : "Style"}
-              </p>
-              {selectedNode === null ? (
-                <p className="text-sm text-white/50">
-                  Select a block on the canvas to change how it looks.
-                </p>
-              ) : selectedNode.type === "row" ? (
-                <RowInspector
-                  row={selectedNode}
-                  readOnly={readOnly}
-                  onChange={(patch) =>
-                    setNodes((nodes) =>
-                      updateRow(nodes, selectedNode.id, patch),
-                    )
-                  }
-                />
-              ) : (
-                <LeafInspector
-                  block={selectedNode.block}
-                  readOnly={readOnly}
-                  onChange={(block) =>
-                    setNodes((nodes) =>
-                      replaceLeaf(nodes, selectedNode.id, block),
-                    )
-                  }
-                />
-              )}
-            </Card>
-          </div>
-
-          {/* Middle: settings, then the canvas. */}
-          <div
-            className="flex min-w-0 flex-col gap-6"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <Card>
-              <CardHeader>
-                <CardTitle>Settings</CardTitle>
-              </CardHeader>
-              <CardBody className="grid gap-4 sm:grid-cols-2">
-                <Field
+      <BlockDesigner
+        nodes={c.nodes}
+        onChange={setNodes}
+        readOnly={readOnly}
+        invalidIndex={preview.ok ? null : preview.index}
+        settings={
+          <Card>
+            <CardHeader>
+              <CardTitle>Settings</CardTitle>
+            </CardHeader>
+            <CardBody className="grid gap-4 sm:grid-cols-2">
+              <Field
+                id="cmp-name"
+                label="Name"
+                hint="Internal only. Recipients never see it."
+              >
+                <Input
                   id="cmp-name"
-                  label="Name"
-                  hint="Internal only. Recipients never see it."
-                >
-                  <Input
-                    id="cmp-name"
-                    value={c.name}
-                    maxLength={200}
-                    disabled={readOnly}
-                    onChange={(e) => set("name", e.target.value)}
-                  />
-                </Field>
-
-                <Field id="cmp-subject" label="Subject">
-                  <Input
-                    id="cmp-subject"
-                    value={c.subject}
-                    disabled={readOnly}
-                    onChange={(e) => set("subject", e.target.value)}
-                  />
-                </Field>
-
-                <Field
-                  id="cmp-book"
-                  label="Contact book"
-                  error={
-                    bookMissing
-                      ? "The book this campaign was drawn from has been deleted. Pick another before saving."
-                      : undefined
-                  }
-                  hint="Everyone in it who is subscribed and not suppressed — consent and deliverability are separate, and both have to say yes."
-                >
-                  <Select
-                    id="cmp-book"
-                    value={c.bookId}
-                    disabled={readOnly}
-                    placeholder="Choose a book…"
-                    onChange={(v) => set("bookId", v)}
-                    options={[
-                      /* A campaign outlives its book: `book_id` carries no
-                         foreign key, so the stored id can point at nothing.
-                         Kept as an option so the row still renders what it
-                         says, with a warning telling the author to repoint it. */
-                      ...(bookMissing
-                        ? [
-                            {
-                              value: c.bookId,
-                              label: "Deleted book",
-                              hint: c.bookId,
-                            },
-                          ]
-                        : []),
-                      ...books.map((b) => ({
-                        value: b.id,
-                        label: b.name,
-                        hint: `${b.contactCount.toLocaleString("en-US")} contacts`,
-                      })),
-                    ]}
-                  />
-                </Field>
-
-                <Field
-                  id="cmp-domain"
-                  label="Sending domain"
-                  error={
-                    domainMissing
-                      ? "This domain is gone or no longer verified. A campaign sent from it would fail for every recipient."
-                      : undefined
-                  }
-                >
-                  <Select
-                    id="cmp-domain"
-                    value={c.domainId}
-                    disabled={readOnly}
-                    placeholder="Choose a domain…"
-                    onChange={(v) => set("domainId", v)}
-                    options={[
-                      ...(domainMissing
-                        ? [
-                            {
-                              value: c.domainId,
-                              label: "Deleted or unverified",
-                              hint: c.domainId,
-                            },
-                          ]
-                        : []),
-                      ...domains.map((d) => ({ value: d.id, label: d.name })),
-                    ]}
-                  />
-                </Field>
-
-                <Field
-                  id="cmp-from"
-                  label="From"
-                  hint="Must be an address at the domain above."
-                >
-                  <Input
-                    id="cmp-from"
-                    value={c.from}
-                    placeholder="hello@yourdomain.com"
-                    disabled={readOnly}
-                    onChange={(e) => set("from", e.target.value)}
-                  />
-                </Field>
-
-                <Field id="cmp-replyto" label="Reply-to (optional)">
-                  <Input
-                    id="cmp-replyto"
-                    value={c.replyTo}
-                    placeholder="none"
-                    disabled={readOnly}
-                    onChange={(e) => set("replyTo", e.target.value)}
-                  />
-                </Field>
-              </CardBody>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>Body</CardTitle>
-                <span className="text-xs text-white/40">
-                  {c.nodes.length} block{c.nodes.length === 1 ? "" : "s"}
-                </span>
-              </CardHeader>
-              <CardBody className="flex flex-col gap-2.5">
-                <Canvas
-                  nodes={c.nodes}
-                  readOnly={readOnly}
-                  selectedId={selectedId}
-                  invalidIndex={preview.ok ? null : preview.index}
-                  onSelect={setSelectedId}
-                  onChangeLeaf={(id, block: LeafBlock) =>
-                    setNodes((nodes) => replaceLeaf(nodes, id, block))
-                  }
-                  onRemove={removeById}
+                  value={c.name}
+                  maxLength={200}
+                  disabled={readOnly}
+                  onChange={(e) => set("name", e.target.value)}
                 />
-                {!readOnly && <RootDropZone empty={c.nodes.length === 0} />}
-              </CardBody>
-            </Card>
-          </div>
+              </Field>
 
-          {/* Right: the preview, which is what the whole page is for. */}
-          <Card
-            className="xl:sticky xl:top-20 xl:self-start"
-            onClick={(e) => e.stopPropagation()}
-          >
+              <Field id="cmp-subject" label="Subject">
+                <Input
+                  id="cmp-subject"
+                  value={c.subject}
+                  disabled={readOnly}
+                  onChange={(e) => set("subject", e.target.value)}
+                />
+              </Field>
+
+              <Field
+                id="cmp-book"
+                label="Contact book"
+                error={
+                  bookMissing
+                    ? "The book this campaign was drawn from has been deleted. Pick another before saving."
+                    : undefined
+                }
+                hint="Everyone in it who is subscribed and not suppressed — consent and deliverability are separate, and both have to say yes."
+              >
+                <Select
+                  id="cmp-book"
+                  value={c.bookId}
+                  disabled={readOnly}
+                  placeholder="Choose a book…"
+                  onChange={(v) => set("bookId", v)}
+                  options={[
+                    /* A campaign outlives its book: `book_id` carries no
+                       foreign key, so the stored id can point at nothing.
+                       Kept as an option so the row still renders what it
+                       says, with a warning telling the author to repoint it. */
+                    ...(bookMissing
+                      ? [
+                          {
+                            value: c.bookId,
+                            label: "Deleted book",
+                            hint: c.bookId,
+                          },
+                        ]
+                      : []),
+                    ...books.map((b) => ({
+                      value: b.id,
+                      label: b.name,
+                      hint: `${b.contactCount.toLocaleString("en-US")} contacts`,
+                    })),
+                  ]}
+                />
+              </Field>
+
+              <Field
+                id="cmp-domain"
+                label="Sending domain"
+                error={
+                  domainMissing
+                    ? "This domain is gone or no longer verified. A campaign sent from it would fail for every recipient."
+                    : undefined
+                }
+              >
+                <Select
+                  id="cmp-domain"
+                  value={c.domainId}
+                  disabled={readOnly}
+                  placeholder="Choose a domain…"
+                  onChange={(v) => set("domainId", v)}
+                  options={[
+                    ...(domainMissing
+                      ? [
+                          {
+                            value: c.domainId,
+                            label: "Deleted or unverified",
+                            hint: c.domainId,
+                          },
+                        ]
+                      : []),
+                    ...domains.map((d) => ({ value: d.id, label: d.name })),
+                  ]}
+                />
+              </Field>
+
+              <Field
+                id="cmp-from"
+                label="From"
+                hint="Must be an address at the domain above."
+              >
+                <Input
+                  id="cmp-from"
+                  value={c.from}
+                  placeholder="hello@yourdomain.com"
+                  disabled={readOnly}
+                  onChange={(e) => set("from", e.target.value)}
+                />
+              </Field>
+
+              <Field id="cmp-replyto" label="Reply-to (optional)">
+                <Input
+                  id="cmp-replyto"
+                  value={c.replyTo}
+                  placeholder="none"
+                  disabled={readOnly}
+                  onChange={(e) => set("replyTo", e.target.value)}
+                />
+              </Field>
+            </CardBody>
+          </Card>
+        }
+        preview={
+          <Card className="xl:sticky xl:top-20 xl:self-start">
             <CardHeader>
               <CardTitle>Preview</CardTitle>
               <IconEye className="text-white/30" />
@@ -654,12 +417,8 @@ export function CampaignEditor({
               </p>
             </CardBody>
           </Card>
-        </div>
-
-        <DragOverlay dropAnimation={null}>
-          {dragging && <DragChip id={dragging} nodes={c.nodes} />}
-        </DragOverlay>
-      </DndContext>
+        }
+      />
 
       <TestSendDialog
         open={testOpen}
@@ -705,25 +464,4 @@ function serialisable(c: EditorCampaign) {
     subject: c.subject,
     blocks: blocksOfTree(c.nodes),
   };
-}
-
-/** What follows the cursor during a drag. */
-function DragChip({ id, nodes }: { id: string; nodes: EditorNode[] }) {
-  const fresh = parsePaletteId(id);
-  const label = fresh
-    ? fresh.kind === "leaf"
-      ? BLOCK_LABELS[fresh.leaf]
-      : `Columns ${fresh.layout}`
-    : (() => {
-        const found = locate(nodes, id);
-        if (!found) return "Block";
-        return found.node.type === "row"
-          ? `Columns ${found.node.layout}`
-          : BLOCK_LABELS[found.node.block.kind];
-      })();
-  return (
-    <span className="glass-strong pointer-events-none inline-flex items-center gap-2 px-3 py-2 text-xs text-white shadow-glass">
-      {label}
-    </span>
-  );
 }

@@ -404,10 +404,30 @@ function validate(blocks: readonly CampaignBlock[]): CampaignBlock[] {
  * a *sendable* campaign, not this function's rule about a *renderable* one,
  * and the dashboard preview opens on an empty editor.
  */
+export interface RenderOptions {
+  /**
+   * Append the unsubscribe footer. Default `true`.
+   *
+   * A campaign always carries one — it is bulk mail to a list, and the footer
+   * is not optional in any jurisdiction that matters. A **template** is the
+   * body of a transactional send: a password reset with an unsubscribe link
+   * under it is a password reset the recipient can opt out of receiving, which
+   * is not a thing anyone wants. The same block renderer serves both, so which
+   * one this is has to be said rather than assumed.
+   *
+   * The marker itself is what is being suppressed, not a rendered link: the
+   * fan-out substitutes {@link UNSUBSCRIBE_MARKER} per recipient, and a
+   * template that carried one would ship a U+0001 to the inbox.
+   */
+  unsubscribe?: boolean;
+}
+
 export function renderBlocks(
   blocks: readonly CampaignBlock[],
+  options: RenderOptions = {},
 ): RenderedCampaign {
   const safe = validate(blocks);
+  const unsubscribe = options.unsubscribe ?? true;
 
   const body = safe.map(renderBlock).join("");
   // `background` on `<html>` as well as `<body>`, and `color-scheme: light`.
@@ -436,15 +456,19 @@ export function renderBlocks(
     `<tr><td align="center" valign="top" style="padding:24px 12px">` +
     `<table role="presentation" class="ss-card" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px;max-width:100%;background:#ffffff;border-radius:8px">` +
     body +
-    `<tr><td style="padding:8px 24px 24px">` +
-    `<p style="${FONT};font-size:12px;line-height:1.5;color:${MUTED};margin:0">${UNSUBSCRIBE_MARKER}</p>` +
-    `</td></tr></table></td></tr></table></body></html>`;
+    (unsubscribe
+      ? `<tr><td style="padding:8px 24px 24px">` +
+        `<p style="${FONT};font-size:12px;line-height:1.5;color:${MUTED};margin:0">${UNSUBSCRIBE_MARKER}</p>` +
+        `</td></tr>`
+      : `<tr><td style="padding:0 24px 24px">&nbsp;</td></tr>`) +
+    `</table></td></tr></table></body></html>`;
 
   const text = safe
     .map(blockToText)
     .filter((s) => s !== "")
     .join("\n\n");
 
+  if (!unsubscribe) return { html, text };
   return {
     html,
     text: text === "" ? UNSUBSCRIBE_MARKER : `${text}\n\n${UNSUBSCRIBE_MARKER}`,

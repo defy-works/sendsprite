@@ -1,7 +1,11 @@
 "use server";
 import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
-import { can, type TemplateVariablesSchema } from "@sendsprite/shared";
+import {
+  can,
+  type CampaignBlock,
+  type TemplateVariablesSchema,
+} from "@sendsprite/shared";
 import { requestMeta } from "@/lib/audit";
 import type { Result } from "@/lib/result";
 import { requireTeam } from "@/lib/session";
@@ -37,6 +41,15 @@ export interface TemplateDraft {
   bodyHtml: string;
   bodyText: string;
   variablesSchema: TemplateVariablesSchema;
+  /**
+   * The visual editor's blocks, when the template is authored that way.
+   *
+   * `null` means "authored as HTML" and clears any stored design; the service
+   * treats an absent value as "leave it alone", which is the API client's
+   * case, not the editor's. When blocks are given the service compiles them
+   * and ignores `bodyHtml` — the two cannot be allowed to disagree.
+   */
+  design?: CampaignBlock[] | null;
 }
 
 /** The fields a restore put back, so the open editor can adopt them without a reload. */
@@ -46,16 +59,23 @@ export interface RestoredTemplate {
   bodyHtml: string;
   bodyText: string | null;
   variablesSchema: TemplateVariablesSchema;
+  /** `null` when that version was authored as HTML. */
+  design: CampaignBlock[] | null;
 }
 
 export async function createTemplate(
   draft: TemplateDraft,
 ): Promise<Result<{ slug: string }>> {
-  const res = await templates.createTemplate(await actor(), {
-    ...draft,
-    // An empty textarea means "no text body", not "an empty one".
-    bodyText: draft.bodyText.trim() ? draft.bodyText : undefined,
-  });
+  const { design, ...fields } = draft;
+  const res = await templates.createTemplate(
+    await actor(),
+    {
+      ...fields,
+      // An empty textarea means "no text body", not "an empty one".
+      bodyText: draft.bodyText.trim() ? draft.bodyText : undefined,
+    },
+    design,
+  );
   if (!res.ok) return res;
   revalidatePath("/app/templates");
   return { ok: true, data: { slug: res.data.slug } };
@@ -65,14 +85,19 @@ export async function updateTemplate(
   slug: string,
   draft: TemplateDraft,
 ): Promise<Result> {
-  const res = await templates.updateTemplate(await actor(), slug, {
-    name: draft.name,
-    subject: draft.subject,
-    bodyHtml: draft.bodyHtml,
-    // `null`, not `undefined`: clearing the text body has to be expressible.
-    bodyText: draft.bodyText.trim() ? draft.bodyText : null,
-    variablesSchema: draft.variablesSchema,
-  });
+  const res = await templates.updateTemplate(
+    await actor(),
+    slug,
+    {
+      name: draft.name,
+      subject: draft.subject,
+      bodyHtml: draft.bodyHtml,
+      // `null`, not `undefined`: clearing the text body has to be expressible.
+      bodyText: draft.bodyText.trim() ? draft.bodyText : null,
+      variablesSchema: draft.variablesSchema,
+    },
+    draft.design,
+  );
   if (!res.ok) return res;
   revalidatePath(`/app/templates/${slug}`);
   revalidatePath("/app/templates");
@@ -116,7 +141,16 @@ export async function restoreVersion(
       error:
         "That version is no longer in the recent history. Reload the page and try again.",
     };
-  const res = await templates.updateTemplate(a, slug, found.snapshot);
+  // The snapshot carries the design it was authored with (or `null` for a
+  // version written as HTML), and it is passed explicitly: `updateTemplate`
+  // treats an absent `design` as "leave it alone", which on a restore would
+  // keep today's blocks while reverting the body they no longer compile to.
+  const res = await templates.updateTemplate(
+    a,
+    slug,
+    found.snapshot,
+    found.snapshot.design ?? null,
+  );
   if (!res.ok) return res;
   revalidatePath(`/app/templates/${slug}`);
   revalidatePath("/app/templates");
@@ -130,6 +164,7 @@ export async function restoreVersion(
       bodyHtml: res.data.bodyHtml,
       bodyText: res.data.bodyText,
       variablesSchema: res.data.variablesSchema,
+      design: res.data.design ?? null,
     },
   };
 }

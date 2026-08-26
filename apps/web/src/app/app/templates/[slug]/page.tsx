@@ -2,7 +2,10 @@ import { notFound } from "next/navigation";
 import { can } from "@sendsprite/shared";
 import { formatWhen } from "@/lib/format";
 import { requireTeam } from "@/lib/session";
+import { listDomains } from "@/services/domains";
 import { getTemplate, listTemplateVersions } from "@/services/templates";
+import { getTeamAws } from "@/services/team-aws";
+import { editorNodesOf } from "@/lib/editor/tree";
 import { variableRowsOf } from "../preview";
 import { TemplateEditor } from "./TemplateEditor";
 
@@ -27,11 +30,20 @@ export default async function TemplatePage({
   // and they are gated in the service.
   const t = await getTemplate(ctx.team.id, slug);
   if (!t) notFound();
-  const versions = await listTemplateVersions(ctx.team.id, t.id);
+  const [versions, domains, aws] = await Promise.all([
+    listTemplateVersions(ctx.team.id, t.id),
+    listDomains(ctx.team.id),
+    getTeamAws(ctx.team.id),
+  ]);
   return (
     <TemplateEditor
       mode="edit"
       canManage={can(ctx.role, "templates.manage")}
+      userEmail={ctx.session.user.email}
+      sesSandbox={aws?.sesAccountStatus !== "production"}
+      domains={domains
+        .filter((d) => d.status === "verified")
+        .map((d) => ({ id: d.id, name: d.name }))}
       version={t.version}
       template={{
         slug: t.slug,
@@ -40,6 +52,9 @@ export default async function TemplatePage({
         bodyHtml: t.bodyHtml,
         bodyText: t.bodyText ?? "",
         variables: variableRowsOf(t.variablesSchema),
+        // Present means this template was built in the visual editor and
+        // reopens there; null means it was written as HTML.
+        nodes: t.design ? editorNodesOf(t.design) : null,
       }}
       versions={versions.map((v) => ({
         version: v.version,

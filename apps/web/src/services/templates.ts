@@ -1,5 +1,9 @@
 import { and, desc, eq, or, sql } from "drizzle-orm";
+import { z } from "zod";
 import {
+  CampaignBlock,
+  MAX_BLOCKS,
+  renderBlocks,
   CreateTemplateInput,
   TemplateVariablesPayload,
   UpdateTemplateInput,
@@ -54,12 +58,25 @@ export const publicTemplate = (t: Template) => ({
   updatedAt: t.updatedAt,
 });
 
-export const publicTemplateVersion = (v: TemplateVersion) => ({
-  version: v.version,
-  snapshot: v.snapshot,
-  createdBy: v.createdBy,
-  createdAt: v.createdAt,
-});
+/**
+ * `design` is stripped rather than returned.
+ *
+ * The REST surface deals in HTML — `bodyHtml` is what a client sends, what the
+ * SDK types say and what the OpenAPI document describes. The block tree is the
+ * dashboard editor's own source, and shipping it here would add an
+ * undocumented field to a documented response and quietly make it part of the
+ * contract. The dashboard reads the snapshot from the service, not from this.
+ */
+export const publicTemplateVersion = (v: TemplateVersion) => {
+  const snapshot = { ...v.snapshot };
+  delete snapshot.design;
+  return {
+    version: v.version,
+    snapshot,
+    createdBy: v.createdBy,
+    createdAt: v.createdAt,
+  };
+};
 
 /** Newest first (the dashboard list). */
 export const listTemplates = (teamId: string): Promise<Template[]> =>
@@ -140,6 +157,7 @@ const snapshotOf = (t: Template): TemplateSnapshot => ({
   bodyHtml: t.bodyHtml,
   bodyText: t.bodyText,
   variablesSchema: t.variablesSchema,
+  design: t.design ?? null,
 });
 
 const SNAPSHOT_FIELDS = [
@@ -148,7 +166,57 @@ const SNAPSHOT_FIELDS = [
   "bodyHtml",
   "bodyText",
   "variablesSchema",
+  "design",
 ] as const;
+
+/**
+ * The visual editor's block tree, compiled to the fields that are actually
+ * sent.
+ *
+ * Compiled **here** and not in the caller, so `body_html` and `design` cannot
+ * disagree. A server action that rendered the blocks itself and posted both
+ * would let the two drift — by a bug, or by a client that simply posted
+ * whatever it liked — and the result is a template that shows one thing in the
+ * editor and mails another. There is exactly one place that turns blocks into
+ * a body, and this is it.
+ *
+ * `unsubscribe: false` because a template is the body of a transactional send.
+ * The marker is substituted per recipient by the campaign fan-out, which is
+ * not involved here at all; leaving it in would ship a U+0001 to the inbox.
+ */
+function compileDesign(
+  design: CampaignBlock[],
+): Result<{ bodyHtml: string; bodyText: string | null }> {
+  const parsed = z.array(CampaignBlock).max(MAX_BLOCKS).safeParse(design);
+  if (!parsed.success)
+    return {
+      ok: false,
+      error:
+        parsed.error.issues[0]?.message ??
+        "This design contains a block that is not valid.",
+    };
+  try {
+    const { html, text } = renderBlocks(parsed.data, { unsubscribe: false });
+    return { ok: true, data: { bodyHtml: html, bodyText: text || null } };
+  } catch (e) {
+    return {
+      ok: false,
+      error:
+        e instanceof Error
+          ? `This design cannot be rendered: ${e.message}`
+          : "This design cannot be rendered.",
+    };
+  }
+}
+
+/**
+ * How a write treats `design`.
+ *
+ * `undefined` leaves the stored design alone (an API client updating a body
+ * has no opinion about it); `null` clears it, which is what editing the HTML
+ * by hand means; an array replaces it *and* the body compiled from it.
+ */
+export type DesignPatch = CampaignBlock[] | null | undefined;
 
 /**
  * The snapshot fields whose **value** differs.
@@ -177,20 +245,24 @@ const changedFields = (
 export async function createTemplate(
   actor: TeamActor,
   raw: unknown,
+  design?: DesignPatch,
 ): Promise<Result<Template>> {
   if (!can(actor.role, "templates.manage")) return DENIED;
   const p = CreateTemplateInput.safeParse(raw);
   if (!p.success)
     return { ok: false, error: p.error.issues[0]?.message ?? "Invalid input." };
+  const compiled = design ? compileDesign(design) : null;
+  if (compiled && !compiled.ok) return compiled;
   const values = {
     id: newId("tpl"),
     teamId: actor.teamId,
     slug: p.data.slug,
     name: p.data.name,
     subject: p.data.subject,
-    bodyHtml: p.data.bodyHtml,
-    bodyText: p.data.bodyText ?? null,
+    bodyHtml: compiled ? compiled.data.bodyHtml : p.data.bodyHtml,
+    bodyText: compiled ? compiled.data.bodyText : (p.data.bodyText ?? null),
     variablesSchema: p.data.variablesSchema,
+    design: design ?? null,
     version: 1,
     updatedBy: actor.userId,
   };
@@ -242,6 +314,7 @@ export async function updateTemplate(
   actor: TeamActor,
   key: string,
   raw: unknown,
+  design?: DesignPatch,
 ): Promise<Result<Template>> {
   if (!can(actor.role, "templates.manage")) return DENIED;
   const p = UpdateTemplateInput.safeParse(raw);
@@ -249,13 +322,21 @@ export async function updateTemplate(
     return { ok: false, error: p.error.issues[0]?.message ?? "Invalid input." };
   const current = await getTemplate(actor.teamId, key);
   if (!current) return NOT_FOUND;
+  const compiled = design ? compileDesign(design) : null;
+  if (compiled && !compiled.ok) return compiled;
   const next: TemplateSnapshot = {
     name: p.data.name ?? current.name,
     subject: p.data.subject ?? current.subject,
-    bodyHtml: p.data.bodyHtml ?? current.bodyHtml,
-    bodyText:
-      p.data.bodyText === undefined ? current.bodyText : p.data.bodyText,
+    bodyHtml: compiled
+      ? compiled.data.bodyHtml
+      : (p.data.bodyHtml ?? current.bodyHtml),
+    bodyText: compiled
+      ? compiled.data.bodyText
+      : p.data.bodyText === undefined
+        ? current.bodyText
+        : p.data.bodyText,
     variablesSchema: p.data.variablesSchema ?? current.variablesSchema,
+    design: design === undefined ? (current.design ?? null) : design,
   };
   const fields = changedFields(snapshotOf(current), next);
   if (!fields.length) return { ok: true, data: current };

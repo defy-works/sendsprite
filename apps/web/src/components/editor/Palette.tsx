@@ -12,8 +12,8 @@ import {
   IconText,
 } from "@/components/ui/icons";
 import { cn } from "@/lib/cn";
-import { BLOCK_KINDS, BLOCK_LABELS, LAYOUT_LABELS } from "../../preview";
-import type { LeafKind } from "../../preview";
+import { BLOCK_KINDS, BLOCK_LABELS, LAYOUT_LABELS } from "@/lib/editor/blocks";
+import type { LeafKind } from "@/lib/editor/blocks";
 
 /**
  * The block palette.

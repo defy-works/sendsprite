@@ -10,13 +10,13 @@ import type { LeafBlock } from "@sendsprite/shared";
 import { Button } from "@/components/ui/Button";
 import { IconColumns, IconGrip, IconTrash } from "@/components/ui/icons";
 import { cn } from "@/lib/cn";
-import { BLOCK_LABELS, blockIssue } from "../../preview";
+import { BLOCK_LABELS, blockIssue } from "@/lib/editor/blocks";
 import {
   columnContainer,
   type EditorLeaf,
   type EditorNode,
   type EditorRow,
-} from "../../tree";
+} from "@/lib/editor/tree";
 import { BlockFields } from "./BlockFields";
 
 /**

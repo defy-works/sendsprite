@@ -15,8 +15,8 @@ import {
   IconAlignLeft,
   IconAlignRight,
 } from "@/components/ui/icons";
-import { LAYOUT_LABELS } from "../../preview";
-import type { EditorRow } from "../../tree";
+import { LAYOUT_LABELS } from "@/lib/editor/blocks";
+import type { EditorRow } from "@/lib/editor/tree";
 
 /**
  * How the selected block looks.

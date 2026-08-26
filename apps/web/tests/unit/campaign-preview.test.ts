@@ -5,14 +5,12 @@ import {
   UNSUBSCRIBE_MARKER,
   renderBlocks,
 } from "@sendsprite/shared";
+import { previewCampaign } from "@/app/app/campaigns/preview";
+import { BLOCK_KINDS, blockDefaults, blockIssue } from "@/lib/editor/blocks";
 import {
-  BLOCK_KINDS,
-  blockDefaults,
-  blockIssue,
-  previewCampaign,
   serializeInline,
   type InlineDocNode,
-} from "@/app/app/campaigns/preview";
+} from "@/lib/editor/inline";
 
 /** A ProseMirror document with one paragraph of the given inline nodes. */
 const doc = (...content: InlineDocNode[]): InlineDocNode => ({

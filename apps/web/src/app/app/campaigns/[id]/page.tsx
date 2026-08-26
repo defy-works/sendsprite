@@ -9,7 +9,7 @@ import { listBooks } from "@/services/contacts";
 import { listDomains } from "@/services/domains";
 import { usageSnapshot } from "@/services/send-limits";
 import { getTeamAws } from "@/services/team-aws";
-import { editorNodesOf } from "../tree";
+import { editorNodesOf } from "@/lib/editor/tree";
 import { STATUS_PLAN, capPreflight } from "../send";
 import { AudienceCard } from "./AudienceCard";
 import { CampaignEditor } from "./CampaignEditor";
