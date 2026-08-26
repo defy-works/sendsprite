@@ -1,7 +1,9 @@
 import { cache } from "react";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
+import { loadEnv } from "@/env.schema";
 import { auth } from "./auth";
+import { isInstanceAdmin, parseAdminEmails } from "./instance-admin";
 import { resolveTeam, type TeamContext } from "./team";
 
 export type { TeamContext } from "./team";
@@ -38,4 +40,22 @@ export async function requireOwner(): Promise<TeamContext> {
   const ctx = await requireTeam();
   if (ctx.role !== "owner") redirect("/app");
   return ctx;
+}
+
+/**
+ * Instance-wide settings (signup mode, landing page, the retention ceiling).
+ * Deliberately **not** team-derived: with AWS moving onto the team, owning a
+ * team says nothing about operating the deployment. Passes on the
+ * `INSTANCE_ADMIN_EMAILS` allowlist or the `instanceAdmin` flag; anything
+ * else lands back on /app rather than a 403, matching `requireOwner`.
+ *
+ * `loadEnv` rather than `@/env`: the latter is `server-only` and throws under
+ * the CLI and vitest, which is why `lib/auth.ts` imports it the same way.
+ */
+export async function requireInstanceAdmin() {
+  const s = await requireSession();
+  const admins = parseAdminEmails(loadEnv().INSTANCE_ADMIN_EMAILS);
+  const flag = (s.user as { instanceAdmin?: boolean }).instanceAdmin === true;
+  if (!isInstanceAdmin({ email: s.user.email, flag }, admins)) redirect("/app");
+  return s;
 }
