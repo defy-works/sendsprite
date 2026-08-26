@@ -8,10 +8,13 @@ export function NavLink({
   href,
   label,
   icon,
+  collapsed = false,
 }: {
   href: string;
   label: string;
   icon?: ReactNode;
+  /** Icon only, with the label as a tooltip and to screen readers. */
+  collapsed?: boolean;
 }) {
   const pathname = usePathname();
   // `/app` matches only itself; everything else owns its subtree. Compared
@@ -23,8 +26,14 @@ export function NavLink({
     <Link
       href={href}
       aria-current={active ? "page" : undefined}
+      // Collapsed, the row has no text, so the accessible name has to come
+      // from somewhere; `title` alone is not one a screen reader announces
+      // reliably.
+      aria-label={collapsed ? label : undefined}
+      title={collapsed ? label : undefined}
       className={cn(
         "group relative flex items-center gap-2.5 rounded-md px-3 py-2 text-sm no-underline",
+        collapsed && "justify-center px-0",
         "transition-colors duration-[var(--duration-fast)]",
         // The active marker is a rail on the left rather than a filled pill:
         // ten filled pills in one column is a lot of weight for one of them
@@ -46,7 +55,7 @@ export function NavLink({
       >
         {icon}
       </span>
-      {label}
+      {!collapsed && label}
     </Link>
   );
 }

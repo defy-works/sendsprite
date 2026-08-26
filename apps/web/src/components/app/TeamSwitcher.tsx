@@ -25,10 +25,18 @@ import { cn } from "@/lib/cn";
 export function TeamSwitcher({
   activeId,
   activeName,
+  variant = "bar",
 }: {
   activeId: string;
   /** Rendered before the org list has loaded, so the trigger is never blank. */
   activeName: string;
+  /**
+   * `bar` in the top bar: borderless, sized to its text, so it reads as the
+   * path the page sits under rather than as a form control. `panel` in the
+   * mobile drawer, where it is on its own and a full-width bordered row is
+   * the clearer target.
+   */
+  variant?: "bar" | "panel";
 }) {
   const router = useRouter();
   const toast = useToast();
@@ -66,14 +74,21 @@ export function TeamSwitcher({
     <Menu
       label="Switch team"
       align="start"
-      className="w-full"
+      className={variant === "panel" ? "w-full" : undefined}
       trigger={({ open }) => (
         <span
           className={cn(
-            "flex w-full items-center gap-2.5 rounded-md border px-2.5 py-2 text-left text-sm transition-colors",
-            open
-              ? "border-indigo-500 bg-indigo-500/8"
-              : "border-white/12 bg-white/4 hover:border-white/25",
+            "flex items-center gap-2 text-left text-sm transition-colors",
+            variant === "panel"
+              ? "w-full gap-2.5 rounded-md border px-2.5 py-2"
+              : "max-w-56 rounded-md px-2 py-1.5",
+            variant === "panel"
+              ? open
+                ? "border-indigo-500 bg-indigo-500/8"
+                : "border-white/12 bg-white/4 hover:border-white/25"
+              : open
+                ? "bg-white/8"
+                : "hover:bg-white/6",
           )}
         >
           <IconBuilding className="text-base text-indigo-300/80" />
