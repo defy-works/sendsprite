@@ -30,7 +30,12 @@ async function until<T>(
   what: string,
   read: () => Promise<T>,
   ok: (v: T) => boolean,
-  ms = 30_000,
+  // 60s, not 30: this drives real pg-boss polling through a sweep cron, and a
+  // shared CI runner reached the first verify at 32.8s — a flake that failed
+  // the Phase 6 tag build and passed on re-run. The assertions are unchanged;
+  // only the patience is. A genuinely stuck loop still reports which step it
+  // did not reach, because the vitest timeout for this project is 120s.
+  ms = 60_000,
 ): Promise<T> {
   const deadline = Date.now() + ms;
   for (;;) {
