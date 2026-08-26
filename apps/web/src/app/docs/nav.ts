@@ -13,6 +13,8 @@ export const DOCS_NAV: DocsNavItem[] = [
   { title: "Sending", href: "/docs/sending" },
   { title: "Templates", href: "/docs/templates" },
   { title: "Contacts", href: "/docs/contacts" },
+  { title: "Campaigns", href: "/docs/campaigns" },
+  { title: "Unsubscribe", href: "/docs/unsubscribe" },
   { title: "API keys", href: "/docs/api-keys" },
   { title: "Webhooks", href: "/docs/webhooks" },
   { title: "Billing", href: "/docs/billing" },

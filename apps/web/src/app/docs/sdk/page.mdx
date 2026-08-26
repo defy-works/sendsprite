@@ -1,7 +1,7 @@
 export const metadata = {
   title: "SDK",
   description:
-    "The sendsprite npm package: typed client for emails, templates and contacts, React email templates, Next.js webhook handler and the live change stream.",
+    "The sendsprite npm package: typed client for emails, templates, contacts and campaigns, React email templates, Next.js webhook handler and the live change stream.",
 };
 
 # SDK
@@ -141,6 +141,46 @@ Unsubscribing a contact is **consent**, not deliverability: it never writes a
 suppression, so the address still receives transactional mail. See
 [Contacts](/docs/contacts).
 
+## campaigns
+
+```ts
+const campaign = await sendsprite.campaigns.create({
+  name: "August newsletter",
+  bookId: book.id,
+  domainId: "dom_...",
+  from: "Acme <hello@mail.acme.com>",
+  subject: "What we shipped in August",
+  blocks: [
+    { kind: "heading", level: 1, text: "What we shipped" },
+    { kind: "text", html: "Three things, and <strong>one</strong> is fast." },
+    { kind: "button", label: "Read the notes", url: "https://acme.com/log" },
+  ],
+});
+
+const { eligible } = await sendsprite.campaigns.audience(campaign.id);
+
+await sendsprite.campaigns.schedule(campaign.id, new Date("2026-09-01T09:00Z"));
+await sendsprite.campaigns.sendNow(campaign.id); // no time argument, by design
+await sendsprite.campaigns.cancel(campaign.id);
+
+await sendsprite.campaigns.list({ status: "sent" });
+await sendsprite.campaigns.get(campaign.id);
+await sendsprite.campaigns.update(campaign.id, { subject: "…" });
+await sendsprite.campaigns.remove(campaign.id);
+```
+
+Every campaigns method needs a **`full`** key; a `sending_only` key gets a
+`403` on all eight, reads included.
+
+`schedule(id, at)` requires the time and `sendNow(id)` takes none. They are two
+methods rather than one with an optional argument on purpose: a method that
+mails everyone on a contact book when you forget its second argument is the
+wrong shape for an irreversible action. `schedule(id)` does not compile.
+
+`cancel()` stops the fan-out that has not happened yet; it never recalls mail
+already handed to the provider. `create()` and `update()` send nothing. See
+[Campaigns](/docs/campaigns).
+
 Plus two top-level calls: `sendsprite.stats()` for send counts and 30-day
 rates, and `sendsprite.me()` for the team and key behind the current
 credentials.
@@ -151,8 +191,8 @@ for anything without a helper; `path` is relative to `/api/v1`.
 ## Pagination
 
 Every `list()` returns `{ data, nextCursor }` and takes `{ limit, cursor }`.
-`emails`, `templates` and `contacts` have an iterator that walks every page for
-you:
+`emails`, `templates`, `contacts` and `campaigns` have an iterator that walks
+every page for you:
 
 ```ts
 for await (const email of sendsprite.emails.iterate({ status: "bounced" })) {
@@ -163,7 +203,8 @@ for await (const contact of sendsprite.contacts.iterate(bookId)) {
 }
 ```
 
-For the other resources, loop on `nextCursor` yourself:
+`domains`, `apiKeys`, `webhooks`, `suppressions` and `contactBooks` have no
+iterator; loop on `nextCursor` yourself:
 
 ```ts
 let cursor: string | undefined;

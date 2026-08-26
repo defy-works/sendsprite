@@ -51,8 +51,8 @@ Subscribe to any non-empty subset of:
 | `domain.verified`                                                                    | A domain became verified.                                                                                                                                             |
 | `domain.failed`                                                                      | A verified domain was demoted, or verification failed for good.                                                                                                       |
 | `contact.created`, `contact.updated`, `contact.unsubscribed`, `contact.resubscribed` | A contact was added, changed, unsubscribed or resubscribed. CSV import fires none of these — see [Contacts](/docs/contacts).                                          |
-| `campaign.sent`                                                                      | Every recipient of a campaign has been **queued** — not delivered. Fires once, when the fan-out materialises the last recipient.                                      |
-| `campaign.completed`                                                                 | Every message a campaign queued has reached a terminal state. Fires once; wait on this one before reading a campaign's stats.                                         |
+| `campaign.sent`                                                                      | Every recipient of a campaign has been **queued** — not delivered. Fires once, when the fan-out finds no recipient left to materialise.                                      |
+| `campaign.completed`                                                                 | Every message a campaign queued has reached a terminal state. Fires once; wait on this one before reading a campaign's stats. See [Campaigns](/docs/campaigns).                                       |
 
 ## Payload
 
@@ -90,10 +90,16 @@ as "delivered" builds something that is wrong by the entire delivery window,
 and whose first symptom is your own users telling you so.
 
 `campaign.completed` is the one to wait on: it fires when every message the
-campaign queued has reached a terminal state — delivered, bounced or failed —
-and its `data.campaign.counts` is the campaign's final tally. Both fire
-exactly once. A cancelled campaign fires neither, because it never finished
-queueing.
+campaign queued has reached a terminal state — `delivered`, `bounced`,
+`complained`, `failed` or `cancelled` — and its `data.campaign.counts` is the
+campaign's final tally. Both fire exactly once.
+
+Two campaigns never fire either event. A **cancelled** campaign fires neither
+because it never finished queueing. Neither does one with a recipient stuck in
+`sent` because SES never reported an outcome for it — that is recorded as a
+known gap rather than papered over with a timeout, since a campaign that
+silently "completes" with half its deliveries unknown is the worse failure.
+Treat `campaign.completed` as reliable, not as guaranteed to arrive.
 
 A campaign's `counts` are derived from the mail log rather than tallied as
 events arrive, so they can never disagree with it. `opened` and `clicked`

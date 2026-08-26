@@ -70,13 +70,28 @@ await sendsprite.webhooks.create({
   events: ["email.delivered"],
 });
 await sendsprite.suppressions.add({ email: "bounce@example.com" });
+
+// Campaigns: `schedule(id, at)` needs a time; `sendNow(id)` is a separate
+// verb, so an irreversible send cannot be triggered by a forgotten argument.
+const campaign = await sendsprite.campaigns.create({
+  name: "August newsletter",
+  bookId,
+  domainId,
+  from: "Acme <hello@mail.acme.com>",
+  subject: "What we shipped",
+  blocks: [{ kind: "heading", level: 1, text: "What we shipped" }],
+});
+await sendsprite.campaigns.audience(campaign.id); // who it would reach
+await sendsprite.campaigns.schedule(campaign.id, new Date("2026-09-01T09:00Z"));
+
 const key = await sendsprite.apiKeys.create({ name: "ci" }); // `key.secret`
 const stats = await sendsprite.stats();
 const me = await sendsprite.me();
 ```
 
-Every `list()` returns `{ data, nextCursor }` and accepts `{ limit, cursor }`;
-`emails.iterate()` walks all pages for you.
+Every `list()` returns `{ data, nextCursor }` and accepts `{ limit, cursor }`.
+`emails`, `templates`, `contacts` and `campaigns` each have an `iterate()` that
+walks all pages for you; the rest take a manual `nextCursor` loop.
 
 ### Live changes
 

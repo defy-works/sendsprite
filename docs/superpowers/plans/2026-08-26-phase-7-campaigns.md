@@ -1847,3 +1847,336 @@ git tag phase-7-complete
 **2. Placeholder scan.** Tasks 1–4, 7 and 10 carry complete code for every logic-bearing module. Tasks 5, 6, 9, 11–14 carry signatures, the tests that must pass, and the constraints, with the reasoning that makes them checkable — this is the deliberate split described in "How to read this plan", not an omission.
 
 **3. Type consistency.** `renderBlocks(blocks) → { html, text }` is called by Tasks 7, 13 and 14 with that exact shape. `UNSUBSCRIBE_MARKER` is defined in Task 2 and consumed in Task 7. `signUnsubscribeToken(contactId, campaignId, secret)` is defined in Task 3 and called in Tasks 7 and 10 with that argument order. `fanoutChunk(campaignId, deps)` is defined in Task 7 and called in Task 8. `AudiencePreview`'s four fields are identical in Tasks 1, 6, 11 and 14. `CampaignCounts`'s nine fields are identical in Tasks 1, 9 and 14.
+
+---
+
+## Phase 7 status: COMPLETE
+
+Shipped on `master`, `ff06178`..`phase-7-complete` — 24 commits, the plan
+itself included. Every gate green at the tagged commit; counts below.
+
+### What shipped, per task
+
+| Task                         | Commits                         | Notes                                                                                                                                                                                                                                            |
+| ---------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Plan                         | `ff06178`, `85a3afa`, `e0fe356` | Amended twice while it was being executed; both amendments are above this block.                                                                                                                                                                 |
+| 1. Shared contracts          | `bb48169`, `6b17b13`            | `SafeUrl` refuses credentials, unencoded quotes and backslashes, and protocol-relative URLs as well as the scheme — `new URL()` alone calls all four valid. `6b17b13` renamed the row schema to `CampaignObject`, for parity with `EmailObject`. |
+| 2. The block renderer        | `0e605aa`                       | Re-validates every block it is handed and throws rather than degrade: the send path's blocks come out of `jsonb`, where the parameter type is a claim TypeScript cannot check.                                                                   |
+| 3. Unsubscribe tokens        | `3412359`                       | Stateless HMAC. Re-encodes and compares before verifying, so a token has exactly one spelling.                                                                                                                                                   |
+| 4. Schema                    | `08224bc`                       | Migration `0014`. `campaigns.book_id` and `domain_id` carry no foreign key, which is what Tasks 5, 7 and 8 spend their guards on.                                                                                                                |
+| 5. Campaign CRUD             | `314d117`, `792c1de`, `947ef22` | `792c1de`: jsonb compared canonically rather than by serialised key order — the same bug had been live in templates since Phase 6, so one fix served two features. `947ef22` added the list and detail reads the REST surface needed.            |
+| 6. Audience selection        | `ade4e39`                       | Migration `0015`. Suppression tested with `exists` over `lower(btrim(...))` on both sides: `suppressions.email` has no normalising constraint, and a `left join` on a duplicate-by-case row would inflate every count derived from it.           |
+| 7. The fan-out               | `02d1498`, `eb33232`, `ba9f43c` | `eb33232`: the send caps `createEmail` enforces were being bypassed, and suppression is now re-checked per message immediately before SES. `ba9f43c`: a deleted contact book made a campaign report itself `sent` — see deviations.              |
+| 8. The sweeps                | `b1e9825`                       | Three crons, one chunk per campaign per tick, and nothing enqueues itself.                                                                                                                                                                       |
+| 9. Stats and `campaign.*`    | `ed8072d`                       | Migration `0016`. Counts derived, never incremented; completion staged cheapest-first, so a late SES event costs two indexed reads and the aggregate runs twice in a campaign's life.                                                            |
+| 10. Unsubscribe surface      | `8e57df1`                       | GET renders, POST writes, and the header points at a different route from the body link because an App Router page segment cannot also export a `POST`.                                                                                          |
+| 11. REST                     | `947ef22`                       | Every route needs a `full` key, reads included.                                                                                                                                                                                                  |
+| 12. SDK                      | `ef1355c`                       | `schedule(id, at)` and `sendNow(id)` are two methods on purpose.                                                                                                                                                                                 |
+| 13. Block editor             | `24bf0f1`, `211fff8`            | Live preview through the same renderer the send uses, inside a sandboxed frame. `211fff8`: the toolbar dropped the first character typed after Bold, Italic or Link — see deviations.                                                            |
+| 14. Audience, send, stats UI | `11094ca`, `211fff8`            | The stats panel recomputes live rather than reading the cache. `211fff8`: the audience card's headline number and the words giving it meaning were two siblings, so anything consuming text read out a fragment; they are one sentence now.      |
+| 15. End-to-end               | `c5e8ea7`                       | One spec: a campaign reaching one eligible contact, and an unsubscribe a GET must not perform.                                                                                                                                                   |
+| 16. Docs, README, changeset  | this commit                     | Two new docs pages, a corrected webhooks table, and four stale claims elsewhere. See deviations.                                                                                                                                                 |
+
+### Gates at the tag
+
+| Gate                       | Result                                  |
+| -------------------------- | --------------------------------------- |
+| `bun run typecheck`        | 4 packages, clean                       |
+| `bun run lint`             | clean                                   |
+| `bun run format`           | clean (README + the changeset reflowed) |
+| `bun run test` (unit)      | **60 files, 847 tests** passed          |
+| — `@sendsprite/shared`     | 15 files, 266                           |
+| — `sendsprite` (SDK + CLI) | 8 files, 151                            |
+| — `@sendsprite/web`        | 34 files, 383                           |
+| — `@sendsprite/mcp`        | 3 files, 47                             |
+| `bun run test:integration` | **54 files, 507 tests** passed (205 s)  |
+| `bun run test:e2e`         | **10 files, 18 tests** passed (48 s)    |
+
+Against the baseline entering the phase (`c6b39b4`: 680 unit, 372 integration,
+17 e2e) that is +167 unit, +135 integration and +1 e2e.
+
+**The e2e is flaky on a cold build.** The first run of this task's gate lost
+three tests — `send.spec.ts` (a `POST /emails` that answered something other
+than 201), `sdk.spec.ts` and `campaigns.spec.ts` — and two more never ran; an
+immediate re-run passed all 18 with nothing changed in between. The suite
+builds and runs a production server against a shared Postgres with eight
+Playwright workers, so the first pass after a rebuild is the one that loses the
+race. `609136e` had already widened one timeout for the same reason. Worth a
+retry policy before CI starts failing on unrelated PRs.
+
+**The e2e needs a Postgres on `localhost:5432`** — `bun run db:dev` from
+`apps/web` (embedded-postgres, persistent in `apps/web/.pgdata`; no Docker on
+this machine), stopped with `pg_ctl -D apps/web/.pgdata -m fast stop`.
+
+### Deviations from the plan worth knowing
+
+- **Three guard gaps were found while executing, not while planning, and all
+  three are in the fan-out.** The plan had campaigns inherit the send path's
+  guarantees by writing ordinary `emails` rows, and that inheritance reaches
+  only as far as the path is actually reused. The team's send caps and the
+  instance's SES quota live in `createEmail`, which the fan-out never calls
+  (`eb33232`); the sending domain is proved once when a campaign is authored
+  and nothing re-asserts it, so a demoted domain would have failed 38 000 times
+  individually (`02d1498`, `b1e9825`); and suppression was filtered at
+  selection only, so a hard bounce arriving mid-send was ignored (`eb33232`).
+  Each is now checked once per chunk rather than once per message.
+- **A deleted contact book made a campaign lie, and that is the one worth
+  reading twice** (`ba9f43c`). The fan-out's finish condition is an empty
+  chunk; `contacts.book_id` cascades from `contact_books`, and
+  `campaigns.book_id` has no foreign key at all. So deleting a book mid-send
+  emptied the select, and the campaign flipped to `sent`, fired
+  `campaign.sent`, stamped a completion time — and **nothing anywhere
+  disagreed**. Unlike the other three gaps this one had no downstream symptom
+  of any kind: the customer is told 50 000 people were mailed when 12 000 were,
+  with nowhere to look. It now pauses, because pausing cannot lie and finishing
+  can, and `deleteBook` refuses outright while a campaign over the book is
+  `sending`.
+- **The pause/stop split is the reversibility test applied per fact.** A cap
+  and an unverified domain stop being true on their own, so they pause and the
+  campaign resumes from its cursor. An unparseable `from` and blocks that no
+  longer render never stop being true, so they end the campaign. Cancelling a
+  _reversible_ refusal would be actively harmful rather than merely unhelpful:
+  `cancelled` is immutable, so the only route left is a second campaign over
+  the same book, which re-mails everyone who received the first half.
+- **Before a campaign starts, nothing cancels it — it defers.** A `scheduled`
+  campaign whose domain, book, `from` or blocks are bad is left `scheduled`,
+  audited once, and reconsidered on the next tick, whichever the reason. It has
+  mailed nobody and `scheduled` is still editable, so the customer can fix it;
+  `cancelled` would be a terminal state they cannot edit their way out of. The
+  two refusals that _do_ end a campaign only apply once it is `sending`.
+- **A deleted book pauses a campaign that cannot then resume**, which is the
+  one pause that does not fit the reversibility test cleanly. The contacts went
+  with the book, re-importing them mints new ids, and a re-created book gets a
+  new id the campaign will never name. It pauses anyway because the alternative
+  is the lie above, and because cancelling is a decision only the person who
+  owns the audience can make. The docs say to cancel it.
+- **`792c1de` fixed a Phase 6 bug on the way past.** Comparing `jsonb` columns
+  by serialised key order made an unchanged save look like an edit. It was live
+  in templates and would have been live in campaign blocks.
+- **The audit-log UI and the analytics overview were deferred by decision**,
+  not forgotten. Campaigns write `campaigns.create|update|delete|schedule|`
+  `cancel|started|paused|stopped` rows throughout — and a paused campaign's
+  reason is recorded on the audit trail and **nowhere else** — so the rows
+  exist and the screen that reads them does not. Phase 8 opener 1.
+- **`/docs/campaigns` and `/docs/unsubscribe` are two pages, not one.** The
+  plan named them separately and was right to. The unsubscribe surface has an
+  audience of its own — customers running their own unsubscribe page, and
+  anyone asking why a GET does not unsubscribe — and burying the GET/POST
+  argument inside a campaigns page would hide the one thing on that surface
+  that must not be "simplified" later.
+- **The webhooks table was already correct; its prose was not.** Task 9
+  un-reserved `campaign.sent`/`campaign.completed` and wrote both the table row
+  and a section. Re-checked against the code, the event names, the payload
+  shape (`data.campaign`), "fires exactly once", "a cancelled campaign fires
+  neither" and the derived-counts paragraph all hold. Two things did not.
+  `campaign.sent` was described as firing "when the fan-out materialises the
+  last recipient" — it fires on the _following_ tick, when the select comes
+  back empty. And `campaign.completed`'s terminal set was given as "delivered,
+  bounced or failed" when `TERMINAL_EMAIL_STATUSES` also holds `complained` and
+  `cancelled` — and `cancelled` is what a send-time suppression writes, so the
+  omission was reachable in ordinary use. Both corrected, and the campaign that
+  never completes (rows stuck in `sent` because SES never reported an outcome)
+  is now stated rather than left for a customer to find.
+- **Four stale claims elsewhere.** `/docs/contacts` said "Campaigns ship in a
+  later release" while `/docs/webhooks` on the same instance documented
+  `campaign.*` as live. `packages/sdk/README.md` named `emails.iterate()` as
+  the only iterator, which had been false since Phase 6 and is now false about
+  four namespaces; `/docs/sdk` had been half-corrected in Phase 6 and named
+  three of four. README's roadmap still called Phase 7 "next", its SDK
+  namespace list omitted `campaigns`, its `/docs` list omitted both new pages,
+  and its webhook event list had never gained `contact.*` either.
+- **The most transferable thing this phase learned is about testing, not about
+  campaigns** (`211fff8`). The block editor's toolbar dropped the first
+  character typed after Bold, Italic or Link: a button takes focus on
+  `mousedown`, before its own click handler runs, and Tiptap defers
+  `view.focus()` by one `requestAnimationFrame` on purpose (for React —
+  ueberdosis/tiptap#1520), so the handler returns with the button still
+  `document.activeElement` and the next keystroke goes to a `<button>`, which
+  drops it silently. The product symptom is an email body missing a letter,
+  found by the recipients.
+
+  What matters is that **removing the spec's workaround did not catch it.** The
+  workaround waited on `aria-pressed` and `toBeFocused()` before typing; taking
+  that away and simply clicking then typing still passed, because the deferred
+  frame elapses during the round trip between Playwright's `click()` resolving
+  and the first keystroke arriving. **A one-frame gap is invisible to any
+  polling assertion by construction** — every `expect().toPass()`, every
+  auto-waiting locator, every retry loop is slower than the thing it is trying
+  to observe. Catching it needed a `page.evaluate` that dispatches the click and
+  reads `document.activeElement` **in the same task, inside the page**. That
+  check fails against the old editor and passes against the new one. Anything
+  else in this codebase whose correctness lives inside one frame — a focus
+  handoff, a synchronous selection restore, an optimistic update reverted before
+  paint — needs the same shape of assertion, and will otherwise be tested by
+  users.
+
+- **The changeset is scoped to `sendsprite` alone.** `@sendsprite/mcp` gained
+  nothing this phase, and that is deliberate — see opener 17.
+
+---
+
+## Phase 8 openers
+
+**The body of Phase 8** is the audit-log UI and the analytics overview,
+deferred from Phase 4 twice and from this phase by decision, with the audit
+rows now written by every service that mutates anything — plus the campaign
+gaps below, of which 5 is the one most likely to reach support first.
+
+**Carried forward unchanged from Phases 3–6:** `sending_only` and
+`GET /emails`, the per-key stream connection cap, the MCP host allowlist,
+`workspace:*` publishing, the CLI polish items, the operational openers, and
+the rest of Phase 6's list — including its opener 19, which is still true:
+`jobs/handlers/billing-meter.ts` calls `billingConfig()` at module scope, so
+any env fault takes every handler down with an error naming the wrong thing.
+Phase 6 openers 4 (URL schemes) and 19 (MDX heading anchors) are **partly
+closed** and reappear below as 7 and 16.
+
+### New, created or discovered by this phase
+
+**Campaigns: gaps a customer can see**
+
+1. **The audit-log UI and the analytics overview.** Deferred by decision. Every
+   campaign transition writes an audit row, and `campaigns.paused` carries its
+   reason **nowhere else** — so today the only answer to "why did this campaign
+   stop at 12 000?" is a database query. The rows are there; the screen is not.
+2. **A campaign's audience is not frozen at start.** `selectEligible` walks a
+   cursor by contact id, so a contact added mid-send after the cursor is
+   included and one added before it is missed; the same goes for consent and
+   suppression, which take effect for the chunks not yet walked and not for the
+   ones already materialised. The fix is to materialise every recipient row up
+   front — one 50 000-row write on a cron tick — or to snapshot the book.
+   Accepted for a window measured in the minutes a fan-out takes; it should not
+   stay accepted if chunks ever get slower.
+3. **No test send.** There is no "send this to me first", which is the single
+   most requested campaign feature anywhere and the cheapest insurance
+   available against mailing 50 000 people a broken layout. Everything it needs
+   already exists — `renderBlocks`, the marker substitution, `createEmail` — so
+   it is a route and a button, not a mechanism.
+4. **Cancel cannot recall queued mail.** `cancelCampaign` stops further
+   fan-out; rows already handed to `email.send` go out. Draining a cancelled
+   campaign's `queued` rows — marking them `cancelled` before `sendQueuedEmail`
+   claims them — would recover most of a mistake caught quickly, and the status
+   already exists and already means "queued, then deliberately not sent".
+5. **No per-campaign send-rate control, and this is the one most likely to
+   generate a support incident.** Throughput is whatever the SES token bucket
+   allows, and that bucket is instance-wide, so a large campaign can crowd out
+   a customer's password resets and receipts for minutes at a time. A
+   per-campaign rate ceiling, or simply a lower queue priority for
+   `source: "campaign"`, would protect the mail a customer's own users are
+   actively waiting for. The fan-out already tags every row it writes.
+6. **`campaigns.counts` goes stale for late events.** The cache is refreshed by
+   the sweep on a tick that moved something and by `settleCampaign` at
+   completion; after that `settleCampaign` returns at the `completed_at` check
+   and writes nothing, so an open or a click arriving days later updates the
+   mail log and not the cache. The detail page recomputes live, so only list
+   views can look stale — the right trade, but it is a real disagreement
+   between two screens and should be said on the list or fixed with a slow
+   refresh.
+7. **No URL-scheme filter outside campaign blocks.** Task 1's `SafeUrl` closes
+   Phase 6 opener 4 **for campaigns only**. A `javascript:` URL interpolated
+   into a template variable and landing inside an `href` is still refused by
+   nothing but the sandboxed preview and the mail clients that decline to
+   execute it. `SafeUrl` is exported and the contract it belongs in is
+   `variables_schema`; the work is deciding what a `type: "url"` variable means
+   for templates that already exist, not writing the validator.
+8. **A campaign with rows stuck in `sent` never fires `campaign.completed`.**
+   If SES never reports an outcome for one message, `hasPendingRecipient` keeps
+   answering true for ever and the automation waiting on the event waits with
+   it. A timeout was rejected and should stay rejected — a campaign that
+   "completes" with half its deliveries unknown is the worse failure — but the
+   campaign ought at least to be _visible_ as stalled, and today it is not.
+9. **A contact deleted and re-imported mid-send can be mailed twice.**
+   `campaign_recipients.contact_id` cascades, so deleting the contact removes
+   the row that proves it was mailed, and the re-import mints a new ULID a
+   still-`sending` campaign will pick up. `restrict` would close it at the cost
+   of 500-ing contact deletion, which is worse; a soft delete, or a recipient
+   row keyed on the address, would not.
+10. **Sweep starvation, and it crosses tenancies.** `sweepSendingCampaigns`
+    takes ten campaigns oldest-first, and a paused campaign keeps its slot for
+    as long as it is paused — potentially the rest of a billing month. Eleven
+    paused campaigns starve the twelfth, and the sweep is instance-wide, so
+    that twelfth belongs to somebody else. Bounded work and fair scheduling are
+    two different problems and only the first is solved. The honest reason it
+    is not solved is that it needs a "last attempted" column that does not
+    exist.
+11. **`hasPendingRecipient`'s correctness is now consequential rather than
+    intrinsic.** It fires `campaign.completed` when no row of the campaign is
+    in a pending status, and that is sound _only_ because nothing can put a
+    campaign into `sent` without having walked its whole audience — which
+    `ba9f43c` is what made true. Anything that later lets a campaign reach
+    `sent` early (a test send that reuses the status, an admin tool, a partial
+    resume) makes this function announce that every recipient is accounted for
+    when they are not. Whoever touches the status machine owns this.
+12. **`deleteBook` refuses only for `sending` campaigns, not `scheduled`
+    ones.** Deliberate: blocking a tidy-up over a campaign that has mailed
+    nobody is worse than deferring it, and `startCampaign` declines rather than
+    starting a campaign whose book has gone. But a customer who deletes a book
+    and then wonders why Thursday's campaign never went out has only an audit
+    row to find. A warning at delete time would cost nothing.
+
+**Campaigns: smaller, still real**
+
+13. **There is no `campaign.paused` webhook.** A paused campaign is a fact a
+    customer's automation cannot learn: an audit row is not a webhook and a
+    dashboard is not an API. It is the one campaign state change with no
+    machine-readable signal, and it is precisely the one somebody needs to act
+    on.
+14. **`EmailObject` does not expose `campaignId`, `contactId` or `source`.**
+    The columns exist and the fan-out sets all three, but the public email
+    object omits them and `GET /emails` cannot filter on them — so an API
+    client reading the mail log cannot tell campaign mail from transactional
+    mail, or say which campaign a message belongs to. The dashboard can; REST
+    cannot.
+15. **The unsubscribe rate limiter is in-memory and per process.** A
+    two-instance deployment allows twice the rate and a restart forgets
+    everything. Deliberate — the failure it contains is one looping client
+    against one instance, and a shared bucket wants a table and a migration —
+    but it should be a table before anyone runs this behind a load balancer at
+    volume. Related: a request with no client ip is not limited at all, which
+    makes the `x-forwarded-for` proxy requirement load-bearing and stated
+    nowhere but `/docs/unsubscribe`.
+16. **The MDX docs still have no heading anchors** (Phase 6 opener 19).
+    `/docs/campaigns` wanted to link to its own "audience is not frozen"
+    section from two places and had to name it in prose instead. `rehype-slug`
+    is a one-line addition to `next.config.ts`, but plugins cross the Turbopack
+    loader boundary as strings, so verify it in a dev build rather than
+    assuming.
+17. **There is no campaigns MCP tool, and that was a decision.** An agent that
+    can mail a whole contact book is a different risk category from one that
+    can send an email, and `add_contact`'s "never guesses a book" reasoning
+    applies here with much more force. If it is ever added, the safe shape is
+    read-only (`list_campaigns`, `campaign_audience`) plus, at most, a test
+    send — never `schedule` and never `sendNow`.
+18. **The e2e suite is flaky on a cold build.** Three tests lost on the first
+    run of this task's gate and all 18 green on an immediate re-run with
+    nothing changed. Eight Playwright workers against one production build and
+    one shared Postgres. A retry policy, or fewer workers for the app project,
+    before CI starts failing on unrelated PRs.
+19. **The e2e suite exhausts the instance SES quota after about four runs, and
+    the failure looks exactly like a product bug.** The fake AWS client reports
+    `Max24HourSend: 200` (`lib/aws/fake-client.ts`), `aws-connect` stores that
+    as `instance_settings.ses_daily_quota`, and `checkInstanceQuota` counts
+    every row in the instance with a `sent_at` in the trailing 24 hours — not
+    per team, and no e2e fixture truncates anything, so each run's messages
+    stack on top of the last run's in the persistent `apps/web/.pgdata`. Around
+    the fourth run of the day the accumulated total crosses 200 and
+    `send.spec.ts` and `campaigns.spec.ts` start failing with
+    `daily_quota_exceeded`: a red build, in the send path, that reads as a
+    regression and is nothing of the kind. It was worked around this phase by
+    back-dating `sent_at` on the accumulated scratch rows. The fix is for the
+    fixtures to reset or isolate that counter — clear `emails` between runs,
+    give the e2e instance its own quota, or back-date on setup — so that the
+    suite is actually repeatable. **State it plainly wherever the suite is
+    documented**: the next person to hit this will otherwise spend an hour
+    inside `send-limits.ts` looking for a bug that is not there.
+20. **A one-frame gap is invisible to every polling assertion**, and this
+    codebase now has at least one place where correctness lives inside one
+    (`211fff8`; the argument is in the deviations above). No lint rule and no
+    review checklist catches it, and the obvious test — click, then type, with
+    nothing awaited in between — passes against the broken build. Worth a short
+    note in the testing conventions saying that focus handoffs, synchronous
+    selection restores and anything reverted before paint must be asserted with
+    a `page.evaluate` that acts and observes in the same task. There is no
+    second Tiptap surface to audit today — `blocks/InlineEditor.tsx` is the only
+    one in the product, and the template editor is a plain textarea — so the
+    note is what carries the lesson to whatever gets built next.

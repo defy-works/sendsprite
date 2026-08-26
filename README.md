@@ -61,10 +61,10 @@ yet, so the install lines below will not resolve until it happens; build them
 from the repository in the meantime (`bun run --filter sendsprite build`,
 `bun run --filter @sendsprite/mcp build`).
 
-| Package                           | Install                       | What it is                                                                                                                                                                              |
-| --------------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`sendsprite`](packages/sdk)      | `npm install sendsprite`      | Typed API client (`emails`, `templates`, `contactBooks`, `contacts`, `domains`, `apiKeys`, `webhooks`, `suppressions`, `stats`, `me`, SSE `stream`), plus three extra entry points.     |
-| [`@sendsprite/mcp`](packages/mcp) | `npm install @sendsprite/mcp` | Model Context Protocol server — `send_email`, `get_email_status`, `list_emails`, `search_emails`, `list_domains`, `get_send_stats`, `list_templates`, `render_template`, `add_contact`. |
+| Package                           | Install                       | What it is                                                                                                                                                                                       |
+| --------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [`sendsprite`](packages/sdk)      | `npm install sendsprite`      | Typed API client (`emails`, `templates`, `contactBooks`, `contacts`, `campaigns`, `domains`, `apiKeys`, `webhooks`, `suppressions`, `stats`, `me`, SSE `stream`), plus three extra entry points. |
+| [`@sendsprite/mcp`](packages/mcp) | `npm install @sendsprite/mcp` | Model Context Protocol server — `send_email`, `get_email_status`, `list_emails`, `search_emails`, `list_domains`, `get_send_stats`, `list_templates`, `render_template`, `add_contact`.          |
 
 - `sendsprite/react` re-exports the React Email primitives and `renderEmail`,
   and `emails.send({ react: <Email /> })` renders an element for you.
@@ -83,8 +83,8 @@ package or `zod` into your dependency tree.
 ## Docs
 
 Every instance serves its own documentation at `/docs` — getting started,
-self-hosting, domains, sending, templates, contacts, API keys, webhooks,
-billing, SDK, CLI, MCP server —
+self-hosting, domains, sending, templates, contacts, campaigns, unsubscribe,
+API keys, webhooks, billing, SDK, CLI, MCP server —
 with an interactive API reference at `/docs/api` rendered from
 `/api/v1/openapi.json` (OpenAPI 3.1, generated from the same zod contracts the
 server validates with). The pages live in
@@ -236,7 +236,7 @@ curl -X POST "$APP_URL/api/v1/emails" \
 - **Read back:** `GET /api/v1/emails/:id` (includes `events`),
   `GET /api/v1/emails?limit&cursor&status&to&domainId&tag`.
 
-### Templates and contacts
+### Templates, contacts and campaigns
 
 - **Templates** (Templates in the sidebar; `GET/POST /api/v1/templates`,
   `GET/PATCH/DELETE /api/v1/templates/:slug`,
@@ -256,12 +256,29 @@ curl -X POST "$APP_URL/api/v1/emails" \
   not deliverability: it excludes a contact from campaigns and never blocks a
   transactional send. The suppression list is what stops mail to an address
   entirely, and no import can resubscribe someone who opted out.
+- **Campaigns** (Campaigns in the sidebar; `/api/v1/campaigns`,
+  `POST /api/v1/campaigns/:id/schedule|cancel`,
+  `GET /api/v1/campaigns/:id/audience`): one message to one contact book,
+  authored as a typed block list rather than free HTML and rendered to
+  table-based email HTML with a plain-text alternative. A recipient is mailed
+  only if they are **subscribed and not suppressed** — the one place consent
+  and deliverability meet. Sending is a resumable chunked fan-out that writes
+  ordinary `emails` rows, so campaigns inherit the same queue, SES token
+  bucket, tracking, events and metering as a transactional send; it pauses and
+  resumes by itself when a send cap or an unverified domain gets in the way.
+  Every message carries a per-recipient unsubscribe link and RFC 8058
+  one-click headers. `campaign.sent` means every recipient was **queued**, not
+  that anyone received it — `campaign.completed` is the one to wait on. Every
+  campaigns route needs a `full` key. Stats are derived from the mail log, not
+  tallied per event, so they cannot disagree with it.
 
 ### Webhooks
 
 Team → Webhooks (or `POST /api/v1/webhooks { url, events }`) subscribes a URL
-to `email.sent|delivered|delayed|bounced|complained|opened|clicked|failed`
-and `domain.verified|failed`; the `whsec_…` secret is shown once. Deliveries
+to `email.sent|delivered|delayed|bounced|complained|opened|clicked|failed`,
+`domain.verified|failed`,
+`contact.created|updated|unsubscribed|resubscribed` and
+`campaign.sent|completed`; the `whsec_…` secret is shown once. Deliveries
 are `POST { id, type, createdAt, data }` with `Sendsprite-Signature:
 t=<unix>,v1=<hex hmac-sha256(secret, "<t>.<body>")>` and
 `Sendsprite-Event-Id`. Failures retry after 1 m, 5 m, 30 m, 2 h and 8 h
@@ -452,8 +469,10 @@ done. Phase 4: SDK, CLI, MCP, OpenAPI, `/docs`, landing page, release
 pipeline — done. Phase 5: billing — plans, usage metering, entitlements,
 `BILLING_ENABLED` — done. Phase 6: templates and contacts — versioned templates
 with a server-side render, contact books with CSV import/export and
-unsubscribe — done. Phase 7 (next): campaigns and the block editor, preview,
-audit UI, analytics.
+unsubscribe — done. Phase 7: campaigns — block editor with live preview,
+audience selection, scheduling, resumable fan-out, per-campaign stats and RFC
+8058 one-click unsubscribe — done. Phase 8 (next): the audit log UI and the
+analytics overview, a campaign test send, and per-campaign send-rate control.
 Design: `docs/superpowers/specs/2026-08-24-sendsprite-design.md`.
 
 ## Licensing

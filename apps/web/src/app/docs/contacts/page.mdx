@@ -35,7 +35,7 @@ These are two different things and Sendsprite keeps them apart on purpose:
 | --------- | ---------------------------------------------------- | --------------------------------------------------------- |
 | Question  | "Can this address receive mail at all?"              | "Does this person want this kind of mail?"                |
 | Scope     | The whole team                                       | One contact book                                          |
-| Filled by | SES bounces and complaints, and `POST /suppressions` | `POST /contacts/unsubscribe`, the dashboard, CSV import   |
+| Filled by | SES bounces and complaints, and `POST /suppressions` | A campaign's [unsubscribe link](/docs/unsubscribe), `POST /contacts/unsubscribe`, the dashboard, CSV import |
 | Effect    | **Blocks every send**, transactional included        | Excludes the contact from campaigns. Blocks nothing else. |
 
 Unsubscribing a contact never writes a suppression, and suppressing an address
@@ -43,9 +43,10 @@ never unsubscribes a contact. If it did, someone who left your newsletter would
 stop receiving their password resets and their receipts. When you want mail to
 an address to stop entirely, use the suppression list.
 
-Campaigns ship in a later release, so today a `subscribed: false` contact
-blocks nothing on its own — it is the record of consent that campaign
-recipient selection will read.
+A `subscribed: false` contact blocks nothing on its own; it is the record of
+consent that campaign recipient selection reads. A campaign mails a contact
+only when they are subscribed **and** their address is not suppressed — see
+[Campaigns](/docs/campaigns).
 
 ```bash
 curl -X POST "$APP_URL/api/v1/contacts/unsubscribe" \
