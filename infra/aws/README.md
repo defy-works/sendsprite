@@ -53,6 +53,33 @@ the permissions above, so all three paths converge on the same state.
 parameters, so the wizard could not prefill it. The single-use, 15-minute token
 is the mitigation.
 
+## Instances behind a proxy or WAF
+
+The callback is a server-to-server POST from a Lambda in the user's account, so
+anything that screens traffic on how "browser-like" it looks will block it
+before it reaches the instance. The stack then fails with
+`callback returned 403: …` and the wizard never advances — the key is deleted,
+so a failed run leaves nothing behind, but it cannot succeed until the request
+is let through.
+
+Cloudflare's Browser Integrity Check is the case that shows up in practice: it
+answers `403` with a plain-text `error code: 1010` body for clients whose
+user-agent looks like a library, which is what urllib's default
+`Python-urllib/3.12` looks like. The Lambda therefore sends
+`Sendsprite-Connect/1.0 (+https://sendsprite.com)` instead, which passes.
+
+That is a courtesy, not a guarantee — a stricter rule (Bot Fight Mode, a managed
+WAF ruleset, an IP allowlist) can still reject it, and a proxy is free to
+tighten what it accepts at any time. If the callback keeps failing, exempt the
+one path rather than loosening the zone:
+
+```
+(http.request.uri.path eq "/api/setup/aws/callback")  ->  Skip
+```
+
+The endpoint takes a single-use token that expires in 15 minutes and consumes it
+atomically, so it is a safe path to exempt.
+
 ## Why the template lives on S3
 
 CloudFormation quick-create links only accept `templateURL`s in S3 URL formats;
