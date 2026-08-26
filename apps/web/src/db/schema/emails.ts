@@ -11,6 +11,7 @@ import {
 import { EMAIL_STATUS } from "@sendsprite/shared";
 import { organization } from "./auth";
 import { domains } from "./domains";
+import { templates } from "./templates";
 
 /** Single source of truth is the shared API contract; alias kept for schema-side imports. */
 export const EMAIL_STATUSES = EMAIL_STATUS;
@@ -57,6 +58,17 @@ export const emails = pgTable(
       .$type<AttachmentMeta[]>()
       .notNull()
       .default([]),
+    // Nullable and `set null`: the mail log must never block deleting a
+    // template, exactly as it must never block deleting a domain.
+    templateId: text("template_id").references(() => templates.id, {
+      onDelete: "set null",
+    }),
+    /**
+     * The variables that produced this email's body. Kept for debugging and
+     * for "resend"; purged with the body by retention, because they hold
+     * whatever the caller substituted (names, order numbers, addresses).
+     */
+    variables: jsonb("variables").$type<Record<string, unknown>>(),
     // Resolved at create time from team defaults + per-request override.
     trackOpens: boolean("track_opens").notNull().default(true),
     trackClicks: boolean("track_clicks").notNull().default(true),

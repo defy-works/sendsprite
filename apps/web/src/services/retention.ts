@@ -4,8 +4,8 @@ import { emailAttachments, emails, webhookDeliveries } from "@/db/schema";
 
 /**
  * Nightly retention (spec §5): emails created more than `retentionDays` ago
- * lose their bodies (`html`/`text` nulled, attachment bytes deleted,
- * `bodyPurgedAt` stamped); the row, metadata and events stay. Webhook
+ * lose their bodies (`html`/`text`/`variables` nulled, attachment bytes
+ * deleted, `bodyPurgedAt` stamped); the row, metadata and events stay. Webhook
  * deliveries older than the same window are deleted outright (their
  * payloads and response excerpts only matter for recent debugging).
  * Batched so one nightly run never holds a long lock; idempotent because
@@ -34,7 +34,9 @@ export async function purgeOldBodies(
         .where(inArray(emailAttachments.emailId, ids));
       await tx
         .update(emails)
-        .set({ html: null, text: null, bodyPurgedAt: now })
+        // `variables` holds whatever the caller substituted into the body, so
+        // it is body content and is purged with it.
+        .set({ html: null, text: null, variables: null, bodyPurgedAt: now })
         .where(and(inArray(emails.id, ids), isNull(emails.bodyPurgedAt)));
     });
     purged += ids.length;

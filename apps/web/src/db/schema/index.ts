@@ -9,6 +9,8 @@ export * from "./emails";
 export * from "./email-attachments";
 export * from "./email-events";
 export * from "./suppressions";
+export * from "./templates";
+export * from "./contacts";
 export * from "./webhooks";
 export * from "./webhook-deliveries";
 export * from "./send-rate";

@@ -122,6 +122,28 @@ describe("retention purge", () => {
       expect((await load(`em_b${i}`)).bodyPurgedAt).toEqual(now);
   });
 
+  it("purges the substituted variables along with the body", async () => {
+    await pg.db.insert(emails).values({
+      id: "em_vars",
+      teamId: "org_1",
+      from: "a@mail.acme.com",
+      fromEmail: "a@mail.acme.com",
+      to: ["r@x.io"],
+      subject: "s",
+      html: "<p>hi</p>",
+      variables: { name: "Mingu", orderId: "1234" },
+      createdAt: daysAgo(400),
+    });
+    const { purgeOldBodies } = await import("@/services/retention");
+    await purgeOldBodies(90, now);
+    const row = await load("em_vars");
+    expect(row.html).toBeNull();
+    // Variables hold whatever was substituted — names, order numbers,
+    // addresses. A row whose body is gone but whose variables remain has not
+    // been purged.
+    expect(row.variables).toBeNull();
+  });
+
   it("the job reads retention_days from instance settings", async () => {
     const { updateInstanceSettings } =
       await import("@/services/instance-settings");
