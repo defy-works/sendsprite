@@ -245,6 +245,21 @@ README.md                                  + templates/contacts paragraphs, road
 
 ---
 
+## Amendment after Task 1 — cap the variables payload
+
+`renderTemplate` enforces `MAX_RENDERED_CHARS` **after** building the string. With up to 500
+placeholder occurrences allowed per field and `RenderTemplateInput.variables` typed as an
+uncapped `z.record(z.string(), z.unknown())`, one large value repeated across placeholders
+allocates far more than the limit before the refusal fires — bounded only by the route's body
+cap multiplied by 500. That is a memory-amplification vector on `POST /templates/:slug/render`
+and on any send carrying variables.
+
+Close it at the contract, not in the renderer: **Task 2 must bound the `variables` payload** —
+a cap on the number of keys, a cap on each value's length, and a cap on the serialised total.
+Reject at parse time with a message naming what was exceeded. The renderer's own limit stays as
+a second line of defence; do not remove it. If a value legitimately needs to be larger than the
+per-value cap, that is what the `html` field is for.
+
 ## Decisions confirmed before implementation
 
 All six open questions in this plan are confirmed as drafted. Reasoning recorded so an
