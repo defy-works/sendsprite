@@ -360,3 +360,201 @@ export interface StreamChange {
   type: "email" | "webhook";
   id?: string;
 }
+
+// ---- templates --------------------------------------------------------------
+
+export type TemplateVariableType = "string" | "number" | "boolean";
+
+/** One declared variable. A `default` is what makes a placeholder optional. */
+export interface TemplateVariable {
+  name: string;
+  /** Default `"string"`. */
+  type?: TemplateVariableType;
+  /** The only way to make a placeholder optional; there is no `required` flag. */
+  default?: string | number | boolean;
+  description?: string;
+}
+
+/**
+ * A declared variable as the API stores it: `type` has been resolved to its
+ * default, so it is always present. `default` and `description` stay optional
+ * — a variable that declares neither has neither.
+ */
+export interface DeclaredTemplateVariable {
+  name: string;
+  type: TemplateVariableType;
+  default?: string | number | boolean;
+  description?: string;
+}
+
+export interface TemplateVariablesSchema {
+  variables?: TemplateVariable[];
+}
+
+export interface CreateTemplateInput {
+  /** Lower-case, digits and dashes; the name `emails.send({ template })` uses. */
+  slug: string;
+  name: string;
+  /** May contain `{{ variable }}` placeholders. */
+  subject: string;
+  bodyHtml: string;
+  bodyText?: string;
+  variablesSchema?: TemplateVariablesSchema;
+}
+
+/** At least one field. `slug` cannot change — a rename is a create plus a delete. */
+export interface UpdateTemplateInput {
+  name?: string;
+  subject?: string;
+  bodyHtml?: string;
+  bodyText?: string | null;
+  variablesSchema?: TemplateVariablesSchema;
+}
+
+export interface TemplateObject {
+  id: string;
+  slug: string;
+  name: string;
+  subject: string;
+  bodyHtml: string;
+  bodyText: string | null;
+  variablesSchema: { variables: DeclaredTemplateVariable[] };
+  /** Bumped on every content change; each one is kept in the history. */
+  version: number;
+  updatedBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TemplateVersionObject {
+  version: number;
+  snapshot: {
+    name: string;
+    subject: string;
+    bodyHtml: string;
+    bodyText: string | null;
+    variablesSchema: { variables: DeclaredTemplateVariable[] };
+  };
+  createdBy: string | null;
+  createdAt: string;
+}
+
+/** `GET /templates/:slug`: the template plus its versions, newest first. */
+export interface TemplateDetail extends TemplateObject {
+  versions: TemplateVersionObject[];
+}
+
+export interface RenderTemplateInput {
+  variables?: Record<string, unknown>;
+}
+
+/**
+ * `POST /templates/:slug/render`. The rendered fields and nothing else — the
+ * variables that produced them are not echoed back.
+ */
+export interface RenderedTemplateObject {
+  subject: string;
+  html: string;
+  text: string | null;
+}
+
+// ---- contacts ---------------------------------------------------------------
+
+export interface CreateContactBookInput {
+  name: string;
+  /** `"Name <addr@domain>"` or a bare address; a suggestion, not a sender. */
+  defaultFrom?: string;
+}
+
+/** At least one field. */
+export interface UpdateContactBookInput {
+  name?: string;
+  defaultFrom?: string | null;
+}
+
+export interface ContactBookObject {
+  id: string;
+  name: string;
+  defaultFrom: string | null;
+  contactCount: number;
+  subscribedCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateContactInput {
+  email: string;
+  firstName?: string;
+  lastName?: string;
+  /** Up to 20 string properties, 500 characters each. */
+  properties?: Record<string, string>;
+  /** Default `true`. */
+  subscribed?: boolean;
+}
+
+/** At least one field. */
+export interface UpdateContactInput {
+  firstName?: string | null;
+  lastName?: string | null;
+  properties?: Record<string, string>;
+  subscribed?: boolean;
+  unsubscribeReason?: string | null;
+}
+
+export interface ContactObject {
+  id: string;
+  bookId: string;
+  email: string;
+  firstName: string | null;
+  lastName: string | null;
+  properties: Record<string, string>;
+  /**
+   * Consent, not deliverability. `false` stops campaigns, **not** transactional
+   * sends — `suppressions` is what blocks an address entirely.
+   */
+  subscribed: boolean;
+  unsubscribeReason: string | null;
+  unsubscribedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Filters for `contacts.list` / `contacts.iterate`. */
+export interface ListContactsParams extends PageParams {
+  /** Matches an address prefix or either name. */
+  q?: string;
+  subscribed?: boolean;
+}
+
+export interface ImportContactsInput {
+  /** Up to 2 MB; needs an `email` column. */
+  csv: string;
+  /** Default `true`. */
+  updateExisting?: boolean;
+}
+
+/**
+ * The report `contactBooks.import()` resolves with. Rows that failed do not
+ * fail the call: the good rows land, and the bad ones are counted here with
+ * the line each was on (the first 100).
+ */
+export interface ImportContactsResult {
+  imported: number;
+  updated: number;
+  skipped: number;
+  /** Rows dropped because a later row in the same file had the same address. */
+  duplicates: number;
+  errors: { line: number; email: string | null; reason: string }[];
+}
+
+export interface UnsubscribeContactInput {
+  email: string;
+  /** Narrow to one book; omitted means every book of the team. */
+  bookId?: string;
+  reason?: string;
+}
+
+export interface UnsubscribeResult {
+  /** Contact rows changed; 0 when the address was already out. */
+  unsubscribed: number;
+}

@@ -81,8 +81,65 @@ type Checks = [
   Mutual<sdk.SendStatsObject, Out<typeof shared.SendStatsObject>>,
   Mutual<sdk.MeObject, Out<typeof shared.MeObject>>,
   Mutual<sdk.StreamChange, Out<typeof shared.StreamChange>>,
+  Mutual<sdk.TemplateVariableType, shared.TemplateVariableType>,
+  Mutual<sdk.TemplateVariable, In<typeof shared.TemplateVariable>>,
+  // The stored form: `type` has been resolved to its default, so it is
+  // required here while it is optional on the way in.
+  Mutual<sdk.DeclaredTemplateVariable, Out<typeof shared.TemplateVariable>>,
+  Mutual<
+    sdk.TemplateVariablesSchema,
+    In<typeof shared.TemplateVariablesSchema>
+  >,
+  Mutual<sdk.CreateTemplateInput, In<typeof shared.CreateTemplateInput>>,
+  Mutual<sdk.UpdateTemplateInput, In<typeof shared.UpdateTemplateInput>>,
+  Mutual<sdk.TemplateObject, Out<typeof shared.TemplateObject>>,
+  Mutual<sdk.TemplateVersionObject, Out<typeof shared.TemplateVersionObject>>,
+  Mutual<sdk.TemplateDetail, Out<typeof shared.TemplateDetail>>,
+  Mutual<sdk.RenderTemplateInput, In<typeof shared.RenderTemplateInput>>,
+  Mutual<sdk.RenderedTemplateObject, Out<typeof shared.RenderedTemplateObject>>,
+  Mutual<sdk.CreateContactBookInput, In<typeof shared.CreateContactBookInput>>,
+  Mutual<sdk.UpdateContactBookInput, In<typeof shared.UpdateContactBookInput>>,
+  Mutual<sdk.ContactBookObject, Out<typeof shared.ContactBookObject>>,
+  Mutual<sdk.CreateContactInput, In<typeof shared.CreateContactInput>>,
+  Mutual<sdk.UpdateContactInput, In<typeof shared.UpdateContactInput>>,
+  Mutual<sdk.ContactObject, Out<typeof shared.ContactObject>>,
+  // `limit` is coerced, and `subscribed` is a `"true" | "false"` enum on the
+  // wire that parses to a boolean — so compare the parsed (output) shapes.
+  Mutual<
+    Required<sdk.ListContactsParams>,
+    Required<Out<typeof shared.ListContactsQuery>>
+  >,
+  Mutual<sdk.ImportContactsInput, In<typeof shared.ImportContactsInput>>,
+  Mutual<sdk.ImportContactsResult, Out<typeof shared.ImportContactsResult>>,
+  Mutual<
+    sdk.UnsubscribeContactInput,
+    In<typeof shared.UnsubscribeContactInput>
+  >,
+  Mutual<sdk.UnsubscribeResult, Out<typeof shared.UnsubscribeResult>>,
 ];
 const allTrue: Checks = [
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
   true,
   true,
   true,
@@ -207,6 +264,14 @@ describe("SDK types mirror @sendsprite/shared", () => {
     };
     expect(Object.keys(dnsKinds).sort()).toEqual(
       [...shared.DNS_RECORD_KINDS].sort(),
+    );
+    const variableTypes: Record<sdk.TemplateVariableType, true> = {
+      string: true,
+      number: true,
+      boolean: true,
+    };
+    expect(Object.keys(variableTypes).sort()).toEqual(
+      [...shared.TEMPLATE_VARIABLE_TYPES].sort(),
     );
   });
 });

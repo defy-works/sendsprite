@@ -302,3 +302,208 @@ describe("domains / apiKeys / webhooks / suppressions / stats / me", () => {
     expect(call(fetch).url).toBe("https://x/api/v1/anything");
   });
 });
+
+/**
+ * Multi-call variant of `client()`: one stub `fetch` that answers call `n`
+ * from `respond(n)` and records the method, the path relative to `/api/v1`
+ * and the parsed body of every call. `client()` above only keeps the first.
+ */
+function recorder(
+  respond: (n: number) => { status?: number; body?: unknown } = () => ({}),
+  maxRetries = 0,
+) {
+  const calls: { method: string; path: string; body: unknown }[] = [];
+  let n = 0;
+  // `mockImplementation` rather than an implementation argument: `typeof
+  // fetch` carries a `preconnect` static that a plain function lacks.
+  const fetch = vi
+    .fn<typeof globalThis.fetch>()
+    .mockImplementation(async (url, init) => {
+      const i = (init ?? {}) as RequestInit;
+      calls.push({
+        method: i.method ?? "GET",
+        path: String(url).replace("https://x/api/v1", ""),
+        body: i.body === undefined ? undefined : JSON.parse(i.body as string),
+      });
+      const { status = 200, body = {} } = respond(n++);
+      return new Response(body === null ? null : JSON.stringify(body), {
+        status,
+        headers: { "content-type": "application/json" },
+      });
+    });
+  return {
+    ss: new Sendsprite({
+      apiKey: "k",
+      baseUrl: "https://x",
+      fetch,
+      maxRetries,
+    }),
+    calls,
+    fetch,
+  };
+}
+
+describe("templates", () => {
+  it("lists, gets, creates, updates, deletes and renders", async () => {
+    const { ss, calls } = recorder();
+    await ss.templates.list({ limit: 10 });
+    await ss.templates.get("welcome");
+    await ss.templates.create({
+      slug: "welcome",
+      name: "Welcome",
+      subject: "Hi",
+      bodyHtml: "<p>Hi</p>",
+    });
+    await ss.templates.update("welcome", { name: "W" });
+    await ss.templates.remove("welcome");
+    await ss.templates.render("welcome", { name: "Mingu" });
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+      "GET /templates?limit=10",
+      "GET /templates/welcome",
+      "POST /templates",
+      "PATCH /templates/welcome",
+      "DELETE /templates/welcome",
+      "POST /templates/welcome/render",
+    ]);
+    expect(calls[5]!.body).toEqual({ variables: { name: "Mingu" } });
+  });
+
+  it("renders with no variables at all", async () => {
+    const { ss, calls } = recorder();
+    await ss.templates.render("welcome");
+    expect(calls[0]!.body).toEqual({ variables: {} });
+  });
+
+  it("URL-encodes a slug", async () => {
+    const { ss, calls } = recorder();
+    await ss.templates.get("a/b");
+    expect(calls[0]!.path).toBe("/templates/a%2Fb");
+  });
+
+  it("iterates every page of templates", async () => {
+    const { ss } = recorder((n) =>
+      n === 0
+        ? { body: { data: [{ id: "tpl_1" }], nextCursor: "c" } }
+        : { body: { data: [{ id: "tpl_2" }], nextCursor: null } },
+    );
+    const seen: string[] = [];
+    for await (const t of ss.templates.iterate()) seen.push(t.id);
+    expect(seen).toEqual(["tpl_1", "tpl_2"]);
+  });
+
+  it("retries render (a read in POST's clothing) but not create", async () => {
+    const retried = recorder(
+      (n) => (n === 0 ? { status: 503 } : { body: { subject: "s" } }),
+      1,
+    );
+    vi.useFakeTimers();
+    try {
+      const p = retried.ss.templates.render("welcome");
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(p).resolves.toMatchObject({ subject: "s" });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(retried.fetch).toHaveBeenCalledTimes(2);
+
+    const once = recorder(() => ({ status: 503 }), 1);
+    await expect(
+      once.ss.templates.create({
+        slug: "welcome",
+        name: "Welcome",
+        subject: "Hi",
+        bodyHtml: "<p>Hi</p>",
+      }),
+    ).rejects.toMatchObject({ status: 503 });
+    expect(once.fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("contactBooks and contacts", () => {
+  it("walks the nested paths", async () => {
+    const { ss, calls } = recorder();
+    await ss.contactBooks.list();
+    await ss.contactBooks.create({ name: "News" });
+    await ss.contactBooks.get("cb_1");
+    await ss.contactBooks.update("cb_1", { name: "N" });
+    await ss.contactBooks.remove("cb_1");
+    await ss.contactBooks.import("cb_1", { csv: "email\na@b.io" });
+    await ss.contacts.list("cb_1", { q: "ada" });
+    await ss.contacts.create("cb_1", { email: "a@b.io" });
+    await ss.contacts.get("cb_1", "ct_1");
+    await ss.contacts.update("cb_1", "ct_1", { subscribed: false });
+    await ss.contacts.remove("cb_1", "ct_1");
+    await ss.contacts.unsubscribe({ email: "a@b.io" });
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+      "GET /contact-books",
+      "POST /contact-books",
+      "GET /contact-books/cb_1",
+      "PATCH /contact-books/cb_1",
+      "DELETE /contact-books/cb_1",
+      "POST /contact-books/cb_1/contacts/import",
+      "GET /contact-books/cb_1/contacts?q=ada",
+      "POST /contact-books/cb_1/contacts",
+      "GET /contact-books/cb_1/contacts/ct_1",
+      "PATCH /contact-books/cb_1/contacts/ct_1",
+      "DELETE /contact-books/cb_1/contacts/ct_1",
+      "POST /contacts/unsubscribe",
+    ]);
+  });
+
+  it("sends the subscribed filter as a string, and omits it when unset", async () => {
+    const { ss, calls } = recorder();
+    await ss.contacts.list("cb_1", { subscribed: false, limit: 5 });
+    await ss.contacts.list("cb_1");
+    expect(calls[0]!.path).toBe(
+      "/contact-books/cb_1/contacts?limit=5&subscribed=false",
+    );
+    expect(calls[1]!.path).toBe("/contact-books/cb_1/contacts");
+  });
+
+  it("iterates every page of contacts", async () => {
+    const { ss } = recorder((n) =>
+      n === 0
+        ? { body: { data: [{ id: "ct_1" }], nextCursor: "c" } }
+        : { body: { data: [{ id: "ct_2" }], nextCursor: null } },
+    );
+    const seen: string[] = [];
+    for await (const c of ss.contacts.iterate("cb_1")) seen.push(c.id);
+    expect(seen).toEqual(["ct_1", "ct_2"]);
+  });
+
+  it("returns the import report rather than throwing on partial failure", async () => {
+    const report = {
+      imported: 2,
+      updated: 1,
+      skipped: 1,
+      duplicates: 0,
+      errors: [{ line: 4, email: null, reason: "Ragged row." }],
+    };
+    const { ss } = recorder(() => ({ body: report }));
+    await expect(
+      ss.contactBooks.import("cb_1", { csv: "email\na@b.io" }),
+    ).resolves.toEqual(report);
+  });
+
+  it("does not retry an import, but does retry an unsubscribe", async () => {
+    const imports = recorder(() => ({ status: 503 }), 1);
+    await expect(
+      imports.ss.contactBooks.import("cb_1", { csv: "email\na@b.io" }),
+    ).rejects.toMatchObject({ status: 503 });
+    expect(imports.fetch).toHaveBeenCalledTimes(1);
+
+    const unsub = recorder(
+      (n) => (n === 0 ? { status: 503 } : { body: { unsubscribed: 1 } }),
+      1,
+    );
+    vi.useFakeTimers();
+    try {
+      const p = unsub.ss.contacts.unsubscribe({ email: "a@b.io" });
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(p).resolves.toEqual({ unsubscribed: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(unsub.fetch).toHaveBeenCalledTimes(2);
+  });
+});

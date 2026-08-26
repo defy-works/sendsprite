@@ -10,6 +10,9 @@ export type { Domains } from "./resources/domains";
 export type { ApiKeys } from "./resources/api-keys";
 export type { Webhooks } from "./resources/webhooks";
 export type { Suppressions } from "./resources/suppressions";
+export type { Templates } from "./resources/templates";
+export type { ContactBooks } from "./resources/contact-books";
+export type { Contacts } from "./resources/contacts";
 export * from "./types";
 
 import {
@@ -18,9 +21,12 @@ import {
   type SendspriteOptions,
 } from "./client";
 import { ApiKeys } from "./resources/api-keys";
+import { ContactBooks } from "./resources/contact-books";
+import { Contacts } from "./resources/contacts";
 import { Domains } from "./resources/domains";
 import { Emails } from "./resources/emails";
 import { Suppressions } from "./resources/suppressions";
+import { Templates } from "./resources/templates";
 import { Webhooks } from "./resources/webhooks";
 import { openStream, type StreamHandle, type StreamOptions } from "./stream";
 import type { MeObject, SendStatsObject } from "./types";
@@ -32,6 +38,9 @@ export class Sendsprite {
   readonly apiKeys: ApiKeys;
   readonly webhooks: Webhooks;
   readonly suppressions: Suppressions;
+  readonly templates: Templates;
+  readonly contactBooks: ContactBooks;
+  readonly contacts: Contacts;
   private readonly http: HttpClient;
 
   constructor(options?: SendspriteOptions) {
@@ -41,6 +50,9 @@ export class Sendsprite {
     this.apiKeys = new ApiKeys(this.http);
     this.webhooks = new Webhooks(this.http);
     this.suppressions = new Suppressions(this.http);
+    this.templates = new Templates(this.http);
+    this.contactBooks = new ContactBooks(this.http);
+    this.contacts = new Contacts(this.http);
   }
 
   /** Instance origin with `/api/v1` not yet appended. */
