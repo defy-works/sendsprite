@@ -51,7 +51,7 @@ export function DoneStep({ settings }: WizardProps) {
       </div>
       {!aws && (
         <Notice>
-          AWS isn&apos;t connected yet — connect it from Settings → Instance
+          AWS isn&apos;t connected yet — connect it from Settings → Sending
           before adding domains.
         </Notice>
       )}

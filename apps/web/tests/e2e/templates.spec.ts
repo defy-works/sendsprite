@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { completeTeamSetup } from "./team-setup";
 
 // Runs after setup.spec.ts (project `app`), so the dashboard is open. Nothing
 // here needs AWS or the worker: a template is created, previewed, versioned,
@@ -18,8 +19,13 @@ async function signUpOwner(page: Page, label: string) {
   if (await createTeam.isVisible()) {
     await page.fill("#name", `Templates ${suffix}`);
     await createTeam.click();
-    await page.waitForURL("**/app");
+    // Team creation is a server action; the new team then lands on /setup
+    // (unconnected) or /app. Either way, wait for it to leave /teams/new.
+    await page.waitForURL(/\/(setup|app)/);
   }
+  // Setup is per team now: a freshly created team is held on /setup until it
+  // connects its own AWS account.
+  await completeTeamSetup(page);
 }
 
 test("create a template, preview it, version it, restore it and delete it", async ({

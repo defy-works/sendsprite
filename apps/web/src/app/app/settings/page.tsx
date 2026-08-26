@@ -126,16 +126,16 @@ export default async function SettingsPage() {
           </CardBody>
         </Card>
       )}
-      {ctx.role === "owner" && (
+      {(ctx.role === "owner" || ctx.role === "admin") && (
         <Card>
           <CardHeader>
-            <CardTitle>Instance</CardTitle>
+            <CardTitle>Sending</CardTitle>
           </CardHeader>
           <CardBody>
             <p className="text-sm text-white/70">
-              AWS, SES production access and Cloudflare apply to the whole
-              instance.{" "}
-              <Link href="/app/settings/instance">Open instance settings</Link>
+              This team&apos;s own AWS account, SES production access and
+              Cloudflare connection.{" "}
+              <Link href="/app/settings/sending">Open sending settings</Link>
             </p>
           </CardBody>
         </Card>

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { completeTeamSetup } from "./team-setup";
 import nodemailer from "nodemailer";
 
 // Runs after setup.spec.ts (project `app`), so the instance is set up and
@@ -59,8 +60,13 @@ test("owner verifies a domain, sends via REST and SMTP, sees the log", async ({
   if (await createTeam.isVisible()) {
     await page.fill("#name", `Send ${suffix}`);
     await createTeam.click();
-    await expect(checklist).toBeVisible();
+    // Team creation is a server action; the new team then lands on /setup
+    // (unconnected) or /app. Either way, wait for it to leave /teams/new.
+    await page.waitForURL(/\/(setup|app)/);
   }
+  // Setup is per team now: a freshly created team is held on /setup until it
+  // connects its own AWS account.
+  await completeTeamSetup(page);
 
   // Domain: provisioning is an inline job; the records table appears once
   // the fake SES has issued the DKIM tokens. Re-verify runs verifyDomain

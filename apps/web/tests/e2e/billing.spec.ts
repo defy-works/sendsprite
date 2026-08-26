@@ -1,5 +1,6 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
+import { completeTeamSetup } from "./team-setup";
 
 // Runs after setup.spec.ts (project `app`), so the instance is set up. The
 // server has BILLING_ENABLED=1 and BILLING_PROVIDER=fake, so the catalog is
@@ -20,8 +21,13 @@ async function signUpOwner(page: Page, label: string) {
   if (await createTeam.isVisible()) {
     await page.fill("#name", `Billing ${suffix}`);
     await createTeam.click();
-    await page.waitForURL("**/app");
+    // Team creation is a server action; the new team then lands on /setup
+    // (unconnected) or /app. Either way, wait for it to leave /teams/new.
+    await page.waitForURL(/\/(setup|app)/);
   }
+  // Setup is per team now: a freshly created team is held on /setup until it
+  // connects its own AWS account.
+  await completeTeamSetup(page);
 }
 
 test("settings links to billing; the page shows the Free plan, this period's usage and the catalog", async ({

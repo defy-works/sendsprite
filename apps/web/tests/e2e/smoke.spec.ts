@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { completeTeamSetup } from "./team-setup";
 
 test("signup → create team → shell renders → settings rename", async ({
   page,
@@ -21,17 +22,24 @@ test("signup → create team → shell renders → settings rename", async ({
   if (await createTeam.isVisible()) {
     await page.fill("#name", "Acme");
     await createTeam.click();
-    await page.waitForURL("**/app");
+    // Team creation is a server action; the new team then lands on /setup
+    // (unconnected) or /app. Either way, wait for it to leave /teams/new.
+    await page.waitForURL(/\/(setup|app)/);
   }
+  // Setup is per team now: a freshly created team is held on /setup until it
+  // connects its own AWS account.
+  await completeTeamSetup(page);
   await expect(checklist).toBeVisible();
 
   await page.goto("/app/settings");
   await page.fill("#team-name", "Acme Renamed");
-  await page.getByRole("button", { name: "Save" }).click();
+  // Scoped to the rename form: the page also carries the per-team Retention
+  // form, whose submit button is called Save too.
+  const renameForm = page.locator("form", { has: page.locator("#team-name") });
+  await renameForm.getByRole("button", { name: "Save" }).click();
   // No error alert from the server action (scoped to the form: Next's dev
   // overlay keeps an empty role=alert live region on every page), and the
   // revalidated shell shows the new name.
-  const renameForm = page.locator("form", { has: page.locator("#team-name") });
   await expect(renameForm.getByRole("alert")).toHaveCount(0);
   await expect(page.getByRole("banner")).toContainText("Acme Renamed");
 

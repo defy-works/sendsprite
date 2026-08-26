@@ -9,7 +9,7 @@ import {
   vi,
 } from "vitest";
 import { mockClient } from "aws-sdk-client-mock";
-import { eq, isNull } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import {
   SESv2Client,
   GetAccountCommand,

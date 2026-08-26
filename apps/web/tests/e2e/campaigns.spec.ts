@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { completeTeamSetup } from "./team-setup";
 import { PgBoss } from "pg-boss";
 import { Q } from "../../src/jobs/queues";
 
@@ -210,8 +211,13 @@ test("a campaign reaches one eligible contact, and unsubscribing needs a POST", 
   if (await createTeam.isVisible()) {
     await page.fill("#name", `Campaigns ${suffix}`);
     await createTeam.click();
-    await expect(checklist).toBeVisible();
+    // Team creation is a server action; the new team then lands on /setup
+    // (unconnected) or /app. Either way, wait for it to leave /teams/new.
+    await page.waitForURL(/\/(setup|app)/);
   }
+  // Setup is per team now: a freshly created team is held on /setup until it
+  // connects its own AWS account.
+  await completeTeamSetup(page);
 
   /* ---- a verified domain: a campaign cannot be authored without one ---- */
 

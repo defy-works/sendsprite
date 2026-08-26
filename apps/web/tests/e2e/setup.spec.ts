@@ -22,7 +22,7 @@ async function reloadUntilVisible(
   await expect(locator).toBeVisible();
 }
 
-/** Manual-keys path of the AWS step; same ids on /setup and Settings → Instance. */
+/** Manual-keys path of the AWS step; same ids on /setup and Settings → Sending. */
 async function connectAwsWithKeys(page: Page) {
   await page.getByRole("button", { name: "Paste keys manually" }).click();
   await page.selectOption("#region", "us-east-1");
@@ -83,11 +83,11 @@ test("owner completes setup via manual keys, adds a domain, sees records", async
     await page.getByRole("button", { name: "Go to dashboard" }).click();
     await expect(page).toHaveURL(/\/app$/);
   } else {
-    // Setup already completed (local dev database): the same AWS step lives
-    // on the Instance tab, without the wizard's Continue/Skip. If a previous
-    // run (or the developer) already connected AWS, keep that connection —
-    // the fake answers regardless of the stored keys.
-    await page.goto("/app/settings/instance");
+    // This team already finished setup (local dev database): the same AWS
+    // step lives on the Sending tab, without the wizard's Continue/Skip. If a
+    // previous run (or the developer) already connected AWS, keep that
+    // connection — the fake answers regardless of the stored keys.
+    await page.goto("/app/settings/sending");
     const manual = page.getByRole("button", { name: "Paste keys manually" });
     const connected = page.getByText("AWS is connected");
     await expect(manual.or(connected)).toBeVisible();
@@ -121,7 +121,7 @@ test("owner completes setup via manual keys, adds a domain, sees records", async
   await expect(page.getByText("pending", { exact: true })).toBeVisible();
 
   // Clean up through the UI (fake DeleteEmailIdentity); the name is unique
-  // instance-wide, so leaving it would only clutter the dev database.
+  // across the instance, so leaving it would only clutter the dev database.
   page.once("dialog", (d) => d.accept());
   await page.getByRole("button", { name: "Delete" }).click();
   await expect(page).toHaveURL(/\/app\/domains$/);
@@ -146,4 +146,45 @@ test("owner completes setup via manual keys, adds a domain, sees records", async
   )?.trim();
   expect(secret).toMatch(/^ss_live_/);
   saveApiKey(test.info(), secret!);
+});
+
+/**
+ * Setup is per team now. A second team on the same instance starts
+ * unconnected however finished the first one is, and cannot reach the
+ * dashboard until it connects its own AWS account.
+ */
+test("a second team must connect its own AWS account", async ({ page }) => {
+  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+  await page.goto("/signup");
+  await page.fill("#name", "Two Teams");
+  await page.fill("#email", `two-teams-${suffix}@example.com`);
+  await page.fill("#password", "correct-horse-battery");
+  await page.click("button[type=submit]");
+
+  const createTeam = page.getByRole("button", { name: "Create team" });
+  const wizard = page.getByRole("navigation", { name: "Setup steps" });
+  const checklist = page.getByText("Setup checklist");
+  await expect(createTeam.or(wizard).or(checklist)).toBeVisible();
+  if (await createTeam.isVisible()) {
+    await page.fill("#name", `First ${suffix}`);
+    await createTeam.click();
+  }
+
+  // Whatever state the first team is in, make a second one.
+  await page.goto("/teams/new");
+  await page.fill("#name", `Second ${suffix}`);
+  await page.getByRole("button", { name: "Create team" }).click();
+
+  // The new team is active and has connected nothing, so the app is closed to
+  // it and its owner is sent to the wizard — on the AWS step.
+  await page.goto("/app");
+  await expect(page).toHaveURL(/\/setup/);
+  await expect(
+    page.getByRole("button", { name: "Paste keys manually" }),
+  ).toBeVisible();
+
+  // And its Sending tab shows no connection of its own.
+  await page.goto("/app/settings/sending");
+  await expect(page.getByText("AWS is connected")).toHaveCount(0);
 });

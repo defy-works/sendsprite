@@ -15,7 +15,14 @@
  * name switch can honour.
  */
 const ACCOUNT_ID = "111111111111";
-const TOPIC_ARN = `arn:aws:sns:us-east-1:${ACCOUNT_ID}:sendsprite-events`;
+/**
+ * Derived from the requested topic name, exactly as SNS does. A constant ARN
+ * here would let only one team ever connect: topic names carry the org slug
+ * and `team_aws.sns_topic_arn` is unique, so a second team's connect would
+ * die on the constraint rather than on anything it did.
+ */
+const topicArn = (name: string) =>
+  `arn:aws:sns:us-east-1:${ACCOUNT_ID}:${name}`;
 const DKIM_TOKENS = ["e1", "e2", "e3"];
 // `emails.ses_message_id` is unique and the dev database persists between
 // runs, so ids carry a per-boot nonce in addition to the counter.
@@ -33,10 +40,14 @@ export class FakeAwsClient {
           ProductionAccessEnabled: false,
           SendQuota: { Max24HourSend: 200, MaxSendRate: 1 },
         };
-      case "CreateTopicCommand":
-        return { TopicArn: TOPIC_ARN };
-      case "SubscribeCommand":
-        return { SubscriptionArn: `${TOPIC_ARN}:sub` };
+      case "CreateTopicCommand": {
+        const input = (cmd as { input?: { Name?: string } }).input;
+        return { TopicArn: topicArn(input?.Name ?? "sendsprite-events") };
+      }
+      case "SubscribeCommand": {
+        const input = (cmd as { input?: { TopicArn?: string } }).input;
+        return { SubscriptionArn: `${input?.TopicArn ?? ""}:sub` };
+      }
       case "CreateEmailIdentityCommand":
         return { DkimAttributes: { Tokens: DKIM_TOKENS, Status: "PENDING" } };
       case "GetEmailIdentityCommand": {
