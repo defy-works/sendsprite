@@ -3,11 +3,11 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState, useTransition } from "react";
 import { Button } from "@/components/ui/Button";
+import { IconCloud } from "@/components/ui/icons";
+import { useConfirm } from "@/components/ui/confirm";
 import type { WizardProps } from "../types";
 import { disconnectCloudflareAction } from "../actions";
-import { Alert, Heading, Notice, Panel } from "./shared";
-
-const CLIENTS_URL = "https://dash.cloudflare.com/?to=/:account/oauth-clients";
+import { Alert, Heading, Notice } from "./shared";
 
 /** Cloudflare's `?error=` slugs plus our own, rendered as sentences. */
 const ERRORS: Record<string, string> = {
@@ -19,22 +19,54 @@ const ERRORS: Record<string, string> = {
   connect_failed: "Cloudflare authorisation failed. Try again.",
 };
 
+/**
+ * The Cloudflare connection, for a team.
+ *
+ * Renders **nothing** when the instance has no OAuth client. It used to render
+ * a card headed "Not configured on this instance" with four numbered steps
+ * about `CLOUDFLARE_OAUTH_CLIENT_ID` and restarting the server — instructions
+ * for whoever operates the deployment, shown to every customer of it, most of
+ * whom have no shell on that box and nothing to do about it. Those steps now
+ * live at `/admin`, behind `requireInstanceAdmin`, where the person who can
+ * act on them will see them. A customer of an instance without the client
+ * simply never hears that automatic DNS was a possibility; the manual records
+ * and the zone deep link are on every domain page regardless.
+ */
 export function CloudflareStep({
   settings,
   oauthAvailable,
   mode = "wizard",
 }: WizardProps) {
   const router = useRouter();
+  const confirm = useConfirm();
   const params = useSearchParams();
   const connected = Boolean(settings.cloudflareConnectedAt);
   const [disconnecting, start] = useTransition();
   const [disconnectError, setDisconnectError] = useState<string | null>(null);
 
+  if (!oauthAvailable) return null;
+
   const error = params.get("error");
   const noZones = params.get("cloudflare") === "no_zones";
   const from =
-    mode === "wizard" ? "/setup?step=cloudflare" : "/app/settings/sending";
+    mode === "wizard" ? "/setup?step=cloudflare" : "/app/settings#sending";
   const startUrl = `/api/setup/cloudflare/start?from=${encodeURIComponent(from)}`;
+
+  const disconnect = async () => {
+    const ok = await confirm({
+      title: "Disconnect Cloudflare?",
+      body: "New domains stop getting their DNS records written for them — you add DKIM, SPF, DMARC and MX by hand from then on. Records already written stay where they are.",
+      confirmLabel: "Disconnect",
+      tone: "danger",
+    });
+    if (!ok) return;
+    start(async () => {
+      setDisconnectError(null);
+      const res = await disconnectCloudflareAction();
+      if (!res.ok) setDisconnectError(res.error);
+      else router.refresh();
+    });
+  };
 
   return (
     <div className="flex flex-col gap-5">
@@ -78,26 +110,22 @@ export function CloudflareStep({
             )}
             <Button
               variant="dangerSubtle"
-              disabled={disconnecting}
-              onClick={() =>
-                start(async () => {
-                  setDisconnectError(null);
-                  const res = await disconnectCloudflareAction();
-                  if (!res.ok) setDisconnectError(res.error);
-                  else router.refresh();
-                })
-              }
+              loading={disconnecting}
+              onClick={() => void disconnect()}
             >
-              {disconnecting ? "Disconnecting…" : "Disconnect"}
+              Disconnect
             </Button>
           </div>
           {disconnectError && <Alert>{disconnectError}</Alert>}
         </div>
-      ) : oauthAvailable ? (
+      ) : (
         <div className="flex items-center gap-3">
           {/* A plain link, not a form: the flow is a top-level redirect to Cloudflare. */}
           <Button asChild>
-            <a href={startUrl}>Connect Cloudflare</a>
+            <a href={startUrl}>
+              <IconCloud />
+              Connect Cloudflare
+            </a>
           </Button>
           {mode === "wizard" && (
             <Button
@@ -108,51 +136,6 @@ export function CloudflareStep({
             </Button>
           )}
         </div>
-      ) : (
-        <>
-          <Panel title="Not configured on this instance">
-            <p className="text-sm text-white/75">
-              Automatic DNS needs a Cloudflare OAuth client, which this instance
-              does not have. Sending domains still work: you add the records at
-              your provider, and every domain page shows them with a one-click
-              link to the right Cloudflare zone when it detects one.
-            </p>
-            <ol className="mt-3 list-decimal space-y-1 pl-5 text-sm text-white/75">
-              <li>
-                In Cloudflare, open{" "}
-                <a
-                  className="text-indigo-300 underline"
-                  href={CLIENTS_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  Manage Account → OAuth clients
-                </a>{" "}
-                and create a client.
-              </li>
-              <li>
-                Redirect URI:{" "}
-                <code>&lt;APP_URL&gt;/api/setup/cloudflare/callback</code> —
-                Cloudflare matches it exactly.
-              </li>
-              <li>
-                Scopes: zone read and DNS write, plus{" "}
-                <code>offline_access</code>.
-              </li>
-              <li>
-                Set <code>CLOUDFLARE_OAUTH_CLIENT_ID</code> and{" "}
-                <code>CLOUDFLARE_OAUTH_CLIENT_SECRET</code>, then restart.
-              </li>
-            </ol>
-          </Panel>
-          {mode === "wizard" && (
-            <div>
-              <Button asChild>
-                <Link href="/setup?step=done">Continue</Link>
-              </Button>
-            </div>
-          )}
-        </>
       )}
     </div>
   );

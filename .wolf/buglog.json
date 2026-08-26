@@ -1,0 +1,70 @@
+[
+  {
+    "id": "bug-001",
+    "timestamp": "2026-08-26T09:57:19.157Z",
+    "error_message": "\"The one-click link expired; open a new one.\" shown while the CloudFormation stack was still running",
+    "file": "apps/web/src/app/setup/steps/QuickCreate.tsx, apps/web/src/app/setup/actions.ts",
+    "root_cause": "Two faults. (1) The poll re-checked the token expiry client-side with Date.parse(body.expiresAt) <= Date.now(), comparing a server timestamp to the browser clock. /status only ever returns pendingToken:true for a token the DB considers unexpired, so that branch could only fire on clock skew \u2014 any browser running ahead was told the link had expired mid-deploy. (2) The TTL was 15 min measured from link generation, so it had to cover console dwell time AND the full stack build.",
+    "fix": "Deleted the client-side expiry branch (server is authoritative) and dropped expiresAt from the client status type. Raised ttlMs to 60 min. Rewrote the message: an expired token makes the callback 403, the template treats non-2xx as FAILED, so the stack rolls back and deletes the IAM user by itself \u2014 telling the user to open a new link immediately would collide on the stack name.",
+    "tags": [
+      "aws",
+      "cloudformation",
+      "setup-wizard",
+      "clock-skew",
+      "token-expiry",
+      "polling"
+    ],
+    "related_bugs": [],
+    "occurrences": 1,
+    "last_seen": "2026-08-26T09:57:19.157Z"
+  },
+  {
+    "id": "bug-002",
+    "timestamp": "2026-08-26T20:40:00Z",
+    "error_message": "webhooks.test.ts 'retries on failure with the 1m/5m/30m/2h/8h schedule' \u2014 AssertionError: expected null to match object { status, statusCode } at tests/integration/webhooks.test.ts:243",
+    "file": "apps/web/tests/integration/webhooks.test.ts",
+    "root_cause": "NOT YET DIAGNOSED. Confirmed pre-existing: reproduces identically at commit 052dc06, before the phase-8 instance-admin work. deliver() returns null for the second delivery id (id2) after a thrown-fetch failure, where the test expects a delivered/204 result.",
+    "fix": "None yet. Verified out of scope for phase 8/9 (org-level connections) \u2014 recorded so it is not mistaken for a regression from that work.",
+    "tags": [
+      "webhooks",
+      "integration-test",
+      "pre-existing",
+      "flaky-or-broken",
+      "deliver"
+    ],
+    "related_bugs": [],
+    "occurrences": 1,
+    "last_seen": "2026-08-26T20:40:00Z"
+  },
+  {
+    "id": "bug-003",
+    "timestamp": "2026-08-26T20:50:00Z",
+    "error_message": "build: src/app/app/settings/RetentionForm.tsx(7,10): error TS2305: Module './actions' has no exported member 'updateRetentionAction'",
+    "file": "apps/web/src/app/app/settings/actions.ts",
+    "root_cause": "To check whether a failing test was pre-existing, ran `git checkout <old-sha> -- apps/web/src apps/web/tests` and then `git checkout HEAD -- ...` to restore. HEAD did not yet contain the in-progress task's edits, so every UNCOMMITTED change to an already-tracked file was destroyed. Newly created files survived (checkout does not delete untracked files), which made the loss partial and easy to miss \u2014 the next commit captured only the new files.",
+    "fix": "Redid the lost edits. Rule: never `git checkout <sha> -- <paths>` while uncommitted work exists. Commit (or `git stash`) first, or check the baseline by reading the old file with `git show <sha>:<path>` instead of touching the working tree.",
+    "tags": ["git", "data-loss", "working-tree", "baseline-check", "process"],
+    "related_bugs": [],
+    "occurrences": 1,
+    "last_seen": "2026-08-26T20:50:00Z"
+  },
+  {
+    "id": "bug-004",
+    "timestamp": "2026-08-26T21:35:00Z",
+    "error_message": "webhook-loop.test.ts: 'Invalid environment: APP_URL: APP_URL must be a full URL incl. protocol' thrown from billingConfig() via src/jobs/handlers/billing-meter.ts:54 at module scope",
+    "file": "apps/web/tests/integration/webhook-loop.test.ts",
+    "root_cause": "The file starts a real pg-boss worker, which imports jobs/handlers/index.ts, which imports billing-meter.ts \u2014 and that calls billingConfig() -> loadEnv() at MODULE SCOPE. The test never set APP_URL (it never has, since the initial release), so it only passed when another integration file sharing the same vitest worker process had already set it. Pure isolation luck; it surfaced when file scheduling shifted.",
+    "fix": "Set `process.env.APP_URL ??= \"http://localhost:3000\"` in its beforeAll, as every other integration file does. The deeper smell is billing-meter.ts reading env at import time rather than inside the handler \u2014 worth revisiting if it bites again.",
+    "tags": [
+      "test-isolation",
+      "env",
+      "pg-boss",
+      "billing-meter",
+      "pre-existing",
+      "flaky"
+    ],
+    "related_bugs": [],
+    "occurrences": 1,
+    "last_seen": "2026-08-26T21:35:00Z"
+  }
+]

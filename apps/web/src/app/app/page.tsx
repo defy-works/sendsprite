@@ -36,7 +36,7 @@ export default async function OverviewPage() {
     failed: domains.filter((d) => d.status === "failed").length,
   };
   // Connection steps link only for those who may change them.
-  const sendingHref = owner ? "/app/settings/sending" : null;
+  const sendingHref = owner ? "/app/settings#sending" : null;
   const steps = [
     { label: "Connect AWS", done: aws !== null, href: sendingHref },
     {

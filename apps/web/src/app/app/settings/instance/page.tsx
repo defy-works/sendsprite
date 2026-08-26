@@ -6,5 +6,5 @@ import { redirect } from "next/navigation";
  * moved to /app/admin.
  */
 export default function InstanceSettingsRedirect() {
-  redirect("/app/settings/sending");
+  redirect("/app/settings#sending");
 }

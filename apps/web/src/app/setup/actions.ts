@@ -38,7 +38,7 @@ const who = (a: Awaited<ReturnType<typeof actor>>) => ({
 /** The wizard and the Sending settings tab render the same steps. */
 function revalidate() {
   revalidatePath("/setup");
-  revalidatePath("/app/settings/sending");
+  revalidatePath("/app/settings");
 }
 
 const UNSUPPORTED_REGION = {

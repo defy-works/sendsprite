@@ -1,10 +1,11 @@
 "use client";
-import { useActionState } from "react";
+import { useActionState, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { Label } from "@/components/ui/Label";
 import { Select } from "@/components/ui/Select";
 import { updateInstanceAction } from "./actions";
+import { Field } from "@/components/ui/Field";
+import { Switch } from "@/components/ui/Toggle";
 import { Alert, Notice } from "@/app/setup/steps/shared";
 
 export function InstanceForm({
@@ -18,6 +19,7 @@ export function InstanceForm({
   retentionDays: number;
   envSignupMode: "open" | "invite" | "closed" | "auto";
 }) {
+  const [landing, setLanding] = useState(landingEnabled);
   const [state, action, pending] = useActionState(
     async (_prev: unknown, fd: FormData) => updateInstanceAction(fd),
     null,
@@ -30,8 +32,11 @@ export function InstanceForm({
           the value below.
         </Notice>
       )}
-      <div>
-        <Label htmlFor="signupMode">Signup mode</Label>
+      <Field
+        id="signupMode"
+        label="Signup mode"
+        hint="Who may create an account on this deployment."
+      >
         <Select
           id="signupMode"
           name="signupMode"
@@ -51,19 +56,19 @@ export function InstanceForm({
             { value: "closed", label: "Closed", hint: "No new accounts" },
           ]}
         />
-      </div>
-      <label className="flex items-center gap-2 text-sm text-white/75">
-        <input
-          type="checkbox"
-          name="landingEnabled"
-          value="on"
-          defaultChecked={landingEnabled}
-          className="accent-indigo-500"
-        />
-        Landing page (falls back to LANDING_ENABLED env when unset)
-      </label>
-      <div>
-        <Label htmlFor="retentionDays">Maximum retention (days)</Label>
+      </Field>
+      <Switch
+        name="landingEnabled"
+        checked={landing}
+        onChange={setLanding}
+        label="Landing page"
+        hint="Off serves the sign-in page at the root instead. Falls back to the LANDING_ENABLED environment variable when this has never been set."
+      />
+      <Field
+        id="retentionDays"
+        label="Maximum retention (days)"
+        hint="The longest window any team may keep email logs for (1–3650). A team can choose a shorter one in its own settings; nothing may exceed this. Bodies and attachments are purged nightly; metadata and events stay."
+      >
         <Input
           id="retentionDays"
           name="retentionDays"
@@ -75,15 +80,10 @@ export function InstanceForm({
           defaultValue={retentionDays}
           className="max-w-40"
         />
-        <p className="mt-1 text-xs text-white/50">
-          The longest window any team may keep email logs for (1–3650). A team
-          can choose a shorter one in its own settings; nothing may exceed this.
-          Bodies and attachments are purged nightly; metadata and events stay.
-        </p>
-      </div>
+      </Field>
       <div className="flex items-center gap-3">
-        <Button type="submit" disabled={pending}>
-          {pending ? "Saving…" : "Save"}
+        <Button type="submit" loading={pending}>
+          Save
         </Button>
         {state?.ok && <span className="text-sm text-white/65">Saved.</span>}
       </div>

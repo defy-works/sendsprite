@@ -26,6 +26,21 @@ export const teamSettings = pgTable("team_settings", {
   retentionDays: integer("retention_days"),
   /** Set when this team finishes the connect wizard; gates /app. */
   setupCompleted: boolean("setup_completed").notNull().default(false),
+  /**
+   * Set by an instance admin to stop this team sending, and by nobody else —
+   * there is no team-facing control for it.
+   *
+   * A timestamp rather than a boolean, because "when" is the first thing
+   * asked about a suspension and a boolean cannot answer it. The reason is
+   * shown to the team verbatim: a team that cannot send and is not told why
+   * files a support ticket, which is the outcome suspending them was supposed
+   * to avoid.
+   *
+   * Enforced in `checkTeamCaps`, so it covers the REST API, SMTP, campaign
+   * fan-out and the dashboard at once — every send path runs the caps.
+   */
+  suspendedAt: timestamp("suspended_at", { withTimezone: true }),
+  suspendedReason: text("suspended_reason"),
   trackOpens: boolean("track_opens").notNull().default(true),
   trackClicks: boolean("track_clicks").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true })

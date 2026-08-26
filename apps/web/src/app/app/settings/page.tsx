@@ -2,17 +2,31 @@ import { and, eq, gt } from "drizzle-orm";
 import { can } from "@sendsprite/shared";
 import { db } from "@/db";
 import { invitation, member, user } from "@/db/schema";
+import { env } from "@/env";
+import { SES_REGIONS } from "@/lib/aws/regions";
 import { requireTeam } from "@/lib/session";
 import { billingConfig } from "@/services/billing/config";
 import { getInstanceSettings } from "@/services/instance-settings";
+import { getTeamAws } from "@/services/team-aws";
 import { getTeamSettings } from "@/services/team-settings";
+import {
+  getTeamCloudflare,
+  oauthAvailable,
+} from "@/services/cloudflare-connect";
 import { effectiveRetentionDays } from "@/services/retention-policy";
 import { Card, CardHeader, CardTitle, CardBody } from "@/components/ui/Card";
 import { Link } from "@/components/ui/Link";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { AwsStep } from "@/app/setup/steps/AwsStep";
+import { ProductionStep } from "@/app/setup/steps/ProductionStep";
+import { CloudflareStep } from "@/app/setup/steps/CloudflareStep";
+import type { WizardProps, WizardSettings } from "@/app/setup/types";
 import { RenameForm } from "./RenameForm";
 import { MembersPanel } from "./MembersPanel";
 import { InvitePanel } from "./InvitePanel";
 import { RetentionForm } from "./RetentionForm";
+import { DangerZone } from "./DangerZone";
+import { SectionRail, type Section } from "./SectionRail";
 
 export const metadata = { title: "Settings" };
 
@@ -26,8 +40,20 @@ const formatDate = (d: Date) =>
     timeZone: "UTC",
   }).format(d);
 
+/**
+ * One page, not a hub of links.
+ *
+ * Sending used to live at `/app/settings/sending`, reached by a card whose
+ * whole content was a sentence and a link — so connecting AWS meant finding
+ * Settings, reading a card that did nothing, and clicking through to the page
+ * that did. The steps are components already (the wizard renders the same
+ * three), so there was never anything to build: they render here, in `settings`
+ * mode, under their own heading.
+ */
 export default async function SettingsPage() {
   const ctx = await requireTeam();
+  const isAdmin = ctx.role === "owner" || ctx.role === "admin";
+
   const members = await db()
     .select({
       id: member.id,
@@ -58,88 +84,200 @@ export default async function SettingsPage() {
       )
       .orderBy(invitation.expiresAt)
   ).map(({ expiresAt, ...i }) => ({ ...i, expires: formatDate(expiresAt) }));
-  const [instance, settings] = await Promise.all([
+
+  const [instance, settings, aws, cf] = await Promise.all([
     getInstanceSettings(),
     getTeamSettings(ctx.team.id),
+    // Only an admin may see the connection details; a member gets no Sending
+    // section at all, so the queries are skipped rather than filtered.
+    isAdmin ? getTeamAws(ctx.team.id) : Promise.resolve(null),
+    isAdmin ? getTeamCloudflare(ctx.team.id) : Promise.resolve(null),
   ]);
+
+  const cfOauth = oauthAvailable();
+  const sending: WizardProps = {
+    // Only serialisable, non-secret fields cross into the client tree.
+    settings: {
+      awsConnected: aws !== null,
+      awsRegion: aws?.region ?? null,
+      awsAccountId: aws?.accountId ?? null,
+      sesAccountStatus: aws?.sesAccountStatus ?? null,
+      sesReviewStatus: aws?.sesReviewStatus ?? null,
+      sesDailyQuota: aws?.sesDailyQuota ?? null,
+      sesMaxSendRate: aws?.sesMaxSendRate ?? null,
+      snsSubscriptionMissing: Boolean(
+        aws?.snsTopicArn && !aws.snsSubscriptionArn,
+      ),
+      cloudflareConnectedAt: cf?.connectedAt?.toISOString() ?? null,
+      cloudflareAccountName: cf?.accountName ?? null,
+      setupCompleted: settings?.setupCompleted ?? false,
+    } satisfies WizardSettings,
+    step: "aws",
+    regions: SES_REGIONS,
+    defaultRegion: env.AWS_DEFAULT_REGION,
+    oneClickAvailable: env.APP_URL.startsWith("https://"),
+    oauthAvailable: cfOauth,
+    mode: "settings",
+  };
+
+  const billingEnabled = billingConfig().enabled;
+  const sections: Section[] = [
+    { id: "team", label: "Team" },
+    { id: "members", label: "Members" },
+    ...(isAdmin ? [{ id: "sending", label: "Sending" }] : []),
+    { id: "retention", label: "Retention" },
+    ...(billingEnabled ? [{ id: "billing", label: "Billing" }] : []),
+    ...(ctx.role === "owner" ? [{ id: "danger", label: "Danger zone" }] : []),
+  ];
+
   return (
-    <div className="flex max-w-3xl flex-col gap-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Team</CardTitle>
-        </CardHeader>
-        <CardBody>
-          {/* Keyed on the name so a successful rename resets the field's defaultValue. */}
-          <RenameForm
-            key={ctx.team.name}
-            name={ctx.team.name}
-            disabled={!can(ctx.role, "team.rename")}
-          />
-        </CardBody>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>Members</CardTitle>
-        </CardHeader>
-        <CardBody>
-          <MembersPanel members={members} me={ctx.userId} myRole={ctx.role} />
-        </CardBody>
-      </Card>
-      {can(ctx.role, "members.invite") && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Invitations</CardTitle>
-          </CardHeader>
-          <CardBody>
-            <InvitePanel invites={invites} />
-          </CardBody>
-        </Card>
-      )}
-      <Card>
-        <CardHeader>
-          <CardTitle>Retention</CardTitle>
-        </CardHeader>
-        <CardBody>
-          <RetentionForm
-            retentionDays={effectiveRetentionDays(
-              settings?.retentionDays ?? null,
-              instance.retentionDays,
+    <div className="flex gap-10">
+      <SectionRail sections={sections} />
+      <div className="flex min-w-0 max-w-3xl flex-1 flex-col gap-8">
+        <PageHeader
+          title="Settings"
+          description="Everything about this team: who is on it, where it sends from, and how long its mail log is kept."
+        />
+
+        <Section id="team" title="Team">
+          <Card>
+            <CardBody>
+              {/* Keyed on the name so a successful rename resets the field's defaultValue. */}
+              <RenameForm
+                key={ctx.team.name}
+                name={ctx.team.name}
+                disabled={!can(ctx.role, "team.rename")}
+              />
+            </CardBody>
+          </Card>
+        </Section>
+
+        <Section id="members" title="Members">
+          <Card>
+            <CardBody>
+              <MembersPanel
+                members={members}
+                me={ctx.userId}
+                myRole={ctx.role}
+              />
+            </CardBody>
+          </Card>
+          {can(ctx.role, "members.invite") && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Invitations</CardTitle>
+              </CardHeader>
+              <CardBody>
+                <InvitePanel invites={invites} />
+              </CardBody>
+            </Card>
+          )}
+        </Section>
+
+        {isAdmin && (
+          <Section
+            id="sending"
+            title="Sending"
+            description="This team sends through its own AWS account. Nothing here is shared with any other team on this instance."
+          >
+            <Card>
+              <CardBody>
+                <AwsStep {...sending} />
+              </CardBody>
+            </Card>
+            <Card>
+              <CardBody>
+                <ProductionStep {...sending} />
+              </CardBody>
+            </Card>
+            {/* Rendered only when this instance has an OAuth client: the
+                registration steps are an operator's job and live at /admin. */}
+            {cfOauth && (
+              <Card>
+                <CardBody>
+                  <CloudflareStep {...sending} />
+                </CardBody>
+              </Card>
             )}
-            instanceMax={instance.retentionDays}
-            canManage={can(ctx.role, "settings.manage")}
-          />
-        </CardBody>
-      </Card>
-      {/* Mirrors the Instance card deliberately: there is no settings
-          sub-nav to extend, and inventing one for a single page would be a
-          bigger change than the page itself. */}
-      {billingConfig().enabled && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Billing</CardTitle>
-          </CardHeader>
-          <CardBody>
-            <p className="text-sm text-white/70">
-              Your plan, this period&apos;s usage and payment details.{" "}
-              <Link href="/app/settings/billing">Open billing</Link>
-            </p>
-          </CardBody>
-        </Card>
-      )}
-      {(ctx.role === "owner" || ctx.role === "admin") && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Sending</CardTitle>
-          </CardHeader>
-          <CardBody>
-            <p className="text-sm text-white/70">
-              This team&apos;s own AWS account, SES production access and
-              Cloudflare connection.{" "}
-              <Link href="/app/settings/sending">Open sending settings</Link>
-            </p>
-          </CardBody>
-        </Card>
-      )}
+          </Section>
+        )}
+
+        <Section id="retention">
+          <Card>
+            <CardHeader>
+              <CardTitle>Retention</CardTitle>
+            </CardHeader>
+            <CardBody>
+              <RetentionForm
+                retentionDays={effectiveRetentionDays(
+                  settings?.retentionDays ?? null,
+                  instance.retentionDays,
+                )}
+                instanceMax={instance.retentionDays}
+                canManage={can(ctx.role, "settings.manage")}
+              />
+            </CardBody>
+          </Card>
+        </Section>
+
+        {billingEnabled && (
+          <Section id="billing">
+            <Card>
+              <CardHeader>
+                <CardTitle>Billing</CardTitle>
+              </CardHeader>
+              <CardBody>
+                <p className="text-sm text-white/70">
+                  Your plan, this period&apos;s usage and payment details.{" "}
+                  <Link href="/app/settings/billing">Open billing</Link>
+                </p>
+              </CardBody>
+            </Card>
+          </Section>
+        )}
+
+        {ctx.role === "owner" && (
+          <Section id="danger" title="Danger zone">
+            <div className="rounded-lg border border-danger/35 bg-danger/6 p-5">
+              <DangerZone
+                teamName={ctx.team.name}
+                isOwner
+                memberCount={members.length}
+              />
+            </div>
+          </Section>
+        )}
+      </div>
     </div>
+  );
+}
+
+/** A titled band of cards with an anchor the rail can jump to. */
+function Section({
+  id,
+  title,
+  description,
+  children,
+}: {
+  id: string;
+  /** Omitted when the single card inside already carries the title. */
+  title?: string;
+  description?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    // `scroll-mt` clears the sticky header, so an anchor jump does not put the
+    // heading underneath it.
+    <section id={id} className="flex scroll-mt-20 flex-col gap-4">
+      {title && (
+        <div className="flex flex-col gap-1">
+          <h2 className="text-base font-medium">{title}</h2>
+          {description && (
+            <p className="text-sm text-white/55">{description}</p>
+          )}
+        </div>
+      )}
+      {children}
+    </section>
   );
 }

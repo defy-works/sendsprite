@@ -36,7 +36,7 @@ export default async function DomainsPage() {
         <Notice>
           AWS is not connected, so domains cannot be provisioned.{" "}
           {ctx.role === "owner" || ctx.role === "admin" ? (
-            <Link href="/app/settings/sending">Connect AWS in Settings</Link>
+            <Link href="/app/settings#sending">Connect AWS in Settings</Link>
           ) : (
             "Ask a team owner or admin to connect it in Settings → Sending."
           )}

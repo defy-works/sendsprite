@@ -189,6 +189,29 @@ export async function resolveTeamCaps(
 }
 
 /**
+ * The team's suspension, or null.
+ *
+ * Its own query rather than a column added to `resolveTeamCaps`: that
+ * function answers "how much may this team send", and a suspension is not a
+ * quantity. Keeping them apart is what lets the refusal above name a reason
+ * instead of reporting a limit of zero, which is what an operator's
+ * suspension would otherwise look like to a customer reading an error.
+ */
+export async function teamSuspension(
+  teamId: string,
+): Promise<{ at: Date; reason: string | null } | null> {
+  const [row] = await db()
+    .select({
+      at: teamSettings.suspendedAt,
+      reason: teamSettings.suspendedReason,
+    })
+    .from(teamSettings)
+    .where(eq(teamSettings.teamId, teamId))
+    .limit(1);
+  return row?.at ? { at: row.at, reason: row.reason } : null;
+}
+
+/**
  * Per-team daily/monthly caps. UTC calendar day for the daily cap; the
  * billing period (or the UTC month) for the monthly one. Counts by
  * `createdAt` (reservation semantics: an email scheduled for later counts
@@ -200,6 +223,19 @@ export async function checkTeamCaps(
   adding: number,
   now = new Date(),
 ): Promise<CapResult> {
+  // Suspension is checked here rather than at each entry point precisely
+  // because there are five of them — REST, SMTP, campaign fan-out, the
+  // dashboard and the batch endpoint — and every one already runs the caps.
+  // A suspension enforced anywhere else is a suspension with a hole in it.
+  const suspended = await teamSuspension(teamId);
+  if (suspended)
+    return {
+      ok: false,
+      code: "forbidden",
+      message: suspended.reason
+        ? `Sending is suspended for this team: ${suspended.reason}`
+        : "Sending is suspended for this team. Contact the operator of this instance.",
+    };
   const caps = await resolveTeamCaps(teamId, now);
   if (caps.daily == null && caps.monthly == null) return { ok: true };
   if (

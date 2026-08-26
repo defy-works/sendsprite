@@ -169,6 +169,13 @@
       "when": 1787747126030,
       "tag": "0023_drop_instance_cloud_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1787752828274,
+      "tag": "0024_team_suspension",
+      "breakpoints": true
     }
   ]
 }

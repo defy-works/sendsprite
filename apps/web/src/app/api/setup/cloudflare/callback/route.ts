@@ -31,29 +31,35 @@ export async function GET(req: Request) {
   } catch {
     // Tampered or encrypted under a rotated APP_SECRET; treated as absent.
   }
-  const back = (q: string) =>
-    NextResponse.redirect(
-      new URL(
-        `${parked.returnTo ?? defaultReturn}${(parked.returnTo ?? defaultReturn).includes("?") ? "&" : "?"}${q}`,
-        env.APP_URL,
-      ),
-    );
+  /**
+   * Redirect back to where the flow started, with one status parameter added.
+   *
+   * Built through `URL` rather than string concatenation because the return
+   * targets now carry a fragment (`/app/settings#sending`, so the long
+   * Settings page opens at the right band). Appending `?error=…` to that
+   * string puts the query *inside* the fragment, where no server and no
+   * `useSearchParams` will ever see it — the user lands on a Settings page
+   * that quietly shows Cloudflare as disconnected and says nothing about why.
+   */
+  const back = (key: string, value: string) => {
+    const url = new URL(parked.returnTo ?? defaultReturn, env.APP_URL);
+    url.searchParams.set(key, value);
+    return NextResponse.redirect(url);
+  };
 
   const p = new URL(req.url).searchParams;
   // The user pressed Cancel, or Cloudflare refused the request outright.
   const denied = p.get("error");
-  if (denied) return back(`error=${slug(denied)}`);
+  if (denied) return back("error", slug(denied));
 
   const code = p.get("code");
   const state = p.get("state");
-  if (!code || !state) return back("error=invalid_response");
+  if (!code || !state) return back("error", "invalid_response");
 
   const res = await completeOauth({ code, state }, parked.handoff, {
     userId: ctx.userId,
     meta: requestMeta(await headers()),
   });
-  if (!res.ok) return back(`error=${slug(res.code ?? "connect_failed")}`);
-  return back(
-    res.data.warning ? "cloudflare=no_zones" : "cloudflare=connected",
-  );
+  if (!res.ok) return back("error", slug(res.code ?? "connect_failed"));
+  return back("cloudflare", res.data.warning ? "no_zones" : "connected");
 }

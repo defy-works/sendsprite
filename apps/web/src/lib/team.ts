@@ -1,7 +1,7 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { TEAM_ROLES, type TeamRole } from "@sendsprite/shared";
 import { db } from "@/db";
-import { member, organization, user } from "@/db/schema";
+import { member, organization, session as sessions, user } from "@/db/schema";
 import type { auth } from "./auth";
 
 export type Session = NonNullable<
@@ -68,4 +68,31 @@ export async function listTeamAdminEmails(teamId: string): Promise<string[]> {
     )
     .orderBy(user.email);
   return rows.map((r) => r.email);
+}
+
+/**
+ * Blanks `active_organization_id` on every session of a user that still points
+ * at a team that has just been deleted.
+ *
+ * `resolveTeam` already tolerates a stale id, so this is not what keeps the
+ * dashboard working — better-auth is. Its organization plugin reads the same
+ * column for `setActive`, `useListOrganizations` and the invitation endpoints,
+ * and a session claiming membership of a row that no longer exists is a
+ * disagreement between two readers of one column. Cheaper to clear it than to
+ * reason about which of them notices.
+ *
+ * Every session, not just the current one: the same person may be signed in on
+ * a phone, and that session would otherwise carry the dead id until it
+ * expires.
+ */
+export async function clearActiveOrganization(userId: string, teamId: string) {
+  await db()
+    .update(sessions)
+    .set({ activeOrganizationId: null })
+    .where(
+      and(
+        eq(sessions.userId, userId),
+        eq(sessions.activeOrganizationId, teamId),
+      ),
+    );
 }

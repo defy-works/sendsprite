@@ -44,6 +44,6 @@ export async function updateInstanceAction(fd: FormData): Promise<Result> {
     },
     actor,
   );
-  revalidatePath("/app/admin");
+  revalidatePath("/admin");
   return { ok: true, data: undefined };
 }
