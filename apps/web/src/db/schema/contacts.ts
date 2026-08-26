@@ -85,6 +85,14 @@ export const contacts = pgTable(
     index("contacts_team_email_idx").on(t.teamId, t.email),
     index("contacts_book_created_idx").on(t.bookId, t.createdAt),
     /*
+     * Campaign fan-out walks a book in chunks ordered by `id` (a ULID, so
+     * insertion order) with a keyset cursor, once per sweep tick. Without
+     * this index every tick either sorts the whole book or scans the primary
+     * key across every team's contacts; with it a chunk is a range scan.
+     * See `services/campaigns/audience.ts`.
+     */
+    index("contacts_book_id_idx").on(t.bookId, t.id),
+    /*
      * The unique index above compares raw bytes, so `A@b.io` and `a@b.io` are
      * two rows to Postgres — and then `POST /contacts/unsubscribe` misses one
      * of them and a CSV re-import inserts a second copy. The shared contract
