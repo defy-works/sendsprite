@@ -245,6 +245,21 @@ README.md                                  + templates/contacts paragraphs, road
 
 ---
 
+## Carry-forwards for Task 7 (from the Task 3 contracts)
+
+- **Normalise emails identically on both sides.** The contract's email schema is
+  `.trim().toLowerCase().max(320).pipe(z.email())`, the same idiom as `AddSuppressionInput`. The
+  `(book_id, email)` uniqueness constraint must store that same normalised form, or the
+  idempotency promise on unsubscribe and the dedupe in CSV import both break for any address
+  that differs only in case or whitespace.
+- **Truncate the import error list in the service.** `ImportContactsResult.errors` caps at 100,
+  but that is a _response_ validator: if Task 7 returns more, a large bad file turns into a
+  serialisation failure instead of the error report the customer needs. Truncate at the source
+  and say how many were omitted.
+- **`SUPPRESSION_REASONS` already contains `"unsubscribe"`**, meaning "remove from all mail".
+  That is a different thing from `contacts.subscribed = false`, and the similar name is exactly
+  the trap the separation exists to avoid. Do not let one write the other.
+
 ## Amendment after the Task 1 review — empty values, nulls, and escaping scope
 
 **Empty string counts as missing.** Decision 2 exists so nobody mails "Hi ," to a whole list —
