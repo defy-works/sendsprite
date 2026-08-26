@@ -11,6 +11,7 @@ export * from "./email-events";
 export * from "./suppressions";
 export * from "./templates";
 export * from "./contacts";
+export * from "./campaigns";
 export * from "./webhooks";
 export * from "./webhook-deliveries";
 export * from "./send-rate";

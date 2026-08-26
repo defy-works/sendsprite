@@ -76,6 +76,23 @@ export const emails = pgTable(
       .notNull()
       .default("queued"),
     source: text("source", { enum: EMAIL_SOURCES }).notNull().default("api"),
+    /*
+     * Which campaign fanned this row out, and to which contact. Set together
+     * with `source: "campaign"` and never otherwise.
+     *
+     * **Deliberately not foreign keys.** `emails` is the highest-write table
+     * in the product and its rows outlive everything else: retention purges
+     * bodies but keeps the rows, and a campaign or a contact may be deleted
+     * long afterwards. An FK would have to either block those deletes or
+     * cascade away mail-log history, and both are worse than a dangling id —
+     * which reads as "the campaign is gone", the truth. The same reasoning
+     * already made `domain_id` and `template_id` `set null`; these two go one
+     * step further and carry no constraint at all, because a campaign's stats
+     * are a `group by campaign_id` over exactly these rows and `set null`
+     * would blank the grouping key on the way past.
+     */
+    campaignId: text("campaign_id"),
+    contactId: text("contact_id"),
     idempotencyKey: text("idempotency_key"),
     sesMessageId: text("ses_message_id"),
     lastError: text("last_error"),
@@ -107,5 +124,7 @@ export const emails = pgTable(
     // Overview stats scan `sent_at` windows per team and instance-wide.
     index("emails_sent_at_idx").on(t.teamId, t.sentAt),
     index("emails_sent_at_all_idx").on(t.sentAt),
+    // Campaign stats and the per-campaign mail log read `(campaign, id)`.
+    index("emails_campaign_idx").on(t.campaignId, t.id),
   ],
 );
