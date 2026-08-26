@@ -1,0 +1,656 @@
+import { randomBytes } from "node:crypto";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { startPg } from "./_pg";
+import { seedTeamWithKey } from "./helpers";
+
+/**
+ * The fan-out is the most consequential code in the campaigns phase: get it
+ * wrong one way and a contact is mailed twice, the other way and they are
+ * never mailed at all. Neither is recoverable after the fact, so the tests
+ * that matter here are the ones that run the same work twice and count what
+ * came out — not the ones that check a happy path.
+ */
+
+const APP_URL = "https://mail.example.test";
+
+let pg: Awaited<ReturnType<typeof startPg>>;
+beforeAll(async () => {
+  process.env.APP_URL = APP_URL;
+  process.env.APP_SECRET = "f".repeat(48);
+  pg = await startPg();
+  const { resetEnvCache } = await import("@/env.schema");
+  resetEnvCache();
+});
+afterAll(async () => {
+  await pg.stop();
+});
+
+const fanout = () => import("@/services/campaigns/fanout");
+
+/** Collects what was enqueued instead of touching pg-boss. */
+function recorder() {
+  const jobs: { queue: string; data: object }[] = [];
+  return {
+    jobs,
+    emailIds: () =>
+      jobs
+        .filter((j) => j.queue === "email.send")
+        .map((j) => (j.data as { emailId: string }).emailId),
+    enqueue: async (queue: string, data: object) => {
+      jobs.push({ queue, data });
+    },
+  };
+}
+
+const BLOCKS = [
+  { kind: "text", html: 'Hi <a href="https://example.test/x">here</a>' },
+  { kind: "button", label: "Go", url: "https://example.test/go" },
+];
+
+interface SeedOpts {
+  /** One entry per contact. `email` overrides the generated address. */
+  contacts?: { email?: string; subscribed?: boolean }[];
+  status?: string;
+  blocks?: unknown;
+  /** Pre-render, as `campaign.start-sweep` does before the first chunk. */
+  render?: boolean;
+}
+
+/**
+ * A team with a verified domain, a book of contacts and one `sending`
+ * campaign, written straight to the tables.
+ *
+ * Contact ids are `ct_<suffix><nn>` so lexicographic order — which is the
+ * order `selectEligible` walks — is the seed order, and a cursor assertion can
+ * name the row it expects rather than observe it.
+ */
+async function seed({
+  contacts: want = [{}, {}, {}],
+  status = "sending",
+  blocks = BLOCKS,
+  render = true,
+}: SeedOpts = {}) {
+  const { db } = await import("@/db");
+  const { campaigns, contactBooks, contacts, domains } =
+    await import("@/db/schema");
+  const { renderBlocks } = await import("@sendsprite/shared");
+  const { team, actor } = await seedTeamWithKey();
+  const suffix = randomBytes(4).toString("hex");
+  const domainName = `${suffix}.example.test`;
+  const domainId = `dom_${suffix}`;
+  const bookId = `cb_${suffix}`;
+  const campaignId = `cmp_${suffix}`;
+  await db()
+    .insert(domains)
+    .values({
+      id: domainId,
+      teamId: team.id,
+      name: domainName,
+      region: "eu-west-1",
+      dnsMode: "manual",
+      status: "verified",
+      mailFromDomain: `bounce.${domainName}`,
+    });
+  await db()
+    .insert(contactBooks)
+    .values({ id: bookId, teamId: team.id, name: "News" });
+  const ids = want.map((_, i) => `ct_${suffix}${String(i).padStart(2, "0")}`);
+  await db()
+    .insert(contacts)
+    .values(
+      want.map((c, i) => ({
+        id: ids[i]!,
+        bookId,
+        teamId: team.id,
+        email: c.email ?? `r${i}@rcpt.test`,
+        subscribed: c.subscribed ?? true,
+      })),
+    );
+  // Only a `text`/`button` list renders; a deliberately invalid one is stored
+  // raw so `renderBlocks` has something to throw on.
+  let rendered: { html: string; text: string } | null = null;
+  if (render) {
+    try {
+      rendered = renderBlocks(blocks as never);
+    } catch {
+      rendered = null;
+    }
+  }
+  await db()
+    .insert(campaigns)
+    .values({
+      id: campaignId,
+      teamId: team.id,
+      bookId,
+      domainId,
+      name: "August news",
+      subject: "Hello",
+      from: `news@${domainName}`,
+      blocks: blocks as never,
+      html: rendered?.html ?? null,
+      text: rendered?.text ?? null,
+      status: status as "sending",
+      startedAt: new Date(),
+    });
+  return { db, team, actor, bookId, domainId, campaignId, ids, suffix };
+}
+
+const emailRows = async (campaignId: string) => {
+  const { db } = await import("@/db");
+  const { emails } = await import("@/db/schema");
+  const { asc, eq } = await import("drizzle-orm");
+  return db()
+    .select()
+    .from(emails)
+    .where(eq(emails.campaignId, campaignId))
+    .orderBy(asc(emails.contactId));
+};
+
+const emailCount = async (campaignId: string) => {
+  const { db } = await import("@/db");
+  const { emails } = await import("@/db/schema");
+  const { eq, sql } = await import("drizzle-orm");
+  const [row] = await db()
+    .select({ n: sql<number>`count(*)::int` })
+    .from(emails)
+    .where(eq(emails.campaignId, campaignId));
+  return row!.n;
+};
+
+const campaignRow = async (campaignId: string) => {
+  const { db } = await import("@/db");
+  const { campaigns } = await import("@/db/schema");
+  const { eq } = await import("drizzle-orm");
+  const [row] = await db()
+    .select()
+    .from(campaigns)
+    .where(eq(campaigns.id, campaignId));
+  return row!;
+};
+
+const recipientRows = async (campaignId: string) => {
+  const { db } = await import("@/db");
+  const { campaignRecipients } = await import("@/db/schema");
+  const { asc, eq } = await import("drizzle-orm");
+  return db()
+    .select()
+    .from(campaignRecipients)
+    .where(eq(campaignRecipients.campaignId, campaignId))
+    .orderBy(asc(campaignRecipients.contactId));
+};
+
+/**
+ * A row's body with the three things that are *meant* to differ per recipient
+ * masked: the unsubscribe token, the email id in the tracking URLs, and the
+ * click signature derived from that id. Whatever survives must be the same
+ * bytes for every recipient of one campaign.
+ */
+const normalise = (r: { id: string; html: string | null }) =>
+  (r.html ?? "")
+    .replaceAll(r.id, "EMAIL_ID")
+    .replace(/\/unsubscribe\/[A-Za-z0-9_-]+/g, "/unsubscribe/TOKEN")
+    .replace(/&s=[A-Za-z0-9_-]+/g, "&s=SIG");
+
+/** Reset the cursor, which is exactly what a lost/rolled-back tick looks like. */
+async function rewindCursor(campaignId: string) {
+  const { db } = await import("@/db");
+  const { campaigns } = await import("@/db/schema");
+  const { eq } = await import("drizzle-orm");
+  await db()
+    .update(campaigns)
+    .set({ fanoutCursor: null })
+    .where(eq(campaigns.id, campaignId));
+}
+
+describe("campaign fan-out", () => {
+  it("materialises one chunk and advances the cursor", async () => {
+    const { campaignId, ids } = await seed();
+    const q = recorder();
+    const res = await (await fanout()).fanoutChunk(campaignId, q);
+
+    expect(res).toEqual({
+      materialised: 3,
+      skipped: 0,
+      done: false,
+      completed: false,
+    });
+    const rows = await emailRows(campaignId);
+    expect(rows).toHaveLength(3);
+    expect(rows.map((r) => r.contactId)).toEqual(ids);
+    expect(rows.map((r) => r.status)).toEqual(["queued", "queued", "queued"]);
+    expect(rows.map((r) => r.source)).toEqual([
+      "campaign",
+      "campaign",
+      "campaign",
+    ]);
+    expect(rows.map((r) => r.to)).toEqual([
+      ["r0@rcpt.test"],
+      ["r1@rcpt.test"],
+      ["r2@rcpt.test"],
+    ]);
+    // Every recipient row points at the email it produced.
+    const recips = await recipientRows(campaignId);
+    expect(recips.map((r) => r.status)).toEqual(["queued", "queued", "queued"]);
+    expect(recips.map((r) => r.emailId).sort()).toEqual(
+      rows.map((r) => r.id).sort(),
+    );
+    // The cursor stops at the last contact this chunk actually processed —
+    // never past it, which is what makes a crash resume rather than skip.
+    expect((await campaignRow(campaignId)).fanoutCursor).toBe(ids[2]);
+    expect(q.emailIds().sort()).toEqual(rows.map((r) => r.id).sort());
+    // A `queued` timeline event per row, exactly as an API send writes.
+    const { db } = await import("@/db");
+    const { emailEvents } = await import("@/db/schema");
+    const { inArray } = await import("drizzle-orm");
+    const evs = await db()
+      .select()
+      .from(emailEvents)
+      .where(
+        inArray(
+          emailEvents.emailId,
+          rows.map((r) => r.id),
+        ),
+      );
+    expect(evs.map((e) => e.type)).toEqual(["queued", "queued", "queued"]);
+  });
+
+  /*
+   * The double-send guard, stated the way it is dangerous: run the same chunk
+   * twice with no state reset at all, then count the emails. The primary key
+   * on `(campaign_id, contact_id)` is what has to hold here — not the cursor,
+   * which is only an optimisation.
+   */
+  it("running the same chunk twice sends nothing twice", async () => {
+    const { campaignId } = await seed();
+    const q = recorder();
+    await (await fanout()).fanoutChunk(campaignId, q);
+    await (await fanout()).fanoutChunk(campaignId, q);
+
+    expect(await emailCount(campaignId)).toBe(3);
+  });
+
+  /*
+   * The same guard with the cursor taken away — a rolled-back tick, a restored
+   * dump, a second worker that read the cursor before the first committed. The
+   * cursor cannot help here, so if anything comes out twice the primary key is
+   * not doing its job.
+   */
+  it("does not enqueue a send for a row it did not insert", async () => {
+    const { campaignId } = await seed();
+    const first = recorder();
+    await (await fanout()).fanoutChunk(campaignId, first);
+    expect(first.emailIds()).toHaveLength(3);
+
+    await rewindCursor(campaignId);
+    const second = recorder();
+    const res = await (await fanout()).fanoutChunk(campaignId, second);
+
+    expect(res.materialised).toBe(0);
+    expect(second.emailIds()).toEqual([]);
+    expect(await emailCount(campaignId)).toBe(3);
+    expect((await recipientRows(campaignId)).length).toBe(3);
+  });
+
+  it("finishes: the last chunk marks the campaign sent", async () => {
+    const { campaignId } = await seed();
+    const q = recorder();
+    const first = await (await fanout()).fanoutChunk(campaignId, q);
+    expect(first.done).toBe(false);
+    expect((await campaignRow(campaignId)).status).toBe("sending");
+
+    const last = await (await fanout()).fanoutChunk(campaignId, q);
+    expect(last).toEqual({
+      materialised: 0,
+      skipped: 0,
+      done: true,
+      completed: true,
+    });
+    const row = await campaignRow(campaignId);
+    expect(row.status).toBe("sent");
+    expect(row.sentAt).toBeInstanceOf(Date);
+    expect(await emailCount(campaignId)).toBe(3);
+
+    // `completed` is the "this call finished it" edge, not a level: a further
+    // tick must not fire the once-only work (the `campaign.sent` webhook, the
+    // count refresh) a second time.
+    const again = await (await fanout()).fanoutChunk(campaignId, q);
+    expect(again).toEqual({
+      materialised: 0,
+      skipped: 0,
+      done: true,
+      completed: false,
+    });
+  });
+
+  /*
+   * A short chunk must NOT finish the campaign: a contact added mid-send sorts
+   * after the cursor, and only an empty select proves the book is walked out.
+   */
+  it("resumes from the cursor and picks up a contact added mid-send", async () => {
+    const { campaignId, ids, bookId, team, suffix } = await seed();
+    const q = recorder();
+    await (await fanout()).fanoutChunk(campaignId, q);
+    expect((await campaignRow(campaignId)).status).toBe("sending");
+
+    const { db } = await import("@/db");
+    const { contacts } = await import("@/db/schema");
+    const lateId = `ct_${suffix}99`;
+    await db().insert(contacts).values({
+      id: lateId,
+      bookId,
+      teamId: team.id,
+      email: "late@rcpt.test",
+      subscribed: true,
+    });
+
+    const res = await (await fanout()).fanoutChunk(campaignId, q);
+    expect(res.materialised).toBe(1);
+    const rows = await emailRows(campaignId);
+    expect(rows).toHaveLength(4);
+    expect(rows.map((r) => r.contactId)).toEqual([...ids, lateId]);
+    expect((await campaignRow(campaignId)).fanoutCursor).toBe(lateId);
+  });
+
+  it("substitutes a different unsubscribe link per recipient", async () => {
+    const { campaignId, ids } = await seed();
+    const q = recorder();
+    await (await fanout()).fanoutChunk(campaignId, q);
+    const rows = await emailRows(campaignId);
+
+    const { verifyUnsubscribeToken } = await import("@sendsprite/shared/node");
+    const tokens = rows.map((r) => {
+      const m = /\/unsubscribe\/([A-Za-z0-9_-]+)/.exec(r.html ?? "");
+      expect(m, `no unsubscribe link in ${r.id}`).not.toBeNull();
+      return m![1]!;
+    });
+    expect(new Set(tokens).size).toBe(3);
+    // Each link carries *that* recipient's claims, not merely a different one.
+    expect(
+      tokens.map((t) => verifyUnsubscribeToken(t, process.env.APP_SECRET!)),
+    ).toEqual(ids.map((id) => ({ contactId: id, campaignId })));
+    // And the plain-text alternative carries the same link, not the marker.
+    const { UNSUBSCRIBE_MARKER } = await import("@sendsprite/shared");
+    for (const [i, r] of rows.entries()) {
+      expect(r.text).toContain(`Unsubscribe: ${APP_URL}/unsubscribe/`);
+      expect(r.text).toContain(tokens[i]!);
+      expect(r.text).not.toContain(UNSUBSCRIBE_MARKER);
+      expect(r.html).not.toContain(UNSUBSCRIBE_MARKER);
+    }
+  });
+
+  /*
+   * Without this pair Gmail and Outlook show no native unsubscribe button and
+   * the recipient's only exit is the spam button, which costs far more
+   * reputation. The fan-out writes `emails` rows directly, so `SendEmailInput`
+   * never validates these values — the header-safety rules are re-asserted
+   * here because this is the only place they are checked.
+   */
+  it("puts List-Unsubscribe and List-Unsubscribe-Post on every row", async () => {
+    const { campaignId } = await seed();
+    const q = recorder();
+    await (await fanout()).fanoutChunk(campaignId, q);
+    const rows = await emailRows(campaignId);
+    const { NO_CONTROL_CHARS } = await import("@sendsprite/shared");
+    const HEADER_NAME = /^[A-Za-z0-9-]{1,80}$/;
+
+    expect(rows).toHaveLength(3);
+    for (const r of rows) {
+      expect(r.headers["List-Unsubscribe-Post"]).toBe(
+        "List-Unsubscribe=One-Click",
+      );
+      expect(r.headers["List-Unsubscribe"]).toMatch(
+        new RegExp(`^<${APP_URL}/unsubscribe/[A-Za-z0-9_-]+>$`),
+      );
+      // The header must carry the same link the body does.
+      const inBody = /\/unsubscribe\/([A-Za-z0-9_-]+)/.exec(r.html ?? "")![1];
+      expect(r.headers["List-Unsubscribe"]).toContain(inBody!);
+      for (const [name, value] of Object.entries(r.headers)) {
+        expect(name).toMatch(HEADER_NAME);
+        expect(value).toMatch(NO_CONTROL_CHARS);
+      }
+    }
+  });
+
+  it("records a skipped recipient with a reason instead of an email row", async () => {
+    // `contacts.email` has a check constraint on its *shape*, not on its
+    // validity, so an address the send path cannot parse can reach the book.
+    const { campaignId, ids } = await seed({
+      contacts: [{}, { email: "not-an-address" }, {}],
+    });
+    const q = recorder();
+    const res = await (await fanout()).fanoutChunk(campaignId, q);
+
+    expect(res.materialised).toBe(2);
+    expect(res.skipped).toBe(1);
+    const recips = await recipientRows(campaignId);
+    expect(recips.map((r) => [r.contactId, r.status, r.skipReason])).toEqual([
+      [ids[0], "queued", null],
+      [ids[1], "skipped", "invalid"],
+      [ids[2], "queued", null],
+    ]);
+    // No email row, and no send job, for the skipped one.
+    const rows = await emailRows(campaignId);
+    expect(rows.map((r) => r.contactId)).toEqual([ids[0], ids[2]]);
+    expect(q.emailIds()).toHaveLength(2);
+    // And it is not reconsidered on the next tick, which is what would stop
+    // the campaign ever finishing.
+    const next = await (await fanout()).fanoutChunk(campaignId, q);
+    expect(next).toMatchObject({ done: true, completed: true });
+  });
+
+  /*
+   * `renderBlocks` runs once per campaign, and its output is what every
+   * recipient gets. Anything else means the first and the last recipient of
+   * one campaign receive different mail.
+   */
+  it("renders once — every recipient gets byte-identical body HTML apart from the unsubscribe link", async () => {
+    const { campaignId } = await seed();
+    const q = recorder();
+    await (await fanout()).fanoutChunk(campaignId, q);
+    const rows = await emailRows(campaignId);
+
+    const bodies = new Set(rows.map(normalise));
+    expect(bodies.size).toBe(1);
+    // The bodies are the campaign's stored render, not a fresh one.
+    const stored = await campaignRow(campaignId);
+    expect(stored.html).toContain("Hi <a");
+    expect([...bodies][0]).toContain("Go");
+  });
+
+  /*
+   * The same property across chunks, which is the version that actually bites:
+   * editing `blocks` under a half-sent campaign must not change what the
+   * remaining recipients receive.
+   */
+  it("ignores a block edit made mid-send", async () => {
+    const { campaignId, db } = await seed({ contacts: [{}, {}] });
+    const q = recorder();
+    await (await fanout()).fanoutChunk(campaignId, q);
+    const before = (await emailRows(campaignId))[0]!;
+
+    const { campaigns } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    await db()
+      .update(campaigns)
+      .set({ blocks: [{ kind: "text", html: "TOTALLY DIFFERENT" }] as never })
+      .where(eq(campaigns.id, campaignId));
+
+    const { contacts } = await import("@/db/schema");
+    const seedRow = await campaignRow(campaignId);
+    await db()
+      .insert(contacts)
+      .values({
+        id: `${campaignId.replace("cmp_", "ct_")}99`,
+        bookId: seedRow.bookId,
+        teamId: seedRow.teamId,
+        email: "late@rcpt.test",
+        subscribed: true,
+      });
+    await (await fanout()).fanoutChunk(campaignId, q);
+
+    const after = (await emailRows(campaignId)).at(-1)!;
+    expect(after.html).not.toContain("TOTALLY DIFFERENT");
+    expect(normalise(after)).toBe(normalise(before));
+  });
+
+  it("renders and stores the body when the start sweep has not", async () => {
+    const { campaignId } = await seed({ render: false });
+    const q = recorder();
+    const res = await (await fanout()).fanoutChunk(campaignId, q);
+
+    expect(res.materialised).toBe(3);
+    const stored = await campaignRow(campaignId);
+    expect(stored.html).toContain("Hi <a");
+    expect(stored.text).toContain("Hi");
+  });
+
+  /*
+   * A campaign that is `sending` and whose stored blocks no longer validate
+   * cannot be fixed by retrying. Left `sending` it would throw on every sweep
+   * tick, for ever — a stuck campaign logging an exception a minute is its own
+   * incident. It is stopped once, loudly, with the reason on the audit trail.
+   */
+  it("stops a campaign whose stored blocks no longer render", async () => {
+    const { campaignId, team } = await seed({
+      blocks: [{ kind: "text", html: 'go <img src="x" onerror="alert(1)">' }],
+      render: false,
+    });
+    const q = recorder();
+    const res = await (await fanout()).fanoutChunk(campaignId, q);
+
+    expect(res).toEqual({
+      materialised: 0,
+      skipped: 0,
+      done: true,
+      completed: false,
+    });
+    expect((await campaignRow(campaignId)).status).toBe("cancelled");
+    expect(await emailCount(campaignId)).toBe(0);
+    expect(q.jobs).toEqual([]);
+
+    const { db } = await import("@/db");
+    const { auditLog } = await import("@/db/schema");
+    const { and, eq } = await import("drizzle-orm");
+    const audits = await db()
+      .select()
+      .from(auditLog)
+      .where(
+        and(eq(auditLog.teamId, team.id), eq(auditLog.targetId, campaignId)),
+      );
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.action).toBe("campaigns.stopped");
+    expect(audits[0]!.diff).toMatchObject({ reason: { to: "invalid_blocks" } });
+
+    // And the next tick does nothing at all rather than throwing again.
+    expect(await (await fanout()).fanoutChunk(campaignId, q)).toMatchObject({
+      done: true,
+    });
+  });
+
+  it("a cancel between ticks stops the fan-out and leaves the cursor alone", async () => {
+    const { campaignId, db } = await seed();
+    const { campaigns } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    await db()
+      .update(campaigns)
+      .set({ status: "cancelled" })
+      .where(eq(campaigns.id, campaignId));
+
+    const q = recorder();
+    expect(await (await fanout()).fanoutChunk(campaignId, q)).toEqual({
+      materialised: 0,
+      skipped: 0,
+      done: true,
+      completed: false,
+    });
+    expect(await emailCount(campaignId)).toBe(0);
+    expect(await recipientRows(campaignId)).toEqual([]);
+    expect((await campaignRow(campaignId)).fanoutCursor).toBeNull();
+    expect(q.jobs).toEqual([]);
+  });
+
+  it("does nothing for a campaign that has been deleted", async () => {
+    const q = recorder();
+    expect(await (await fanout()).fanoutChunk("cmp_gone", q)).toEqual({
+      materialised: 0,
+      skipped: 0,
+      done: true,
+      completed: false,
+    });
+    expect(q.jobs).toEqual([]);
+  });
+
+  /*
+   * Selection already excludes them (consent ∩ deliverability), and the fan-out
+   * must not quietly widen that: an unsubscribed contact gets no row of any
+   * kind here, and no email.
+   */
+  it("never materialises an unsubscribed contact", async () => {
+    const { campaignId, ids } = await seed({
+      contacts: [{}, { subscribed: false }, {}],
+    });
+    const q = recorder();
+    const res = await (await fanout()).fanoutChunk(campaignId, q);
+
+    expect(res.materialised).toBe(2);
+    const rows = await emailRows(campaignId);
+    expect(rows.map((r) => r.contactId)).toEqual([ids[0], ids[2]]);
+    expect((await recipientRows(campaignId)).map((r) => r.contactId)).toEqual([
+      ids[0],
+      ids[2],
+    ]);
+  });
+
+  /*
+   * `String.replace` with a string replaces only the first occurrence, and a
+   * `$` in a *replacement* string is a substitution pattern in both `replace`
+   * and `replaceAll`. The marker appears once in a rendered body today, so a
+   * `replace` would pass every other test in this file; assert on the property
+   * rather than on today's block list.
+   */
+  it("substitutes every marker, and never treats the link as a $-pattern", async () => {
+    const { UNSUBSCRIBE_MARKER } = await import("@sendsprite/shared");
+    const { resetEnvCache } = await import("@/env.schema");
+    // `$&` inside the *replacement* is what makes this dangerous: with a
+    // string replacement it expands to the matched marker, putting a raw
+    // control character into the body of exactly the recipients whose link
+    // happens to contain one. A base64url token never will — but `APP_URL` is
+    // part of the same replacement, and it is operator-supplied.
+    process.env.APP_URL = "https://mail.example.test/p$&q";
+    resetEnvCache();
+    try {
+      const { campaignId, db } = await seed({ contacts: [{}] });
+      const { campaigns } = await import("@/db/schema");
+      const { eq } = await import("drizzle-orm");
+      const [row] = await db()
+        .select()
+        .from(campaigns)
+        .where(eq(campaigns.id, campaignId));
+      // Three markers, because `String.replace` with a string would take only
+      // the first and a rendered body carries exactly one today — the bug
+      // would pass every other test in this file.
+      await db()
+        .update(campaigns)
+        .set({
+          html: `${row!.html}<p>${UNSUBSCRIBE_MARKER}</p><p>${UNSUBSCRIBE_MARKER}</p>`,
+          text: `${row!.text}\n${UNSUBSCRIBE_MARKER}`,
+        })
+        .where(eq(campaigns.id, campaignId));
+
+      const q = recorder();
+      await (await fanout()).fanoutChunk(campaignId, q);
+      const [email] = await emailRows(campaignId);
+
+      expect(email!.html).not.toContain(UNSUBSCRIBE_MARKER);
+      expect(email!.text).not.toContain(UNSUBSCRIBE_MARKER);
+      expect(email!.html!.match(/\/unsubscribe\//g)).toHaveLength(3);
+      expect(email!.text!.match(/Unsubscribe: /g)).toHaveLength(2);
+      // The `$&` survived as itself in every link, in both bodies.
+      expect(email!.html!.match(/p\$&amp;q\/unsubscribe\//g)).toHaveLength(3);
+      expect(email!.text!.match(/p\$&q\/unsubscribe\//g)).toHaveLength(2);
+    } finally {
+      process.env.APP_URL = APP_URL;
+      resetEnvCache();
+    }
+  });
+});
