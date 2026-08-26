@@ -1,0 +1,203 @@
+name: Publish image
+# Builds the runtime image and publishes it to GHCR as
+# ghcr.io/defy-works/sendsprite, which is what `docker-compose.yml`,
+# `docker-compose.coolify.yml` and `install.sh` all pull.
+#
+# amd64 and arm64 are built on native runners rather than under QEMU: the
+# bun/Next.js build is slow enough emulated to push a run well past 45 minutes.
+# Each leg pushes an untagged, digest-addressed image and smoke-tests the copy
+# it just pushed; the `merge` job then joins whichever digests were produced
+# into one manifest and is the only thing that ever moves a tag. A leg that
+# fails to boot therefore leaves an orphaned digest nobody can reach by name,
+# rather than a broken `:latest`.
+on:
+  push:
+    # Both names, matching ci.yml: the checkout is `master`, GitHub creates
+    # `main` for new repos.
+    branches: [main, master]
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: publish-image-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  # Required for docker/login-action to push to GHCR with GITHUB_TOKEN; no
+  # separate PAT is needed while the package stays linked to this repository.
+  packages: write
+
+env:
+  # Already lowercase here (defy-works/sendsprite). GHCR rejects uppercase in a
+  # package name, so a repository rename has to stay lowercase too.
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build:
+    strategy:
+      # Publish nothing if either architecture fails, but let the other leg
+      # finish so a single run shows both results.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    # GitHub-hosted arm64 runners are free on public repositories but need a
+    # Team or Enterprise plan on private ones, where `ubuntu-24.04-arm` simply
+    # never gets picked up and the leg queues until it times out. While this
+    # repository is private and the org is on the free plan, the arm64 leg
+    # skips and the run publishes an amd64-only manifest; it starts building
+    # both the first time the workflow runs after the repository goes public,
+    # with no edit here. A skipped leg does not block `merge`.
+    if: matrix.arch != 'arm64' || github.event.repository.visibility == 'public'
+    steps:
+      - uses: actions/checkout@v4
+
+      # Baked in as APP_VERSION, which /api/health and the OpenAPI document
+      # report. A tag build reports the release; a branch build reports the
+      # commit, so a `:latest` running in the wild can always be traced back to
+      # a source revision.
+      - name: Derive APP_VERSION
+        id: version
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Only for the OCI labels here; the tags themselves are computed once, in
+      # `merge`. `org.opencontainers.image.source` is the label that links the
+      # published package to this repository on GitHub.
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.IMAGE }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          build-args: APP_VERSION=${{ steps.version.outputs.value }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # push-by-digest publishes the image without giving it a tag, so
+          # nothing is reachable as `:latest` until the manifest is created.
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          # Separate scopes: one cache shared between architectures would have
+          # each leg evicting the other's layers on every run.
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,scope=${{ matrix.arch }},mode=max
+
+      # The boot check ci.yml already runs, but against the artifact that would
+      # actually ship instead of a locally built one, and on this architecture:
+      # it proves the traced node_modules/.bun symlinks, the boot migrations
+      # and /api/health. Postgres runs as a plain container rather than a
+      # service block because only this job needs it.
+      - name: Smoke-test the pushed image
+        run: |
+          docker run -d --name pg --network host \
+            -e POSTGRES_USER=sendsprite \
+            -e POSTGRES_PASSWORD=sendsprite \
+            -e POSTGRES_DB=sendsprite \
+            postgres:16-alpine
+          for i in $(seq 1 30); do
+            docker exec pg pg_isready -U sendsprite >/dev/null 2>&1 && break
+            sleep 2
+          done
+          docker run -d --name ss --network host \
+            -e APP_URL=http://localhost:3000 \
+            -e APP_SECRET=ci-secret-ci-secret-ci-secret-ci-secret \
+            -e DATABASE_URL=postgres://sendsprite:sendsprite@localhost:5432/sendsprite \
+            -e EMAIL_PASSWORD_ENABLED=true \
+            "${IMAGE}@${DIGEST}"
+          for i in $(seq 1 30); do
+            if curl -fsS localhost:3000/api/health; then
+              echo; echo "healthy after ${i} tries"; exit 0
+            fi
+            sleep 2
+          done
+          echo "image did not become healthy"; exit 1
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+
+      - name: Container logs
+        if: failure()
+        run: |
+          docker logs ss || true
+          docker logs pg || true
+
+      # buildx reports the digest as a string, not a file. The artifact is an
+      # empty file named after it, which `merge` turns back into a reference.
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    # Both legs must have built and booted before any tag moves.
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.IMAGE }}
+          # Disables the action's own implicit latest, so the explicit rule
+          # below is the only thing that sets it.
+          flavor: latest=false
+          # A `v1.2.3` tag publishes 1.2.3 and 1.2; every build also gets an
+          # immutable sha- tag to roll back to. `latest` moves for releases and
+          # for the default branch, but never for a manual run off a side
+          # branch.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' || github.ref_name == github.event.repository.default_branch }}
+
+      - name: Create the multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${IMAGE}@sha256:%s " *)
+
+      - name: Inspect the published manifest
+        run: docker buildx imagetools inspect "${IMAGE}:${{ steps.meta.outputs.version }}"

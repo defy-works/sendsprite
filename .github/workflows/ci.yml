@@ -129,5 +129,7 @@ jobs:
       - name: Container logs
         if: failure()
         run: docker logs ss || true
-      # GHCR push (docker/login-action + push: true, tags ghcr.io/...) goes
-      # here once releases are cut; not part of Phase 1.
+      # This job stays push-free so it can also run on pull requests, where
+      # the token is read-only. Publishing to GHCR is publish-image.yml, which
+      # runs on the default branch and on `v*` tags and repeats this same boot
+      # check per architecture before it moves a tag.

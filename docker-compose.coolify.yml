@@ -13,6 +13,12 @@
 
 services:
   app:
+    # Built and published by .github/workflows/publish-image.yml on every push
+    # to the default branch and every `v*` tag. Pulling a prebuilt multi-arch
+    # image keeps the deploy to a download instead of running the whole Next.js
+    # build on the server. The package must be public for this anonymous pull
+    # to work — a private one answers `denied`, which reads like bad
+    # credentials but is really a 404.
     image: ghcr.io/defy-works/sendsprite:latest
     environment:
       # Assigns a domain routed to port 3000, and hands the app its own public
