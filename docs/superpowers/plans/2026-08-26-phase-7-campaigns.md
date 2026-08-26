@@ -1247,6 +1247,8 @@ export async function deleteCampaign(
 ): Promise<Result<void>>;
 ```
 
+**Amendment after Task 4 shipped as `08224bc`.** `campaigns.book_id` and `domain_id` carry **no foreign key** — this schema has no `restrict` FK anywhere (26 cascade, 4 set null), and `deleteBook`/`deleteDomain` delete unconditionally without catching a violation, so `restrict` would have surfaced as an unhandled 500 on a Phase 6 screen. `set null` is unavailable because `PublicCampaign` types both ids as non-nullable. **Consequence you must honour: list and detail queries have to LEFT JOIN book and domain and render the missing side, and create/update must check both exist and belong to the caller's team.** A campaign whose book was deleted must not crash the list.
+
 **The domain check matters.** A campaign names a `domainId`; sending from an unverified domain fails at SES for every recipient. Check verification at create/update _and_ again when sending starts (a domain can be deleted or fail re-verification in between) — the same two-times-for-two-moments reasoning as the suppression check.
 
 - [ ] **Step 3: Run, then commit**
@@ -1384,6 +1386,8 @@ export async function fanoutChunk(
   deps: { enqueue: Enqueue; now?: Date },
 ): Promise<FanoutResult>;
 ```
+
+**Race recorded by Task 4:** deleting a contact mid-send cascades away its `campaign_recipients` row, so a contact deleted and then re-imported (new ULID) can be picked up again by a still-`sending` campaign and mailed twice. `restrict` would close it at the cost of 500-ing contact deletion, which is worse. Note it in the Phase 8 openers rather than fixing it here.
 
 Per chunk, in order:
 
