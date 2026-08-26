@@ -5,6 +5,8 @@ import { StatusDot } from "@/components/ui/StatusDot";
 import { env } from "@/env";
 import { requireInstanceAdmin } from "@/lib/session";
 import { instanceStats } from "@/services/admin";
+import { AlertBanners } from "@/app/app/StatsTiles";
+import { instanceStats as instanceSendStats } from "@/services/stats";
 import { oauthAvailable } from "@/services/cloudflare-connect";
 import { getInstanceSettings } from "@/services/instance-settings";
 import { InstanceForm } from "./InstanceForm";
@@ -15,9 +17,14 @@ const CLIENTS_URL = "https://dash.cloudflare.com/?to=/:account/oauth-clients";
 
 export default async function AdminPage() {
   await requireInstanceAdmin();
-  const [s, stats] = await Promise.all([
+  const [s, stats, health] = await Promise.all([
     getInstanceSettings(),
     instanceStats(),
+    // Deliverability across every team. It used to be rendered on `/app` for
+    // any team owner, which is one tenant reading another's reputation — and
+    // useless to them besides, since each team sends from its own AWS
+    // account. Here it is what it always was: an operator's number.
+    instanceSendStats(),
   ]);
   const cf = oauthAvailable();
 
@@ -27,6 +34,8 @@ export default async function AdminPage() {
         title="Instance"
         description="Settings that belong to whoever runs this deployment, not to any one team."
       />
+
+      <AlertBanners alerts={health.alerts} scope="instance" />
 
       <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <Stat label="Teams" value={stats.teams} />

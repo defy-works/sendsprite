@@ -47,12 +47,22 @@ const WORDING: Record<StatsAlert["kind"], string> = {
   complaint: `SES pauses sending at a ${pct(THRESHOLDS.complaint.pause)} complaint rate and reviews accounts from ${pct(THRESHOLDS.complaint.critical)}. Keep it under ${pct(THRESHOLDS.complaint.warning)}.`,
 };
 
+/**
+ * Deliverability warnings for one scope.
+ *
+ * `scope` says whose numbers these are, and it is not cosmetic: the team
+ * banner is about mail this team sent from its own AWS account, and the
+ * instance banner (at `/admin`, behind `requireInstanceAdmin`) is about every
+ * team at once. Those used to be shown on the same page to any team owner,
+ * which handed one tenant a read on another's reputation and told this team
+ * about a problem they could not act on.
+ */
 export function AlertBanners({
   alerts,
-  scope,
+  scope = "team",
 }: {
   alerts: StatsAlert[];
-  scope: "team" | "instance";
+  scope?: "team" | "instance";
 }) {
   if (!alerts.length) return null;
   return (
