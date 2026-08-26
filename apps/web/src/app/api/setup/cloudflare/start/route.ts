@@ -12,18 +12,20 @@ export const HANDOFF_COOKIE = "ss_cf_oauth";
 const HANDOFF_TTL_S = 600;
 
 /** Only ever back into our own setup surfaces; a stray `?from=` cannot become an open redirect. */
-const RETURNS = ["/setup?step=cloudflare", "/app/settings/instance"] as const;
+const RETURNS = ["/setup?step=cloudflare", "/app/settings/sending"] as const;
 export const defaultReturn = RETURNS[0];
 
 /**
- * Sends the owner to Cloudflare's consent screen. The `state` and PKCE
+ * Sends a team owner or admin to Cloudflare's consent screen. The `state` and PKCE
  * verifier are parked in an encrypted, httpOnly cookie: `SameSite=Lax` still
  * sends it on the top-level GET that Cloudflare redirects back to, and
  * nothing else can read it.
  */
 export async function GET(req: Request) {
-  await requireTeamAdmin();
-  const res = beginOauth();
+  const ctx = await requireTeamAdmin();
+  // The grant belongs to the active team, and the team id rides in the
+  // encrypted handoff cookie so the callback cannot be aimed elsewhere.
+  const res = beginOauth(ctx.team.id);
   if (!res.ok)
     return NextResponse.redirect(
       new URL(`${defaultReturn}&error=${res.code ?? "failed"}`, env.APP_URL),
