@@ -8673,6 +8673,10 @@ Append a `## Phase 6 status: COMPLETE` section to this file in the shape Phase 5
 10. **Template bodies are not deduplicated across versions.** Every version snapshot stores the whole body, so a 200 KB template edited 50 times is 10 MB. Bounded by hand-editing speed, but `template_versions` should eventually join the retention sweep.
 11. **A template delete is not blocked by live sends.** Deleting a slug a scheduled email names makes that send fail at render time. A "used by N scheduled emails" check before deleting would be cheap.
 12. **`emails.variables` is stored in full and purged with the body.** That is right for retention, but it means a send's variables outlive the body's retention window by exactly zero days — there is no separate, shorter window for what may be the most personal data in the row.
+13. **`/app/templates/new` shadows a template whose slug is literally `new`.** Next resolves the static segment before the dynamic one, so such a template is editable over REST, the SDK and the CLI, but the dashboard opens the create form instead. Either reserve the slug in `TemplateSlug` or move the create form to a query parameter.
+14. **There is no `list_contact_books` MCP tool.** `add_contact` requires a `cb_…` id and deliberately will not guess which list an address lands on, so an agent depends on the operator pasting the id. A read-only listing tool is the natural completion, and it is read-only, so it costs nothing to add.
+15. **MCP `list_templates` returns `nextCursor` but accepts no `limit` or `cursor`.** A team past one page hands the model a cursor it cannot use. `list_domains` has the identical shape, so this is a consistent gap rather than a new one — fix both together.
+16. **`format: "email"` is lost in the advertised MCP schema.** `z.string().trim().toLowerCase().max(320).pipe(z.email())` emits only `{ type: "string", maxLength: 320 }` through `z.toJSONSchema`. Runtime validation still refuses a bad address; only the hint the model reads is thinner than the check it will meet.
 
 Then, and only then:
 
