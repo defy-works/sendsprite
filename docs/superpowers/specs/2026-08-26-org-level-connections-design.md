@@ -173,8 +173,49 @@ and subscription are all created by our own code.
 `app/api/setup/aws/callback/route.ts` passes `tok.teamId` to `connectWithKeys`.
 `app/api/setup/aws/status/route.ts` becomes team-scoped.
 
-`TOPIC_NAME` and `CONFIG_SET` stay fixed strings — they live inside each
-tenant's own AWS account, so they cannot collide.
+### AWS resource naming (org slug)
+
+Nothing stops one person connecting two orgs to the **same** AWS account, so
+the three fixed names must carry the org slug:
+
+| Today | Becomes |
+| --- | --- |
+| `stackName: "sendsprite-connect"` | `sendsprite-connect-<slug>` |
+| `CONFIG_SET = "sendsprite"` | `sendsprite-<slug>` |
+| `TOPIC_NAME = "sendsprite-events"` | `sendsprite-events-<slug>` |
+
+`EVENT_DESTINATION` stays fixed: it is scoped inside the configuration set,
+which is now unique.
+
+Without this, two orgs on one AWS account share a configuration set, so
+`CreateConfigurationSetEventDestination` takes its `AlreadyExists` branch and
+**updates** the destination — silently repointing org A's SES events at org
+B's SNS topic. That is a cross-tenant event leak, not merely a name clash.
+Sharing the topic is the milder failure: `CreateTopic` is idempotent by name,
+so the second team's connect dies on the `snsTopicArn` unique constraint.
+
+**The template still needs no change.** `SendspriteUser` is already
+`!Sub "sendsprite-${AWS::StackName}"`, so a slugged stack name makes the IAM
+user unique for free, and the SNS policy resource `sendsprite-*` still matches
+a slugged topic ARN.
+
+**Slug sanitising.** The three services disagree on legal characters
+(CloudFormation stack names are `[A-Za-z][A-Za-z0-9-]*`, SES configuration
+set names allow `_`, SNS topic names allow `_` too). A single
+`awsResourceSuffix(slug)` in `lib/aws/naming.ts` lowercases, replaces anything
+outside `[a-z0-9-]` with `-`, collapses runs, trims leading and trailing
+hyphens and caps the result at 40 characters, so one derivation feeds all
+three names and the shortest limit governs.
+
+**Slugs are mutable; these names are not.** `organization.slug` can change
+after a connect. The names chosen at connect time are already persisted
+(`team_aws.configSet`, `team_aws.snsTopicArn`), so every later read — creating
+a domain identity, ingesting events — uses the stored value and **never**
+re-derives from the current slug. Re-deriving would silently address a
+configuration set that no longer exists. A team that renames and then
+*reconnects* gets fresh resources and leaves the old ones behind in its own
+AWS account, where they are visible and deletable; that is accepted rather
+than chased.
 
 ### SNS ingress
 
@@ -267,6 +308,13 @@ Ciphertext is copied verbatim — same encryption key, no re-encryption.
 With zero organizations every statement is a no-op and the operator
 reconnects through the wizard.
 
+The migrated team keeps the **legacy unslugged names** (`sendsprite`,
+`sendsprite-events`) because they are copied from the singleton, and every
+read uses the stored value. Do not rename them during migration: the
+configuration set and topic already exist in that AWS account under the old
+names, and renaming the DB column would address resources that are not there.
+Only a fresh connect produces slugged names.
+
 **0021 — destructive.** Drop the moved columns from `instance_settings`; drop
 `send_rate_state`.
 
@@ -300,6 +348,15 @@ New coverage:
   refuses a plain team owner.
 - **First-signup flag.** Set when `INSTANCE_ADMIN_EMAILS` is empty, not set
   when it is populated.
+- **Resource naming.** `awsResourceSuffix` lowercases, strips illegal
+  characters, collapses hyphen runs and caps at 40; a slug of `Acme_Corp!!`
+  and one of `acme-corp` both yield a stack name CloudFormation accepts.
+- **Two orgs, one AWS account.** Connecting both produces distinct
+  configuration sets and distinct topic ARNs, and neither connect overwrites
+  the other's event destination.
+- **Slug rename.** Renaming a team after connecting leaves `configSet` and
+  `snsTopicArn` untouched, and creating a domain afterwards still uses the
+  stored configuration set name.
 - **Migration 0020.** Seeded pre-migration singleton lands on the oldest org.
 - **Retention ceiling.** A team asking for more than the instance maximum is
   clamped.
