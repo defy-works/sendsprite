@@ -7,7 +7,7 @@ const FEATURES = [
   },
   {
     title: "Cloudflare DNS",
-    body: "Hand over a token and DKIM, SPF, MAIL FROM and DMARC records are written and verified for you. Every other provider gets a clean copy-paste list.",
+    body: "Authorise once with Cloudflare and DKIM, SPF, MAIL FROM and DMARC records are written and verified for you — no API token to mint or store. Every other provider gets a clean copy-paste list.",
   },
   {
     title: "Webhooks and a live stream",

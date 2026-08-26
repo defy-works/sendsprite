@@ -34,7 +34,7 @@ Every Sendsprite instance serves both files itself, at `/install.sh` and
 curl -fsSL https://mail.example.com/install.sh | SENDSPRITE_BASE_URL=https://mail.example.com sh
 ```
 
-`APP_SECRET` encrypts your stored AWS and Cloudflare credentials. Back it up
+`APP_SECRET` encrypts your stored AWS keys and Cloudflare OAuth tokens. Back it up
 with the database; losing it means reconnecting both.
 
 ## docker-compose.yml
@@ -174,12 +174,30 @@ with a token bucket, so raising the limit in AWS is picked up here.
 
 ## Cloudflare (optional)
 
-Paste a Cloudflare API token in Settings → Instance and domains whose zone
-the token can see are provisioned in `auto` mode: DKIM, MAIL FROM and DMARC
-records are written for you. The token needs **Zone:Read** on the zones you
-want plus DNS edit rights on them; a token that lists no zones is accepted
-but warns. Without Cloudflare every domain falls back to `manual` and you copy
-the records over by hand.
+Sendsprite can write a domain's DKIM, MAIL FROM and DMARC records for you,
+via Cloudflare OAuth rather than a pasted API token. It is off until you give
+the instance an OAuth client of its own:
+
+1. In Cloudflare, open **Manage Account → OAuth clients** and create a client.
+2. Set its redirect URI to exactly `<APP_URL>/api/setup/cloudflare/callback`.
+   Cloudflare matches redirect URIs exactly, which is why each instance needs
+   its own client — there is no shared one to borrow.
+3. Give it zone read and DNS write scopes, plus `offline_access` (that is what
+   makes Cloudflare issue a refresh token; without it the grant dies at the
+   first access-token expiry). Confirm the exact scope strings with
+   `GET /client/v4/oauth/scopes` and override `CLOUDFLARE_OAUTH_SCOPES` if
+   they differ.
+4. Set `CLOUDFLARE_OAUTH_CLIENT_ID` and `CLOUDFLARE_OAUTH_CLIENT_SECRET`,
+   restart, then authorise from Settings → Instance. Private visibility is
+   enough: the client only has to be usable by your own account.
+
+Domains in a zone you authorised are then provisioned in `auto` mode. A grant
+that covers no zones is accepted but warns.
+
+Without this every domain falls back to `manual` and you add the records by
+hand. That path needs no credentials at all: the domain page lists the exact
+records, and when the domain's nameservers are Cloudflare's it also links
+straight to that zone's DNS page.
 
 ## Separate worker
 

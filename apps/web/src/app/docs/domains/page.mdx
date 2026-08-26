@@ -64,12 +64,18 @@ not block verification.
 
 ## Cloudflare (auto mode)
 
-In `auto` mode each record is upserted into the matching zone as soon as the
-identity exists, and the Cloudflare record id is stored alongside it — so a
-retry patches instead of duplicating, and deleting the domain removes what it
-created. If the Cloudflare token has been removed in the meantime, the domain
-quietly degrades to `manual`: the records are still computed, you just add
-them yourself.
+`auto` needs an authorised Cloudflare OAuth grant (see
+[self-hosting](/docs/self-hosting#cloudflare-optional)). Each record is then
+upserted into the matching zone as soon as the identity exists, and the
+Cloudflare record id is stored alongside it — so a retry patches instead of
+duplicating, and deleting the domain removes what it created. If the grant has
+been revoked or has expired in the meantime, the domain quietly degrades to
+`manual`: the records are still computed, you just add them yourself.
+
+In `manual` mode Sendsprite checks the domain's nameservers once during
+provisioning. When they are Cloudflare's, the domain page links straight to
+that zone's DNS records — no credentials involved, but you still enter the
+values yourself.
 
 ## Verification timing
 
@@ -104,8 +110,8 @@ check fails it for good.
   provisioning, or use **Retry provisioning** if it never ran.
 - **`SES identity was removed`** means someone deleted the identity in the
   AWS console. Delete the domain here and add it again.
-- **`Cloudflare is not connected; add the records manually`** — reconnect the
-  token or add the four record kinds by hand.
+- **`Cloudflare is not connected; add the records manually`** — re-authorise
+  from Settings → Instance, or add the four record kinds by hand.
 - **Deleting a domain** removes the SES identity and the Cloudflare records
   it created; anything it could not remove is reported back as
   `leftoverDnsRecords` for you to clean up.

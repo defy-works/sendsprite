@@ -94,7 +94,7 @@ function ConnectPanels({
   regions,
   defaultRegion,
   oneClickAvailable,
-}: Omit<WizardProps, "settings" | "step">) {
+}: Pick<WizardProps, "regions" | "defaultRegion" | "oneClickAvailable">) {
   const router = useRouter();
   const [region, setRegion] = useState(defaultRegion);
   const [manual, setManual] = useState(false);

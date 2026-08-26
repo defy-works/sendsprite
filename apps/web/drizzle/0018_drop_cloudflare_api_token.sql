@@ -1,0 +1,1 @@
+ALTER TABLE "instance_settings" DROP COLUMN "cloudflare_token_enc";

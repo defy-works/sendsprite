@@ -6,6 +6,8 @@ export interface Resolver {
   resolveCname(name: string): Promise<string[]>;
   resolveMx(name: string): Promise<{ exchange: string; priority: number }[]>;
   resolveTxt(name: string): Promise<string[][]>;
+  /** Used to find a domain's delegation point; see dns/cloudflare-zone.ts. */
+  resolveNs(name: string): Promise<string[]>;
 }
 
 /**
@@ -28,6 +30,7 @@ export function publicResolver(): Resolver {
     resolveCname: (n) => r.resolveCname(n),
     resolveMx: (n) => r.resolveMx(n),
     resolveTxt: (n) => r.resolveTxt(n),
+    resolveNs: (n) => r.resolveNs(n),
   };
 }
 

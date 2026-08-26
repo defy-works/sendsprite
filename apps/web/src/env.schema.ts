@@ -2,6 +2,7 @@ import { z } from "zod";
 import { SES_REGIONS } from "@/lib/aws/regions";
 import { isS3TemplateUrl } from "@/lib/aws/quick-create";
 import { UPSTREAM_SOURCE_URL } from "@/lib/build-info";
+import { CF_DEFAULT_SCOPES } from "@/lib/cloudflare/scopes";
 
 const bool = z
   .union([z.boolean(), z.string()])
@@ -65,6 +66,21 @@ export const schema = z
     GOOGLE_CLIENT_SECRET: z.string().optional(),
     GITHUB_CLIENT_ID: z.string().optional(),
     GITHUB_CLIENT_SECRET: z.string().optional(),
+    /**
+     * Cloudflare OAuth client (Manage Account → OAuth clients). With both
+     * set, Sendsprite can write a domain's DNS records itself once the owner
+     * authorises it; without them every domain falls back to the manual
+     * records list plus a dashboard deep link, which needs no credentials.
+     *
+     * The redirect URI registered on the client must be exactly
+     * `<APP_URL>/api/setup/cloudflare/callback`. Cloudflare matches redirect
+     * URIs exactly, so a self-hosted instance cannot borrow someone else's
+     * client — it registers its own (private visibility is enough for that).
+     */
+    CLOUDFLARE_OAUTH_CLIENT_ID: z.string().min(1).optional(),
+    CLOUDFLARE_OAUTH_CLIENT_SECRET: z.string().min(1).optional(),
+    /** Space-separated. See CF_DEFAULT_SCOPES in lib/cloudflare/scopes.ts. */
+    CLOUDFLARE_OAUTH_SCOPES: z.string().min(1).default(CF_DEFAULT_SCOPES),
     // CloudFormation quick-create only accepts S3 template URLs.
     CFN_TEMPLATE_URL: z
       .url()

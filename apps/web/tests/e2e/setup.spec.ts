@@ -70,7 +70,12 @@ test("owner completes setup via manual keys, adds a domain, sees records", async
     await expect(page.getByText("sandbox", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Skip for now" }).click();
     await expect(page).toHaveURL(/step=cloudflare/);
-    await page.getByRole("button", { name: "Skip", exact: true }).click();
+    // With a Cloudflare OAuth client configured the step offers Connect/Skip;
+    // without one (the default, and CI) it is informational with a Continue.
+    const skip = page.getByRole("button", { name: "Skip", exact: true });
+    const carryOn = page.getByRole("link", { name: "Continue", exact: true });
+    await expect(skip.or(carryOn)).toBeVisible();
+    await ((await skip.isVisible()) ? skip : carryOn).click();
     await expect(page).toHaveURL(/step=done/);
     await expect(
       page.getByText("AWS connected · 111111111111 · us-east-1"),

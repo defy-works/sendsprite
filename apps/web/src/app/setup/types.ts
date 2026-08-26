@@ -22,6 +22,12 @@ export interface WizardProps {
   defaultRegion: string;
   /** False when APP_URL is not https (the CFN template refuses http callbacks). */
   oneClickAvailable: boolean;
+  /**
+   * Whether this instance has a Cloudflare OAuth client configured. False is
+   * the self-hosted default: domains then fall back to manual records plus a
+   * dashboard deep link.
+   */
+  oauthAvailable: boolean;
   /** `settings` hides the wizard's Continue/Skip navigation. Default `wizard`. */
   mode?: "wizard" | "settings";
 }

@@ -31,6 +31,12 @@ export const domains = pgTable(
     name: text("name").notNull(),
     region: text("region").notNull(),
     cloudflareZoneId: text("cloudflare_zone_id"),
+    /**
+     * Zone name detected from the domain's nameservers, set whether or not
+     * Cloudflare is connected. Null means "not on Cloudflare" (or not yet
+     * checked), and is what hides the dashboard deep link.
+     */
+    cloudflareZone: text("cloudflare_zone"),
     dnsMode: text("dns_mode", { enum: ["auto", "manual"] }).notNull(),
     status: text("status", { enum: ["pending", "verified", "failed"] })
       .notNull()

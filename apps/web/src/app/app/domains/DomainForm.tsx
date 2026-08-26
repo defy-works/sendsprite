@@ -8,6 +8,8 @@ import { Alert } from "@/app/setup/steps/shared";
 import { createDomain } from "./actions";
 
 export function DomainForm({ hasCloudflare }: { hasCloudflare: boolean }) {
+  // `hasCloudflare` = an authorised Cloudflare grant, not merely a configured
+  // OAuth client: only a live grant can write the records.
   const router = useRouter();
   const [state, action, pending] = useActionState(
     async (_prev: unknown, fd: FormData) => {
@@ -36,8 +38,8 @@ export function DomainForm({ hasCloudflare }: { hasCloudflare: boolean }) {
       </div>
       <p className="text-sm text-white/65">
         {hasCloudflare
-          ? "If the domain is in a Cloudflare zone your token can manage, the DNS records are added for you."
-          : "Cloudflare is not connected: you will add the DNS records at your provider by hand."}
+          ? "If the domain is in a Cloudflare zone you authorised, the DNS records are added for you."
+          : "Cloudflare is not connected: you will add the DNS records at your provider by hand. We link straight to the right zone if the domain is already on Cloudflare."}
       </p>
       <div>
         <Button type="submit" disabled={pending}>

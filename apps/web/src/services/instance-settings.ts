@@ -46,13 +46,15 @@ type Plain = Partial<
     | "updatedAt"
     | "awsAccessKeyEnc"
     | "awsSecretEnc"
-    | "cloudflareTokenEnc"
+    | "cloudflareAccessTokenEnc"
+    | "cloudflareRefreshTokenEnc"
   >
 >;
 type Secrets = {
   awsAccessKey?: string | null;
   awsSecret?: string | null;
-  cloudflareToken?: string | null;
+  cloudflareAccessToken?: string | null;
+  cloudflareRefreshToken?: string | null;
 };
 
 /**
@@ -84,7 +86,13 @@ export async function updateInstanceSettings(
   opts: { audit?: boolean; action?: string } = {},
 ): Promise<InstanceSettings> {
   const before = await selectSingleton();
-  const { awsAccessKey, awsSecret, cloudflareToken, ...plain } = patch;
+  const {
+    awsAccessKey,
+    awsSecret,
+    cloudflareAccessToken,
+    cloudflareRefreshToken,
+    ...plain
+  } = patch;
   const c = getCipher();
   const enc = {
     ...(awsAccessKey !== undefined && {
@@ -93,8 +101,15 @@ export async function updateInstanceSettings(
     ...(awsSecret !== undefined && {
       awsSecretEnc: awsSecret ? c.encrypt(awsSecret) : null,
     }),
-    ...(cloudflareToken !== undefined && {
-      cloudflareTokenEnc: cloudflareToken ? c.encrypt(cloudflareToken) : null,
+    ...(cloudflareAccessToken !== undefined && {
+      cloudflareAccessTokenEnc: cloudflareAccessToken
+        ? c.encrypt(cloudflareAccessToken)
+        : null,
+    }),
+    ...(cloudflareRefreshToken !== undefined && {
+      cloudflareRefreshTokenEnc: cloudflareRefreshToken
+        ? c.encrypt(cloudflareRefreshToken)
+        : null,
     }),
   };
   const set = { ...plain, ...enc, updatedAt: new Date() };
@@ -123,8 +138,11 @@ export async function getDecryptedSecrets() {
   return {
     awsAccessKey: s.awsAccessKeyEnc ? c.decrypt(s.awsAccessKeyEnc) : null,
     awsSecret: s.awsSecretEnc ? c.decrypt(s.awsSecretEnc) : null,
-    cloudflareToken: s.cloudflareTokenEnc
-      ? c.decrypt(s.cloudflareTokenEnc)
+    cloudflareAccessToken: s.cloudflareAccessTokenEnc
+      ? c.decrypt(s.cloudflareAccessTokenEnc)
+      : null,
+    cloudflareRefreshToken: s.cloudflareRefreshTokenEnc
+      ? c.decrypt(s.cloudflareRefreshTokenEnc)
       : null,
   };
 }

@@ -32,7 +32,7 @@ describe("instance settings", () => {
     expect(await getDecryptedSecrets()).toMatchObject({
       awsAccessKey: "AKIAEXAMPLE",
       awsSecret: "s3cr3t",
-      cloudflareToken: null,
+      cloudflareAccessToken: null,
     });
   });
   it("clears a secret when given null", async () => {
@@ -46,12 +46,12 @@ describe("instance settings", () => {
   it("leaves secrets untouched on a plain patch", async () => {
     const { updateInstanceSettings, getDecryptedSecrets } =
       await import("@/services/instance-settings");
-    const before = await updateInstanceSettings({ cloudflareToken: "cf-tok" });
+    const before = await updateInstanceSettings({ cloudflareAccessToken: "cf-tok" });
     const after = await updateInstanceSettings({ awsRegion: "eu-west-1" });
     expect(after.awsRegion).toBe("eu-west-1");
     expect(after.awsAccessKeyEnc).toBe(before.awsAccessKeyEnc);
-    expect(after.cloudflareTokenEnc).toBe(before.cloudflareTokenEnc);
-    expect((await getDecryptedSecrets()).cloudflareToken).toBe("cf-tok");
+    expect(after.cloudflareAccessTokenEnc).toBe(before.cloudflareAccessTokenEnc);
+    expect((await getDecryptedSecrets()).cloudflareAccessToken).toBe("cf-tok");
   });
   it("writes an instance-level audit row on update", async () => {
     const { updateInstanceSettings } =

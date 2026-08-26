@@ -128,13 +128,6 @@ export async function refreshAccount() {
   return res;
 }
 
-export async function connectCloudflareAction(fd: FormData) {
-  const a = await actor();
-  const res = await cf.connectCloudflare(String(fd.get("token") ?? ""), a);
-  revalidate();
-  return res;
-}
-
 export async function disconnectAws() {
   const a = await actor();
   const res = await aws.disconnectAws(a);

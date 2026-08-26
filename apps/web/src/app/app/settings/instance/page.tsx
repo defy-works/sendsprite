@@ -3,6 +3,7 @@ import { env } from "@/env";
 import { SES_REGIONS } from "@/lib/aws/regions";
 import { requireOwner } from "@/lib/session";
 import { getInstanceSettings } from "@/services/instance-settings";
+import { oauthAvailable } from "@/services/cloudflare-connect";
 import { AwsStep } from "@/app/setup/steps/AwsStep";
 import { ProductionStep } from "@/app/setup/steps/ProductionStep";
 import { CloudflareStep } from "@/app/setup/steps/CloudflareStep";
@@ -14,6 +15,7 @@ export const metadata = { title: "Instance settings" };
 export default async function InstanceSettingsPage() {
   await requireOwner();
   const s = await getInstanceSettings();
+  const cfOauth = oauthAvailable();
   // Only serialisable, non-secret fields cross into the client tree.
   const settings: WizardSettings = {
     awsMode: s.awsMode,
@@ -33,6 +35,7 @@ export default async function InstanceSettingsPage() {
     regions: SES_REGIONS,
     defaultRegion: env.AWS_DEFAULT_REGION,
     oneClickAvailable: env.APP_URL.startsWith("https://"),
+    oauthAvailable: cfOauth,
     mode: "settings",
   };
   return (

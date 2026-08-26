@@ -39,7 +39,7 @@ export default async function OverviewPage() {
     { label: "Connect AWS", done: s.awsMode !== "none", href: instanceHref },
     {
       label: "Connect Cloudflare (optional)",
-      done: Boolean(s.cloudflareTokenEnc),
+      done: Boolean(s.cloudflareConnectedAt),
       href: instanceHref,
     },
     {

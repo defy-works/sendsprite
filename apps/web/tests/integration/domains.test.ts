@@ -96,13 +96,19 @@ beforeEach(async () => {
     undefined,
     { audit: false },
   );
-  const { connectCloudflare } = await import("@/services/cloudflare-connect");
-  const cf = await connectCloudflare(
-    "cf-token-value-0123456789",
-    { userId: "u1" },
-    cfFetch,
+  // Seed a live OAuth grant directly: the consent round trip is covered in
+  // cloudflare-connect.test.ts, and going through it here would mean faking
+  // Cloudflare's token endpoint in every domains test.
+  await updateInstanceSettings(
+    {
+      cloudflareAccessToken: "cf-access-token",
+      cloudflareRefreshToken: "cf-refresh-token",
+      cloudflareTokenExpiresAt: new Date(Date.now() + 3600_000),
+      cloudflareConnectedAt: new Date(),
+    },
+    undefined,
+    { audit: false },
   );
-  if (!cf.ok) throw new Error(cf.error);
   cfCalls.length = 0;
 });
 afterEach(() => {
@@ -118,6 +124,7 @@ const actor = {
 };
 const noop = { enqueue: async () => "", fetch: cfFetch };
 const emptyDns: Resolver = {
+  resolveNs: async () => [],
   resolveCname: async () => [],
   resolveMx: async () => [],
   resolveTxt: async () => [],
@@ -160,9 +167,16 @@ async function byName(name: string) {
 async function disconnectCloudflare() {
   const { updateInstanceSettings } =
     await import("@/services/instance-settings");
-  await updateInstanceSettings({ cloudflareToken: null }, undefined, {
-    audit: false,
-  });
+  await updateInstanceSettings(
+    {
+      cloudflareAccessToken: null,
+      cloudflareRefreshToken: null,
+      cloudflareTokenExpiresAt: null,
+      cloudflareConnectedAt: null,
+    },
+    undefined,
+    { audit: false },
+  );
 }
 function happyProvision() {
   ses.on(CreateEmailIdentityCommand).resolves({
@@ -505,6 +519,7 @@ describe("domains", () => {
       VerifiedForSendingStatus: true,
     });
     const resolver: Resolver = {
+      resolveNs: async () => [],
       resolveCname: async () => ["t1.dkim.amazonses.com"],
       resolveMx: async () => [
         { exchange: "feedback-smtp.eu-west-1.amazonses.com", priority: 10 },

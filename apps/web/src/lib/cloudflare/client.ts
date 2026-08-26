@@ -63,6 +63,10 @@ export function txtKey(content: string): string {
 
 /**
  * Minimal Cloudflare v4 client. `f` (fetch) is injectable for tests.
+ * `token` is an OAuth access token (see services/cloudflare-connect.ts);
+ * the v4 API takes it as a bearer exactly like an API token, so nothing
+ * here is OAuth-specific. `listZones` doubles as the liveness check —
+ * `/user/tokens/verify` only answers for API tokens, not OAuth grants.
  * Zones are paged (100/page); records at one name are not (more than 100
  * records at a single name is out of scope).
  */
@@ -99,14 +103,6 @@ export class CloudflareClient {
 
   private async call<T>(path: string, init: RequestInit = {}): Promise<T> {
     return (await this.envelope<T>(path, init)).result as T;
-  }
-
-  /**
-   * Works for user tokens and account-owned tokens alike: both are checked
-   * at `/user/tokens/verify`, which needs nothing but the token itself.
-   */
-  verifyToken() {
-    return this.call<{ status: string }>("/user/tokens/verify");
   }
 
   async listZones(): Promise<CfZone[]> {

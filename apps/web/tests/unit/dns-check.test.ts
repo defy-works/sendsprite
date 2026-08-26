@@ -3,6 +3,7 @@ import { checkRecords, type Resolver } from "@/lib/dns/check";
 import { expectedRecords } from "@/lib/dns/records";
 
 const resolver: Resolver = {
+  resolveNs: async () => [],
   resolveCname: async (n) =>
     n.startsWith("a1._domainkey") ? ["A1.dkim.amazonses.com."] : [],
   resolveMx: async (n) =>
@@ -46,6 +47,7 @@ describe("checkRecords", () => {
     });
     const withTxt = (txt: string[][]) =>
       checkRecords(recs, {
+        resolveNs: async () => [],
         resolveCname: async () => [],
         resolveMx: async () => [],
         resolveTxt: async () => txt,
@@ -71,6 +73,7 @@ describe("checkRecords", () => {
   });
   it("treats resolver errors (NXDOMAIN) as not-ok", async () => {
     const throwing: Resolver = {
+      resolveNs: async () => [],
       resolveCname: async () => {
         throw Object.assign(new Error("x"), { code: "ENOTFOUND" });
       },

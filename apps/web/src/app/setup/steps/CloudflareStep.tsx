@@ -1,48 +1,61 @@
 "use client";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useActionState, useState, useTransition } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useState, useTransition } from "react";
 import { Button } from "@/components/ui/Button";
-import { Input } from "@/components/ui/Input";
-import { Label } from "@/components/ui/Label";
 import type { WizardProps } from "../types";
-import {
-  connectCloudflareAction,
-  disconnectCloudflareAction,
-} from "../actions";
+import { disconnectCloudflareAction } from "../actions";
 import { Alert, Heading, Notice, Panel } from "./shared";
 
-const TOKENS_URL = "https://dash.cloudflare.com/profile/api-tokens";
+const CLIENTS_URL = "https://dash.cloudflare.com/?to=/:account/oauth-clients";
 
-export function CloudflareStep({ settings, mode = "wizard" }: WizardProps) {
+/** Cloudflare's `?error=` slugs plus our own, rendered as sentences. */
+const ERRORS: Record<string, string> = {
+  access_denied: "You cancelled the Cloudflare authorisation.",
+  not_configured: "This instance has no Cloudflare OAuth client configured.",
+  expired: "That authorisation took too long. Try again.",
+  bad_state: "The authorisation could not be verified. Try again.",
+  invalid_response: "Cloudflare sent back an unexpected response. Try again.",
+  connect_failed: "Cloudflare authorisation failed. Try again.",
+};
+
+export function CloudflareStep({
+  settings,
+  oauthAvailable,
+  mode = "wizard",
+}: WizardProps) {
   const router = useRouter();
+  const params = useSearchParams();
   const connected = Boolean(settings.cloudflareConnectedAt);
-  const [zones, setZones] = useState<string[] | null>(null);
-  const [warning, setWarning] = useState<string | null>(null);
-  const [state, action, pending] = useActionState(
-    async (_prev: unknown, fd: FormData) => {
-      const res = await connectCloudflareAction(fd);
-      if (res.ok) {
-        setZones(res.data.zones.map((z) => z.name));
-        setWarning(res.data.warning ?? null);
-        router.refresh();
-      }
-      return res;
-    },
-    null,
-  );
   const [disconnecting, start] = useTransition();
   const [disconnectError, setDisconnectError] = useState<string | null>(null);
+
+  const error = params.get("error");
+  const noZones = params.get("cloudflare") === "no_zones";
+  const from =
+    mode === "wizard" ? "/setup?step=cloudflare" : "/app/settings/instance";
+  const startUrl = `/api/setup/cloudflare/start?from=${encodeURIComponent(from)}`;
 
   return (
     <div className="flex flex-col gap-5">
       <Heading>Connect Cloudflare</Heading>
       <p className="text-sm text-white/65">
-        Optional. With a Cloudflare API token Sendsprite writes the DKIM, SPF,
-        DMARC and MX records for your sending domains itself; without it you add
-        them by hand.
+        Optional. Authorise Sendsprite and it writes the DKIM, SPF, DMARC and MX
+        records for your sending domains itself. Without it you add them by hand
+        — we show the exact records, and link straight to the right zone when a
+        domain is already on Cloudflare.
       </p>
-      {warning && <Notice>{warning}</Notice>}
+      {error && (
+        <Alert>
+          {ERRORS[error] ?? "Cloudflare authorisation failed. Try again."}
+        </Alert>
+      )}
+      {noZones && (
+        <Notice>
+          Cloudflare is connected but the grant covers no zones — authorise
+          again and tick the zones you send from.
+        </Notice>
+      )}
 
       {connected ? (
         <div className="flex flex-col gap-4">
@@ -54,9 +67,9 @@ export function CloudflareStep({ settings, mode = "wizard" }: WizardProps) {
                 to <strong>{settings.cloudflareAccountName}</strong>
               </>
             )}
-            .
+            . New domains in a zone you authorised get their records written
+            automatically.
           </p>
-          {zones && zones.length > 0 && <ZoneList zones={zones} />}
           <div className="flex items-center gap-3">
             {mode === "wizard" && (
               <Button asChild>
@@ -71,95 +84,76 @@ export function CloudflareStep({ settings, mode = "wizard" }: WizardProps) {
                   setDisconnectError(null);
                   const res = await disconnectCloudflareAction();
                   if (!res.ok) setDisconnectError(res.error);
-                  else {
-                    setZones(null);
-                    router.refresh();
-                  }
+                  else router.refresh();
                 })
               }
             >
-              Disconnect
+              {disconnecting ? "Disconnecting…" : "Disconnect"}
             </Button>
           </div>
           {disconnectError && <Alert>{disconnectError}</Alert>}
         </div>
+      ) : oauthAvailable ? (
+        <div className="flex items-center gap-3">
+          {/* A plain link, not a form: the flow is a top-level redirect to Cloudflare. */}
+          <Button asChild>
+            <a href={startUrl}>Connect Cloudflare</a>
+          </Button>
+          {mode === "wizard" && (
+            <Button
+              variant="ghost"
+              onClick={() => router.push("/setup?step=done")}
+            >
+              Skip
+            </Button>
+          )}
+        </div>
       ) : (
         <>
-          <Panel title="Create a token">
-            <ol className="list-decimal space-y-1 pl-5 text-sm text-white/75">
+          <Panel title="Not configured on this instance">
+            <p className="text-sm text-white/75">
+              Automatic DNS needs a Cloudflare OAuth client, which this instance
+              does not have. Sending domains still work: you add the records at
+              your provider, and every domain page shows them with a one-click
+              link to the right Cloudflare zone when it detects one.
+            </p>
+            <ol className="mt-3 list-decimal space-y-1 pl-5 text-sm text-white/75">
               <li>
-                Open{" "}
+                In Cloudflare, open{" "}
                 <a
                   className="text-indigo-300 underline"
-                  href={TOKENS_URL}
+                  href={CLIENTS_URL}
                   target="_blank"
                   rel="noopener noreferrer"
                 >
-                  dash.cloudflare.com/profile/api-tokens
+                  Manage Account → OAuth clients
                 </a>{" "}
-                and choose <strong>Create Token</strong> → Custom token.
+                and create a client.
               </li>
               <li>
-                Permissions: <em>Zone → Zone → Read</em> and{" "}
-                <em>Zone → DNS → Edit</em>.
+                Redirect URI:{" "}
+                <code>&lt;APP_URL&gt;/api/setup/cloudflare/callback</code> —
+                Cloudflare matches it exactly.
               </li>
               <li>
-                Zone resources: the zones you will send from (or all zones).
+                Scopes: zone read and DNS write, plus{" "}
+                <code>offline_access</code>.
               </li>
-              <li>Create it and paste the token below.</li>
+              <li>
+                Set <code>CLOUDFLARE_OAUTH_CLIENT_ID</code> and{" "}
+                <code>CLOUDFLARE_OAUTH_CLIENT_SECRET</code>, then restart.
+              </li>
             </ol>
           </Panel>
-          <form action={action} className="flex flex-col gap-3">
+          {mode === "wizard" && (
             <div>
-              <Label htmlFor="token">API token</Label>
-              <Input
-                id="token"
-                name="token"
-                type="password"
-                autoComplete="off"
-                required
-                minLength={10}
-              />
-            </div>
-            <div className="flex items-center gap-3">
-              <Button type="submit" disabled={pending}>
-                {pending ? "Verifying…" : "Connect Cloudflare"}
+              <Button asChild>
+                <Link href="/setup?step=done">Continue</Link>
               </Button>
-              {mode === "wizard" && (
-                <Button
-                  variant="ghost"
-                  onClick={() => router.push("/setup?step=done")}
-                >
-                  Skip
-                </Button>
-              )}
             </div>
-            {mode === "wizard" && (
-              <p className="text-xs text-white/50">
-                Skip if you would rather add DNS records manually.
-              </p>
-            )}
-            {state && !state.ok && <Alert>{state.error}</Alert>}
-          </form>
+          )}
         </>
       )}
-    </div>
-  );
-}
-
-function ZoneList({ zones }: { zones: string[] }) {
-  return (
-    <div className="text-sm">
-      <p className="text-white/50">Zones this token can manage:</p>
-      <ul className="mt-1 flex flex-wrap gap-2">
-        {zones.map((z) => (
-          <li key={z}>
-            <code className="rounded bg-white/8 px-1.5 py-0.5 text-xs">
-              {z}
-            </code>
-          </li>
-        ))}
-      </ul>
     </div>
   );
 }

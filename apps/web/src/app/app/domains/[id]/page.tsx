@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Link } from "@/components/ui/Link";
 import { StatusDot, type Status } from "@/components/ui/StatusDot";
+import { cloudflareDnsUrl } from "@/lib/dns/cloudflare-zone";
 import { formatWhen } from "@/lib/format";
 import { requireTeam } from "@/lib/session";
 import { getDomain, type Domain } from "@/services/domains";
@@ -54,6 +55,20 @@ export default async function DomainPage({
               ? "These records were written to your Cloudflare zone. SES confirms DKIM and MAIL FROM once DNS propagates; we re-check every 2 minutes for 72 hours."
               : "Add these at your DNS provider. We re-check every 2 minutes for 72 hours; click Re-verify to check right away."}
           </p>
+          {d.dnsMode === "manual" && d.cloudflareZone && (
+            <p className="text-sm text-white/65">
+              <strong>{d.cloudflareZone}</strong> is on Cloudflare.{" "}
+              <a
+                className="text-indigo-300 underline"
+                href={cloudflareDnsUrl(d.cloudflareZone)}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Open its DNS records
+              </a>{" "}
+              and add the rows below.
+            </p>
+          )}
           <RecordsTable records={d.expectedRecords} />
         </CardBody>
       </Card>

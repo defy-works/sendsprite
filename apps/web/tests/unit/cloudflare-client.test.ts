@@ -45,13 +45,11 @@ const txtZone = (existing: { id: string; content: string }[]) =>
   });
 
 describe("CloudflareClient", () => {
-  it("verifies token and lists zones", async () => {
+  it("lists zones with the token as a bearer", async () => {
     const { fetch, calls } = fake({
-      "/user/tokens/verify": () => ({ status: "active" }),
       "/zones?": () => [{ id: "z1", name: "acme.com" }],
     });
     const cf = new CloudflareClient("tok", fetch);
-    expect(await cf.verifyToken()).toEqual({ status: "active" });
     expect(await cf.listZones()).toEqual([{ id: "z1", name: "acme.com" }]);
     expect(calls[0]!.init?.headers).toMatchObject({
       authorization: "Bearer tok",
@@ -219,7 +217,7 @@ describe("CloudflareClient", () => {
         { status: 403 },
       );
     const err = await new CloudflareClient("bad", f)
-      .verifyToken()
+      .listZones()
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(CloudflareError);
     expect((err as CloudflareError).message).toMatch(/Authentication error/);

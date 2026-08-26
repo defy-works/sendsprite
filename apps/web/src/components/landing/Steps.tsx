@@ -13,7 +13,7 @@ const STEPS = [
   },
   {
     title: "Add a domain",
-    body: "Type the domain. With Cloudflare the records are written for you; otherwise copy them over and hit verify.",
+    body: "Type the domain. With Cloudflare authorised the records are written for you; otherwise copy them over and hit verify — we link you straight to the right zone.",
     aside: "DKIM · SPF · DMARC",
   },
   {

@@ -30,7 +30,6 @@ export const instanceSettings = pgTable(
     }),
     sesMaxSendRate: doublePrecision("ses_max_send_rate"),
     sesDailyQuota: integer("ses_daily_quota"),
-    cloudflareTokenEnc: text("cloudflare_token_enc"),
     awsAccountId: text("aws_account_id"),
     awsConnectedAt: timestamp("aws_connected_at", { withTimezone: true }),
     snsSubscriptionArn: text("sns_subscription_arn"),
@@ -38,6 +37,12 @@ export const instanceSettings = pgTable(
       enum: ["PENDING", "GRANTED", "DENIED", "FAILED"],
     }),
     sesLastCheckedAt: timestamp("ses_last_checked_at", { withTimezone: true }),
+    /** OAuth grant from Cloudflare (Manage Account -> OAuth clients). */
+    cloudflareAccessTokenEnc: text("cloudflare_access_token_enc"),
+    cloudflareRefreshTokenEnc: text("cloudflare_refresh_token_enc"),
+    cloudflareTokenExpiresAt: timestamp("cloudflare_token_expires_at", {
+      withTimezone: true,
+    }),
     cloudflareAccountName: text("cloudflare_account_name"),
     cloudflareConnectedAt: timestamp("cloudflare_connected_at", {
       withTimezone: true,

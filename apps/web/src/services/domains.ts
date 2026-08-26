@@ -19,7 +19,8 @@ import { resolveAwsContext } from "@/lib/aws/credentials";
 import type { FetchLike } from "@/lib/cloudflare/client";
 import { expectedRecords } from "@/lib/dns/records";
 import { matchZone } from "@/lib/dns/zone-match";
-import { checkRecords, type Resolver } from "@/lib/dns/check";
+import { checkRecords, publicResolver, type Resolver } from "@/lib/dns/check";
+import { detectCloudflareZone } from "@/lib/dns/cloudflare-zone";
 import { recordAudit } from "@/lib/audit";
 import type { Result } from "@/lib/result";
 import { getInstanceSettings } from "./instance-settings";
@@ -344,7 +345,19 @@ export async function provisionDomain(
     }
     await db()
       .update(domains)
-      .set({ dnsMode, lastError })
+      .set({
+        dnsMode,
+        lastError,
+        // Manual mode only: in auto mode we write the records ourselves, so
+        // there is nothing for the dashboard link to help with. A failed
+        // lookup is not fatal — it just means no link on the domain page.
+        ...(dnsMode === "manual" && {
+          cloudflareZone: await detectCloudflareZone(
+            d.name,
+            deps.resolver ?? publicResolver(),
+          ).catch(() => null),
+        }),
+      })
       .where(eq(domains.id, d.id));
     await enqueueVerify(deps.enqueue, d.id, FIRST_VERIFY_AFTER_S);
   } catch (e) {
