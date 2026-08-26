@@ -61,6 +61,13 @@ export const schema = z
      */
     POLAR_METER_ID: z.string().min(1).optional(),
     SIGNUP_MODE: z.enum(["auto", "open", "invite", "closed"]).default("auto"),
+    /**
+     * Comma-separated emails that always pass `requireInstanceAdmin`,
+     * whatever `user.instanceAdmin` says. The lockout escape hatch: a
+     * self-hoster who removed their own flag fixes it here. Leave it unset
+     * and the first user to sign up is flagged instead.
+     */
+    INSTANCE_ADMIN_EMAILS: z.string().optional(),
     EMAIL_PASSWORD_ENABLED: bool.default(false),
     GOOGLE_CLIENT_ID: z.string().optional(),
     GOOGLE_CLIENT_SECRET: z.string().optional(),
