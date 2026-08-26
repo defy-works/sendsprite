@@ -13,6 +13,15 @@ import {
 const text = (html: string) => CampaignBlock.safeParse({ kind: "text", html });
 const url = (u: string) => SafeUrl.safeParse(u);
 
+/**
+ * Written as character codes rather than literals: a NUL and a non-breaking
+ * space are invisible in a diff and the first tool to touch this file that is
+ * careless about encodings turns them into something else, quietly weakening
+ * the two tests that need them most.
+ */
+const NUL = String.fromCharCode(0);
+const NBSP = String.fromCharCode(0xa0);
+
 describe("CampaignBlock", () => {
   it("accepts each block kind", () => {
     const blocks = [
@@ -132,7 +141,7 @@ describe("text block inline HTML", () => {
 
   /*
    * The renderer injects this string without escaping, so an unclosed `<a>`
-   * does not stop at the block — it swallows every following block into one
+   * does not stop at the block: it swallows every following block into one
    * link, and an unclosed `<strong>` bolds the rest of the message. A pure
    * token allow-list happily admits both, which is why the structural check
    * exists alongside it.
@@ -166,17 +175,18 @@ describe("text block inline HTML", () => {
    * href refuses it and every variant of it, because no real URL carries a
    * literal space.
    */
-  it("refuses whitespace inside an href", () => {
+  it("refuses whitespace and path-mangling characters inside an href", () => {
     for (const s of [
       '<a href="https://x&#x22; onclick=&#x22;alert(1)">z</a>',
       '<a href="https://x.test/a b">z</a>',
-      '<a href="https://x.test/a�00a0b">z</a>',
+      `<a href="https://x.test/a${NBSP}b">z</a>`,
+      '<a href="https:/\\evil.test">z</a>',
     ])
       expect(text(s).success, s).toBe(false);
   });
 
   it("refuses control characters, which no editor emits", () => {
-    expect(text("a0000b").success).toBe(false);
+    expect(text(`a${NUL}b`).success).toBe(false);
     expect(text("a\nb").success).toBe(false);
   });
 });
@@ -209,8 +219,8 @@ describe("SafeUrl", () => {
 
   /*
    * `https://example.com@evil.test/` is a perfectly valid URL pointing at
-   * `evil.test`, and it reads as `example.com` to the recipient. No
-   * legitimate campaign link carries credentials.
+   * `evil.test`, and it reads as `example.com` to the recipient. No legitimate
+   * campaign link carries credentials.
    */
   it("refuses embedded credentials, which read as a different host", () => {
     for (const u of [
@@ -246,12 +256,12 @@ describe("SafeUrl", () => {
    * bug class; refusing the characters closes it.
    */
   it("refuses interior whitespace the URL parser would strip", () => {
-    for (const u of [
-      "ht\ttps://x.test/",
-      "https://x.test/a\nb",
-      "https://x.test/a0000b",
-    ])
+    for (const u of ["ht\ttps://x.test/", "https://x.test/a\nb"])
       expect(url(u).success, u).toBe(false);
+  });
+
+  it("refuses control characters, which a URL must percent-encode", () => {
+    expect(url(`https://x.test/a${NUL}b`).success).toBe(false);
   });
 
   it("caps the length", () => {
@@ -296,7 +306,7 @@ describe("CreateCampaignInput", () => {
     );
   });
 
-  it("refuses an empty block list — a campaign with no body is a mistake", () => {
+  it("refuses an empty block list, because a campaign with no body is a mistake", () => {
     expect(CreateCampaignInput.safeParse({ ...base, blocks: [] }).success).toBe(
       false,
     );
@@ -326,7 +336,7 @@ describe("CreateCampaignInput", () => {
 
 describe("OpenAPI representability", () => {
   it("emits every exported schema as JSON Schema", () => {
-    const schemas = Object.entries(campaigns).filter(
+    const schemas = (Object.entries(campaigns) as [string, unknown][]).filter(
       (e): e is [string, z.ZodType] => e[1] instanceof z.ZodType,
     );
     expect(schemas.length).toBeGreaterThan(5);

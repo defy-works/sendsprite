@@ -20,9 +20,17 @@ const noCrlf = (s: z.ZodString) =>
   s.regex(NO_CONTROL_CHARS, {
     message: "must not contain line breaks or control characters",
   });
-const addr = noCrlf(z.string().trim().min(3).max(320)).regex(ADDR_RE, {
-  message: "invalid email address",
-});
+/**
+ * One address, `"Name <a@b>"` or bare. Exported because every path that puts a
+ * from-address on the wire has to agree on its shape: `api/campaigns.ts`
+ * imports this rather than restating the regex, for the same reason
+ * `NO_CONTROL_CHARS` is imported rather than restated — two copies of a shape
+ * check drift, and the looser one becomes the hole.
+ */
+export const EmailAddressField = noCrlf(
+  z.string().trim().min(3).max(320),
+).regex(ADDR_RE, { message: "invalid email address" });
+const addr = EmailAddressField;
 const list = z
   .union([addr, z.array(addr)])
   .default([])
