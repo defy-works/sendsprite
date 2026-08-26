@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { env } from "@/env";
 import { requestMeta } from "@/lib/audit";
 import { getCipher } from "@/lib/crypto";
-import { requireOwner } from "@/lib/session";
+import { requireTeamAdmin } from "@/lib/session";
 import { completeOauth } from "@/services/cloudflare-connect";
 import { HANDOFF_COOKIE, defaultReturn } from "../start/route";
 
@@ -19,7 +19,7 @@ const slug = (s: string) => s.replace(/[^a-z0-9_-]/gi, "").slice(0, 64);
  * error would strand them on an API URL.
  */
 export async function GET(req: Request) {
-  const ctx = await requireOwner();
+  const ctx = await requireTeamAdmin();
   const jar = await cookies();
   const raw = jar.get(HANDOFF_COOKIE)?.value;
   // Read once: whatever happens below, this handoff must not be replayable.

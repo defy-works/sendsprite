@@ -1,7 +1,7 @@
 import { Card, CardBody } from "@/components/ui/Card";
 import { env } from "@/env";
 import { SES_REGIONS } from "@/lib/aws/regions";
-import { requireOwner } from "@/lib/session";
+import { requireTeamAdmin } from "@/lib/session";
 import { getInstanceSettings } from "@/services/instance-settings";
 import { oauthAvailable } from "@/services/cloudflare-connect";
 import { AwsStep } from "@/app/setup/steps/AwsStep";
@@ -12,7 +12,7 @@ import type { WizardProps, WizardSettings } from "@/app/setup/types";
 export const metadata = { title: "Instance settings" };
 
 export default async function InstanceSettingsPage() {
-  await requireOwner();
+  await requireTeamAdmin();
   const s = await getInstanceSettings();
   const cfOauth = oauthAvailable();
   // Only serialisable, non-secret fields cross into the client tree.

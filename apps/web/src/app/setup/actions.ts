@@ -2,7 +2,7 @@
 import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { loadEnv } from "@/env.schema";
-import { requireOwner } from "@/lib/session";
+import { requireTeamAdmin } from "@/lib/session";
 import { requestMeta } from "@/lib/audit";
 import { buildQuickCreateUrl } from "@/lib/aws/quick-create";
 import { SES_REGIONS } from "@/lib/aws/regions";
@@ -19,7 +19,7 @@ export type { Result } from "@/lib/result";
 
 /** Server actions are thin: resolve the owner, delegate, revalidate. */
 async function actor() {
-  const ctx = await requireOwner();
+  const ctx = await requireTeamAdmin();
   return { userId: ctx.userId, meta: requestMeta(await headers()) };
 }
 

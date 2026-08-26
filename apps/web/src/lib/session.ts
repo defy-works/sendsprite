@@ -35,10 +35,16 @@ export async function requireTeam(): Promise<TeamContext> {
   return { ...ctx, session: s };
 }
 
-/** Instance-level actions: any owner of any team may perform them (§6.1: "first user"; later owners too). */
-export async function requireOwner(): Promise<TeamContext> {
+/**
+ * Connecting a cloud account for the team. Owner **or** admin: the billing
+ * owner is often not the engineer who holds the AWS account. Scoped to the
+ * *active* team — it no longer means "owner of any team", which was only ever
+ * a stand-in for an instance operator while there was one AWS connection.
+ * That meaning now lives in `requireInstanceAdmin`.
+ */
+export async function requireTeamAdmin(): Promise<TeamContext> {
   const ctx = await requireTeam();
-  if (ctx.role !== "owner") redirect("/app");
+  if (ctx.role !== "owner" && ctx.role !== "admin") redirect("/app");
   return ctx;
 }
 
@@ -47,7 +53,7 @@ export async function requireOwner(): Promise<TeamContext> {
  * Deliberately **not** team-derived: with AWS moving onto the team, owning a
  * team says nothing about operating the deployment. Passes on the
  * `INSTANCE_ADMIN_EMAILS` allowlist or the `instanceAdmin` flag; anything
- * else lands back on /app rather than a 403, matching `requireOwner`.
+ * else lands back on /app rather than a 403, matching `requireTeamAdmin`.
  *
  * `loadEnv` rather than `@/env`: the latter is `server-only` and throws under
  * the CLI and vitest, which is why `lib/auth.ts` imports it the same way.

@@ -2,7 +2,7 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { env } from "@/env";
 import { getCipher } from "@/lib/crypto";
-import { requireOwner } from "@/lib/session";
+import { requireTeamAdmin } from "@/lib/session";
 import { beginOauth } from "@/services/cloudflare-connect";
 
 export const dynamic = "force-dynamic";
@@ -22,7 +22,7 @@ export const defaultReturn = RETURNS[0];
  * nothing else can read it.
  */
 export async function GET(req: Request) {
-  await requireOwner();
+  await requireTeamAdmin();
   const res = beginOauth();
   if (!res.ok)
     return NextResponse.redirect(

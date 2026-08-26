@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { env } from "@/env";
 import { SES_REGIONS } from "@/lib/aws/regions";
-import { requireOwner } from "@/lib/session";
+import { requireTeamAdmin } from "@/lib/session";
 import { getInstanceSettings } from "@/services/instance-settings";
 import { oauthAvailable } from "@/services/cloudflare-connect";
 import { SetupWizard } from "./SetupWizard";
@@ -17,7 +17,7 @@ export default async function SetupPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  await requireOwner();
+  await requireTeamAdmin();
   const s = await getInstanceSettings();
   const cfOauth = oauthAvailable();
   // Only serialisable, non-secret fields cross into the client tree.
