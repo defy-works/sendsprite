@@ -19,6 +19,7 @@ import {
   type TemplateVersion,
 } from "@/db/schema";
 import { recordAudit } from "@/lib/audit";
+import { canonicalJson } from "@/lib/canonical-json";
 import type { Result } from "@/lib/result";
 import type { TeamActor } from "./team";
 
@@ -156,17 +157,21 @@ const SNAPSHOT_FIELDS = [
  * dashboard editor and `templates push` both re-send the whole template on
  * every save. Reference equality would call each of those an edit and cut a
  * version per save click, which is precisely the history this table is not
- * supposed to keep. Both sides have been through the same zod object by the
- * time they get here, so their key order — and therefore their serialisation —
- * is stable.
+ * supposed to keep.
+ *
+ * `canonicalJson`, not `JSON.stringify`: `variablesSchema` is a jsonb column,
+ * and jsonb does not preserve key order — it sorts keys by length then
+ * bytewise. The stored row and a freshly parsed input therefore serialise
+ * differently for the same value, and a plain stringify would call every save
+ * an edit. (This file previously claimed the two orders were stable; they are
+ * not. Found while building the campaign editor, which has the same shape.)
  */
 const changedFields = (
   before: TemplateSnapshot,
   after: TemplateSnapshot,
 ): string[] =>
   SNAPSHOT_FIELDS.filter(
-    (f) =>
-      JSON.stringify(before[f] ?? null) !== JSON.stringify(after[f] ?? null),
+    (f) => canonicalJson(before[f]) !== canonicalJson(after[f]),
   );
 
 export async function createTemplate(

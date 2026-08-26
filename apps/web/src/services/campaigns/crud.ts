@@ -10,6 +10,7 @@ import { db } from "@/db";
 import type { Page } from "@/db/keyset";
 import { campaigns, contactBooks, domains, type Campaign } from "@/db/schema";
 import { recordAudit } from "@/lib/audit";
+import { canonicalJson } from "@/lib/canonical-json";
 import { decodeCursor, encodeCursor } from "@/lib/cursor";
 import type { Result } from "@/lib/result";
 import { resolveSendingDomain } from "../emails";
@@ -395,17 +396,6 @@ type EditableValues = Pick<Campaign, EditableField>;
  * reverts a scheduled campaign to a draft, so re-saving an unchanged body
  * would silently cancel its schedule.
  */
-const canonical = (v: unknown): string =>
-  JSON.stringify(v ?? null, (_k, val: unknown) =>
-    val && typeof val === "object" && !Array.isArray(val)
-      ? Object.fromEntries(
-          Object.entries(val as Record<string, unknown>).sort(([a], [b]) =>
-            a < b ? -1 : a > b ? 1 : 0,
-          ),
-        )
-      : val,
-  );
-
 /**
  * The fields whose **value** differs.
  *
@@ -418,7 +408,9 @@ const changedFields = (
   before: EditableValues,
   after: EditableValues,
 ): EditableField[] =>
-  EDITABLE_FIELDS.filter((f) => canonical(before[f]) !== canonical(after[f]));
+  EDITABLE_FIELDS.filter(
+    (f) => canonicalJson(before[f]) !== canonicalJson(after[f]),
+  );
 
 /**
  * Edit a `draft` or `scheduled` campaign; anything further along is immutable.
