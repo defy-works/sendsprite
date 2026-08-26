@@ -244,6 +244,17 @@ export function csvCell(value: string): string {
 }
 
 /**
+ * One record, escaped and terminated.
+ *
+ * Split out of `toCsv` for the export route, which writes a book into a
+ * stream row by row rather than assembling the whole document in memory.
+ * Both doors go through this one function, so a streamed export and a
+ * buffered one cannot escape their cells differently.
+ */
+export const csvLine = (cells: readonly string[]): string =>
+  cells.map(csvCell).join(",") + "\n";
+
+/**
  * A whole document, header first, always ending in a newline.
  *
  * Rows are written exactly as given: a row shorter than the header comes back
@@ -252,5 +263,4 @@ export function csvCell(value: string): string {
 export const toCsv = (
   header: readonly string[],
   rows: readonly (readonly string[])[],
-): string =>
-  [header, ...rows].map((r) => r.map(csvCell).join(",")).join("\n") + "\n";
+): string => [header, ...rows].map(csvLine).join("");

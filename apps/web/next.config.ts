@@ -35,6 +35,27 @@ const nextConfig: NextConfig = {
      * throw if it were not.
      */
     allowDevelopmentBuild: developmentMode ? true : undefined,
+    serverActions: {
+      /**
+       * Raised from Next's 1 MB default for one caller: the contacts CSV
+       * import (`/app/contacts/[bookId]`), which reads the chosen file and
+       * passes its text to a server action.
+       *
+       * Everything else on that path is bounded at 2 MB — `parseCsv`'s
+       * `MAX_CSV_BYTES`, `ImportContactsInput`'s `MAX_IMPORT_CSV_CHARS`, and
+       * the panel's own refusal before it reads the file — and the REST route
+       * for the same import already allows a 4 MB envelope for the same
+       * reason. At 1 MB the framework refuses a 1.5 MB list with a 413 raised
+       * before any of our code runs, so the customer sees a failed action
+       * instead of the "split the file" message that says what to do. A cap
+       * the UI advertises and the server refuses is worse than a smaller
+       * honest one; this is the number that makes the advertised 2 MB true.
+       *
+       * 3 MB, not 2, because the limit applies to the raw request body: the
+       * 2 MB payload arrives inside the action's own encoding.
+       */
+      bodySizeLimit: "3mb",
+    },
   },
   // Node-only packages: keep out of the client bundle and Turbopack graph.
   serverExternalPackages: [
