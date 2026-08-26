@@ -3,6 +3,7 @@ import {
   MAX_PLACEHOLDERS,
   MAX_SUBJECT_CHARS,
   NO_CONTROL_CHARS,
+  placeholderCount,
 } from "../template";
 
 /**
@@ -200,9 +201,40 @@ export const TemplateVariable = z.object({
 });
 export type TemplateVariable = z.infer<typeof TemplateVariable>;
 
-export const TemplateVariablesSchema = z.object({
-  variables: z.array(TemplateVariable).max(100).default([]),
-});
+/**
+ * The declared shape of a template's variables.
+ *
+ * The two cross-entry rules are here rather than left to render time on
+ * purpose: both mistakes are made while authoring, and both surface at render
+ * as something that blames the wrong party. A duplicate name silently
+ * last-wins, so the editor shows a `default` or a `description` that the
+ * renderer never uses; and a `default` that contradicts its own declared
+ * `type` is reported by `renderTemplate` as `not a string, number or boolean`
+ * against a variable the caller never supplied — a schema mistake charged to
+ * the send.
+ */
+export const TemplateVariablesSchema = z
+  .object({
+    variables: z.array(TemplateVariable).max(100).default([]),
+  })
+  .superRefine(({ variables }, ctx) => {
+    const seen = new Set<string>();
+    variables.forEach((v, i) => {
+      if (seen.has(v.name))
+        ctx.addIssue({
+          code: "custom",
+          message: `The variable "${v.name}" is declared more than once.`,
+          path: ["variables", i, "name"],
+        });
+      seen.add(v.name);
+      if (v.default !== undefined && typeof v.default !== v.type)
+        ctx.addIssue({
+          code: "custom",
+          message: `The default for "${v.name}" is a ${typeof v.default}, but the variable is declared as ${v.type}.`,
+          path: ["variables", i, "default"],
+        });
+    });
+  });
 export type TemplateVariablesSchema = z.infer<typeof TemplateVariablesSchema>;
 
 // The renderer's rule, imported rather than restated, so the authored subject
@@ -224,16 +256,13 @@ const body = z.string().max(5_000_000);
 /**
  * A field may not use more placeholders than the renderer will substitute.
  *
- * Counts opening delimiters rather than parsing placeholders: the renderer
- * caps *occurrences*, not distinct names (`{{a}}` a thousand times is exactly
- * the case its cap exists for), and every occurrence contains one `{{`. That
- * makes this a conservative bound — it can never accept a field the renderer
- * would refuse — without restating the placeholder grammar in a second place,
- * where it would drift. The cost is a field with 500+ *literal* `{{` and no
- * variables at all, which no email body has.
+ * Uses the renderer's own counter: occurrences, not distinct names (`{{a}}` a
+ * thousand times is exactly the case the cap exists for), counted by the one
+ * pattern that will do the substituting — so a template the API accepts is a
+ * template the renderer accepts, with no second copy of the grammar to drift.
  */
 const withinPlaceholderLimit = (s: string | undefined) =>
-  s === undefined || (s.match(/\{\{/g)?.length ?? 0) <= MAX_PLACEHOLDERS;
+  s === undefined || placeholderCount(s) <= MAX_PLACEHOLDERS;
 
 const PLACEHOLDER_LIMIT_MESSAGE = `A template field may use at most ${MAX_PLACEHOLDERS} variables (counting every occurrence).`;
 

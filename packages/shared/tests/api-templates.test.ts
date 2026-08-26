@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
+import { MAX_PLACEHOLDERS, placeholderNames } from "../src/template";
 import {
   CreateTemplateInput,
   MAX_VARIABLES_JSON_CHARS,
@@ -89,6 +90,18 @@ describe("CreateTemplateInput", () => {
     ).toBe(true);
   });
 
+  it("counts what the renderer counts, literal braces included", () => {
+    const base = { slug: "a", name: "n", subject: "s", bodyHtml: "b" };
+    // 501 literal `{{` are not 501 placeholders: the renderer would render
+    // this happily, so the contract must accept it.
+    expect(
+      CreateTemplateInput.safeParse({
+        ...base,
+        bodyHtml: "{{".repeat(MAX_PLACEHOLDERS + 1),
+      }).success,
+    ).toBe(true);
+  });
+
   it("counts occurrences, not distinct names, in every field", () => {
     const base = { slug: "a", name: "n", subject: "s", bodyHtml: "b" };
     for (const field of ["subject", "bodyHtml", "bodyText"] as const)
@@ -123,6 +136,82 @@ describe("TemplateVariablesSchema", () => {
       TemplateVariablesSchema.safeParse({ variables: [{ name: "user.first" }] })
         .success,
     ).toBe(true);
+  });
+
+  it("accepts exactly the names the renderer's own matcher recognises", () => {
+    // The declared-name pattern and the renderer's placeholder pattern are two
+    // copies of one grammar; this pins them together rather than trusting them
+    // to be edited in step.
+    const legal = ["a", "_x", "name9", "user.first", "a.b.c.d"];
+    const illegal = ["1bad", "a-b", "", "a b", "a.", ".a", "a..b", "a.b.c.d.e"];
+    for (const name of legal) {
+      expect(placeholderNames(`{{${name}}}`), name).toEqual([name]);
+      expect(
+        TemplateVariablesSchema.safeParse({ variables: [{ name }] }).success,
+        name,
+      ).toBe(true);
+    }
+    for (const name of illegal) {
+      expect(placeholderNames(`{{${name}}}`), name).not.toEqual([name]);
+      expect(
+        TemplateVariablesSchema.safeParse({ variables: [{ name }] }).success,
+        name,
+      ).toBe(false);
+    }
+  });
+
+  it("refuses a name declared twice", () => {
+    const r = TemplateVariablesSchema.safeParse({
+      variables: [{ name: "n" }, { name: "n", default: "x" }],
+    });
+    expect(r.success).toBe(false);
+    expect(r.error?.issues[0]?.message).toMatch(/declared more than once/);
+    expect(r.error?.issues[0]?.path).toEqual(["variables", 1, "name"]);
+    // A dotted sibling is not a duplicate.
+    expect(
+      TemplateVariablesSchema.safeParse({
+        variables: [{ name: "user.first" }, { name: "user.last" }],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("refuses a default that contradicts its own declared type", () => {
+    for (const v of [
+      { name: "n", type: "number", default: "x" },
+      { name: "n", type: "string", default: true },
+      { name: "n", type: "boolean", default: 1 },
+      { name: "n", default: 1 },
+    ]) {
+      const r = TemplateVariablesSchema.safeParse({ variables: [v] });
+      expect(r.success, JSON.stringify(v)).toBe(false);
+      expect(r.error?.issues[0]?.path).toEqual(["variables", 0, "default"]);
+    }
+    for (const v of [
+      { name: "n", type: "number", default: 1 },
+      { name: "n", type: "boolean", default: false },
+      { name: "n", default: "there" },
+      { name: "n", type: "number" },
+    ])
+      expect(
+        TemplateVariablesSchema.safeParse({ variables: [v] }).success,
+        JSON.stringify(v),
+      ).toBe(true);
+  });
+
+  it("carries both rules into create and update", () => {
+    const dup = { variables: [{ name: "n" }, { name: "n" }] };
+    expect(
+      CreateTemplateInput.safeParse({
+        slug: "a",
+        name: "n",
+        subject: "s",
+        bodyHtml: "b",
+        variablesSchema: dup,
+      }).success,
+    ).toBe(false);
+    expect(
+      UpdateTemplateInput.safeParse({ variablesSchema: dup }).success,
+    ).toBe(false);
   });
 
   it("bounds a declared default by the same cap a supplied value gets", () => {
