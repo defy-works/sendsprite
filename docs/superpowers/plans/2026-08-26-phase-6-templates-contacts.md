@@ -8486,6 +8486,8 @@ sendsprite templates push ./emails --dry-run
 ```
 ````
 
+
+**Amendment (recorded after Task 12 shipped as `c684d42`).** The `/docs/templates` page must document the CLI directory layout as built — flat, three files per template: `<slug>.json` (`name`, `subject`, `variablesSchema`), `<slug>.html`, and `<slug>.txt` present only when the template has a text body. Two behaviours need saying plainly because they are safety properties, not incidentals: **`push` never deletes a remote template** because a local file is missing (it reports and leaves it), and a **missing `<slug>.txt` means "no opinion", not "clear the text body"** — there is currently no CLI path to clear it (Phase 7 opener 17). Also tell the reader to add `* text=auto eol=lf` to a `.gitattributes` in their template directory: on Windows with `core.autocrlf=true` a checked-out body becomes CRLF, and `push` will correctly — but confusingly — see that as a change.
 - [ ] **Step 4: Write `/docs/contacts`**
 
 `apps/web/src/app/docs/contacts/page.mdx`:
@@ -8677,6 +8679,8 @@ Append a `## Phase 6 status: COMPLETE` section to this file in the shape Phase 5
 14. **There is no `list_contact_books` MCP tool.** `add_contact` requires a `cb_…` id and deliberately will not guess which list an address lands on, so an agent depends on the operator pasting the id. A read-only listing tool is the natural completion, and it is read-only, so it costs nothing to add.
 15. **MCP `list_templates` returns `nextCursor` but accepts no `limit` or `cursor`.** A team past one page hands the model a cursor it cannot use. `list_domains` has the identical shape, so this is a consistent gap rather than a new one — fix both together.
 16. **`format: "email"` is lost in the advertised MCP schema.** `z.string().trim().toLowerCase().max(320).pipe(z.email())` emits only `{ type: "string", maxLength: 320 }` through `z.toJSONSchema`. Runtime validation still refuses a bad address; only the hint the model reads is thinner than the check it will meet.
+17. **The CLI cannot remove a template's text body.** `push` treats a missing `<slug>.txt` as "no opinion" rather than "delete", because an absent file is ambiguous — never pulled, gitignored, or lost. That is the safe reading, but it leaves no CLI path to clear `bodyText`; today the answer is the dashboard. The fix is an explicit `"bodyText": null` in the manifest, not inferring deletion from absence.
+18. **`push` fetches every template body to push one file.** It lists the whole remote once to diff and to build minimal patches. Bounded and small at present, but it is O(all templates) per invocation.
 
 Then, and only then:
 
