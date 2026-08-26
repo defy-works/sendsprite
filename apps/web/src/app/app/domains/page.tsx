@@ -8,7 +8,7 @@ import { StatusDot, type Status } from "@/components/ui/StatusDot";
 import { formatWhen } from "@/lib/format";
 import { requireTeam } from "@/lib/session";
 import { listDomains, type Domain } from "@/services/domains";
-import { getInstanceSettings } from "@/services/instance-settings";
+import { getTeamAws } from "@/services/team-aws";
 import { Notice } from "@/app/setup/steps/shared";
 
 export const metadata = { title: "Domains" };
@@ -21,9 +21,9 @@ const DOT: Record<Domain["status"], Status> = {
 
 export default async function DomainsPage() {
   const ctx = await requireTeam();
-  const [rows, settings] = await Promise.all([
+  const [rows, aws] = await Promise.all([
     listDomains(ctx.team.id),
-    getInstanceSettings(),
+    getTeamAws(ctx.team.id),
   ]);
   const addButton = can(ctx.role, "domains.manage") ? (
     <Button asChild>
@@ -32,13 +32,13 @@ export default async function DomainsPage() {
   ) : null;
   return (
     <div className="flex flex-col gap-6">
-      {settings.awsMode === "none" && (
+      {!aws && (
         <Notice>
           AWS is not connected, so domains cannot be provisioned.{" "}
-          {ctx.role === "owner" ? (
-            <Link href="/app/settings/instance">Connect AWS in Settings</Link>
+          {ctx.role === "owner" || ctx.role === "admin" ? (
+            <Link href="/app/settings/sending">Connect AWS in Settings</Link>
           ) : (
-            "Ask a team owner to connect it in Settings → Instance."
+            "Ask a team owner or admin to connect it in Settings → Sending."
           )}
         </Notice>
       )}

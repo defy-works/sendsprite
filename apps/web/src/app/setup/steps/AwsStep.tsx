@@ -11,7 +11,6 @@ import { Select } from "@/components/ui/Select";
 import type { WizardProps } from "../types";
 import {
   connectKeys,
-  detectRole,
   disconnectAws,
   type Result,
 } from "../actions";
@@ -26,7 +25,7 @@ export function AwsStep({
   oneClickAvailable,
   mode = "wizard",
 }: WizardProps) {
-  if (settings.awsMode !== "none")
+  if (settings.awsConnected)
     return <ConnectedPanel settings={settings} mode={mode} />;
   return (
     <ConnectPanels
@@ -56,13 +55,13 @@ function ConnectedPanel({
         </dd>
         <dt className="text-white/50">Region</dt>
         <dd>{settings.awsRegion}</dd>
-        <dt className="text-white/50">Mode</dt>
-        <dd>
-          <Badge variant={settings.awsMode === "keys" ? "indigo" : "success"}>
-            {settings.awsMode === "keys" ? "access keys" : "instance role"}
-          </Badge>
-        </dd>
       </dl>
+      {settings.snsSubscriptionMissing && (
+        <Notice>
+          SES events are not being delivered: this connection has an SNS topic
+          but no confirmed subscription. Reconnect to resume event delivery.
+        </Notice>
+      )}
       <div className="flex items-center gap-3">
         {mode === "wizard" && (
           <Button asChild>
@@ -109,10 +108,6 @@ function ConnectPanels({
     return res;
   };
 
-  const [roleState, roleAction, rolePending] = useActionState(
-    async (_prev: unknown, fd: FormData) => onConnected(await detectRole(fd)),
-    null,
-  );
   const [keysState, keysAction, keysPending] = useActionState(
     async (_prev: unknown, fd: FormData) => onConnected(await connectKeys(fd)),
     null,
@@ -122,8 +117,8 @@ function ConnectPanels({
     <div className="flex flex-col gap-5">
       <Heading>Connect AWS</Heading>
       <p className="text-sm text-white/65">
-        Sendsprite sends through Amazon SES in your own account. Pick the SES
-        region first, then connect one of three ways.
+        This team sends through Amazon SES in its own AWS account. Pick the SES
+        region first, then connect one of two ways.
       </p>
       {warning && <Notice>{warning}</Notice>}
       <div>
@@ -147,22 +142,6 @@ function ConnectPanels({
           creates a least-privilege IAM user and hands its keys back here.
         </p>
         <QuickCreate region={region} available={oneClickAvailable} />
-      </Panel>
-
-      <Panel title="Use this server's role">
-        <p className="text-sm text-white/65">
-          If Sendsprite runs on EC2/ECS with an IAM role attached, no keys are
-          needed.
-        </p>
-        <form action={roleAction} className="flex flex-col gap-3">
-          <input type="hidden" name="region" value={region} />
-          <div>
-            <Button type="submit" variant="secondary" disabled={rolePending}>
-              {rolePending ? "Checking…" : "Use this server's AWS role"}
-            </Button>
-          </div>
-          {roleState && !roleState.ok && <Alert>{roleState.error}</Alert>}
-        </form>
       </Panel>
 
       <Divider label="or" />

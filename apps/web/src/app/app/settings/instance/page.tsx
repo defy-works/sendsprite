@@ -1,59 +1,10 @@
-import { Card, CardBody } from "@/components/ui/Card";
-import { env } from "@/env";
-import { SES_REGIONS } from "@/lib/aws/regions";
-import { requireTeamAdmin } from "@/lib/session";
-import { getInstanceSettings } from "@/services/instance-settings";
-import { oauthAvailable } from "@/services/cloudflare-connect";
-import { AwsStep } from "@/app/setup/steps/AwsStep";
-import { ProductionStep } from "@/app/setup/steps/ProductionStep";
-import { CloudflareStep } from "@/app/setup/steps/CloudflareStep";
-import type { WizardProps, WizardSettings } from "@/app/setup/types";
+import { redirect } from "next/navigation";
 
-export const metadata = { title: "Instance settings" };
-
-export default async function InstanceSettingsPage() {
-  await requireTeamAdmin();
-  const s = await getInstanceSettings();
-  const cfOauth = oauthAvailable();
-  // Only serialisable, non-secret fields cross into the client tree.
-  const settings: WizardSettings = {
-    awsMode: s.awsMode,
-    awsRegion: s.awsRegion,
-    awsAccountId: s.awsAccountId,
-    sesAccountStatus: s.sesAccountStatus,
-    sesReviewStatus: s.sesReviewStatus,
-    sesDailyQuota: s.sesDailyQuota,
-    sesMaxSendRate: s.sesMaxSendRate,
-    cloudflareConnectedAt: s.cloudflareConnectedAt?.toISOString() ?? null,
-    cloudflareAccountName: s.cloudflareAccountName,
-    setupCompleted: s.setupCompleted,
-  };
-  const props: WizardProps = {
-    settings,
-    step: "aws",
-    regions: SES_REGIONS,
-    defaultRegion: env.AWS_DEFAULT_REGION,
-    oneClickAvailable: env.APP_URL.startsWith("https://"),
-    oauthAvailable: cfOauth,
-    mode: "settings",
-  };
-  return (
-    <div className="flex max-w-3xl flex-col gap-6">
-      <Card>
-        <CardBody>
-          <AwsStep {...props} />
-        </CardBody>
-      </Card>
-      <Card>
-        <CardBody>
-          <ProductionStep {...props} />
-        </CardBody>
-      </Card>
-      <Card>
-        <CardBody>
-          <CloudflareStep {...props} />
-        </CardBody>
-      </Card>
-    </div>
-  );
+/**
+ * Renamed in the org-level-connections phase: the page is a team's own AWS
+ * and Cloudflare connection now, not an instance-wide one. Operator settings
+ * moved to /app/admin.
+ */
+export default function InstanceSettingsRedirect() {
+  redirect("/app/settings/sending");
 }

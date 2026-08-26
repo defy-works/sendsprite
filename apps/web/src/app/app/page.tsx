@@ -6,7 +6,8 @@ import { requireTeam } from "@/lib/session";
 import { listApiKeys } from "@/services/api-keys";
 import { listDomains } from "@/services/domains";
 import { listEmails } from "@/services/emails";
-import { getInstanceSettings } from "@/services/instance-settings";
+import { getTeamAws } from "@/services/team-aws";
+import { getTeamCloudflare } from "@/services/cloudflare-connect";
 import { instanceStats, teamStats } from "@/services/stats";
 import { EmailsTable, toListRow } from "./emails/EmailsTable";
 import { LiveRefresh } from "./emails/LiveRefresh";
@@ -15,8 +16,9 @@ import { AlertBanners, StatsTiles } from "./StatsTiles";
 export default async function OverviewPage() {
   const ctx = await requireTeam();
   const owner = ctx.role === "owner";
-  const [s, domains, keys, recent, stats, instance] = await Promise.all([
-    getInstanceSettings(),
+  const [aws, cf, domains, keys, recent, stats, instance] = await Promise.all([
+    getTeamAws(ctx.team.id),
+    getTeamCloudflare(ctx.team.id),
     listDomains(ctx.team.id),
     listApiKeys(ctx.team.id),
     listEmails(ctx.team.id, { limit: 10 }),
@@ -33,14 +35,14 @@ export default async function OverviewPage() {
     pending: domains.filter((d) => d.status === "pending").length,
     failed: domains.filter((d) => d.status === "failed").length,
   };
-  // Instance-level steps link only for owners (the page requires it).
-  const instanceHref = owner ? "/app/settings/instance" : null;
+  // Connection steps link only for those who may change them.
+  const sendingHref = owner ? "/app/settings/sending" : null;
   const steps = [
-    { label: "Connect AWS", done: s.awsMode !== "none", href: instanceHref },
+    { label: "Connect AWS", done: aws !== null, href: sendingHref },
     {
       label: "Connect Cloudflare (optional)",
-      done: Boolean(s.cloudflareConnectedAt),
-      href: instanceHref,
+      done: cf !== null,
+      href: sendingHref,
     },
     {
       label: "Add a sending domain",

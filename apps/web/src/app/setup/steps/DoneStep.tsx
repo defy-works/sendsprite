@@ -11,7 +11,7 @@ export function DoneStep({ settings }: WizardProps) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
-  const aws = settings.awsMode !== "none";
+  const aws = settings.awsConnected;
   const prod = settings.sesAccountStatus === "production";
   const cf = Boolean(settings.cloudflareConnectedAt);
   return (

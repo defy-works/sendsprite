@@ -4,7 +4,8 @@ import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Link } from "@/components/ui/Link";
 import { Notice } from "@/app/setup/steps/shared";
 import { requireTeam } from "@/lib/session";
-import { getInstanceSettings } from "@/services/instance-settings";
+import { getTeamAws } from "@/services/team-aws";
+import { getTeamCloudflare } from "@/services/cloudflare-connect";
 import { DomainForm } from "../DomainForm";
 
 export const metadata = { title: "Add domain" };
@@ -12,16 +13,19 @@ export const metadata = { title: "Add domain" };
 export default async function NewDomainPage() {
   const ctx = await requireTeam();
   if (!can(ctx.role, "domains.manage")) redirect("/app/domains");
-  const s = await getInstanceSettings();
+  const [aws, cf] = await Promise.all([
+    getTeamAws(ctx.team.id),
+    getTeamCloudflare(ctx.team.id),
+  ]);
   return (
     <div className="flex max-w-xl flex-col gap-6">
-      {s.awsMode === "none" && (
+      {!aws && (
         <Notice>
           AWS is not connected, so domains cannot be provisioned.{" "}
-          {ctx.role === "owner" ? (
-            <Link href="/app/settings/instance">Connect AWS in Settings</Link>
+          {ctx.role === "owner" || ctx.role === "admin" ? (
+            <Link href="/app/settings/sending">Connect AWS in Settings</Link>
           ) : (
-            "Ask a team owner to connect it in Settings → Instance."
+            "Ask a team owner or admin to connect it in Settings → Sending."
           )}
         </Notice>
       )}
@@ -30,7 +34,7 @@ export default async function NewDomainPage() {
           <CardTitle>Add a sending domain</CardTitle>
         </CardHeader>
         <CardBody>
-          <DomainForm hasCloudflare={Boolean(s.cloudflareConnectedAt)} />
+          <DomainForm hasCloudflare={cf !== null} />
         </CardBody>
       </Card>
     </div>

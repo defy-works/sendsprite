@@ -2,8 +2,12 @@ import Link from "next/link";
 import { env } from "@/env";
 import { SES_REGIONS } from "@/lib/aws/regions";
 import { requireTeamAdmin } from "@/lib/session";
-import { getInstanceSettings } from "@/services/instance-settings";
-import { oauthAvailable } from "@/services/cloudflare-connect";
+import { getTeamAws } from "@/services/team-aws";
+import { getTeamSettings } from "@/services/team-settings";
+import {
+  getTeamCloudflare,
+  oauthAvailable,
+} from "@/services/cloudflare-connect";
 import { SetupWizard } from "./SetupWizard";
 import { STEPS, type Step, type WizardSettings } from "./types";
 
@@ -17,30 +21,36 @@ export default async function SetupPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  await requireTeamAdmin();
-  const s = await getInstanceSettings();
-  const cfOauth = oauthAvailable();
+  const ctx = await requireTeamAdmin();
+  const [aws, cf, team] = await Promise.all([
+    getTeamAws(ctx.team.id),
+    getTeamCloudflare(ctx.team.id),
+    getTeamSettings(ctx.team.id),
+  ]);
   // Only serialisable, non-secret fields cross into the client tree.
   const settings: WizardSettings = {
-    awsMode: s.awsMode,
-    awsRegion: s.awsRegion,
-    awsAccountId: s.awsAccountId,
-    sesAccountStatus: s.sesAccountStatus,
-    sesReviewStatus: s.sesReviewStatus,
-    sesDailyQuota: s.sesDailyQuota,
-    sesMaxSendRate: s.sesMaxSendRate,
-    cloudflareConnectedAt: s.cloudflareConnectedAt?.toISOString() ?? null,
-    cloudflareAccountName: s.cloudflareAccountName,
-    setupCompleted: s.setupCompleted,
+    awsConnected: aws !== null,
+    awsRegion: aws?.region ?? null,
+    awsAccountId: aws?.accountId ?? null,
+    sesAccountStatus: aws?.sesAccountStatus ?? null,
+    sesReviewStatus: aws?.sesReviewStatus ?? null,
+    sesDailyQuota: aws?.sesDailyQuota ?? null,
+    sesMaxSendRate: aws?.sesMaxSendRate ?? null,
+    snsSubscriptionMissing: Boolean(
+      aws?.snsTopicArn && !aws.snsSubscriptionArn,
+    ),
+    cloudflareConnectedAt: cf?.connectedAt?.toISOString() ?? null,
+    cloudflareAccountName: cf?.accountName ?? null,
+    setupCompleted: team?.setupCompleted ?? false,
   };
   const requested = (await searchParams).step;
   const step: Step = isStep(requested)
     ? requested
-    : s.awsMode === "none"
+    : !settings.awsConnected
       ? "aws"
-      : s.sesAccountStatus !== "production"
+      : settings.sesAccountStatus !== "production"
         ? "production"
-        : !s.cloudflareConnectedAt
+        : !settings.cloudflareConnectedAt
           ? "cloudflare"
           : "done";
   return (
@@ -57,7 +67,7 @@ export default async function SetupPage({
             regions={SES_REGIONS}
             defaultRegion={env.AWS_DEFAULT_REGION}
             oneClickAvailable={env.APP_URL.startsWith("https://")}
-            oauthAvailable={cfOauth}
+            oauthAvailable={oauthAvailable()}
           />
         </div>
       </div>

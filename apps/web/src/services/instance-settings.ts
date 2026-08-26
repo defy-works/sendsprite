@@ -3,11 +3,10 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { instanceSettings } from "@/db/schema";
 import { computeDiff, recordAudit, type RequestMeta } from "@/lib/audit";
-import { getCipher } from "@/lib/crypto";
 
 export type InstanceSettings = typeof instanceSettings.$inferSelect;
 
-/** Who is changing instance settings (owner-level, so no team). */
+/** Who is changing instance settings (operator-level, so no team). */
 export interface InstanceActor {
   userId: string;
   meta?: RequestMeta;
@@ -37,31 +36,12 @@ export const getInstanceSettings = cache(
   },
 );
 
-/** Plain columns only: encrypted columns are written via `Secrets`. */
-type Plain = Partial<
-  Omit<
-    InstanceSettings,
-    | "id"
-    | "createdAt"
-    | "updatedAt"
-    | "awsAccessKeyEnc"
-    | "awsSecretEnc"
-    | "cloudflareAccessTokenEnc"
-    | "cloudflareRefreshTokenEnc"
-  >
->;
-type Secrets = {
-  awsAccessKey?: string | null;
-  awsSecret?: string | null;
-  cloudflareAccessToken?: string | null;
-  cloudflareRefreshToken?: string | null;
-};
+/** Everything on the row is a plain operator setting; no secrets live here. */
+type Plain = Partial<Omit<InstanceSettings, "id" | "createdAt" | "updatedAt">>;
 
 /**
- * Row as it appears in the audit diff: bookkeeping columns dropped. Secret
- * columns are compared as ciphertext so a rotation (set → set) still shows up;
- * `computeDiff` redacts them by key name, so the values never reach the log.
- * On a fresh instance `before` is undefined and the first update lists every
+ * Row as it appears in the audit diff: bookkeeping columns dropped. On a
+ * fresh instance `before` is undefined and the first update lists every
  * column as `{ to: … }`.
  */
 function auditView(row: InstanceSettings | undefined): Record<string, unknown> {
@@ -81,38 +61,12 @@ function auditView(row: InstanceSettings | undefined): Record<string, unknown> {
  * events rather than diffs.
  */
 export async function updateInstanceSettings(
-  patch: Plain & Secrets,
+  patch: Plain,
   actor?: InstanceActor,
   opts: { audit?: boolean; action?: string } = {},
 ): Promise<InstanceSettings> {
   const before = await selectSingleton();
-  const {
-    awsAccessKey,
-    awsSecret,
-    cloudflareAccessToken,
-    cloudflareRefreshToken,
-    ...plain
-  } = patch;
-  const c = getCipher();
-  const enc = {
-    ...(awsAccessKey !== undefined && {
-      awsAccessKeyEnc: awsAccessKey ? c.encrypt(awsAccessKey) : null,
-    }),
-    ...(awsSecret !== undefined && {
-      awsSecretEnc: awsSecret ? c.encrypt(awsSecret) : null,
-    }),
-    ...(cloudflareAccessToken !== undefined && {
-      cloudflareAccessTokenEnc: cloudflareAccessToken
-        ? c.encrypt(cloudflareAccessToken)
-        : null,
-    }),
-    ...(cloudflareRefreshToken !== undefined && {
-      cloudflareRefreshTokenEnc: cloudflareRefreshToken
-        ? c.encrypt(cloudflareRefreshToken)
-        : null,
-    }),
-  };
-  const set = { ...plain, ...enc, updatedAt: new Date() };
+  const set = { ...patch, updatedAt: new Date() };
   const [row] = await db()
     .insert(instanceSettings)
     .values({ id: 1, ...set })
@@ -130,19 +84,4 @@ export async function updateInstanceSettings(
     ...actor?.meta,
   });
   return row;
-}
-
-export async function getDecryptedSecrets() {
-  const s = await getInstanceSettings();
-  const c = getCipher();
-  return {
-    awsAccessKey: s.awsAccessKeyEnc ? c.decrypt(s.awsAccessKeyEnc) : null,
-    awsSecret: s.awsSecretEnc ? c.decrypt(s.awsSecretEnc) : null,
-    cloudflareAccessToken: s.cloudflareAccessTokenEnc
-      ? c.decrypt(s.cloudflareAccessTokenEnc)
-      : null,
-    cloudflareRefreshToken: s.cloudflareRefreshTokenEnc
-      ? c.decrypt(s.cloudflareRefreshTokenEnc)
-      : null,
-  };
 }

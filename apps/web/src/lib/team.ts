@@ -50,27 +50,22 @@ export async function resolveTeam(
 }
 
 /**
- * Owner emails to show a member waiting on setup: owners of the caller's
- * own teams first; only when none exist (e.g. the caller's team has no owner
- * left) every owner on the instance.
+ * Owner and admin emails to show a member waiting on setup — for **their own
+ * team only**. The instance-wide fallback is gone: with AWS on the team, an
+ * owner of an unrelated team cannot finish your setup, so listing them just
+ * sends the member to the wrong person.
  */
-export async function listOwnerEmails(userId: string): Promise<string[]> {
-  const mine = db()
-    .select({ id: member.organizationId })
+export async function listTeamAdminEmails(teamId: string): Promise<string[]> {
+  const rows = await db()
+    .selectDistinct({ email: user.email })
     .from(member)
-    .where(eq(member.userId, userId));
-  const query = (scoped: boolean) =>
-    db()
-      .selectDistinct({ email: user.email })
-      .from(member)
-      .innerJoin(user, eq(member.userId, user.id))
-      .where(
-        scoped
-          ? and(eq(member.role, "owner"), inArray(member.organizationId, mine))
-          : eq(member.role, "owner"),
-      )
-      .orderBy(user.email);
-  const rows = await query(true);
-  const all = rows.length > 0 ? rows : await query(false);
-  return all.map((r) => r.email);
+    .innerJoin(user, eq(member.userId, user.id))
+    .where(
+      and(
+        eq(member.organizationId, teamId),
+        inArray(member.role, ["owner", "admin"]),
+      ),
+    )
+    .orderBy(user.email);
+  return rows.map((r) => r.email);
 }

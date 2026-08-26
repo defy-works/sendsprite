@@ -1,15 +1,22 @@
 export const STEPS = ["aws", "production", "cloudflare", "done"] as const;
 export type Step = (typeof STEPS)[number];
 
-/** The non-secret slice of instance settings the wizard renders. */
+/** The non-secret slice of a team's connection the wizard renders. */
 export interface WizardSettings {
-  awsMode: "none" | "instance_role" | "keys";
+  /** The `team_aws` row exists; there is no separate "mode". */
+  awsConnected: boolean;
   awsRegion: string | null;
   awsAccountId: string | null;
   sesAccountStatus: "sandbox" | "requested" | "production" | null;
   sesReviewStatus: "PENDING" | "GRANTED" | "DENIED" | "FAILED" | null;
   sesDailyQuota: number | null;
   sesMaxSendRate: number | null;
+  /**
+   * A topic exists but no confirmed subscription, so SES events are not being
+   * delivered. Set on an instance migrated from the pre-team layout, whose
+   * subscription still points at the old instance-wide webhook path.
+   */
+  snsSubscriptionMissing: boolean;
   cloudflareConnectedAt: string | null;
   cloudflareAccountName: string | null;
   setupCompleted: boolean;

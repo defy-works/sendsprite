@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/Badge";
 import { Logo, MarkTile } from "@/components/ui/Logo";
 import { appVersion, sourceUrl } from "@/lib/build-info";
-import type { InstanceSettings } from "@/services/instance-settings";
+import type { TeamAws } from "@/services/team-aws";
 import { MobileNav } from "./MobileNav";
 import { NavLink } from "./NavLink";
 import { TeamSwitcher } from "./TeamSwitcher";
@@ -29,7 +29,7 @@ export function AppShell(p: {
   teamId: string;
   teamName: string;
   email: string;
-  sesStatus: InstanceSettings["sesAccountStatus"];
+  sesStatus: TeamAws["sesAccountStatus"];
   isInstanceAdmin?: boolean;
   children: ReactNode;
 }) {

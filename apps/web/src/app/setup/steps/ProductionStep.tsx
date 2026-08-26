@@ -55,7 +55,7 @@ export function ProductionStep({ settings, mode = "wizard" }: WizardProps) {
         )}
       </div>
 
-      {settings.awsMode === "none" && (
+      {!settings.awsConnected && (
         <Notice>Connect AWS first; production access is per account.</Notice>
       )}
       {settings.sesReviewStatus === "DENIED" && (
@@ -134,7 +134,7 @@ export function ProductionStep({ settings, mode = "wizard" }: WizardProps) {
           <div>
             <Button
               type="submit"
-              disabled={pending || settings.awsMode === "none"}
+              disabled={pending || !settings.awsConnected}
             >
               {pending ? "Submitting…" : "Request production access"}
             </Button>
