@@ -369,6 +369,98 @@ describe("CSV import", () => {
     expect(page.data.data[0]!.unsubscribedAt).toBeInstanceOf(Date);
   });
 
+  it("honours a subscribed column on the way in, and never resubscribes on the way back", async () => {
+    const { actor, book: b, svc } = await book();
+    // Already out, and the file says otherwise: the file does not win.
+    await svc.createContact(actor, b.id, { email: "gone@b.io" }, deps);
+    await svc.unsubscribeContact(actor, { email: "gone@b.io" }, deps);
+    const r = await svc.importContacts(
+      actor,
+      b.id,
+      {
+        csv: [
+          "email,first_name,subscribed,unsubscribe_reason",
+          "ada@b.io,Ada,true,",
+          "grace@b.io,Grace,FALSE,left the list",
+          "hedy@b.io,Hedy,no,",
+          "gone@b.io,Gone,true,",
+        ].join("\n"),
+      },
+      deps,
+    );
+    if (!r.ok) throw new Error("unreachable");
+    expect(r.data).toMatchObject({ imported: 3, updated: 1, errors: [] });
+    const page = await svc.listContactsPage(actor.teamId, b.id, { limit: 25 });
+    if (!page.ok) throw new Error("unreachable");
+    const by = new Map(page.data.data.map((c) => [c.email, c]));
+    expect(by.get("ada@b.io")).toMatchObject({ subscribed: true });
+    expect(by.get("ada@b.io")!.unsubscribedAt).toBeNull();
+    // Arrived unsubscribed: stamped, with the file's reason carried through.
+    expect(by.get("grace@b.io")).toMatchObject({
+      subscribed: false,
+      unsubscribeReason: "left the list",
+    });
+    expect(by.get("grace@b.io")!.unsubscribedAt).toBeInstanceOf(Date);
+    expect(by.get("hedy@b.io")).toMatchObject({
+      subscribed: false,
+      unsubscribeReason: "import",
+    });
+    // Already unsubscribed, file says true: still out, name still updated.
+    expect(by.get("gone@b.io")).toMatchObject({
+      subscribed: false,
+      firstName: "Gone",
+    });
+  });
+
+  it("holds back a row whose subscribed cell means nothing recognisable", async () => {
+    const { actor, book: b, svc } = await book();
+    const r = await svc.importContacts(
+      actor,
+      b.id,
+      {
+        csv: [
+          "email,subscribed",
+          "ada@b.io,true",
+          "grace@b.io,maybe later",
+        ].join("\n"),
+      },
+      deps,
+    );
+    if (!r.ok) throw new Error("unreachable");
+    expect(r.data).toMatchObject({ imported: 1, skipped: 1 });
+    expect(r.data.errors).toEqual([
+      {
+        line: 3,
+        email: "grace@b.io",
+        reason: 'Value in column "subscribed" must be true or false.',
+      },
+    ]);
+  });
+
+  it("round-trips its own export shape without inventing properties", async () => {
+    const { actor, book: b, svc } = await book();
+    const r = await svc.importContacts(
+      actor,
+      b.id,
+      {
+        csv: [
+          "email,first_name,last_name,subscribed,unsubscribe_reason,created_at,plan",
+          "ada@b.io,Ada,Lovelace,true,,2020-01-01T00:00:00.000Z,pro",
+        ].join("\n"),
+      },
+      deps,
+    );
+    if (!r.ok) throw new Error("unreachable");
+    expect(r.data).toMatchObject({ imported: 1, errors: [] });
+    const page = await svc.listContactsPage(actor.teamId, b.id, { limit: 25 });
+    if (!page.ok) throw new Error("unreachable");
+    const ada = page.data.data[0]!;
+    // The reserved headers are fields; only `plan` is a property.
+    expect(ada.properties).toEqual({ plan: "pro" });
+    // `created_at` is ours to assign, not the file's to set.
+    expect(ada.createdAt.getFullYear()).toBeGreaterThan(2020);
+  });
+
   it("reports the rows the parser held back, and counts them as skipped", async () => {
     const { actor, book: b, svc } = await book();
     const r = await svc.importContacts(

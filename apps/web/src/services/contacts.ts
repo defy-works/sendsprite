@@ -566,10 +566,75 @@ export async function unsubscribeContact(
   return { ok: true, data: { unsubscribed: rows.length } };
 }
 
-/** Header aliases accepted for the three known columns, case-insensitive. */
+/** Header aliases accepted for the known columns, case-insensitive. */
 const EMAIL_HEADERS = new Set(["email", "email_address", "e-mail"]);
 const FIRST_HEADERS = new Set(["first_name", "firstname", "first"]);
 const LAST_HEADERS = new Set(["last_name", "lastname", "last"]);
+const SUBSCRIBED_HEADERS = new Set(["subscribed"]);
+const REASON_HEADERS = new Set(["unsubscribe_reason", "unsubscribereason"]);
+/**
+ * Recognised so it does not become a property, then ignored: when a row was
+ * created is ours to assign, not the file's to set.
+ */
+const IGNORED_HEADERS = new Set(["created_at", "createdat"]);
+
+/**
+ * Every header the import reads as a *field*. The rule for everything else is
+ * unchanged — it becomes a property — but this list is now load-bearing rather
+ * than incidental: without it, re-importing this product's own export turns
+ * `subscribed`, `unsubscribe_reason` and `created_at` into three junk
+ * properties, and for a contact already at the 20-property cap it fails every
+ * row. Export → edit in a spreadsheet → re-import is the most common thing
+ * anyone does with a contact list, so it has to round-trip clean.
+ */
+const RESERVED_HEADERS = new Set([
+  ...EMAIL_HEADERS,
+  ...FIRST_HEADERS,
+  ...LAST_HEADERS,
+  ...SUBSCRIBED_HEADERS,
+  ...REASON_HEADERS,
+  ...IGNORED_HEADERS,
+]);
+
+/** `UpdateContactInput.unsubscribeReason`'s bound, applied at the other door. */
+const MAX_REASON_CHARS = 200;
+
+const SUBSCRIBED_FALSE = new Set([
+  "false",
+  "0",
+  "no",
+  "n",
+  "f",
+  "off",
+  "unsubscribed",
+]);
+const SUBSCRIBED_TRUE = new Set([
+  "true",
+  "1",
+  "yes",
+  "y",
+  "t",
+  "on",
+  "subscribed",
+]);
+
+/**
+ * A `subscribed` cell → consent, or `null` when the value means nothing we
+ * recognise.
+ *
+ * An absent column and a blank cell both mean "subscribed": a list without the
+ * column is a list of people to mail, and reading a blank as "opted out" would
+ * silently empty a customer's audience over a sloppy spreadsheet edit. An
+ * unrecognised value is a **refusal for that row**, not a default — defaulting
+ * it to `true` is precisely the silent resubscribe this column exists to stop.
+ */
+function parseSubscribed(cell: string): boolean | null {
+  if (!cell) return true;
+  const v = cell.toLowerCase();
+  if (SUBSCRIBED_FALSE.has(v)) return false;
+  if (SUBSCRIBED_TRUE.has(v)) return true;
+  return null;
+}
 
 /** A row the import did not apply, with the physical line it was on. */
 type ImportError = ImportContactsResult["errors"][number];
@@ -617,10 +682,14 @@ function truncateErrors(all: ImportError[]): ImportError[] {
  * That includes the rows `parseCsv` itself held back (ragged rows, over-long
  * cells) — they are merged into the same report rather than vanishing.
  *
- * An import never changes consent: `subscribed`, `unsubscribed_at` and
- * `unsubscribe_reason` are set when the row is new and left exactly as they
- * are when it is not, so re-uploading a list cannot resubscribe someone who
- * opted out.
+ * Consent travels in one direction only. A **new** row takes the consent the
+ * file gives it: `subscribed` is honoured when the column is present (a list
+ * exported from another provider routinely carries people who opted out, and
+ * importing them as subscribed is a consent failure that surfaces as a spam
+ * complaint rather than a bug report), and defaults to subscribed only when
+ * the column is absent. An **existing** row keeps the consent it already had:
+ * the upsert's `set` clause never touches `subscribed`, `unsubscribed_at` or
+ * `unsubscribe_reason`, so no file can resubscribe someone who opted out.
  */
 export async function importContacts(
   actor: TeamActor,
@@ -651,9 +720,11 @@ export async function importContacts(
     };
   const firstAt = lower.findIndex((h) => FIRST_HEADERS.has(h));
   const lastAt = lower.findIndex((h) => LAST_HEADERS.has(h));
+  const subscribedAt = lower.findIndex((h) => SUBSCRIBED_HEADERS.has(h));
+  const reasonAt = lower.findIndex((h) => REASON_HEADERS.has(h));
   const propertyAt = header
     .map((name, i) => ({ name, i }))
-    .filter((c) => c.name && ![emailAt, firstAt, lastAt].includes(c.i));
+    .filter((c) => c.name && !RESERVED_HEADERS.has(lower[c.i] ?? ""));
 
   // Every problem, not just the reported ones: `skipped` counts them all.
   // The parser's own held-back rows come first and carry no address, because
@@ -670,10 +741,31 @@ export async function importContacts(
   for (const row of parsed.data.rows) {
     const cell = (i: number) => (i < 0 ? "" : (row.cells[i] ?? "").trim());
     const rawEmail = cell(emailAt);
+    // Consent first: a row whose `subscribed` cell is unreadable is held back
+    // rather than imported as subscribed.
+    const subscribed = parseSubscribed(cell(subscribedAt));
+    if (subscribed === null) {
+      problems.push({
+        line: row.line,
+        email: rawEmail || null,
+        reason: `Value in column "${header[subscribedAt] ?? "subscribed"}" must be true or false.`,
+      });
+      continue;
+    }
+    const reason = cell(reasonAt);
+    if (reason.length > MAX_REASON_CHARS) {
+      problems.push({
+        line: row.line,
+        email: rawEmail || null,
+        reason: `Value in column "${header[reasonAt] ?? "unsubscribe_reason"}" is longer than ${MAX_REASON_CHARS} characters.`,
+      });
+      continue;
+    }
     const parsedContact = CreateContactInput.safeParse({
       email: rawEmail,
       firstName: cell(firstAt) || undefined,
       lastName: cell(lastAt) || undefined,
+      subscribed,
       // A blank cell is an absent property, not an empty one: the renderer
       // treats `""` as missing, so storing it would only hide the gap.
       properties: Object.fromEntries(
@@ -700,7 +792,11 @@ export async function importContacts(
       firstName: parsedContact.data.firstName ?? null,
       lastName: parsedContact.data.lastName ?? null,
       properties: parsedContact.data.properties,
-      subscribed: true,
+      subscribed: parsedContact.data.subscribed,
+      unsubscribedAt: parsedContact.data.subscribed ? null : now,
+      unsubscribeReason: parsedContact.data.subscribed
+        ? null
+        : reason || "import",
       updatedAt: now,
     });
   }
