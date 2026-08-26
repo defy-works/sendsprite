@@ -1,10 +1,12 @@
 "use server";
 import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
+import { z } from "zod";
 import { TEAM_ROLES, type TeamRole } from "@sendsprite/shared";
 import { requestMeta } from "@/lib/audit";
 import { requireTeam } from "@/lib/session";
 import * as team from "@/services/team";
+import { setTeamRetention } from "@/services/team-settings";
 
 export type { Result } from "@/services/team";
 
@@ -63,6 +65,30 @@ export async function changeRole(memberId: string, role: string) {
     return { ok: false as const, error: "Unknown role." };
   const { actor: a, headers: h } = await actor();
   const res = await team.changeRole(a, h, memberId, role as TeamRole);
+  if (res.ok) revalidatePath("/app/settings");
+  return res;
+}
+
+const retentionForm = z.object({
+  retentionDays: z.coerce
+    .number({ error: "Retention days must be a number." })
+    .int("Retention days must be a whole number.")
+    .min(1, "Retention days must be at least 1.")
+    .max(3650, "Retention days must be at most 3650."),
+});
+
+/** Team's own retention window; clamped to the instance ceiling on write. */
+export async function updateRetentionAction(fd: FormData) {
+  const { actor: a } = await actor();
+  const parsed = retentionForm.safeParse({
+    retentionDays: fd.get("retentionDays"),
+  });
+  if (!parsed.success)
+    return {
+      ok: false as const,
+      error: parsed.error.issues[0]?.message ?? "Check the form.",
+    };
+  const res = await setTeamRetention(a, parsed.data.retentionDays);
   if (res.ok) revalidatePath("/app/settings");
   return res;
 }

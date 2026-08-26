@@ -4,11 +4,15 @@ import { db } from "@/db";
 import { invitation, member, user } from "@/db/schema";
 import { requireTeam } from "@/lib/session";
 import { billingConfig } from "@/services/billing/config";
+import { getInstanceSettings } from "@/services/instance-settings";
+import { getTeamSettings } from "@/services/team-settings";
+import { effectiveRetentionDays } from "@/services/retention-policy";
 import { Card, CardHeader, CardTitle, CardBody } from "@/components/ui/Card";
 import { Link } from "@/components/ui/Link";
 import { RenameForm } from "./RenameForm";
 import { MembersPanel } from "./MembersPanel";
 import { InvitePanel } from "./InvitePanel";
+import { RetentionForm } from "./RetentionForm";
 
 export const metadata = { title: "Settings" };
 
@@ -54,6 +58,10 @@ export default async function SettingsPage() {
       )
       .orderBy(invitation.expiresAt)
   ).map(({ expiresAt, ...i }) => ({ ...i, expires: formatDate(expiresAt) }));
+  const [instance, settings] = await Promise.all([
+    getInstanceSettings(),
+    getTeamSettings(ctx.team.id),
+  ]);
   return (
     <div className="flex max-w-3xl flex-col gap-6">
       <Card>
@@ -87,6 +95,21 @@ export default async function SettingsPage() {
           </CardBody>
         </Card>
       )}
+      <Card>
+        <CardHeader>
+          <CardTitle>Retention</CardTitle>
+        </CardHeader>
+        <CardBody>
+          <RetentionForm
+            retentionDays={effectiveRetentionDays(
+              settings?.retentionDays ?? null,
+              instance.retentionDays,
+            )}
+            instanceMax={instance.retentionDays}
+            canManage={can(ctx.role, "settings.manage")}
+          />
+        </CardBody>
+      </Card>
       {/* Mirrors the Instance card deliberately: there is no settings
           sub-nav to extend, and inventing one for a single page would be a
           bigger change than the page itself. */}
@@ -110,8 +133,8 @@ export default async function SettingsPage() {
           </CardHeader>
           <CardBody>
             <p className="text-sm text-white/70">
-              AWS, SES production access, Cloudflare, signup mode and retention
-              apply to the whole instance.{" "}
+              AWS, SES production access and Cloudflare apply to the whole
+              instance.{" "}
               <Link href="/app/settings/instance">Open instance settings</Link>
             </p>
           </CardBody>

@@ -320,3 +320,34 @@ describe("team service", () => {
     expect(a).toMatchObject({ targetId: plainMemberId });
   });
 });
+
+describe("team retention", () => {
+  it("clamps a request above the instance ceiling", async () => {
+    const { updateInstanceSettings } = await import(
+      "@/services/instance-settings"
+    );
+    await updateInstanceSettings({ retentionDays: 90 }, undefined, {
+      audit: false,
+    });
+    const { setTeamRetention } = await import("@/services/team-settings");
+    const res = await setTeamRetention(owner, 365);
+    expect(res).toMatchObject({ ok: true, data: { retentionDays: 90 } });
+  });
+
+  it("stores a shorter window verbatim", async () => {
+    const { setTeamRetention, getTeamSettings } = await import(
+      "@/services/team-settings"
+    );
+    const res = await setTeamRetention(owner, 14);
+    expect(res).toMatchObject({ ok: true, data: { retentionDays: 14 } });
+    expect((await getTeamSettings(owner.teamId))?.retentionDays).toBe(14);
+  });
+
+  it("refuses a plain member", async () => {
+    const { setTeamRetention } = await import("@/services/team-settings");
+    expect(await setTeamRetention(plain, 30)).toMatchObject({
+      ok: false,
+      code: "forbidden",
+    });
+  });
+});

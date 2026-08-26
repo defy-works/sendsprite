@@ -110,6 +110,7 @@ stops the container with a message naming the variable.
 | `SMTP_MAX_SIZE`                             | `10485760`           | Largest message the relay accepts.                                                                                                                                |
 | `LANDING_ENABLED`                           | `true`               | Serve the marketing page at `/`; when off, `/` redirects to `/app`.                                                                                               |
 | `SIGNUP_MODE`                               | `auto`               | `auto`, `open`, `invite` or `closed`. `auto` opens signup only until the first user exists, then switches to invite-only (a dashboard override wins over `auto`). |
+| `INSTANCE_ADMIN_EMAILS`                     | unset                | Comma-separated emails that always have instance-admin access. Leave unset and the first account created on the instance is flagged instead. This is the lockout escape hatch — it cannot be revoked from the UI. |
 | `EMAIL_PASSWORD_ENABLED`                    | `false`              | Email + password sign-in.                                                                                                                                         |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | unset                | Enables Google sign-in when both are set.                                                                                                                         |
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | unset                | Enables GitHub sign-in when both are set.                                                                                                                         |
@@ -124,6 +125,29 @@ stops the container with a message naming the variable.
 
 Enable at least one sign-in method or nobody can reach the dashboard; the
 installer turns on `EMAIL_PASSWORD_ENABLED`.
+
+## Instance admin
+
+Signup mode, the landing-page toggle and the **retention ceiling** are
+operator settings, not team settings. They live at `/app/admin`, which only
+instance admins can open — owning a team grants no access to it.
+
+Two ways to be an instance admin, and either is enough:
+
+- **`INSTANCE_ADMIN_EMAILS`** — a comma-separated allowlist checked against
+  the signed-in email. It always wins and cannot be revoked from the UI, so
+  it is the way back in if the flag below is ever cleared.
+- **The `instance_admin` flag on the user row.** When `INSTANCE_ADMIN_EMAILS`
+  is unset, the first account created on a fresh instance is flagged
+  automatically, so a new deployment always has someone who can reach the
+  page.
+
+Retention is per team, bounded by the operator. `/app/admin` sets the longest
+window any team may keep email bodies and attachments for; each team then
+picks its own window, up to that maximum, in **Settings → Retention**. A team
+that has chosen nothing inherits the ceiling, and lowering the ceiling
+shortens every team that had asked for more. Metadata and events are never
+purged — only bodies, attachments and old webhook deliveries.
 
 ## Connect AWS
 
