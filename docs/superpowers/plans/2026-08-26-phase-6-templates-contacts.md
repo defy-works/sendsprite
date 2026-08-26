@@ -245,6 +245,24 @@ README.md                                  + templates/contacts paragraphs, road
 
 ---
 
+## Behaviour change to announce in Task 16's changeset
+
+`NO_CONTROL_CHARS` replaced the two `NO_CRLF` copies, so the whole email API now refuses **any**
+C0 control character or DEL — not just CR and LF — in `subject`, `from`/`to`/`cc`/`bcc`/
+`replyTo`, attachment `filename` and `contentType`, custom header values and tag values.
+
+That includes **HTAB**, which RFC 5322 permits as WSP in an unstructured header. So a customer
+who puts a tab in a subject now gets a 422 where they previously got a send. Keep it: tab is the
+folding-continuation character and therefore the second half of a header-injection primitive,
+NUL truncates C strings downstream, and ESC is the RFC 2047 charset-switching lead-in. Nothing
+is published to npm yet and there are no production users, so the cost of tightening is zero
+today and non-zero forever after.
+
+It must be **announced**, not shipped silently: name it in the changeset and in `/docs/sending`,
+and make sure the validation message says "line breaks or control characters" rather than
+"line breaks" — otherwise a customer with a tab is told their subject contains a line break,
+which is both wrong and unactionable.
+
 ## Carry-forwards for Task 7 (from the Task 3 contracts)
 
 - **Normalise emails identically on both sides.** The contract's email schema is
