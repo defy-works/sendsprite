@@ -27,6 +27,7 @@ import {
 import { STSClient, GetCallerIdentityCommand } from "@aws-sdk/client-sts";
 import { auditLog } from "@/db/schema";
 import { startPg } from "./_pg";
+import { seedTeamWithKey } from "./helpers";
 
 const ses = mockClient(SESv2Client);
 const sns = mockClient(SNSClient);
@@ -43,40 +44,24 @@ const awsErr = (name: string, message: string) =>
   Object.assign(new Error(message), { name });
 
 let pg: Awaited<ReturnType<typeof startPg>>;
+/** The team under test, and the slug its AWS resource names derive from. */
+let TEAM: string;
+const SLUG = "acme";
 beforeAll(async () => {
   pg = await startPg();
   process.env.APP_SECRET = "x".repeat(40);
   process.env.APP_URL = "https://mail.acme.com";
   const { resetEnvCache } = await import("@/env.schema");
   resetEnvCache();
+  TEAM = (await seedTeamWithKey()).team.id;
 });
 afterAll(async () => {
   await pg.stop();
 });
-/** Every test starts from a disconnected instance and sets its own precondition. */
+/** Every test starts from a disconnected team and sets its own precondition. */
 beforeEach(async () => {
-  const { updateInstanceSettings } =
-    await import("@/services/instance-settings");
-  await updateInstanceSettings(
-    {
-      awsMode: "none",
-      awsRegion: null,
-      awsAccessKey: null,
-      awsSecret: null,
-      awsAccountId: null,
-      awsConnectedAt: null,
-      snsTopicArn: null,
-      snsSubscriptionArn: null,
-      sesConfigSet: null,
-      sesAccountStatus: null,
-      sesReviewStatus: null,
-      sesDailyQuota: null,
-      sesMaxSendRate: null,
-      sesLastCheckedAt: null,
-    },
-    undefined,
-    { audit: false },
-  );
+  const { teamAws } = await import("@/db/schema");
+  await pg.db.delete(teamAws);
   await pg.db.delete(auditLog);
 });
 afterEach(() => {
@@ -100,16 +85,17 @@ function happyMocks() {
   sns.on(SubscribeCommand).resolves({ SubscriptionArn: SUB_ARN });
 }
 
-async function settings() {
-  const { getInstanceSettings } = await import("@/services/instance-settings");
-  return getInstanceSettings();
+/** The team's connection row, or null when it is disconnected. */
+async function conn() {
+  const { getTeamAws } = await import("@/services/team-aws");
+  return getTeamAws(TEAM);
 }
-/** Instance-level audit rows, optionally just those with `action`. */
-async function instanceAudits(action?: string) {
+/** This team's audit rows, optionally just those with `action`. */
+async function audits(action?: string) {
   return pg.db
     .select()
     .from(auditLog)
-    .where(action ? eq(auditLog.action, action) : isNull(auditLog.teamId));
+    .where(action ? eq(auditLog.action, action) : eq(auditLog.teamId, TEAM));
 }
 
 describe("connectWithKeys", () => {
@@ -124,15 +110,14 @@ describe("connectWithKeys", () => {
       );
     const { connectWithKeys } = await import("@/services/aws-connect");
     const res = await connectWithKeys(
+      TEAM,
+      SLUG,
       { ...KEYS, accessKeyId: "AKIABADBADBADBAD" },
       { userId: "u1" },
     );
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toMatch(/security token/i);
-    expect(await settings()).toMatchObject({
-      awsMode: "none",
-      awsAccessKeyEnc: null,
-    });
+    expect(await conn()).toBeNull();
   });
   it("rejects malformed input (short keys, unsupported region) without calling AWS", async () => {
     const { connectWithKeys } = await import("@/services/aws-connect");
@@ -140,7 +125,7 @@ describe("connectWithKeys", () => {
       { accessKeyId: "short", secretAccessKey: "short", region: "us-east-1" },
       { ...KEYS, region: "mars-north-1" },
     ]) {
-      expect((await connectWithKeys(input, { userId: "u1" })).ok).toBe(false);
+      expect((await connectWithKeys(TEAM, SLUG, input, { userId: "u1" })).ok).toBe(false);
     }
     expect(sts.commandCalls(GetCallerIdentityCommand)).toHaveLength(0);
   });
@@ -148,36 +133,34 @@ describe("connectWithKeys", () => {
     happyMocks();
     const { connectWithKeys, EVENT_TYPES } =
       await import("@/services/aws-connect");
-    const res = await connectWithKeys(KEYS, { userId: "u1" });
+    const res = await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" });
     expect(res).toEqual({
       ok: true,
       data: { accountId: "123456789012", status: "sandbox" },
     });
-    const { getDecryptedSecrets } =
-      await import("@/services/instance-settings");
-    const s = await settings();
+    const { getTeamAwsSecrets } = await import("@/services/team-aws");
+    const s = await conn();
     expect(s).toMatchObject({
-      awsMode: "keys",
-      awsRegion: "us-east-1",
-      awsAccountId: "123456789012",
-      sesConfigSet: "sendsprite",
+      region: "us-east-1",
+      accountId: "123456789012",
+      configSet: "sendsprite-acme",
       snsTopicArn: TOPIC_ARN,
       snsSubscriptionArn: SUB_ARN,
       sesAccountStatus: "sandbox",
       sesDailyQuota: 200,
       sesMaxSendRate: 1,
     });
-    expect(s.awsConnectedAt).toBeInstanceOf(Date);
-    expect(s.awsAccessKeyEnc).toMatch(/^v1\./);
-    expect(await getDecryptedSecrets()).toMatchObject({
-      awsAccessKey: KEYS.accessKeyId,
-      awsSecret: KEYS.secretAccessKey,
+    expect(s.connectedAt).toBeInstanceOf(Date);
+    expect(s.accessKeyEnc).toMatch(/^v1\./);
+    expect(await getTeamAwsSecrets(TEAM)).toMatchObject({
+      accessKey: KEYS.accessKeyId,
+      secret: KEYS.secretAccessKey,
     });
     const dest = ses.commandCalls(
       CreateConfigurationSetEventDestinationCommand,
     )[0]!.args[0].input;
     expect(dest).toMatchObject({
-      ConfigurationSetName: "sendsprite",
+      ConfigurationSetName: "sendsprite-acme",
       EventDestination: {
         Enabled: true,
         SnsDestination: { TopicArn: TOPIC_ARN },
@@ -187,27 +170,26 @@ describe("connectWithKeys", () => {
     expect(sns.commandCalls(SubscribeCommand)[0]!.args[0].input).toEqual({
       TopicArn: TOPIC_ARN,
       Protocol: "https",
-      Endpoint: "https://mail.acme.com/api/webhooks/ses",
+      Endpoint: `https://mail.acme.com/api/webhooks/ses/${TEAM}`,
       ReturnSubscriptionArn: true,
     });
     // One audited write for the connection; the subscription ARN is bookkeeping.
-    expect(await instanceAudits()).toHaveLength(1);
-    expect(await instanceAudits("aws.connect")).toHaveLength(1);
+    expect(await audits()).toHaveLength(1);
+    expect(await audits("aws.connect")).toHaveLength(1);
   });
   it("persists the topic ARN before subscribing (confirmation POST can race Subscribe)", async () => {
     happyMocks();
     sns.on(SubscribeCommand).callsFake(async () => {
-      expect(await settings()).toMatchObject({
-        awsMode: "keys",
+      expect(await conn()).toMatchObject({
         snsTopicArn: TOPIC_ARN,
         snsSubscriptionArn: null,
       });
       return { SubscriptionArn: SUB_ARN };
     });
     const { connectWithKeys } = await import("@/services/aws-connect");
-    expect((await connectWithKeys(KEYS, { userId: "u1" })).ok).toBe(true);
+    expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(true);
     expect(sns.commandCalls(SubscribeCommand)).toHaveLength(1);
-    expect((await settings()).snsSubscriptionArn).toBe(SUB_ARN);
+    expect((await conn()).snsSubscriptionArn).toBe(SUB_ARN);
   });
   it("waits out IAM propagation: STS rejects twice, then connects", async () => {
     happyMocks();
@@ -223,13 +205,13 @@ describe("connectWithKeys", () => {
       slept.push(ms);
     });
     try {
-      expect((await connectWithKeys(KEYS, { userId: "u1" })).ok).toBe(true);
+      expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(true);
     } finally {
       setSleepForTests((ms) => new Promise((r) => setTimeout(r, ms)));
     }
     expect(sts.commandCalls(GetCallerIdentityCommand)).toHaveLength(3);
     expect(slept).toEqual([3000, 3000]);
-    expect((await settings()).awsMode).toBe("keys");
+    expect(await conn()).not.toBeNull();
   });
   it("gives up after 5 propagation failures (≤ 15 s budget) with no state and the error code", async () => {
     happyMocks();
@@ -240,20 +222,19 @@ describe("connectWithKeys", () => {
       await import("@/services/aws-connect");
     setSleepForTests(async () => {});
     try {
-      const res = await connectWithKeys(KEYS, { userId: "u1" });
+      const res = await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" });
       expect(res).toMatchObject({ ok: false, code: "InvalidClientTokenId" });
     } finally {
       setSleepForTests((ms) => new Promise((r) => setTimeout(r, ms)));
     }
     expect(sts.commandCalls(GetCallerIdentityCommand)).toHaveLength(5);
-    expect((await settings()).awsMode).toBe("none");
-    expect(await instanceAudits()).toHaveLength(0);
+    expect(await conn()).toBeNull();
+    expect(await audits()).toHaveLength(0);
   });
   it("refuses to connect over a live connection (disconnect first)", async () => {
     happyMocks();
-    const { connectWithKeys, detectInstanceRole } =
-      await import("@/services/aws-connect");
-    expect((await connectWithKeys(KEYS, { userId: "u1" })).ok).toBe(true);
+    const { connectWithKeys } = await import("@/services/aws-connect");
+    expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(true);
     sts.resetHistory();
     const refused = {
       ok: false,
@@ -262,19 +243,17 @@ describe("connectWithKeys", () => {
     };
     expect(
       await connectWithKeys(
+        TEAM,
+        SLUG,
         { ...KEYS, accessKeyId: "AKIAOTHEROTHEROTHER" },
         { userId: "u1" },
       ),
     ).toEqual(refused);
-    expect(await detectInstanceRole("eu-west-1", { userId: "u1" })).toEqual(
-      refused,
-    );
     expect(sts.commandCalls(GetCallerIdentityCommand)).toHaveLength(0);
-    expect(await settings()).toMatchObject({
-      awsMode: "keys",
-      awsRegion: "us-east-1",
+    expect(await conn()).toMatchObject({
+      region: "us-east-1",
     });
-    expect(await instanceAudits()).toHaveLength(1);
+    expect(await audits()).toHaveLength(1);
   });
   it("stays connected with a warning when Subscribe fails (no rollback trap)", async () => {
     happyMocks();
@@ -282,12 +261,11 @@ describe("connectWithKeys", () => {
       .on(SubscribeCommand)
       .rejects(awsErr("AuthorizationError", "not authorized: SNS:Subscribe"));
     const { connectWithKeys } = await import("@/services/aws-connect");
-    const res = await connectWithKeys(KEYS, { userId: "u1" });
+    const res = await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" });
     expect(res.ok).toBe(true);
     if (!res.ok) throw new Error("unreachable");
     expect(res.data.warning).toContain("SES event subscription");
-    expect(await settings()).toMatchObject({
-      awsMode: "keys",
+    expect(await conn()).toMatchObject({
       snsTopicArn: TOPIC_ARN,
       snsSubscriptionArn: null,
     });
@@ -302,7 +280,7 @@ describe("connectWithKeys", () => {
       .rejects(awsErr("AlreadyExistsException", "exists"));
     ses.on(UpdateConfigurationSetEventDestinationCommand).resolves({});
     const { connectWithKeys } = await import("@/services/aws-connect");
-    expect((await connectWithKeys(KEYS, { userId: "u1" })).ok).toBe(true);
+    expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(true);
     const update = ses.commandCalls(
       UpdateConfigurationSetEventDestinationCommand,
     );
@@ -323,19 +301,15 @@ describe("connectWithKeys", () => {
         ),
       );
     const { connectWithKeys } = await import("@/services/aws-connect");
-    const res = await connectWithKeys(KEYS, { userId: "u1" });
+    const res = await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" });
     expect(res.ok).toBe(false);
     if (!res.ok) {
       expect(res.error).toMatch(/sns:CreateTopic/);
       expect(res.error).not.toContain(KEYS.secretAccessKey);
     }
-    expect(await settings()).toMatchObject({
-      awsMode: "none",
-      awsAccessKeyEnc: null,
-      awsSecretEnc: null,
-      snsTopicArn: null,
-    });
-    expect(await instanceAudits()).toHaveLength(0);
+    // Nothing persisted: the row's absence is the disconnected state.
+    expect(await conn()).toBeNull();
+    expect(await audits()).toHaveLength(0);
   });
   it("skips the SNS subscription when APP_URL is not https (local dev)", async () => {
     happyMocks();
@@ -345,10 +319,10 @@ describe("connectWithKeys", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const { connectWithKeys } = await import("@/services/aws-connect");
-      expect((await connectWithKeys(KEYS, { userId: "u1" })).ok).toBe(true);
+      expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(true);
       expect(sns.commandCalls(SubscribeCommand)).toHaveLength(0);
       expect(warn).toHaveBeenCalledWith(expect.stringMatching(/https/i));
-      expect(await settings()).toMatchObject({
+      expect(await conn()).toMatchObject({
         snsTopicArn: TOPIC_ARN,
         snsSubscriptionArn: null,
       });
@@ -364,7 +338,7 @@ describe("requestProductionAccess / refreshSesAccount", () => {
   async function connected() {
     happyMocks();
     const { connectWithKeys } = await import("@/services/aws-connect");
-    expect((await connectWithKeys(KEYS, { userId: "u1" })).ok).toBe(true);
+    expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(true);
     await pg.db.delete(auditLog);
   }
   it("submits details and flips status to requested", async () => {
@@ -377,6 +351,7 @@ describe("requestProductionAccess / refreshSesAccount", () => {
     });
     const { requestProductionAccess } = await import("@/services/aws-connect");
     const res = await requestProductionAccess(
+      TEAM,
       {
         websiteUrl: "https://acme.com",
         mailType: "TRANSACTIONAL",
@@ -394,12 +369,12 @@ describe("requestProductionAccess / refreshSesAccount", () => {
       ProductionAccessEnabled: true,
       AdditionalContactEmailAddresses: ["ops@acme.com"],
     });
-    expect(await settings()).toMatchObject({
+    expect(await conn()).toMatchObject({
       sesAccountStatus: "requested",
       sesReviewStatus: "PENDING",
     });
-    expect(await instanceAudits()).toHaveLength(1);
-    expect(await instanceAudits("ses.production.request")).toHaveLength(1);
+    expect(await audits()).toHaveLength(1);
+    expect(await audits("ses.production.request")).toHaveLength(1);
   });
   it("audits a production request even when SES reports the account unchanged", async () => {
     await connected();
@@ -407,6 +382,7 @@ describe("requestProductionAccess / refreshSesAccount", () => {
     // Same values happyMocks() connected with: nothing changes.
     const { requestProductionAccess } = await import("@/services/aws-connect");
     const res = await requestProductionAccess(
+      TEAM,
       {
         websiteUrl: "https://acme.com",
         mailType: "TRANSACTIONAL",
@@ -415,12 +391,13 @@ describe("requestProductionAccess / refreshSesAccount", () => {
       { userId: "u1" },
     );
     expect(res).toEqual({ ok: true, data: { status: "sandbox" } });
-    expect(await instanceAudits()).toHaveLength(1);
-    expect(await instanceAudits("ses.production.request")).toHaveLength(1);
+    expect(await audits()).toHaveLength(1);
+    expect(await audits("ses.production.request")).toHaveLength(1);
   });
   it("rejects an invalid request before calling SES", async () => {
     const { requestProductionAccess } = await import("@/services/aws-connect");
     const res = await requestProductionAccess(
+      TEAM,
       { websiteUrl: "acme", mailType: "OTHER", useCase: "short" },
       { userId: "u1" },
     );
@@ -435,6 +412,7 @@ describe("requestProductionAccess / refreshSesAccount", () => {
       .rejects(awsErr("TooManyRequestsException", "Rate exceeded"));
     const { requestProductionAccess } = await import("@/services/aws-connect");
     const res = await requestProductionAccess(
+      TEAM,
       {
         websiteUrl: "https://acme.com",
         mailType: "MARKETING",
@@ -456,62 +434,27 @@ describe("requestProductionAccess / refreshSesAccount", () => {
       SendQuota: { Max24HourSend: 50000, MaxSendRate: 14 },
     });
     const { refreshSesAccount } = await import("@/services/aws-connect");
-    expect(await refreshSesAccount({ userId: "u1" })).toEqual({
+    expect(await refreshSesAccount(TEAM, { userId: "u1" })).toEqual({
       ok: true,
       data: { status: "production" },
     });
-    const first = await settings();
+    const first = await conn();
     expect(first).toMatchObject({
       sesAccountStatus: "production",
       sesReviewStatus: "GRANTED",
       sesDailyQuota: 50000,
       sesMaxSendRate: 14,
     });
-    expect(await instanceAudits()).toHaveLength(1);
-    expect(await instanceAudits("ses.account.refresh")).toHaveLength(1);
+    expect(await audits()).toHaveLength(1);
+    expect(await audits("ses.account.refresh")).toHaveLength(1);
 
     await new Promise((r) => setTimeout(r, 5));
-    expect((await refreshSesAccount()).ok).toBe(true);
-    const second = await settings();
-    expect(second.sesLastCheckedAt!.getTime()).toBeGreaterThan(
-      first.sesLastCheckedAt!.getTime(),
+    expect((await refreshSesAccount(TEAM)).ok).toBe(true);
+    const second = await conn();
+    expect(second!.sesLastCheckedAt!.getTime()).toBeGreaterThan(
+      first!.sesLastCheckedAt!.getTime(),
     );
-    expect(await instanceAudits()).toHaveLength(1);
-  });
-});
-
-describe("detectInstanceRole", () => {
-  // aws-sdk-client-mock answers STS before the SDK resolves credentials, so
-  // this exercises the connect path, not IMDS / the default-chain lookup.
-  it("connects with instance role when the default chain works", async () => {
-    happyMocks();
-    const { detectInstanceRole } = await import("@/services/aws-connect");
-    const res = await detectInstanceRole("us-east-1", { userId: "u1" });
-    expect(res).toMatchObject({
-      ok: true,
-      data: { accountId: "123456789012" },
-    });
-    expect(await settings()).toMatchObject({
-      awsMode: "instance_role",
-      awsAccessKeyEnc: null,
-      awsSecretEnc: null,
-    });
-  });
-  it("returns a friendly ok:false when no credentials are available", async () => {
-    sts
-      .on(GetCallerIdentityCommand)
-      .rejects(
-        awsErr(
-          "CredentialsProviderError",
-          "Could not load credentials from any providers",
-        ),
-      );
-    const { detectInstanceRole } = await import("@/services/aws-connect");
-    expect(await detectInstanceRole("us-east-1", { userId: "u1" })).toEqual({
-      ok: false,
-      error: expect.stringMatching(/^No AWS credentials found on this host/),
-    });
-    expect((await settings()).awsMode).toBe("none");
+    expect(await audits()).toHaveLength(1);
   });
 });
 
@@ -521,25 +464,19 @@ describe("disconnectAws", () => {
     sns.on(UnsubscribeCommand).resolves({});
     const { connectWithKeys, disconnectAws } =
       await import("@/services/aws-connect");
-    expect((await connectWithKeys(KEYS, { userId: "u1" })).ok).toBe(true);
-    expect(await disconnectAws({ userId: "u1" })).toEqual({
+    expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(true);
+    expect(await disconnectAws(TEAM, { userId: "u1" })).toEqual({
       ok: true,
       data: undefined,
     });
     expect(sns.commandCalls(UnsubscribeCommand)[0]!.args[0].input).toEqual({
       SubscriptionArn: SUB_ARN,
     });
-    expect(await settings()).toMatchObject({
-      awsMode: "none",
-      awsAccountId: null,
-      awsAccessKeyEnc: null,
-      snsTopicArn: null,
-      snsSubscriptionArn: null,
-      sesConfigSet: null,
-      sesAccountStatus: null,
-    });
-    expect((await disconnectAws({ userId: "u1" })).ok).toBe(false);
-    expect((await instanceAudits()).map((a) => a.action)).toEqual([
+    // Disconnecting deletes the row rather than nulling a dozen columns:
+    // the row's existence is the connection.
+    expect(await conn()).toBeNull();
+    expect((await disconnectAws(TEAM, { userId: "u1" })).ok).toBe(false);
+    expect((await audits()).map((a) => a.action)).toEqual([
       "aws.connect",
       "aws.disconnect",
     ]);
@@ -553,11 +490,89 @@ describe("disconnectAws", () => {
     try {
       const { connectWithKeys, disconnectAws } =
         await import("@/services/aws-connect");
-      expect((await connectWithKeys(KEYS, { userId: "u1" })).ok).toBe(true);
-      expect((await disconnectAws({ userId: "u1" })).ok).toBe(true);
-      expect((await settings()).awsMode).toBe("none");
+      expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(true);
+      expect((await disconnectAws(TEAM, { userId: "u1" })).ok).toBe(true);
+      expect(await conn()).toBeNull();
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe("org-scoped AWS resource names", () => {
+  it("names the config set, topic and webhook path from the org slug", async () => {
+    happyMocks();
+    const { connectWithKeys } = await import("@/services/aws-connect");
+    expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(
+      true,
+    );
+    expect((await conn())?.configSet).toBe("sendsprite-acme");
+    expect(sns.commandCalls(CreateTopicCommand)[0]!.args[0].input).toMatchObject(
+      { Name: "sendsprite-events-acme" },
+    );
+    expect(sns.commandCalls(SubscribeCommand)[0]!.args[0].input).toMatchObject({
+      Endpoint: `https://mail.acme.com/api/webhooks/ses/${TEAM}`,
+    });
+  });
+
+  /**
+   * The dangerous case. Two orgs may point at one AWS account; a shared
+   * configuration set would make CreateConfigurationSetEventDestination take
+   * its AlreadyExists branch and *update* the destination, repointing the
+   * first org's SES events at the second org's topic.
+   */
+  it("gives two orgs on one AWS account distinct, non-overwriting resources", async () => {
+    happyMocks();
+    const other = (await seedTeamWithKey()).team.id;
+    const OTHER_TOPIC = "arn:aws:sns:us-east-1:123456789012:sendsprite-beta";
+    sns
+      .on(CreateTopicCommand, { Name: "sendsprite-events-acme" })
+      .resolves({ TopicArn: TOPIC_ARN })
+      .on(CreateTopicCommand, { Name: "sendsprite-events-beta-co" })
+      .resolves({ TopicArn: OTHER_TOPIC });
+    const { connectWithKeys } = await import("@/services/aws-connect");
+    // Same credentials, same AWS account, different org.
+    expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(
+      true,
+    );
+    expect(
+      (await connectWithKeys(other, "beta-co", KEYS, { userId: "u1" })).ok,
+    ).toBe(true);
+
+    const { getTeamAws } = await import("@/services/team-aws");
+    const a = await getTeamAws(TEAM);
+    const b = await getTeamAws(other);
+    expect(a?.configSet).toBe("sendsprite-acme");
+    expect(b?.configSet).toBe("sendsprite-beta-co");
+    expect(b?.snsTopicArn).not.toBe(a?.snsTopicArn);
+
+    // Each event destination names its own configuration set, so neither
+    // connect repointed the other's.
+    const dests = ses
+      .commandCalls(CreateConfigurationSetEventDestinationCommand)
+      .map((c) => c.args[0].input.ConfigurationSetName);
+    expect(dests).toEqual(["sendsprite-acme", "sendsprite-beta-co"]);
+    expect(new Set(dests).size).toBe(dests.length);
+  });
+
+  it("keeps the stored names when the org slug later changes", async () => {
+    happyMocks();
+    const { connectWithKeys } = await import("@/services/aws-connect");
+    expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(
+      true,
+    );
+    const { organization, teamAws } = await import("@/db/schema");
+    await pg.db
+      .update(organization)
+      .set({ slug: "renamed-co" })
+      .where(eq(organization.id, TEAM));
+    // Read past React.cache: the point is what is on disk, not what a request
+    // memoised.
+    const [row] = await pg.db
+      .select()
+      .from(teamAws)
+      .where(eq(teamAws.teamId, TEAM));
+    expect(row?.configSet).toBe("sendsprite-acme");
+    expect(row?.snsTopicArn).toBe(TOPIC_ARN);
   });
 });

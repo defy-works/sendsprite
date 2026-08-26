@@ -21,15 +21,20 @@ import { resolveAwsContext } from "@/lib/aws/credentials";
 import { SES_REGIONS } from "@/lib/aws/regions";
 import { mapAccount, type SesAccount } from "@/lib/aws/ses-account";
 import type { Result } from "@/lib/result";
+import { configSetName, topicName } from "@/lib/aws/naming";
 import {
-  getInstanceSettings,
-  updateInstanceSettings,
-  type InstanceActor,
-  type InstanceSettings,
-} from "./instance-settings";
+  disconnectTeamAws,
+  getTeamAws,
+  updateTeamAws,
+  type AwsActor,
+  type TeamAws,
+} from "./team-aws";
 
-export const CONFIG_SET = "sendsprite";
-export const TOPIC_NAME = "sendsprite-events";
+/**
+ * Scoped inside the configuration set, which is per team, so this one stays
+ * a constant. The config set and topic names are derived from the org slug
+ * — see `lib/aws/naming.ts` for why they cannot be.
+ */
 const EVENT_DESTINATION = "sendsprite-sns";
 export const EVENT_TYPES = [
   "SEND",
@@ -44,7 +49,7 @@ export const EVENT_TYPES = [
   "SUBSCRIPTION",
 ] as const;
 
-export type Actor = InstanceActor;
+export type Actor = AwsActor;
 
 type Connected = {
   accountId: string;
@@ -109,21 +114,23 @@ async function verifyIdentity(ctx: AwsContext) {
  */
 export async function ensureSesInfrastructure(
   ctx: AwsContext,
+  configSet: string,
+  topic: string,
 ): Promise<{ topicArn: string }> {
   const ses = makeSes(ctx);
   const sns = makeSns(ctx);
   try {
     await ses.send(
-      new CreateConfigurationSetCommand({ ConfigurationSetName: CONFIG_SET }),
+      new CreateConfigurationSetCommand({ ConfigurationSetName: configSet }),
     );
   } catch (e) {
     if (!isAlreadyExists(e)) throw e;
   }
-  const topic = await sns.send(new CreateTopicCommand({ Name: TOPIC_NAME }));
-  if (!topic.TopicArn) throw new Error("SNS returned no topic ARN");
-  const topicArn = topic.TopicArn;
+  const created = await sns.send(new CreateTopicCommand({ Name: topic }));
+  if (!created.TopicArn) throw new Error("SNS returned no topic ARN");
+  const topicArn = created.TopicArn;
   const destination = {
-    ConfigurationSetName: CONFIG_SET,
+    ConfigurationSetName: configSet,
     EventDestinationName: EVENT_DESTINATION,
     EventDestination: {
       Enabled: true,
@@ -152,8 +159,9 @@ export async function ensureSesInfrastructure(
 export async function subscribeEndpoint(
   ctx: AwsContext,
   topicArn: string,
+  teamId: string,
 ): Promise<string | null> {
-  const endpoint = `${loadEnv().APP_URL}/api/webhooks/ses`;
+  const endpoint = `${loadEnv().APP_URL}/api/webhooks/ses/${teamId}`;
   if (!endpoint.startsWith("https://")) {
     console.warn(
       `aws-connect: APP_URL is not https; skipping SNS subscription to ${endpoint}. SES events will not be delivered.`,
@@ -182,25 +190,34 @@ const accountPatch = (a: SesAccount) => ({
  * Verify → provision → persist → subscribe. The topic ARN is stored before
  * SubscribeCommand runs so the confirmation POST (which can arrive before
  * Subscribe returns) finds it; the subscription ARN is a bookkeeping write.
+ *
+ * `slug` names the AWS resources. It is read once here and persisted on the
+ * row — never re-derived, because the org slug is mutable.
  */
 async function finishConnect(
+  teamId: string,
+  slug: string,
   ctx: AwsContext,
-  mode: "keys" | "instance_role",
-  keys: { accessKeyId: string; secretAccessKey: string } | null,
+  keys: { accessKeyId: string; secretAccessKey: string },
   actor: Actor,
 ): Promise<Result<Connected>> {
   const { accountId, account } = await verifyIdentity(ctx);
-  const { topicArn } = await ensureSesInfrastructure(ctx);
+  const configSet = configSetName(slug);
+  const { topicArn } = await ensureSesInfrastructure(
+    ctx,
+    configSet,
+    topicName(slug),
+  );
   const now = new Date();
-  await updateInstanceSettings(
+  await updateTeamAws(
+    teamId,
     {
-      awsMode: mode,
-      awsRegion: ctx.region,
-      awsAccountId: accountId,
-      awsConnectedAt: now,
-      awsAccessKey: keys?.accessKeyId ?? null,
-      awsSecret: keys?.secretAccessKey ?? null,
-      sesConfigSet: CONFIG_SET,
+      region: ctx.region,
+      accountId,
+      connectedAt: now,
+      accessKey: keys.accessKeyId,
+      secret: keys.secretAccessKey,
+      configSet,
       snsTopicArn: topicArn,
       snsSubscriptionArn: null,
       ...accountPatch(account),
@@ -214,8 +231,8 @@ async function finishConnect(
   // CloudFormation callback) does not roll back a working connection.
   let warning: string | undefined;
   try {
-    const snsSubscriptionArn = await subscribeEndpoint(ctx, topicArn);
-    await updateInstanceSettings({ snsSubscriptionArn }, undefined, {
+    const snsSubscriptionArn = await subscribeEndpoint(ctx, topicArn, teamId);
+    await updateTeamAws(teamId, { snsSubscriptionArn }, undefined, {
       audit: false,
     });
   } catch (e) {
@@ -242,6 +259,8 @@ const keysSchema = z.object({
 });
 
 export async function connectWithKeys(
+  teamId: string,
+  slug: string,
   input: unknown,
   actor: Actor,
 ): Promise<Result<Connected>> {
@@ -252,12 +271,12 @@ export async function connectWithKeys(
       error: "Access key, secret and a supported SES region are required.",
     };
   const { accessKeyId, secretAccessKey, region } = parsed.data;
-  if ((await getInstanceSettings()).awsMode !== "none")
-    return ALREADY_CONNECTED;
+  if (await getTeamAws(teamId)) return ALREADY_CONNECTED;
   try {
     return await finishConnect(
+      teamId,
+      slug,
       { region, credentials: { accessKeyId, secretAccessKey } },
-      "keys",
       { accessKeyId, secretAccessKey },
       actor,
     );
@@ -270,30 +289,7 @@ export async function connectWithKeys(
   }
 }
 
-/** Try the SDK default credential chain (EC2/ECS role, env, profile). Never throws. */
-export async function detectInstanceRole(
-  region: string,
-  actor: Actor,
-): Promise<Result<Connected>> {
-  if ((await getInstanceSettings()).awsMode !== "none")
-    return ALREADY_CONNECTED;
-  try {
-    return await finishConnect({ region }, "instance_role", null, actor);
-  } catch (e) {
-    if (errName(e) === "CredentialsProviderError")
-      return {
-        ok: false,
-        error:
-          "No AWS credentials found on this host. Run on EC2/ECS with a role attached, or use one-click / manual keys.",
-      };
-    return {
-      ok: false,
-      error: `No usable AWS credentials on this host: ${errMsg(e)}`,
-    };
-  }
-}
-
-const accountUnchanged = (s: InstanceSettings, a: SesAccount) =>
+const accountUnchanged = (s: TeamAws, a: SesAccount) =>
   s.sesAccountStatus === a.status &&
   s.sesReviewStatus === a.reviewStatus &&
   s.sesDailyQuota === a.dailyQuota &&
@@ -307,22 +303,24 @@ const accountUnchanged = (s: InstanceSettings, a: SesAccount) =>
  * record.
  */
 export async function refreshSesAccount(
+  teamId: string,
   actor?: Actor,
   { action }: { action?: string } = {},
 ): Promise<Result<{ status: string }>> {
   try {
-    const ctx = await resolveAwsContext();
+    const ctx = await resolveAwsContext(teamId);
     const account = mapAccount(
       await makeSes(ctx).send(new GetAccountCommand({})),
     );
-    const current = await getInstanceSettings();
+    const current = await getTeamAws(teamId);
     const now = new Date();
-    if (!action && accountUnchanged(current, account)) {
-      await updateInstanceSettings({ sesLastCheckedAt: now }, undefined, {
+    if (!action && current && accountUnchanged(current, account)) {
+      await updateTeamAws(teamId, { sesLastCheckedAt: now }, undefined, {
         audit: false,
       });
     } else {
-      await updateInstanceSettings(
+      await updateTeamAws(
+        teamId,
         { ...accountPatch(account), sesLastCheckedAt: now },
         actor,
         { action: action ?? "ses.account.refresh" },
@@ -342,6 +340,7 @@ const prodSchema = z.object({
 });
 
 export async function requestProductionAccess(
+  teamId: string,
   input: unknown,
   actor: Actor,
 ): Promise<Result<{ status: string }>> {
@@ -353,7 +352,7 @@ export async function requestProductionAccess(
         "Website URL, mail type and a use-case description (20+ chars) are required.",
     };
   try {
-    const ctx = await resolveAwsContext();
+    const ctx = await resolveAwsContext(teamId);
     await makeSes(ctx).send(
       new PutAccountDetailsCommand({
         MailType: p.data.mailType,
@@ -369,7 +368,7 @@ export async function requestProductionAccess(
   } catch (e) {
     return { ok: false, error: `SES rejected the request: ${errMsg(e)}` };
   }
-  const refreshed = await refreshSesAccount(actor, {
+  const refreshed = await refreshSesAccount(teamId, actor, {
     action: "ses.production.request",
   });
   if (!refreshed.ok)
@@ -383,41 +382,27 @@ export async function requestProductionAccess(
 /**
  * Forget credentials and SES state. The config set, topic and event
  * destination were created through the API (not by the CloudFormation
- * stack), so they stay in the account; the endpoint subscription is removed
- * best-effort so SNS stops posting to this instance.
+ * stack), so they stay in the team's own AWS account; the endpoint
+ * subscription is removed best-effort so SNS stops posting to this instance.
  */
-export async function disconnectAws(actor: Actor): Promise<Result> {
-  const s = await getInstanceSettings();
-  if (s.awsMode === "none")
-    return { ok: false, error: "AWS is not connected." };
-  if (s.snsSubscriptionArn) {
+export async function disconnectAws(
+  teamId: string,
+  actor: Actor,
+): Promise<Result> {
+  const row = await getTeamAws(teamId);
+  if (!row) return { ok: false, error: "AWS is not connected." };
+  if (row.snsSubscriptionArn) {
     try {
-      const ctx = await resolveAwsContext();
+      const ctx = await resolveAwsContext(teamId);
       await makeSns(ctx).send(
-        new UnsubscribeCommand({ SubscriptionArn: s.snsSubscriptionArn }),
+        new UnsubscribeCommand({ SubscriptionArn: row.snsSubscriptionArn }),
       );
     } catch (e) {
       console.warn("aws-connect: unsubscribe failed, continuing:", errMsg(e));
     }
   }
-  await updateInstanceSettings(
-    {
-      awsMode: "none",
-      awsAccessKey: null,
-      awsSecret: null,
-      awsAccountId: null,
-      awsConnectedAt: null,
-      snsTopicArn: null,
-      snsSubscriptionArn: null,
-      sesConfigSet: null,
-      sesAccountStatus: null,
-      sesReviewStatus: null,
-      sesDailyQuota: null,
-      sesMaxSendRate: null,
-      sesLastCheckedAt: null,
-    },
-    actor,
-    { action: "aws.disconnect" },
-  );
+  // The row *is* the connection, so disconnecting deletes it rather than
+  // nulling a dozen columns and leaving a half-row behind.
+  await disconnectTeamAws(teamId, actor);
   return { ok: true, data: undefined };
 }
