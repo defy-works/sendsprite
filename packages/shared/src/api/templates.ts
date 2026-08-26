@@ -186,14 +186,21 @@ export const TemplateVariablesPayload = z
 export type TemplateVariablesPayload = z.infer<typeof TemplateVariablesPayload>;
 
 /**
- * One declared variable. `default` is the only supported way to make a
- * placeholder optional — the renderer refuses a missing value outright — and
- * it is what the editor shows as the sample value in the live preview.
+ * One declared variable.
+ *
+ * `default` is the only supported way to make a placeholder optional — the
+ * renderer refuses a missing value outright — and it is what the editor shows
+ * as the sample value in the live preview. There is deliberately no
+ * `required` flag beside it: a flag would be a *third* way to express
+ * optionality, layered on `default` and on the renderer's
+ * every-placeholder-must-resolve rule, and the only thing `required: false`
+ * could mean is a placeholder that renders as nothing — which is exactly what
+ * Decision 2 refused. An unknown `required` key sent by an older client is
+ * stripped, not rejected.
  */
 export const TemplateVariable = z.object({
   name: VARIABLE_NAME,
   type: z.enum(TEMPLATE_VARIABLE_TYPES).default("string"),
-  required: z.boolean().default(true),
   default: z
     .union([z.string().max(MAX_VARIABLE_VALUE_CHARS), z.number(), z.boolean()])
     .optional(),

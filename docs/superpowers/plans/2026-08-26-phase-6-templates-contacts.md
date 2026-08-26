@@ -913,15 +913,13 @@ describe("CreateTemplateInput", () => {
 });
 
 describe("TemplateVariablesSchema", () => {
-  it("defaults type and required, and keeps a default value", () => {
+  it("defaults the type and keeps a default value", () => {
     expect(
       TemplateVariablesSchema.parse({
         variables: [{ name: "name", default: "there" }],
       }),
     ).toEqual({
-      variables: [
-        { name: "name", type: "string", required: true, default: "there" },
-      ],
+      variables: [{ name: "name", type: "string", default: "there" }],
     });
   });
 
@@ -1041,7 +1039,6 @@ const VARIABLE_NAME = z
 export const TemplateVariable = z.object({
   name: VARIABLE_NAME,
   type: z.enum(TEMPLATE_VARIABLE_TYPES).default("string"),
-  required: z.boolean().default(true),
   default: z.union([z.string().max(2000), z.number(), z.boolean()]).optional(),
   description: z.string().trim().max(200).optional(),
 });
@@ -5500,8 +5497,7 @@ export interface TemplateVariable {
   name: string;
   /** Default `"string"`. */
   type?: TemplateVariableType;
-  /** Default `true`. */
-  required?: boolean;
+  /** The only way to make a placeholder optional; there is no `required` flag. */
   default?: string | number | boolean;
   description?: string;
 }
@@ -8394,7 +8390,6 @@ Declare a variable with a `default` to make it genuinely optional:
       {
         "name": "name",
         "type": "string",
-        "required": false,
         "default": "there"
       }
     ]
@@ -8612,7 +8607,7 @@ Append a `## Phase 6 status: COMPLETE` section to this file in the shape Phase 5
 3. **A public `/unsubscribe/:token` page and `List-Unsubscribe` headers.** Deferred deliberately: one-click unsubscribe (RFC 8058) needs `List-Unsubscribe-Post` on a send that knows which campaign it belongs to. `POST /contacts/unsubscribe` is the API a customer's own page calls in the meantime.
 4. **No URL-scheme filter on interpolated values.** `<a href="{{link}}">` with a `javascript:` value survives HTML escaping. Every preview surface is `<iframe sandbox="">` and mail clients do not execute it, so the exposure is low — but a scheme allow-list for values that land inside an `href`/`src` attribute is a real hardening step.
 5. **No inline variable autocomplete.** The editor offers insert-at-cursor chips and an undeclared-placeholder warning; true completion inside the body needs a code-editor component the UI kit does not have (and §10 says the kit is fixed).
-6. **`variables_schema` types are declared but barely enforced.** `type` is checked against the supplied value at render time; `required` is not used at all (a missing value is always a refusal, with or without the flag), and `description` is not shown outside the editor. Either use them or drop them.
+6. **`variables_schema` is enforced on two of its three fields.** `type` is checked against a supplied value at render time and against a declared `default` at authoring time, and duplicate names are refused; `description` is still shown only in the editor. **`required` was considered and deliberately removed** (Task 2, before the SDK types shipped): the renderer refuses _every_ unresolved placeholder, so `required: true` was a no-op, and the only thing `required: false` could have meant is a placeholder that renders as nothing — the silent empty string Decision 2 exists to prevent. A `default` already makes a variable optional, visibly, with a value the editor can preview; a flag beside it would be a third way to express optionality layered on the other two. Do not add it back. An unknown `required` key from an older client is stripped, not rejected.
 7. **CSV import is JSON-only.** `curl --data-binary @file.csv` with `content-type: text/csv` would be the natural shape for a shell user and is one branch in the import route.
 8. **Import fires no webhook.** A summary `contacts.imported` event carrying the counts would let a customer mirror a bulk change without polling.
 9. **The contacts dashboard shows the first 100 and stops.** Search narrows; there is no paging control, and no way to page a book of 50 000 in the UI. Export is the escape hatch.

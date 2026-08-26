@@ -115,16 +115,21 @@ describe("CreateTemplateInput", () => {
 });
 
 describe("TemplateVariablesSchema", () => {
-  it("defaults type and required, and keeps a default value", () => {
+  it("defaults the type and keeps a default value", () => {
     expect(
       TemplateVariablesSchema.parse({
         variables: [{ name: "name", default: "there" }],
       }),
     ).toEqual({
-      variables: [
-        { name: "name", type: "string", required: true, default: "there" },
-      ],
+      variables: [{ name: "name", type: "string", default: "there" }],
     });
+  });
+
+  it("has no `required` flag, and strips one an older client sends", () => {
+    const parsed = TemplateVariablesSchema.parse({
+      variables: [{ name: "name", required: false }],
+    });
+    expect(parsed.variables[0]).toEqual({ name: "name", type: "string" });
   });
 
   it("refuses a variable name the renderer could never match", () => {
