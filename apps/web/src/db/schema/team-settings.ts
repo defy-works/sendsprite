@@ -24,6 +24,8 @@ export const teamSettings = pgTable("team_settings", {
    * a ceiling — a team may shorten its window, never extend it.
    */
   retentionDays: integer("retention_days"),
+  /** Set when this team finishes the connect wizard; gates /app. */
+  setupCompleted: boolean("setup_completed").notNull().default(false),
   trackOpens: boolean("track_opens").notNull().default(true),
   trackClicks: boolean("track_clicks").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true })

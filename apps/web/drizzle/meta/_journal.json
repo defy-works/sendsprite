@@ -148,6 +148,13 @@
       "when": 1787744096457,
       "tag": "0020_team_retention",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1787745132454,
+      "tag": "0021_team_connections",
+      "breakpoints": true
     }
   ]
 }

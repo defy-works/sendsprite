@@ -14,6 +14,8 @@ export * from "./contacts";
 export * from "./campaigns";
 export * from "./webhooks";
 export * from "./webhook-deliveries";
+export * from "./team-aws";
+export * from "./team-cloudflare";
 export * from "./send-rate";
 export * from "./worker-heartbeats";
 export * from "./billing";
