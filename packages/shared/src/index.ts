@@ -1,5 +1,6 @@
 export * from "./ids";
 export * from "./roles";
+export * from "./template";
 export * from "./api/errors";
 export * from "./api/emails";
 export * from "./api/webhooks";
