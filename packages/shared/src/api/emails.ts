@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TemplateVariablesPayload } from "./templates";
 
 /**
  * Request/response contracts for `/api/v1/emails` (spec §7). Shared with the
@@ -76,7 +77,13 @@ export const SendEmailInput = z
     html: z.string().max(5_000_000).optional(),
     text: z.string().max(5_000_000).optional(),
     template: z.string().min(1).max(64).optional(),
-    variables: z.record(z.string(), z.unknown()).optional(),
+    /**
+     * Bounded by the same three caps a `POST /templates/:slug/render` payload
+     * gets: the renderer only checks its output size *after* building it, so
+     * an unbounded value repeated across a body's placeholders would allocate
+     * far past that limit before the refusal.
+     */
+    variables: TemplateVariablesPayload.optional(),
     headers: z
       .record(
         z.string().regex(HEADER_NAME, { message: "invalid header name" }),

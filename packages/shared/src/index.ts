@@ -8,6 +8,7 @@ export * from "./api/webhook-objects";
 export * from "./api/domains";
 export * from "./api/api-keys";
 export * from "./api/suppressions";
+export * from "./api/templates";
 export * from "./api/stats";
 export * from "./api/me";
 export * from "./api/stream";
