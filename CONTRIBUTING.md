@@ -31,8 +31,7 @@ those need a CLA.
 
 ## Licensing of what you write
 
-Where your change lands decides its licence, so it is worth knowing before you
-start:
+Where your change lands decides its licence:
 
 | Path                               | Licence         |
 | ---------------------------------- | --------------- |

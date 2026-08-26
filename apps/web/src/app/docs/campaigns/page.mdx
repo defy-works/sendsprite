@@ -15,7 +15,7 @@ events, webhooks and metering a transactional send goes through.
 Campaigns live at **Dashboard → Campaigns** (`/app/campaigns`) and under
 `/api/v1/campaigns`.
 
-Two things are worth knowing before anything else:
+Two access rules come before anything else:
 
 - **Every campaigns route needs a `full` API key**, reads included. A
   `sending_only` key exists to sit on an application server that sends
@@ -278,8 +278,7 @@ own name, blocks and count cache.
 
 ## `campaign.sent` means queued, not received
 
-This is the distinction that generates support threads, so it is worth reading
-twice.
+This is the distinction that generates support threads.
 
 - **`campaign.sent`** fires when the **last recipient has been queued**. Every
   message exists and is on its way to SES, and precisely nobody has
@@ -313,7 +312,7 @@ stats page that disagrees with the mail log is worse than one that takes an
 extra second. So every number is a query over the campaign's own emails, and
 the stored `counts` is a cache of that query.
 
-Three consequences worth knowing:
+Three consequences:
 
 - **`opened` and `clicked` count recipients, not events.** Someone who opens
   the same message six times is one opener. That is what "open rate" means to

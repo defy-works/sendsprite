@@ -175,8 +175,7 @@ The slug is the identity: it is immutable server-side and already restricted to
 lower-case letters, digits and dashes, so the file name carries it and no
 manifest field repeats it.
 
-Two behaviours are worth stating plainly, because they are safety properties
-rather than incidentals:
+Two behaviours here are safety properties rather than incidentals:
 
 - **`push` never deletes a remote template.** A template on the instance with no
   file in the directory is reported and left alone. Deleting is explicit:
