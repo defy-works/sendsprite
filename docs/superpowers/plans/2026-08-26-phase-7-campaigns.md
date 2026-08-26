@@ -1613,6 +1613,8 @@ And the route that RFC 8058 clients POST to:
 export async function POST(...) { ... }
 ```
 
+**Never log the token.** It is the authorisation, so a token in an access log, an error report or a Sentry breadcrumb is a working unsubscribe link for that recipient sitting in a system with much wider read access than the mailbox it came from. Log the outcome, never the credential. (Carried from Task 3, which found the verifier had three other ways to go wrong.)
+
 **Rate-limit the POST by IP** using the existing token-bucket pattern, and say why in a comment: the token is unguessable, so this is not brute-force protection — it is protection against one broken client retrying a loop against the database.
 
 - [ ] **Step 3: Run and commit**
