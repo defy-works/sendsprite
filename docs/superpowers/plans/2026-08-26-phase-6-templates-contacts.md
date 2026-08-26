@@ -245,6 +245,30 @@ README.md                                  + templates/contacts paragraphs, road
 
 ---
 
+## Decisions confirmed before implementation
+
+All six open questions in this plan are confirmed as drafted. Reasoning recorded so an
+implementer does not reopen them:
+
+1. **No unescaped placeholder form, ever.** No `{{{ }}}`, no opt-out. A per-recipient HTML
+   fragment goes through the `html` field directly. Shipping an injection vector is not
+   recoverable; adding a sanitised opt-in later is.
+2. **Missing variables are a refusal, not an empty string.** Competitors substitute nothing and
+   mail "Hi ," to a customer's whole list. A 400 naming the variable is a support ticket; the
+   alternative is the customer's embarrassment, at volume, unrecoverably. `variables_schema`
+   defaults are the escape hatch.
+3. **`slug` is immutable.** A live send names a template by slug, so a rename is a silent
+   production break. Create + delete is explicit about what it costs.
+4. **CSV import stays JSON-only**, 2 MB / 10 000 rows, for this phase. Raw `text/csv` and
+   streamed large imports are Phase 7 openers — but make the over-limit error say plainly that
+   the file must be split, because a customer migrating from another ESP will hit it on day one
+   and the message is the whole experience at that moment.
+5. **Book delete requires `settings.manage`; every other contact mutation `contacts.manage`.**
+   An irreversible bulk cascade deserves a higher bar than editing one row.
+6. **Public `/unsubscribe/:token` and RFC 8058 `List-Unsubscribe` stay in Phase 7**, with
+   campaigns — there is nothing to unsubscribe _from_ until then, and `List-Unsubscribe-Post`
+   belongs on a send this phase does not make.
+
 ## Task 1: The renderer
 
 The security-critical core, written first and on its own so it is tested without a database, a route or a React tree in the way. Pure, dependency-free and browser-safe: the dashboard's live preview imports this exact function, so the preview cannot disagree with the send.
