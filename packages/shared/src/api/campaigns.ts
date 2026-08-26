@@ -586,6 +586,13 @@ export const CampaignObject = z.object({
   replyTo: z.string().nullable(),
   subject: z.string(),
   blocks: z.array(CampaignBlock),
+  /**
+   * Null when the campaign uses the renderer's defaults, which is what every
+   * campaign written before themes existed does. Declared here because
+   * `publicCampaign` returns it — a documented response that omits a field it
+   * actually sends is a document that is wrong.
+   */
+  theme: CampaignTheme.nullable(),
   status: z.enum(CAMPAIGN_STATUSES),
   scheduledAt: z.iso.datetime().nullable(),
   /** When the fan-out finished, not when it started. */
