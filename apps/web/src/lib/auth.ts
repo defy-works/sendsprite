@@ -110,9 +110,7 @@ function createAuth() {
             // the instance admin, so a fresh self-hosted deployment is never
             // left with nobody able to reach /app/admin. Same race window as
             // `currentSignupMode` above, and accepted for the same reason.
-            const [users] = await db()
-              .select({ n: count() })
-              .from(schema.user);
+            const [users] = await db().select({ n: count() }).from(schema.user);
             const firstUser =
               Number(users?.n ?? 0) === 0 &&
               parseAdminEmails(env.INSTANCE_ADMIN_EMAILS).length === 0;

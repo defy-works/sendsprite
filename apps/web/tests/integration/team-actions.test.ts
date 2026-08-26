@@ -323,9 +323,8 @@ describe("team service", () => {
 
 describe("team retention", () => {
   it("clamps a request above the instance ceiling", async () => {
-    const { updateInstanceSettings } = await import(
-      "@/services/instance-settings"
-    );
+    const { updateInstanceSettings } =
+      await import("@/services/instance-settings");
     await updateInstanceSettings({ retentionDays: 90 }, undefined, {
       audit: false,
     });
@@ -335,9 +334,8 @@ describe("team retention", () => {
   });
 
   it("stores a shorter window verbatim", async () => {
-    const { setTeamRetention, getTeamSettings } = await import(
-      "@/services/team-settings"
-    );
+    const { setTeamRetention, getTeamSettings } =
+      await import("@/services/team-settings");
     const res = await setTeamRetention(owner, 14);
     expect(res).toMatchObject({ ok: true, data: { retentionDays: 14 } });
     expect((await getTeamSettings(owner.teamId))?.retentionDays).toBe(14);

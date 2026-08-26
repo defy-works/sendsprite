@@ -166,13 +166,11 @@ describe("POST /api/webhooks/ses/[teamId]", () => {
   it("time-limits the SubscribeURL fallback when the stored key is dead", async () => {
     const { updateTeamAws } = await teamAwsSvc();
     await updateTeamAws(TEAM, { accessKey: "AKIADEAD", secret: "dead" });
-    sns
-      .on(ConfirmSubscriptionCommand)
-      .rejects(
-        Object.assign(new Error("The security token is invalid"), {
-          name: "InvalidClientTokenId",
-        }),
-      );
+    sns.on(ConfirmSubscriptionCommand).rejects(
+      Object.assign(new Error("The security token is invalid"), {
+        name: "InvalidClientTokenId",
+      }),
+    );
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     let res;
     try {

@@ -19,9 +19,8 @@ afterAll(async () => {
  */
 describe("instance settings", () => {
   it("creates the singleton lazily with operator defaults", async () => {
-    const { getInstanceSettings } = await import(
-      "@/services/instance-settings"
-    );
+    const { getInstanceSettings } =
+      await import("@/services/instance-settings");
     const s = await getInstanceSettings();
     expect(s.id).toBe(1);
     expect(s.signupMode).toBeNull();
@@ -31,9 +30,8 @@ describe("instance settings", () => {
   });
 
   it("updates plain columns", async () => {
-    const { updateInstanceSettings } = await import(
-      "@/services/instance-settings"
-    );
+    const { updateInstanceSettings } =
+      await import("@/services/instance-settings");
     const s = await updateInstanceSettings({
       signupMode: "invite",
       landingEnabled: false,
@@ -47,9 +45,8 @@ describe("instance settings", () => {
   });
 
   it("leaves untouched columns alone on a partial patch", async () => {
-    const { updateInstanceSettings } = await import(
-      "@/services/instance-settings"
-    );
+    const { updateInstanceSettings } =
+      await import("@/services/instance-settings");
     const after = await updateInstanceSettings({ retentionDays: 45 });
     expect(after).toMatchObject({
       signupMode: "invite",
@@ -59,9 +56,8 @@ describe("instance settings", () => {
   });
 
   it("writes an instance-level audit row on update", async () => {
-    const { updateInstanceSettings } = await import(
-      "@/services/instance-settings"
-    );
+    const { updateInstanceSettings } =
+      await import("@/services/instance-settings");
     await updateInstanceSettings(
       { retentionDays: 50 },
       { userId: "u_audit", meta: { ip: "10.0.0.1", userAgent: "vitest" } },
@@ -85,9 +81,8 @@ describe("instance settings", () => {
   it("skips the audit row when opts.audit is false", async () => {
     const { auditLog } = await import("@/db/schema");
     const before = await pg.db.select().from(auditLog);
-    const { updateInstanceSettings } = await import(
-      "@/services/instance-settings"
-    );
+    const { updateInstanceSettings } =
+      await import("@/services/instance-settings");
     await updateInstanceSettings({ retentionDays: 55 }, undefined, {
       audit: false,
     });
@@ -95,13 +90,16 @@ describe("instance settings", () => {
   });
 
   it("names the audit row after opts.action when given", async () => {
-    const { updateInstanceSettings } = await import(
-      "@/services/instance-settings"
-    );
+    const { updateInstanceSettings } =
+      await import("@/services/instance-settings");
     const { auditLog } = await import("@/db/schema");
-    await updateInstanceSettings({ retentionDays: 60 }, { userId: "u1" }, {
-      action: "test.action",
-    });
+    await updateInstanceSettings(
+      { retentionDays: 60 },
+      { userId: "u1" },
+      {
+        action: "test.action",
+      },
+    );
     const rows = await pg.db
       .select()
       .from(auditLog)

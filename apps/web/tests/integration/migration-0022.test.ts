@@ -122,9 +122,7 @@ describe("migration 0022", () => {
       account_name: "acme.com",
     });
 
-    const ts = await rows(
-      "SELECT team_id, setup_completed FROM team_settings",
-    );
+    const ts = await rows("SELECT team_id, setup_completed FROM team_settings");
     expect(ts).toEqual([{ team_id: "org_old", setup_completed: true }]);
   });
 

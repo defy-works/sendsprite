@@ -64,9 +64,8 @@ export function InstanceForm({
         />
         <p className="mt-1 text-xs text-white/50">
           The longest window any team may keep email logs for (1–3650). A team
-          can choose a shorter one in its own settings; nothing may exceed
-          this. Bodies and attachments are purged nightly; metadata and events
-          stay.
+          can choose a shorter one in its own settings; nothing may exceed this.
+          Bodies and attachments are purged nightly; metadata and events stay.
         </p>
       </div>
       <div className="flex items-center gap-3">

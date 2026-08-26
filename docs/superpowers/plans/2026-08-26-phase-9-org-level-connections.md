@@ -4,7 +4,7 @@
 
 **Goal:** Move the AWS account and the Cloudflare OAuth grant off the `instance_settings` singleton and onto the team, so every org connects and pays for its own cloud accounts.
 
-**Architecture:** Two narrow tables (`team_aws`, `team_cloudflare`) keyed by `organization.id` replace the singleton's cloud columns; the presence of a row *is* the connection, so `awsMode = "none"` disappears. `resolveAwsContext(teamId)` is the one signature change that propagates through sending, domains and the SNS webhook. SES events arrive on a team-scoped path `/api/webhooks/ses/[teamId]` and are authorised by path **and** topic ARN, and `ingestSesEvent` gains a team predicate so one tenant cannot write another's timeline. AWS resource names carry a sanitised org slug because two orgs may point at one AWS account.
+**Architecture:** Two narrow tables (`team_aws`, `team_cloudflare`) keyed by `organization.id` replace the singleton's cloud columns; the presence of a row _is_ the connection, so `awsMode = "none"` disappears. `resolveAwsContext(teamId)` is the one signature change that propagates through sending, domains and the SNS webhook. SES events arrive on a team-scoped path `/api/webhooks/ses/[teamId]` and are authorised by path **and** topic ARN, and `ingestSesEvent` gains a team predicate so one tenant cannot write another's timeline. AWS resource names carry a sanitised org slug because two orgs may point at one AWS account.
 
 **Tech Stack:** Next.js 16 App Router, Drizzle ORM 0.45 on Postgres, AWS SDK v3 (SESv2, SNS, STS), `aws-sdk-client-mock`, Zod 4, Vitest 4, Playwright.
 
@@ -36,29 +36,30 @@ again, and no task after 12 may leave it red.
 
 ## File Structure
 
-| File | Responsibility |
-| --- | --- |
-| `src/lib/aws/naming.ts` *(new)* | Pure: sanitise a slug, derive stack/config-set/topic names |
-| `src/lib/session.ts` | `requireOwner` → `requireTeamAdmin` (owner or admin, active team) |
-| `src/db/schema/team-aws.ts` *(new)* | `team_aws` table |
-| `src/db/schema/team-cloudflare.ts` *(new)* | `team_cloudflare` table |
-| `src/db/schema/send-rate.ts` | `send_rate_state` → `team_send_rate` |
-| `src/services/team-aws.ts` *(new)* | Read/write/disconnect the AWS connection + secrets |
-| `src/services/instance-settings.ts` | Slimmed to signup mode, landing page, retention ceiling |
-| `src/lib/aws/credentials.ts` | `resolveAwsContext(teamId)` |
-| `src/services/aws-connect.ts` | Connect/disconnect/refresh, team-scoped, slug-named resources |
-| `src/services/cloudflare-connect.ts` | OAuth + token storage, team-scoped |
-| `src/app/api/webhooks/ses/[teamId]/route.ts` *(moved)* | Team-scoped SNS ingress |
-| `src/services/ingest.ts` | Team-scoped event attribution |
-| `src/services/send-limits.ts` | Per-team bucket and per-team account quota |
-| `src/app/app/settings/sending/*` *(moved)* | Team connection page |
-| `tests/integration/helpers.ts` | `connectTeamAws` fixture |
+| File                                                   | Responsibility                                                    |
+| ------------------------------------------------------ | ----------------------------------------------------------------- |
+| `src/lib/aws/naming.ts` _(new)_                        | Pure: sanitise a slug, derive stack/config-set/topic names        |
+| `src/lib/session.ts`                                   | `requireOwner` → `requireTeamAdmin` (owner or admin, active team) |
+| `src/db/schema/team-aws.ts` _(new)_                    | `team_aws` table                                                  |
+| `src/db/schema/team-cloudflare.ts` _(new)_             | `team_cloudflare` table                                           |
+| `src/db/schema/send-rate.ts`                           | `send_rate_state` → `team_send_rate`                              |
+| `src/services/team-aws.ts` _(new)_                     | Read/write/disconnect the AWS connection + secrets                |
+| `src/services/instance-settings.ts`                    | Slimmed to signup mode, landing page, retention ceiling           |
+| `src/lib/aws/credentials.ts`                           | `resolveAwsContext(teamId)`                                       |
+| `src/services/aws-connect.ts`                          | Connect/disconnect/refresh, team-scoped, slug-named resources     |
+| `src/services/cloudflare-connect.ts`                   | OAuth + token storage, team-scoped                                |
+| `src/app/api/webhooks/ses/[teamId]/route.ts` _(moved)_ | Team-scoped SNS ingress                                           |
+| `src/services/ingest.ts`                               | Team-scoped event attribution                                     |
+| `src/services/send-limits.ts`                          | Per-team bucket and per-team account quota                        |
+| `src/app/app/settings/sending/*` _(moved)_             | Team connection page                                              |
+| `tests/integration/helpers.ts`                         | `connectTeamAws` fixture                                          |
 
 ---
 
 ## Task 1: AWS resource naming
 
 **Files:**
+
 - Create: `apps/web/src/lib/aws/naming.ts`
 - Create: `apps/web/tests/unit/aws-naming.test.ts`
 
@@ -184,6 +185,7 @@ Every page and action in this phase gates on `requireTeamAdmin()`, so it has
 to exist before task 5.
 
 **Files:**
+
 - Modify: `apps/web/src/lib/session.ts`
 - Test: `apps/web/tests/integration/session.test.ts`
 
@@ -193,25 +195,25 @@ Append to `apps/web/tests/integration/session.test.ts`, following that file's
 existing stubbing of `next/navigation` and `@/lib/auth`:
 
 ```ts
-  it("requireTeamAdmin passes an owner", async () => {
-    // stub resolveTeam to return role "owner"
-    const { requireTeamAdmin } = await import("@/lib/session");
-    const ctx = await requireTeamAdmin();
-    expect(ctx.role).toBe("owner");
-  });
+it("requireTeamAdmin passes an owner", async () => {
+  // stub resolveTeam to return role "owner"
+  const { requireTeamAdmin } = await import("@/lib/session");
+  const ctx = await requireTeamAdmin();
+  expect(ctx.role).toBe("owner");
+});
 
-  it("requireTeamAdmin passes an admin", async () => {
-    // stub resolveTeam to return role "admin"
-    const { requireTeamAdmin } = await import("@/lib/session");
-    const ctx = await requireTeamAdmin();
-    expect(ctx.role).toBe("admin");
-  });
+it("requireTeamAdmin passes an admin", async () => {
+  // stub resolveTeam to return role "admin"
+  const { requireTeamAdmin } = await import("@/lib/session");
+  const ctx = await requireTeamAdmin();
+  expect(ctx.role).toBe("admin");
+});
 
-  it("requireTeamAdmin redirects a member to /app", async () => {
-    // stub resolveTeam to return role "member"
-    const { requireTeamAdmin } = await import("@/lib/session");
-    await expect(requireTeamAdmin()).rejects.toThrow("NEXT_REDIRECT");
-  });
+it("requireTeamAdmin redirects a member to /app", async () => {
+  // stub resolveTeam to return role "member"
+  const { requireTeamAdmin } = await import("@/lib/session");
+  await expect(requireTeamAdmin()).rejects.toThrow("NEXT_REDIRECT");
+});
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -271,6 +273,7 @@ git commit -m "feat(auth): replace requireOwner with a team-scoped requireTeamAd
 ## Task 2: The new tables
 
 **Files:**
+
 - Create: `apps/web/src/db/schema/team-aws.ts`
 - Create: `apps/web/src/db/schema/team-cloudflare.ts`
 - Modify: `apps/web/src/db/schema/send-rate.ts`
@@ -475,6 +478,7 @@ git commit -m "feat(schema): add team_aws, team_cloudflare and team_send_rate"
 ## Task 3: `services/team-aws.ts`
 
 **Files:**
+
 - Create: `apps/web/src/services/team-aws.ts`
 - Create: `apps/web/tests/integration/team-aws.test.ts`
 
@@ -514,9 +518,8 @@ describe("team aws", () => {
   });
 
   it("encrypts the keys at rest and decrypts on read", async () => {
-    const { updateTeamAws, getTeamAwsSecrets } = await import(
-      "@/services/team-aws"
-    );
+    const { updateTeamAws, getTeamAwsSecrets } =
+      await import("@/services/team-aws");
     const row = await updateTeamAws(teamId, connect);
     expect(row.accessKeyEnc).toMatch(/^v1\./);
     expect(row.accessKeyEnc).not.toContain("AKIA");
@@ -557,9 +560,8 @@ describe("team aws", () => {
   });
 
   it("disconnect deletes the row", async () => {
-    const { disconnectTeamAws, getTeamAws } = await import(
-      "@/services/team-aws"
-    );
+    const { disconnectTeamAws, getTeamAws } =
+      await import("@/services/team-aws");
     await disconnectTeamAws(teamId, { userId: "u_a" });
     expect(await getTeamAws(teamId)).toBeNull();
   });
@@ -610,7 +612,10 @@ export const getTeamAws = cache(
 
 /** Plain columns only: the key columns are written through `Secrets`. */
 type Plain = Partial<
-  Omit<TeamAws, "teamId" | "createdAt" | "updatedAt" | "accessKeyEnc" | "secretEnc">
+  Omit<
+    TeamAws,
+    "teamId" | "createdAt" | "updatedAt" | "accessKeyEnc" | "secretEnc"
+  >
 >;
 type Secrets = { accessKey?: string; secret?: string };
 
@@ -721,6 +726,7 @@ git commit -m "feat(aws): add team-scoped connection service"
 ## Task 4: `resolveAwsContext(teamId)`
 
 **Files:**
+
 - Modify: `apps/web/src/lib/aws/credentials.ts`
 
 - [ ] **Step 1: Rewrite the resolver**
@@ -779,6 +785,7 @@ git commit -m "refactor(aws): resolve credentials per team"
 ## Task 5: Team-scoped connect, refresh and disconnect
 
 **Files:**
+
 - Modify: `apps/web/src/services/aws-connect.ts`
 - Test: `apps/web/tests/integration/aws-connect.test.ts`
 
@@ -788,82 +795,82 @@ Add to `apps/web/tests/integration/aws-connect.test.ts`, keeping the file's
 existing `aws-sdk-client-mock` setup:
 
 ```ts
-  it("names the config set and topic from the org slug", async () => {
-    const { connectWithKeys } = await import("@/services/aws-connect");
-    const res = await connectWithKeys(team.id, "acme-corp", {
-      accessKeyId: "AKIAEXAMPLE00000",
-      secretAccessKey: "s".repeat(20),
-      region: "us-east-1",
-    });
-    expect(res.ok).toBe(true);
-    const { getTeamAws } = await import("@/services/team-aws");
-    const row = await getTeamAws(team.id);
-    expect(row?.configSet).toBe("sendsprite-acme-corp");
-    expect(snsMock.commandCalls(CreateTopicCommand)[0]?.args[0].input).toMatchObject(
-      { Name: "sendsprite-events-acme-corp" },
-    );
+it("names the config set and topic from the org slug", async () => {
+  const { connectWithKeys } = await import("@/services/aws-connect");
+  const res = await connectWithKeys(team.id, "acme-corp", {
+    accessKeyId: "AKIAEXAMPLE00000",
+    secretAccessKey: "s".repeat(20),
+    region: "us-east-1",
   });
+  expect(res.ok).toBe(true);
+  const { getTeamAws } = await import("@/services/team-aws");
+  const row = await getTeamAws(team.id);
+  expect(row?.configSet).toBe("sendsprite-acme-corp");
+  expect(
+    snsMock.commandCalls(CreateTopicCommand)[0]?.args[0].input,
+  ).toMatchObject({ Name: "sendsprite-events-acme-corp" });
+});
 
-  it("subscribes the team's own webhook path", async () => {
-    const call = snsMock.commandCalls(SubscribeCommand)[0]?.args[0].input;
-    expect(call?.Endpoint).toBe(
-      `${process.env.APP_URL}/api/webhooks/ses/${team.id}`,
-    );
-  });
+it("subscribes the team's own webhook path", async () => {
+  const call = snsMock.commandCalls(SubscribeCommand)[0]?.args[0].input;
+  expect(call?.Endpoint).toBe(
+    `${process.env.APP_URL}/api/webhooks/ses/${team.id}`,
+  );
+});
 
-  it("refuses a second connect over a live one", async () => {
-    const { connectWithKeys } = await import("@/services/aws-connect");
-    const res = await connectWithKeys(team.id, "acme-corp", {
-      accessKeyId: "AKIAEXAMPLE00001",
-      secretAccessKey: "s".repeat(20),
-      region: "us-east-1",
-    });
-    expect(res).toMatchObject({ ok: false, code: "ALREADY_CONNECTED" });
+it("refuses a second connect over a live one", async () => {
+  const { connectWithKeys } = await import("@/services/aws-connect");
+  const res = await connectWithKeys(team.id, "acme-corp", {
+    accessKeyId: "AKIAEXAMPLE00001",
+    secretAccessKey: "s".repeat(20),
+    region: "us-east-1",
   });
+  expect(res).toMatchObject({ ok: false, code: "ALREADY_CONNECTED" });
+});
 
-  it("leaves another team unconnected", async () => {
-    const other = (await seedTeamWithKey()).team.id;
-    const { getTeamAws } = await import("@/services/team-aws");
-    expect(await getTeamAws(other)).toBeNull();
-  });
+it("leaves another team unconnected", async () => {
+  const other = (await seedTeamWithKey()).team.id;
+  const { getTeamAws } = await import("@/services/team-aws");
+  expect(await getTeamAws(other)).toBeNull();
+});
 
-  it("gives two orgs on one AWS account distinct resources", async () => {
-    const other = await seedTeamWithKey();
-    const { connectWithKeys } = await import("@/services/aws-connect");
-    // Same credentials, same AWS account, different org.
-    const res = await connectWithKeys(other.team.id, "beta-co", {
-      accessKeyId: "AKIAEXAMPLE00000",
-      secretAccessKey: "s".repeat(20),
-      region: "us-east-1",
-    });
-    expect(res.ok).toBe(true);
-    const { getTeamAws } = await import("@/services/team-aws");
-    const a = await getTeamAws(team.id);
-    const b = await getTeamAws(other.team.id);
-    expect(b?.configSet).toBe("sendsprite-beta-co");
-    expect(b?.configSet).not.toBe(a?.configSet);
-    expect(b?.snsTopicArn).not.toBe(a?.snsTopicArn);
-    // The second connect must not have repointed the first team's
-    // destination: each CreateConfigurationSetEventDestination call names its
-    // own configuration set.
-    const dests = sesMock
-      .commandCalls(CreateConfigurationSetEventDestinationCommand)
-      .map((c) => c.args[0].input.ConfigurationSetName);
-    expect(new Set(dests).size).toBe(dests.length);
+it("gives two orgs on one AWS account distinct resources", async () => {
+  const other = await seedTeamWithKey();
+  const { connectWithKeys } = await import("@/services/aws-connect");
+  // Same credentials, same AWS account, different org.
+  const res = await connectWithKeys(other.team.id, "beta-co", {
+    accessKeyId: "AKIAEXAMPLE00000",
+    secretAccessKey: "s".repeat(20),
+    region: "us-east-1",
   });
+  expect(res.ok).toBe(true);
+  const { getTeamAws } = await import("@/services/team-aws");
+  const a = await getTeamAws(team.id);
+  const b = await getTeamAws(other.team.id);
+  expect(b?.configSet).toBe("sendsprite-beta-co");
+  expect(b?.configSet).not.toBe(a?.configSet);
+  expect(b?.snsTopicArn).not.toBe(a?.snsTopicArn);
+  // The second connect must not have repointed the first team's
+  // destination: each CreateConfigurationSetEventDestination call names its
+  // own configuration set.
+  const dests = sesMock
+    .commandCalls(CreateConfigurationSetEventDestinationCommand)
+    .map((c) => c.args[0].input.ConfigurationSetName);
+  expect(new Set(dests).size).toBe(dests.length);
+});
 
-  it("keeps the stored names when the slug changes", async () => {
-    const { organization } = await import("@/db/schema");
-    const { getTeamAws } = await import("@/services/team-aws");
-    const before = await getTeamAws(team.id);
-    await pg.db
-      .update(organization)
-      .set({ slug: "renamed-co" })
-      .where(eq(organization.id, team.id));
-    const after = await getTeamAws(team.id);
-    expect(after?.configSet).toBe(before?.configSet);
-    expect(after?.snsTopicArn).toBe(before?.snsTopicArn);
-  });
+it("keeps the stored names when the slug changes", async () => {
+  const { organization } = await import("@/db/schema");
+  const { getTeamAws } = await import("@/services/team-aws");
+  const before = await getTeamAws(team.id);
+  await pg.db
+    .update(organization)
+    .set({ slug: "renamed-co" })
+    .where(eq(organization.id, team.id));
+  const after = await getTeamAws(team.id);
+  expect(after?.configSet).toBe(before?.configSet);
+  expect(after?.snsTopicArn).toBe(before?.snsTopicArn);
+});
 ```
 
 `getTeamAws` is wrapped in `React.cache`; if the two reads in the rename test
@@ -1007,6 +1014,7 @@ git commit -m "feat(aws): connect, refresh and disconnect per team with slug-nam
 ## Task 6: Team-scoped Cloudflare
 
 **Files:**
+
 - Modify: `apps/web/src/services/cloudflare-connect.ts`
 - Modify: `apps/web/src/app/api/setup/cloudflare/start/route.ts`
 - Modify: `apps/web/src/app/api/setup/cloudflare/callback/route.ts`
@@ -1019,22 +1027,19 @@ existing fixture helper at the top of the file to seed a team and write to
 `team_cloudflare`, then add:
 
 ```ts
-  it("keeps one team's grant invisible to another", async () => {
-    const other = (await seedTeamWithKey()).team.id;
-    const { getTeamCloudflare } = await import(
-      "@/services/cloudflare-connect"
-    );
-    expect(await getTeamCloudflare(other)).toBeNull();
-  });
+it("keeps one team's grant invisible to another", async () => {
+  const other = (await seedTeamWithKey()).team.id;
+  const { getTeamCloudflare } = await import("@/services/cloudflare-connect");
+  expect(await getTeamCloudflare(other)).toBeNull();
+});
 
-  it("disconnect deletes only the calling team's row", async () => {
-    const { disconnectCloudflare, getTeamCloudflare } = await import(
-      "@/services/cloudflare-connect"
-    );
-    await disconnectCloudflare(teamId, { userId: "u_a" });
-    expect(await getTeamCloudflare(teamId)).toBeNull();
-    expect(await getTeamCloudflare(otherTeamId)).not.toBeNull();
-  });
+it("disconnect deletes only the calling team's row", async () => {
+  const { disconnectCloudflare, getTeamCloudflare } =
+    await import("@/services/cloudflare-connect");
+  await disconnectCloudflare(teamId, { userId: "u_a" });
+  expect(await getTeamCloudflare(teamId)).toBeNull();
+  expect(await getTeamCloudflare(otherTeamId)).not.toBeNull();
+});
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -1107,7 +1112,7 @@ Then:
   row only.
 
 `oauthClient()` and `oauthAvailable()` stay instance-level: the OAuth client
-is registered per deployment, and only the *grant* is per team.
+is registered per deployment, and only the _grant_ is per team.
 
 - [ ] **Step 4: Update the routes**
 
@@ -1136,6 +1141,7 @@ git commit -m "feat(cloudflare): store the OAuth grant per team"
 ## Task 7: Team-scoped SNS ingress and ingest
 
 **Files:**
+
 - Move: `apps/web/src/app/api/webhooks/ses/route.ts` → `apps/web/src/app/api/webhooks/ses/[teamId]/route.ts`
 - Modify: `apps/web/src/services/ingest.ts:49-62`
 - Test: `apps/web/tests/integration/ses-webhook.test.ts`
@@ -1148,47 +1154,47 @@ This is the security-critical task. Do not skip step 1.
 Append to `apps/web/tests/integration/ses-ingest.test.ts`:
 
 ```ts
-  it("refuses an event naming another team's email", async () => {
-    const a = await seedTeamWithKey();
-    const b = await seedTeamWithKey();
-    // An email that belongs to team B.
-    const { emails } = await import("@/db/schema");
-    await pg.db.insert(emails).values({
-      id: "em_victim",
-      teamId: b.team.id,
-      from: "b@x.com",
-      to: ["c@x.com"],
-      cc: [],
-      bcc: [],
-      subject: "s",
-      headers: {},
-      attachmentsMeta: [],
-      status: "sent",
-    });
-    const { ingestSesEvent } = await import("@/services/ingest");
-    // Team A posts an event tagged with B's email id.
-    const res = await ingestSesEvent(
-      a.team.id,
-      {
-        eventType: "Bounce",
-        mail: {
-          messageId: "ses-1",
-          tags: { ss_email: ["em_victim"] },
-          timestamp: new Date().toISOString(),
-        },
-        bounce: {
-          bounceType: "Permanent",
-          bouncedRecipients: [{ emailAddress: "c@x.com" }],
-          timestamp: new Date().toISOString(),
-        },
-      },
-      "sns-msg-1",
-      { enqueue: async () => undefined },
-    );
-    expect(res).toMatchObject({ ok: false, reason: "unknown_email" });
-    const { emailEvents } = await import("@/db/schema");
-    expect(await pg.db.select().from(emailEvents)).toHaveLength(0);
+it("refuses an event naming another team's email", async () => {
+  const a = await seedTeamWithKey();
+  const b = await seedTeamWithKey();
+  // An email that belongs to team B.
+  const { emails } = await import("@/db/schema");
+  await pg.db.insert(emails).values({
+    id: "em_victim",
+    teamId: b.team.id,
+    from: "b@x.com",
+    to: ["c@x.com"],
+    cc: [],
+    bcc: [],
+    subject: "s",
+    headers: {},
+    attachmentsMeta: [],
+    status: "sent",
   });
+  const { ingestSesEvent } = await import("@/services/ingest");
+  // Team A posts an event tagged with B's email id.
+  const res = await ingestSesEvent(
+    a.team.id,
+    {
+      eventType: "Bounce",
+      mail: {
+        messageId: "ses-1",
+        tags: { ss_email: ["em_victim"] },
+        timestamp: new Date().toISOString(),
+      },
+      bounce: {
+        bounceType: "Permanent",
+        bouncedRecipients: [{ emailAddress: "c@x.com" }],
+        timestamp: new Date().toISOString(),
+      },
+    },
+    "sns-msg-1",
+    { enqueue: async () => undefined },
+  );
+  expect(res).toMatchObject({ ok: false, reason: "unknown_email" });
+  const { emailEvents } = await import("@/db/schema");
+  expect(await pg.db.select().from(emailEvents)).toHaveLength(0);
+});
 ```
 
 Match the event payload shape that `lib/ses-events.ts` actually parses —
@@ -1219,20 +1225,20 @@ export async function ingestSesEvent(
 ```
 
 ```ts
-  const [e] = ev.emailId
-    ? await db()
-        .select()
-        .from(emails)
-        .where(and(eq(emails.teamId, teamId), eq(emails.id, ev.emailId)))
-    : await db()
-        .select()
-        .from(emails)
-        .where(
-          and(
-            eq(emails.teamId, teamId),
-            eq(emails.sesMessageId, ev.sesMessageId),
-          ),
-        );
+const [e] = ev.emailId
+  ? await db()
+      .select()
+      .from(emails)
+      .where(and(eq(emails.teamId, teamId), eq(emails.id, ev.emailId)))
+  : await db()
+      .select()
+      .from(emails)
+      .where(
+        and(
+          eq(emails.teamId, teamId),
+          eq(emails.sesMessageId, ev.sesMessageId),
+        ),
+      );
 ```
 
 Add `and` to the `drizzle-orm` import, and extend the doc comment:
@@ -1274,12 +1280,12 @@ export async function POST(
 ```
 
 ```ts
-  // Two independent checks. The path alone is guessable; the topic ARN alone
-  // is the old instance-wide check and says nothing about which tenant the
-  // message is for. Both must hold.
-  const aws = await getTeamAws(teamId);
-  if (!aws?.snsTopicArn || msg.TopicArn !== aws.snsTopicArn)
-    return NextResponse.json({ error: "unknown_topic" }, { status: 403 });
+// Two independent checks. The path alone is guessable; the topic ARN alone
+// is the old instance-wide check and says nothing about which tenant the
+// message is for. Both must hold.
+const aws = await getTeamAws(teamId);
+if (!aws?.snsTopicArn || msg.TopicArn !== aws.snsTopicArn)
+  return NextResponse.json({ error: "unknown_topic" }, { status: 403 });
 ```
 
 Replace both `updateInstanceSettings({ snsSubscriptionArn … })` calls with
@@ -1295,19 +1301,19 @@ In `apps/web/tests/integration/ses-webhook.test.ts`, point every request at
 add:
 
 ```ts
-  it("rejects a topic that belongs to another team", async () => {
-    const res = await POST(request(bodyForTopic(OTHER_TOPIC)), {
-      params: Promise.resolve({ teamId }),
-    });
-    expect(res.status).toBe(403);
+it("rejects a topic that belongs to another team", async () => {
+  const res = await POST(request(bodyForTopic(OTHER_TOPIC)), {
+    params: Promise.resolve({ teamId }),
   });
+  expect(res.status).toBe(403);
+});
 
-  it("rejects a team with no connection", async () => {
-    const res = await POST(request(bodyForTopic(TOPIC)), {
-      params: Promise.resolve({ teamId: "org_nope" }),
-    });
-    expect(res.status).toBe(403);
+it("rejects a team with no connection", async () => {
+  const res = await POST(request(bodyForTopic(TOPIC)), {
+    params: Promise.resolve({ teamId: "org_nope" }),
   });
+  expect(res.status).toBe(403);
+});
 ```
 
 - [ ] **Step 8: Run the tests to verify they pass**
@@ -1335,6 +1341,7 @@ events, status changes and suppressions into B's timeline."
 ## Task 8: Per-team send limits
 
 **Files:**
+
 - Modify: `apps/web/src/services/send-limits.ts:27-55,240-298`
 - Modify: `apps/web/src/services/emails.ts:272`
 - Modify: `apps/web/src/services/campaigns/fanout.ts:862`
@@ -1347,43 +1354,42 @@ events, status changes and suppressions into B's timeline."
 Append to `apps/web/tests/integration/send-limits.test.ts`:
 
 ```ts
-  it("gives each team its own bucket", async () => {
-    const a = await seedTeamWithKey();
-    const b = await seedTeamWithKey();
-    const { connectTeamAws } = await import("./helpers");
-    await connectTeamAws(a.team.id, { sesMaxSendRate: 1 });
-    await connectTeamAws(b.team.id, { sesMaxSendRate: 1 });
+it("gives each team its own bucket", async () => {
+  const a = await seedTeamWithKey();
+  const b = await seedTeamWithKey();
+  const { connectTeamAws } = await import("./helpers");
+  await connectTeamAws(a.team.id, { sesMaxSendRate: 1 });
+  await connectTeamAws(b.team.id, { sesMaxSendRate: 1 });
 
-    const { takeSesToken, resetRateForTests } = await import(
-      "@/services/send-limits"
-    );
-    const now = new Date("2026-08-26T00:00:00Z");
-    await resetRateForTests(a.team.id, now);
-    await resetRateForTests(b.team.id, now);
+  const { takeSesToken, resetRateForTests } =
+    await import("@/services/send-limits");
+  const now = new Date("2026-08-26T00:00:00Z");
+  await resetRateForTests(a.team.id, now);
+  await resetRateForTests(b.team.id, now);
 
-    // Drain A.
-    expect(await takeSesToken(a.team.id, now)).toMatchObject({ ok: true });
-    expect(await takeSesToken(a.team.id, now)).toMatchObject({ ok: false });
-    // B is untouched.
-    expect(await takeSesToken(b.team.id, now)).toMatchObject({ ok: true });
+  // Drain A.
+  expect(await takeSesToken(a.team.id, now)).toMatchObject({ ok: true });
+  expect(await takeSesToken(a.team.id, now)).toMatchObject({ ok: false });
+  // B is untouched.
+  expect(await takeSesToken(b.team.id, now)).toMatchObject({ ok: true });
+});
+
+it("counts only the calling team against the account quota", async () => {
+  const a = await seedTeamWithKey();
+  const b = await seedTeamWithKey();
+  const { connectTeamAws } = await import("./helpers");
+  await connectTeamAws(a.team.id, { sesDailyQuota: 1 });
+  await connectTeamAws(b.team.id, { sesDailyQuota: 1 });
+  // Seed one sent email for team B only.
+  await seedSentEmail(b.team.id);
+
+  const { checkAccountQuota } = await import("@/services/send-limits");
+  expect(await checkAccountQuota(a.team.id, 1)).toMatchObject({ ok: true });
+  expect(await checkAccountQuota(b.team.id, 1)).toMatchObject({
+    ok: false,
+    code: "daily_quota_exceeded",
   });
-
-  it("counts only the calling team against the account quota", async () => {
-    const a = await seedTeamWithKey();
-    const b = await seedTeamWithKey();
-    const { connectTeamAws } = await import("./helpers");
-    await connectTeamAws(a.team.id, { sesDailyQuota: 1 });
-    await connectTeamAws(b.team.id, { sesDailyQuota: 1 });
-    // Seed one sent email for team B only.
-    await seedSentEmail(b.team.id);
-
-    const { checkAccountQuota } = await import("@/services/send-limits");
-    expect(await checkAccountQuota(a.team.id, 1)).toMatchObject({ ok: true });
-    expect(await checkAccountQuota(b.team.id, 1)).toMatchObject({
-      ok: false,
-      code: "daily_quota_exceeded",
-    });
-  });
+});
 ```
 
 Reuse the file's existing helper for inserting a sent email in place of
@@ -1468,10 +1474,10 @@ predicate.
 Rename the two fields and drop the `capped` shortcut:
 
 ```ts
-  /** The team's SES Max24HourSend, null when AWS is not connected. */
-  accountQuota: number | null;
-  /** That team's sends in the trailing 24 h. */
-  accountUsed: number;
+/** The team's SES Max24HourSend, null when AWS is not connected. */
+accountQuota: number | null;
+/** That team's sends in the trailing 24 h. */
+accountUsed: number;
 ```
 
 ```ts
@@ -1534,6 +1540,7 @@ git commit -m "feat(limits): per-team rate bucket and account quota"
 ## Task 9: Sending, domains and jobs
 
 **Files:**
+
 - Modify: `apps/web/src/services/ses-send.ts:176-180`
 - Modify: `apps/web/src/services/domains.ts:153,285,622`
 - Modify: `apps/web/src/jobs/handlers/ses-refresh-account.ts`
@@ -1543,15 +1550,15 @@ git commit -m "feat(limits): per-team rate bucket and account quota"
 In `apps/web/src/services/ses-send.ts`, replace:
 
 ```ts
-    const ctx = await resolveAwsContext();
-    const settings = await getInstanceSettings();
+const ctx = await resolveAwsContext();
+const settings = await getInstanceSettings();
 ```
 
 with:
 
 ```ts
-    const ctx = await resolveAwsContext(e.teamId);
-    const aws = await getTeamAws(e.teamId);
+const ctx = await resolveAwsContext(e.teamId);
+const aws = await getTeamAws(e.teamId);
 ```
 
 and every later `settings.sesConfigSet` with `aws?.configSet`. Update the
@@ -1564,13 +1571,13 @@ it now serialises every worker **for that team**.
 In `apps/web/src/services/domains.ts`:
 
 ```ts
-  const aws = await getTeamAws(actor.teamId);
-  if (!aws)
-    return {
-      ok: false,
-      code: "not_configured",
-      error: "Connect AWS first (Settings → Sending).",
-    };
+const aws = await getTeamAws(actor.teamId);
+if (!aws)
+  return {
+    ok: false,
+    code: "not_configured",
+    error: "Connect AWS first (Settings → Sending).",
+  };
 ```
 
 replacing the `awsMode === "none" || !settings.awsRegion` check at line 153.
@@ -1601,8 +1608,7 @@ registerQueue(
     for (const { teamId } of rows) {
       try {
         const r = await refreshSesAccount(teamId);
-        if (!r.ok)
-          console.warn(`[ses] refresh failed for ${teamId}:`, r.error);
+        if (!r.ok) console.warn(`[ses] refresh failed for ${teamId}:`, r.error);
       } catch (e) {
         console.warn(
           `[ses] refresh threw for ${teamId}:`,
@@ -1640,6 +1646,7 @@ git commit -m "refactor(aws): resolve the team in sending, domains and the refre
 ## Task 10: Setup tokens, quick-create and callbacks
 
 **Files:**
+
 - Modify: `apps/web/src/services/setup-tokens.ts`
 - Modify: `apps/web/src/app/setup/actions.ts`
 - Modify: `apps/web/src/app/api/setup/aws/callback/route.ts`
@@ -1651,28 +1658,28 @@ git commit -m "refactor(aws): resolve the team in sending, domains and the refre
 Append to `apps/web/tests/integration/setup-callback.test.ts`:
 
 ```ts
-  it("connects the team named on the token", async () => {
-    const { issueSetupToken } = await import("@/services/setup-tokens");
-    const { token } = await issueSetupToken({
-      purpose: "aws_callback",
-      issuedBy: actor.userId,
-      teamId: team.id,
-      region: "us-east-1",
-      ttlMs: 60_000,
-    });
-    const res = await POST(
-      request({
-        token,
-        accessKeyId: "AKIAEXAMPLE00000",
-        secretAccessKey: "s".repeat(20),
-        region: "us-east-1",
-      }),
-    );
-    expect(res.status).toBe(200);
-    const { getTeamAws } = await import("@/services/team-aws");
-    expect(await getTeamAws(team.id)).not.toBeNull();
-    expect(await getTeamAws(otherTeam.id)).toBeNull();
+it("connects the team named on the token", async () => {
+  const { issueSetupToken } = await import("@/services/setup-tokens");
+  const { token } = await issueSetupToken({
+    purpose: "aws_callback",
+    issuedBy: actor.userId,
+    teamId: team.id,
+    region: "us-east-1",
+    ttlMs: 60_000,
   });
+  const res = await POST(
+    request({
+      token,
+      accessKeyId: "AKIAEXAMPLE00000",
+      secretAccessKey: "s".repeat(20),
+      region: "us-east-1",
+    }),
+  );
+  expect(res.status).toBe(200);
+  const { getTeamAws } = await import("@/services/team-aws");
+  expect(await getTeamAws(team.id)).not.toBeNull();
+  expect(await getTeamAws(otherTeam.id)).toBeNull();
+});
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -1757,6 +1764,7 @@ git commit -m "feat(setup): bind the CloudFormation callback to a team and name 
 ## Task 11: Slim `instance-settings.ts`
 
 **Files:**
+
 - Modify: `apps/web/src/services/instance-settings.ts`
 - Modify: `apps/web/src/db/schema/instance.ts`
 - Modify: `apps/web/tests/integration/instance-settings.test.ts`
@@ -1804,6 +1812,7 @@ git commit -m "refactor(instance): keep only operator settings on the singleton"
 ## Task 12: Pages
 
 **Files:**
+
 - Modify: `apps/web/src/app/setup/page.tsx`, `types.ts`, `steps/AwsStep.tsx`, `steps/CloudflareStep.tsx`
 - Move: `apps/web/src/app/app/settings/instance/` → `apps/web/src/app/app/settings/sending/`
 - Create: `apps/web/src/app/app/settings/instance/page.tsx` (redirect)
@@ -1860,19 +1869,19 @@ export interface WizardSettings {
 `getTeamCloudflare(ctx.team.id)`, and build:
 
 ```tsx
-  const settings: WizardSettings = {
-    awsConnected: aws !== null,
-    awsRegion: aws?.region ?? null,
-    awsAccountId: aws?.accountId ?? null,
-    sesAccountStatus: aws?.sesAccountStatus ?? null,
-    sesReviewStatus: aws?.sesReviewStatus ?? null,
-    sesDailyQuota: aws?.sesDailyQuota ?? null,
-    sesMaxSendRate: aws?.sesMaxSendRate ?? null,
-    snsSubscriptionMissing: Boolean(aws?.snsTopicArn && !aws.snsSubscriptionArn),
-    cloudflareConnectedAt: cf?.connectedAt?.toISOString() ?? null,
-    cloudflareAccountName: cf?.accountName ?? null,
-    setupCompleted: teamSettings?.setupCompleted ?? false,
-  };
+const settings: WizardSettings = {
+  awsConnected: aws !== null,
+  awsRegion: aws?.region ?? null,
+  awsAccountId: aws?.accountId ?? null,
+  sesAccountStatus: aws?.sesAccountStatus ?? null,
+  sesReviewStatus: aws?.sesReviewStatus ?? null,
+  sesDailyQuota: aws?.sesDailyQuota ?? null,
+  sesMaxSendRate: aws?.sesMaxSendRate ?? null,
+  snsSubscriptionMissing: Boolean(aws?.snsTopicArn && !aws.snsSubscriptionArn),
+  cloudflareConnectedAt: cf?.connectedAt?.toISOString() ?? null,
+  cloudflareAccountName: cf?.accountName ?? null,
+  setupCompleted: teamSettings?.setupCompleted ?? false,
+};
 ```
 
 The step resolution in `setup/page.tsx` changes its first branch from
@@ -1885,12 +1894,14 @@ In `AwsStep.tsx` remove the "use the instance role" option and its
 `awsConnected`. Add the reconnect banner:
 
 ```tsx
-      {settings.snsSubscriptionMissing && (
-        <Notice>
-          SES events are not being delivered: this connection has a topic but
-          no confirmed subscription. Reconnect to resume event delivery.
-        </Notice>
-      )}
+{
+  settings.snsSubscriptionMissing && (
+    <Notice>
+      SES events are not being delivered: this connection has a topic but no
+      confirmed subscription. Reconnect to resume event delivery.
+    </Notice>
+  );
+}
 ```
 
 `CloudflareStep.tsx` needs no structural change — its three states already
@@ -1901,13 +1912,15 @@ key off `cloudflareConnectedAt`.
 `apps/web/src/app/app/layout.tsx`:
 
 ```tsx
-  const ctx = await requireTeam();
-  const ts = await getTeamSettings(ctx.team.id);
-  // Until an owner or admin connects this team's AWS account the dashboard is
-  // closed: they go set it up, everyone else waits (both routes live outside
-  // this layout).
-  if (!ts?.setupCompleted)
-    redirect(ctx.role === "owner" || ctx.role === "admin" ? "/setup" : "/waiting");
+const ctx = await requireTeam();
+const ts = await getTeamSettings(ctx.team.id);
+// Until an owner or admin connects this team's AWS account the dashboard is
+// closed: they go set it up, everyone else waits (both routes live outside
+// this layout).
+if (!ts?.setupCompleted)
+  redirect(
+    ctx.role === "owner" || ctx.role === "admin" ? "/setup" : "/waiting",
+  );
 ```
 
 and `sesStatus` comes from `getTeamAws(ctx.team.id)`.
@@ -1974,6 +1987,7 @@ git commit -m "feat(ui): team-scoped setup wizard and sending settings page"
 ## Task 13: Test fixtures
 
 **Files:**
+
 - Modify: `apps/web/tests/integration/helpers.ts`
 - Modify: every integration test that calls `updateInstanceSettings`
 
@@ -2063,6 +2077,7 @@ git commit -m "test: connect AWS per team through a fixture helper"
 ## Task 14: Migrations 0022 and 0023
 
 **Files:**
+
 - Create: `apps/web/drizzle/0022_move_instance_connection.sql`
 - Create: `apps/web/drizzle/0023_drop_instance_cloud_columns.sql`
 - Create: `apps/web/tests/integration/migration-0022.test.ts`
@@ -2243,6 +2258,7 @@ git commit -m "feat(migrate): move the instance connection onto the oldest org a
 ## Task 15: E2E, docs and copy
 
 **Files:**
+
 - Modify: `apps/web/tests/e2e/setup.spec.ts`
 - Modify: `apps/web/src/app/docs/domains/page.mdx`
 - Modify: `apps/web/src/app/docs/self-hosting/page.mdx`

@@ -27,14 +27,14 @@ Two changes follow from that:
 
 ## Decisions
 
-| Question | Decision |
-| --- | --- |
-| Tenancy | Each org owns its AWS account. The instance owns none. |
-| SNS routing | Team-scoped webhook path, `/api/webhooks/ses/[teamId]`. |
-| Instance admin | `INSTANCE_ADMIN_EMAILS` env var **and** a `user.instance_admin` column. |
-| Page shape | `/setup` becomes team-scoped; `/app/settings/instance` becomes `/app/settings/sending`; new `/app/admin`. |
-| Retention | Per team, with the instance value as a ceiling. |
-| Who connects | Team owner **or** admin. |
+| Question       | Decision                                                                                                  |
+| -------------- | --------------------------------------------------------------------------------------------------------- |
+| Tenancy        | Each org owns its AWS account. The instance owns none.                                                    |
+| SNS routing    | Team-scoped webhook path, `/api/webhooks/ses/[teamId]`.                                                   |
+| Instance admin | `INSTANCE_ADMIN_EMAILS` env var **and** a `user.instance_admin` column.                                   |
+| Page shape     | `/setup` becomes team-scoped; `/app/settings/instance` becomes `/app/settings/sending`; new `/app/admin`. |
+| Retention      | Per team, with the instance value as a ceiling.                                                           |
+| Who connects   | Team owner **or** admin.                                                                                  |
 
 ## Data model
 
@@ -113,7 +113,7 @@ into team B even with a valid token.
 
 - `requireTeam()` — unchanged.
 - `requireTeamAdmin()` — replaces `requireOwner()`. Owner **or** admin of the
-  *active* team. Gates `/setup` and `/app/settings/sending`.
+  _active_ team. Gates `/setup` and `/app/settings/sending`.
 - `requireInstanceAdmin()` — passes when `INSTANCE_ADMIN_EMAILS` contains the
   session email (case-insensitive, comma-separated) **or** `user.instanceAdmin`
   is true. Gates `/app/admin` only.
@@ -178,11 +178,11 @@ and subscription are all created by our own code.
 Nothing stops one person connecting two orgs to the **same** AWS account, so
 the three fixed names must carry the org slug:
 
-| Today | Becomes |
-| --- | --- |
-| `stackName: "sendsprite-connect"` | `sendsprite-connect-<slug>` |
-| `CONFIG_SET = "sendsprite"` | `sendsprite-<slug>` |
-| `TOPIC_NAME = "sendsprite-events"` | `sendsprite-events-<slug>` |
+| Today                              | Becomes                     |
+| ---------------------------------- | --------------------------- |
+| `stackName: "sendsprite-connect"`  | `sendsprite-connect-<slug>` |
+| `CONFIG_SET = "sendsprite"`        | `sendsprite-<slug>`         |
+| `TOPIC_NAME = "sendsprite-events"` | `sendsprite-events-<slug>`  |
 
 `EVENT_DESTINATION` stays fixed: it is scoped inside the configuration set,
 which is now unique.
@@ -213,7 +213,7 @@ after a connect. The names chosen at connect time are already persisted
 a domain identity, ingesting events — uses the stored value and **never**
 re-derives from the current slug. Re-deriving would silently address a
 configuration set that no longer exists. A team that renames and then
-*reconnects* gets fresh resources and leaves the old ones behind in its own
+_reconnects_ gets fresh resources and leaves the old ones behind in its own
 AWS account, where they are visible and deletable; that is accepted rather
 than chased.
 
@@ -269,11 +269,11 @@ a row owned by the posting team is rejected as `unknown_email`.
 
 ### Pages
 
-| Route | Gate | Contents |
-| --- | --- | --- |
-| `/setup` | `requireTeamAdmin` | Team wizard, four steps, unchanged shape |
-| `/app/settings/sending` | `requireTeamAdmin` | AWS + production + Cloudflare steps in `settings` mode |
-| `/app/admin` | `requireInstanceAdmin` | Signup mode, landing page, retention ceiling |
+| Route                   | Gate                   | Contents                                               |
+| ----------------------- | ---------------------- | ------------------------------------------------------ |
+| `/setup`                | `requireTeamAdmin`     | Team wizard, four steps, unchanged shape               |
+| `/app/settings/sending` | `requireTeamAdmin`     | AWS + production + Cloudflare steps in `settings` mode |
+| `/app/admin`            | `requireInstanceAdmin` | Signup mode, landing page, retention ceiling           |
 
 `/app/settings/instance` redirects to `/app/settings/sending`.
 
@@ -297,7 +297,7 @@ Add `user.instance_admin`, `setup_tokens.team_id`,
 `created_at`**:
 
 - Insert one `team_aws` row from `instance_settings` when `aws_mode <> 'none'`,
-  mapping `instance_role` to `keys` is *not* possible, so an `instance_role`
+  mapping `instance_role` to `keys` is _not_ possible, so an `instance_role`
   instance is migrated with its row omitted and must reconnect. This is called
   out in the release note.
 - Insert one `team_cloudflare` row when `cloudflare_connected_at` is not null.

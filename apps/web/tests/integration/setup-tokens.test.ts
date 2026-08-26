@@ -86,9 +86,13 @@ describe("setup tokens", () => {
       region: "eu-west-1",
       ttlMs: 60_000,
     });
-    expect(await pendingSetupToken("aws_callback", "u2", "org_1")).toMatchObject({ id });
+    expect(
+      await pendingSetupToken("aws_callback", "u2", "org_1"),
+    ).toMatchObject({ id });
     await consumeSetupToken("aws_callback", token);
-    expect(await pendingSetupToken("aws_callback", "u2", "org_1")).not.toMatchObject({
+    expect(
+      await pendingSetupToken("aws_callback", "u2", "org_1"),
+    ).not.toMatchObject({
       id,
     });
   });
@@ -110,12 +114,16 @@ describe("setup tokens", () => {
     const a1 = await mk("u3");
     const a2 = await mk("u3");
     const other = await mk("u2");
-    expect(await revokePendingSetupTokens("aws_callback", "u3", "org_1")).toBe(2);
+    expect(await revokePendingSetupTokens("aws_callback", "u3", "org_1")).toBe(
+      2,
+    );
     expect(await pendingSetupToken("aws_callback", "u3", "org_1")).toBeNull();
     expect(await consumeSetupToken("aws_callback", a1.token)).toBeNull();
     expect(await consumeSetupToken("aws_callback", a2.token)).toBeNull();
     expect(await consumeSetupToken("aws_callback", other.token)).not.toBeNull();
-    expect(await revokePendingSetupTokens("aws_callback", "u3", "org_1")).toBe(0);
+    expect(await revokePendingSetupTokens("aws_callback", "u3", "org_1")).toBe(
+      0,
+    );
   });
   it("drops tokens when the issuing user is deleted", async () => {
     const { issueSetupToken, consumeSetupToken } =

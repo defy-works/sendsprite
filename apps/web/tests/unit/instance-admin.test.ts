@@ -22,16 +22,16 @@ describe("parseAdminEmails", () => {
 
 describe("isInstanceAdmin", () => {
   it("passes an env-listed email regardless of the flag", () => {
-    expect(isInstanceAdmin({ email: "A@x.com", flag: false }, ["a@x.com"])).toBe(
-      true,
-    );
+    expect(
+      isInstanceAdmin({ email: "A@x.com", flag: false }, ["a@x.com"]),
+    ).toBe(true);
   });
   it("passes a flagged user with an empty env list", () => {
     expect(isInstanceAdmin({ email: "z@x.com", flag: true }, [])).toBe(true);
   });
   it("refuses an unflagged, unlisted user", () => {
-    expect(isInstanceAdmin({ email: "z@x.com", flag: false }, ["a@x.com"])).toBe(
-      false,
-    );
+    expect(
+      isInstanceAdmin({ email: "z@x.com", flag: false }, ["a@x.com"]),
+    ).toBe(false);
   });
 });

@@ -125,7 +125,9 @@ describe("connectWithKeys", () => {
       { accessKeyId: "short", secretAccessKey: "short", region: "us-east-1" },
       { ...KEYS, region: "mars-north-1" },
     ]) {
-      expect((await connectWithKeys(TEAM, SLUG, input, { userId: "u1" })).ok).toBe(false);
+      expect(
+        (await connectWithKeys(TEAM, SLUG, input, { userId: "u1" })).ok,
+      ).toBe(false);
     }
     expect(sts.commandCalls(GetCallerIdentityCommand)).toHaveLength(0);
   });
@@ -187,7 +189,9 @@ describe("connectWithKeys", () => {
       return { SubscriptionArn: SUB_ARN };
     });
     const { connectWithKeys } = await import("@/services/aws-connect");
-    expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(true);
+    expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(
+      true,
+    );
     expect(sns.commandCalls(SubscribeCommand)).toHaveLength(1);
     expect((await conn())?.snsSubscriptionArn).toBe(SUB_ARN);
   });
@@ -205,7 +209,9 @@ describe("connectWithKeys", () => {
       slept.push(ms);
     });
     try {
-      expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(true);
+      expect(
+        (await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok,
+      ).toBe(true);
     } finally {
       setSleepForTests((ms) => new Promise((r) => setTimeout(r, ms)));
     }
@@ -234,7 +240,9 @@ describe("connectWithKeys", () => {
   it("refuses to connect over a live connection (disconnect first)", async () => {
     happyMocks();
     const { connectWithKeys } = await import("@/services/aws-connect");
-    expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(true);
+    expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(
+      true,
+    );
     sts.resetHistory();
     const refused = {
       ok: false,
@@ -280,7 +288,9 @@ describe("connectWithKeys", () => {
       .rejects(awsErr("AlreadyExistsException", "exists"));
     ses.on(UpdateConfigurationSetEventDestinationCommand).resolves({});
     const { connectWithKeys } = await import("@/services/aws-connect");
-    expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(true);
+    expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(
+      true,
+    );
     const update = ses.commandCalls(
       UpdateConfigurationSetEventDestinationCommand,
     );
@@ -319,7 +329,9 @@ describe("connectWithKeys", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const { connectWithKeys } = await import("@/services/aws-connect");
-      expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(true);
+      expect(
+        (await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok,
+      ).toBe(true);
       expect(sns.commandCalls(SubscribeCommand)).toHaveLength(0);
       expect(warn).toHaveBeenCalledWith(expect.stringMatching(/https/i));
       expect(await conn()).toMatchObject({
@@ -338,7 +350,9 @@ describe("requestProductionAccess / refreshSesAccount", () => {
   async function connected() {
     happyMocks();
     const { connectWithKeys } = await import("@/services/aws-connect");
-    expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(true);
+    expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(
+      true,
+    );
     await pg.db.delete(auditLog);
   }
   it("submits details and flips status to requested", async () => {
@@ -464,7 +478,9 @@ describe("disconnectAws", () => {
     sns.on(UnsubscribeCommand).resolves({});
     const { connectWithKeys, disconnectAws } =
       await import("@/services/aws-connect");
-    expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(true);
+    expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(
+      true,
+    );
     expect(await disconnectAws(TEAM, { userId: "u1" })).toEqual({
       ok: true,
       data: undefined,
@@ -490,7 +506,9 @@ describe("disconnectAws", () => {
     try {
       const { connectWithKeys, disconnectAws } =
         await import("@/services/aws-connect");
-      expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(true);
+      expect(
+        (await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok,
+      ).toBe(true);
       expect((await disconnectAws(TEAM, { userId: "u1" })).ok).toBe(true);
       expect(await conn()).toBeNull();
     } finally {
@@ -507,9 +525,9 @@ describe("org-scoped AWS resource names", () => {
       true,
     );
     expect((await conn())?.configSet).toBe("sendsprite-acme");
-    expect(sns.commandCalls(CreateTopicCommand)[0]!.args[0].input).toMatchObject(
-      { Name: "sendsprite-events-acme" },
-    );
+    expect(
+      sns.commandCalls(CreateTopicCommand)[0]!.args[0].input,
+    ).toMatchObject({ Name: "sendsprite-events-acme" });
     expect(sns.commandCalls(SubscribeCommand)[0]!.args[0].input).toMatchObject({
       Endpoint: `https://mail.acme.com/api/webhooks/ses/${TEAM}`,
     });

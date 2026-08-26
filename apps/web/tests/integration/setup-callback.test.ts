@@ -254,13 +254,12 @@ describe("POST /api/setup/aws/callback", () => {
     happyMocks();
     const other = (await seedTeamWithKey()).team.id;
     const token = await issue("us-east-1");
-    expect(
-      (await post({ token, ...KEYS, region: "us-east-1" })).status,
-    ).toBe(200);
+    expect((await post({ token, ...KEYS, region: "us-east-1" })).status).toBe(
+      200,
+    );
     const { getTeamAws } = await import("@/services/team-aws");
     expect(await getTeamAws(TEAM)).not.toBeNull();
     // A stack created for one team cannot connect into another.
     expect(await getTeamAws(other)).toBeNull();
   });
 });
-

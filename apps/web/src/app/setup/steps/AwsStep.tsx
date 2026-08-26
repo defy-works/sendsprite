@@ -8,11 +8,7 @@ import { Input } from "@/components/ui/Input";
 import { Label } from "@/components/ui/Label";
 import { Select } from "@/components/ui/Select";
 import type { WizardProps } from "../types";
-import {
-  connectKeys,
-  disconnectAws,
-  type Result,
-} from "../actions";
+import { connectKeys, disconnectAws, type Result } from "../actions";
 import { QuickCreate } from "./QuickCreate";
 import { Alert, Heading, Notice, Panel } from "./shared";
 

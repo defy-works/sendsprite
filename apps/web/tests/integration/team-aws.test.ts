@@ -29,9 +29,8 @@ describe("team aws", () => {
   });
 
   it("encrypts the keys at rest and decrypts on read", async () => {
-    const { updateTeamAws, getTeamAwsSecrets } = await import(
-      "@/services/team-aws"
-    );
+    const { updateTeamAws, getTeamAwsSecrets } =
+      await import("@/services/team-aws");
     const row = await updateTeamAws(teamId, connect);
     expect(row.accessKeyEnc).toMatch(/^v1\./);
     expect(row.accessKeyEnc).not.toContain("AKIA");
@@ -53,9 +52,8 @@ describe("team aws", () => {
 
   it("scopes rows to their team", async () => {
     const other = (await seedTeamWithKey()).team.id;
-    const { getTeamAws, getTeamAwsSecrets } = await import(
-      "@/services/team-aws"
-    );
+    const { getTeamAws, getTeamAwsSecrets } =
+      await import("@/services/team-aws");
     expect(await getTeamAws(other)).toBeNull();
     expect(await getTeamAwsSecrets(other)).toBeNull();
   });
@@ -100,19 +98,15 @@ describe("team aws", () => {
     const { auditLog } = await import("@/db/schema");
     const before = await pg.db.select().from(auditLog);
     const { updateTeamAws } = await import("@/services/team-aws");
-    await updateTeamAws(
-      teamId,
-      { sesLastCheckedAt: new Date() },
-      undefined,
-      { audit: false },
-    );
+    await updateTeamAws(teamId, { sesLastCheckedAt: new Date() }, undefined, {
+      audit: false,
+    });
     expect(await pg.db.select().from(auditLog)).toHaveLength(before.length);
   });
 
   it("disconnect deletes the row and audits it", async () => {
-    const { disconnectTeamAws, getTeamAws } = await import(
-      "@/services/team-aws"
-    );
+    const { disconnectTeamAws, getTeamAws } =
+      await import("@/services/team-aws");
     await disconnectTeamAws(teamId, { userId: "u_a" });
     expect(await getTeamAws(teamId)).toBeNull();
     const { auditLog } = await import("@/db/schema");

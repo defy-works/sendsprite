@@ -26,5 +26,4 @@
  * `CLOUDFLARE_OAUTH_SCOPES` if they differ from the `<group>.<read|write>`
  * pattern assumed here.
  */
-export const CF_DEFAULT_SCOPES =
-  "zone.read dns.read dns.write offline_access";
+export const CF_DEFAULT_SCOPES = "zone.read dns.read dns.write offline_access";

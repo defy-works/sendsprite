@@ -132,10 +132,7 @@ export function ProductionStep({ settings, mode = "wizard" }: WizardProps) {
             <Input id="contactEmail" name="contactEmail" type="email" />
           </div>
           <div>
-            <Button
-              type="submit"
-              disabled={pending || !settings.awsConnected}
-            >
+            <Button type="submit" disabled={pending || !settings.awsConnected}>
               {pending ? "Submitting…" : "Request production access"}
             </Button>
           </div>

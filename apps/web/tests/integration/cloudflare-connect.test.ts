@@ -309,18 +309,15 @@ describe("disconnectCloudflare", () => {
 
 describe("team scoping", () => {
   it("keeps one team's grant invisible to another", async () => {
-    const { getTeamCloudflare } = await import(
-      "@/services/cloudflare-connect"
-    );
+    const { getTeamCloudflare } = await import("@/services/cloudflare-connect");
     await connect(fake().fetch);
     expect(await grant(TEAM)).not.toBeNull();
     expect(await getTeamCloudflare(OTHER)).toBeNull();
   });
 
   it("binds the grant to the team that started the flow, not the caller", async () => {
-    const { beginOauth, completeOauth } = await import(
-      "@/services/cloudflare-connect"
-    );
+    const { beginOauth, completeOauth } =
+      await import("@/services/cloudflare-connect");
     const started = beginOauth(OTHER);
     if (!started.ok) throw new Error(started.error);
     const state = new URL(started.data.url).searchParams.get("state")!;
@@ -349,9 +346,8 @@ describe("team scoping", () => {
   });
 
   it("disconnect deletes only the calling team's row", async () => {
-    const { beginOauth, completeOauth, disconnectCloudflare } = await import(
-      "@/services/cloudflare-connect"
-    );
+    const { beginOauth, completeOauth, disconnectCloudflare } =
+      await import("@/services/cloudflare-connect");
     const { fetch } = fake();
     await connect(fetch);
     const other = beginOauth(OTHER);

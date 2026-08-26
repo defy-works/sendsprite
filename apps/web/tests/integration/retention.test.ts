@@ -84,7 +84,10 @@ describe("retention purge", () => {
     await seedDelivery("whd_old", daysAgo(91));
     await seedDelivery("whd_new", daysAgo(1));
     const { purgeOldBodies } = await import("@/services/retention");
-    expect(await purgeOldBodies("org_1", 90, now)).toEqual({ emails: 1, deliveries: 1 });
+    expect(await purgeOldBodies("org_1", 90, now)).toEqual({
+      emails: 1,
+      deliveries: 1,
+    });
 
     const old = await load("em_old");
     expect(old).toMatchObject({
@@ -107,7 +110,10 @@ describe("retention purge", () => {
     ).toEqual(["whd_new"]);
 
     // Second run: nothing left to purge.
-    expect(await purgeOldBodies("org_1", 90, now)).toEqual({ emails: 0, deliveries: 0 });
+    expect(await purgeOldBodies("org_1", 90, now)).toEqual({
+      emails: 0,
+      deliveries: 0,
+    });
     expect((await load("em_old")).bodyPurgedAt).toEqual(now);
   });
 
@@ -207,9 +213,8 @@ describe("per-team retention", () => {
       });
     }
 
-    const { runRetentionPurge } = await import(
-      "@/jobs/handlers/retention-purge"
-    );
+    const { runRetentionPurge } =
+      await import("@/jobs/handlers/retention-purge");
     await runRetentionPurge(stamp);
 
     const read = async (id: string) => {
@@ -244,9 +249,8 @@ describe("per-team retention", () => {
       status: "sent",
       createdAt: new Date(stamp.getTime() - 120 * 86_400_000),
     });
-    const { runRetentionPurge } = await import(
-      "@/jobs/handlers/retention-purge"
-    );
+    const { runRetentionPurge } =
+      await import("@/jobs/handlers/retention-purge");
     await runRetentionPurge(stamp);
     const [row] = await pg.db
       .select()
