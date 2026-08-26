@@ -150,3 +150,55 @@ describe("send-consuming statuses", () => {
     ).toEqual(["failed", "cancelled"]);
   });
 });
+
+describe("template and content-source rules", () => {
+  const tplBase = { from: "a@b.io", to: "c@d.io" };
+
+  it("accepts a template with no subject — the template carries one", () => {
+    const p = SendEmailInput.safeParse({
+      ...tplBase,
+      template: "welcome",
+      variables: { name: "Mingu" },
+    });
+    expect(p.success).toBe(true);
+  });
+
+  it("lets a request-level subject accompany a template", () => {
+    expect(
+      SendEmailInput.safeParse({
+        ...tplBase,
+        template: "welcome",
+        subject: "Override",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("still requires a subject when there is no template", () => {
+    expect(
+      SendEmailInput.safeParse({ ...tplBase, html: "<p>x</p>" }).success,
+    ).toBe(false);
+    expect(
+      SendEmailInput.safeParse({ ...tplBase, html: "<p>x</p>", subject: "s" })
+        .success,
+    ).toBe(true);
+  });
+
+  it("refuses a template together with html or text", () => {
+    for (const extra of [{ html: "<p>x</p>" }, { text: "x" }])
+      expect(
+        SendEmailInput.safeParse({ ...tplBase, template: "welcome", ...extra })
+          .success,
+      ).toBe(false);
+  });
+
+  it("refuses variables without a template", () => {
+    expect(
+      SendEmailInput.safeParse({
+        ...tplBase,
+        subject: "s",
+        text: "x",
+        variables: { a: 1 },
+      }).success,
+    ).toBe(false);
+  });
+});

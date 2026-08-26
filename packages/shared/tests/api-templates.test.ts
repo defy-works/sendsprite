@@ -321,7 +321,8 @@ describe("TemplateVariablesPayload", () => {
   });
 
   it("bounds what a send can carry too", () => {
-    const base = { from: "a@b.co", to: "c@d.co", subject: "s", text: "t" };
+    // `variables` only travels with a `template`; the caps apply there.
+    const base = { from: "a@b.co", to: "c@d.co", template: "welcome" };
     expect(
       SendEmailInput.safeParse({
         ...base,

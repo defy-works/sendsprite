@@ -94,7 +94,10 @@ export interface AttachmentInput {
   contentType?: string;
 }
 
-/** Body of `POST /emails`. One of `html`, `text` or `template` is required. */
+/**
+ * Body of `POST /emails`. Exactly one content source: `html`/`text`, or a
+ * `template` (which may not be combined with either).
+ */
 export interface SendEmailInput {
   /** `"Name <addr@domain>"` or a bare address on a verified domain. */
   from: string;
@@ -102,10 +105,13 @@ export interface SendEmailInput {
   cc?: AddressList;
   bcc?: AddressList;
   replyTo?: AddressList;
-  subject: string;
+  /** Required unless `template` is set; a subject here overrides the template's. */
+  subject?: string;
   html?: string;
   text?: string;
+  /** Slug (or id) of a stored template, rendered server-side with `variables`. */
   template?: string;
+  /** Values for the template's `{{placeholders}}`; only valid with `template`. */
   variables?: Record<string, unknown>;
   /** Custom headers; reserved names (`to`, `date`, `message-id`, …) are rejected. */
   headers?: Record<string, string>;

@@ -342,6 +342,22 @@ export async function renderStoredTemplate(
 ): Promise<Result<RenderedTemplate>> {
   const t = await getTemplate(teamId, key);
   if (!t) return NOT_FOUND;
+  return renderTemplateRow(t, variables);
+}
+
+/**
+ * The same seam, for a caller that already holds the row.
+ *
+ * The send path reads the template itself because it stores `template_id`
+ * beside the rendered body, and it must render the very row it recorded — a
+ * second read to render could land on a version the id no longer describes.
+ * Splitting the body out rather than duplicating it keeps that caller on the
+ * one code path a preview also goes through.
+ */
+export function renderTemplateRow(
+  t: Template,
+  variables: unknown = {},
+): Result<RenderedTemplate> {
   const v = TemplateVariablesPayload.safeParse(variables ?? {});
   if (!v.success)
     return {

@@ -80,7 +80,12 @@ export const SendEmailInput = z
     cc: list,
     bcc: list,
     replyTo: list,
-    subject: noCrlf(z.string().min(1).max(998)),
+    /**
+     * Optional only because a template carries its own; the refines below
+     * require one of the two. A request-level subject wins over the
+     * template's, so a single template can serve several subject lines.
+     */
+    subject: noCrlf(z.string().min(1).max(998)).optional(),
     html: z.string().max(5_000_000).optional(),
     text: z.string().max(5_000_000).optional(),
     template: z.string().min(1).max(64).optional(),
@@ -132,6 +137,17 @@ export const SendEmailInput = z
   })
   .refine((v) => v.html || v.text || v.template, {
     message: "one of html, text or template is required",
+  })
+  // "Exactly one content source" (spec §7). Accepting both and preferring one
+  // would make the other silently invisible.
+  .refine((v) => !(v.template && (v.html || v.text)), {
+    message: "template cannot be combined with html or text",
+  })
+  .refine((v) => !(v.variables && !v.template), {
+    message: "variables requires template",
+  })
+  .refine((v) => Boolean(v.subject || v.template), {
+    message: "subject is required unless a template supplies one",
   })
   .refine((v) => v.to.length + v.cc.length + v.bcc.length <= MAX_RECIPIENTS, {
     message: `at most ${MAX_RECIPIENTS} recipients`,

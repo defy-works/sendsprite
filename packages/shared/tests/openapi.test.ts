@@ -47,6 +47,8 @@ describe("buildOpenApiDocument", () => {
       "domain_not_verified | suppressed_recipient",
     );
     expect(schemas.SendEmailInput.properties?.subject).toBeDefined();
+    // Documented but not required: a template carries its own subject.
+    expect(schemas.SendEmailInput.required).not.toContain("subject");
     // Input view: `to` accepts a string or an array (the transform is not
     // applied) and defaulted fields are optional.
     expect(schemas.SendEmailInput.properties?.to?.anyOf).toHaveLength(2);

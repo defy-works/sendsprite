@@ -23,6 +23,7 @@ import { loadEnv } from "@/env.schema";
 import { Q } from "@/jobs/queues";
 import { recordEvent } from "./email-events";
 import { isSuppressed } from "./suppressions";
+import { getTemplate, renderTemplateRow } from "./templates";
 import { checkInstanceQuota, checkTeamCaps } from "./send-limits";
 import type { Domain, Enqueue } from "./domains";
 
@@ -138,8 +139,6 @@ export async function createEmail(
       parsed.error.issues,
     );
   const input = parsed.data;
-  if (input.template)
-    return fail("validation_error", "template is not supported yet (Phase 5).");
   const now = deps.now ?? new Date();
   const from = parseAddress(input.from);
   if (!from) return fail("validation_error", "from is not a valid address.");
@@ -152,6 +151,48 @@ export async function createEmail(
     l.every((x) => x !== undefined);
   if (!isList(to) || !isList(cc) || !isList(bcc) || !isList(replyTo))
     return fail("validation_error", "A recipient address is invalid.");
+
+  // Rendered here — *before* the idempotency lookup — so a replay's
+  // fingerprint is computed over the same bytes the first send stored.
+  // Rendering after the lookup would compare an unrendered request against a
+  // rendered row and conflict on every honest retry; worse, once that was
+  // papered over, a retry issued after the template changed would silently
+  // return an email whose body no longer matches the request. The order is
+  // the guarantee.
+  let templateId: string | null = null;
+  let variables: Record<string, unknown> | null = null;
+  // Trimmed so a whitespace-only subject counts as absent and the template's
+  // own subject wins, rather than a blank header reaching the MIME message.
+  let subject = input.subject?.trim() ?? "";
+  let html = input.html ?? null;
+  let text = input.text ?? null;
+  if (input.template) {
+    // Read here rather than inside `renderStoredTemplate` because the row's
+    // id is stored beside the body: the email records the very row it was
+    // rendered from. `renderTemplateRow` is the same seam the dashboard
+    // preview and `POST /templates/:slug/render` go through, so a preview
+    // cannot disagree with a send.
+    const tpl = await getTemplate(ctx.teamId, input.template);
+    if (!tpl)
+      return fail(
+        "validation_error",
+        `Template "${input.template}" not found.`,
+        { field: "template" },
+      );
+    const rendered = renderTemplateRow(tpl, input.variables ?? {});
+    if (!rendered.ok)
+      return fail("validation_error", rendered.error, rendered.details);
+    templateId = tpl.id;
+    variables = input.variables ?? {};
+    // A request-level subject wins; otherwise the template's rendered one.
+    subject = subject || rendered.data.subject;
+    html = rendered.data.html;
+    text = rendered.data.text;
+  }
+  // The schema's refine guarantees a subject on both paths; kept because this
+  // is what reaches the MIME header and a silently empty one is worse than a
+  // refusal.
+  if (!subject) return fail("validation_error", "subject is required.");
 
   // Before the domain check: a retry after the domain was un-verified still
   // gets the email it already created.
@@ -170,15 +211,15 @@ export async function createEmail(
       // the stored row's flags are reused so the html compares equal).
       // A purged body can no longer be compared; subject + to decide then.
       const same = existing.bodyPurgedAt
-        ? existing.subject === input.subject &&
+        ? existing.subject === subject &&
           JSON.stringify([...existing.to].sort()) ===
             JSON.stringify([...to].sort())
         : fingerprint(existing) ===
           fingerprint({
-            subject: input.subject,
+            subject,
             to,
-            html: applyTracking(input.html ?? null, existing.id, existing),
-            text: input.text ?? null,
+            html: applyTracking(html, existing.id, existing),
+            text,
           });
       return same
         ? { ok: true, data: existing, created: false }
@@ -223,7 +264,7 @@ export async function createEmail(
     trackClicks: input.trackClicks ?? ts?.trackClicks ?? true,
   };
   const id = newId("em");
-  const html = applyTracking(input.html ?? null, id, tracking);
+  const trackedHtml = applyTracking(html, id, tracking);
   const scheduledAt = input.scheduledAt ? new Date(input.scheduledAt) : null;
   const status =
     scheduledAt && scheduledAt.getTime() > now.getTime() + SCHEDULE_THRESHOLD_MS
@@ -257,9 +298,11 @@ export async function createEmail(
           cc,
           bcc,
           replyTo,
-          subject: input.subject,
-          html,
-          text: input.text ?? null,
+          subject,
+          html: trackedHtml,
+          text,
+          templateId,
+          variables,
           headers: input.headers,
           tags: input.tags,
           attachmentsMeta,

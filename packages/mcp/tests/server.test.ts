@@ -84,10 +84,20 @@ describe("@sendsprite/mcp", () => {
       (t) => t.name === "send_email",
     );
     expect(send?.inputSchema.required).toEqual(
-      expect.arrayContaining(["from", "to", "subject"]),
+      expect.arrayContaining(["from", "to"]),
     );
+    // `subject` is described but not required: a `template` carries its own.
+    expect(send?.inputSchema.required).not.toContain("subject");
     expect(Object.keys(send?.inputSchema.properties ?? {})).toEqual(
-      expect.arrayContaining(["html", "text", "attachments", "scheduledAt"]),
+      expect.arrayContaining([
+        "subject",
+        "html",
+        "text",
+        "template",
+        "variables",
+        "attachments",
+        "scheduledAt",
+      ]),
     );
   });
 
@@ -116,6 +126,32 @@ describe("@sendsprite/mcp", () => {
     });
     expect(r.isError).toBe(true);
     expect(client.emails.send).not.toHaveBeenCalled();
+  });
+
+  it("send_email accepts a template with no subject and refuses neither", async () => {
+    const { c, client } = await connect();
+    // A template carries its own subject, so the tool must not demand one.
+    const withTemplate = await c.callTool({
+      name: "send_email",
+      arguments: {
+        from: "a@b.io",
+        to: ["c@d.io"],
+        template: "welcome",
+        variables: { name: "Ada" },
+      },
+    });
+    expect(withTemplate.isError).toBeFalsy();
+    expect(client.emails.send).toHaveBeenCalledWith(
+      expect.objectContaining({ template: "welcome" }),
+    );
+    // Neither a subject nor a template is the refine's job, and it must reach
+    // the caller as an ordinary tool error rather than a protocol failure.
+    const neither = await c.callTool({
+      name: "send_email",
+      arguments: { from: "a@b.io", to: ["c@d.io"], text: "t" },
+    });
+    expect(neither.isError).toBe(true);
+    expect(client.emails.send).toHaveBeenCalledTimes(1);
   });
 
   it("get_email_status returns status + recent events", async () => {

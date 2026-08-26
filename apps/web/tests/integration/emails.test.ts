@@ -107,6 +107,8 @@ describe("createEmail", () => {
         { enqueue },
       ),
     ).toMatchObject({ ok: false, code: "validation_error" });
+    // A template this team does not have names the slug and the field, so
+    // the customer's next action is obvious from the message alone.
     expect(
       await createEmail(
         ctx,
@@ -116,7 +118,8 @@ describe("createEmail", () => {
     ).toMatchObject({
       ok: false,
       code: "validation_error",
-      error: expect.stringContaining("template"),
+      error: expect.stringContaining('"welcome"'),
+      details: { field: "template" },
     });
     const { suppressFromEvent, addSuppression } =
       await import("@/services/suppressions");
@@ -518,5 +521,187 @@ describe("prepareDetail", () => {
       text: null,
       purged: true,
     });
+  });
+});
+
+/**
+ * A fresh team with its own verified sending domain. Templates are unique
+ * per team by slug, so each template test owns its own slug space and the
+ * tests below can all reach for "welcome".
+ */
+async function seedVerifiedDomain() {
+  const { seedTeamWithKey } = await import("./helpers");
+  const { team, actor } = await seedTeamWithKey();
+  const { domains } = await import("@/db/schema");
+  const name = `mail.${team.slug}.io`;
+  await pg.db.insert(domains).values({
+    id: `dom_${team.slug}`,
+    teamId: team.id,
+    name,
+    region: "eu-west-1",
+    dnsMode: "manual",
+    mailFromDomain: `bounce.${name}`,
+    status: "verified",
+  });
+  return { actor, team, from: `hello@${name}` };
+}
+
+describe("sending with a template", () => {
+  const sendCtx = (teamId: string) => ({
+    teamId,
+    source: "api" as const,
+    apiKeyId: null,
+    actorUserId: null,
+  });
+
+  it("renders server-side and stores the result, the template id and the variables", async () => {
+    const enqueue = vi.fn(async () => "job");
+    const { createEmail } = await import("@/services/emails");
+    const { createTemplate } = await import("@/services/templates");
+    const { actor, team, from } = await seedVerifiedDomain();
+    const t = await createTemplate(actor, {
+      slug: "welcome",
+      name: "Welcome",
+      subject: "Hi {{name}}",
+      bodyHtml: "<p>Hello {{name}}</p>",
+      bodyText: "Hello {{name}}",
+    });
+    if (!t.ok) throw new Error("seed failed");
+    const res = await createEmail(
+      sendCtx(team.id),
+      {
+        from,
+        to: "c@d.io",
+        template: "welcome",
+        variables: { name: "<Mingu>" },
+      },
+      { enqueue },
+    );
+    if (!res.ok) throw new Error(`send failed: ${res.error}`);
+    expect(res.data.subject).toBe("Hi <Mingu>");
+    // Escaped in html, raw in text — the field decides, not the caller.
+    expect(res.data.html).toContain("Hello &lt;Mingu&gt;");
+    expect(res.data.text).toBe("Hello <Mingu>");
+    expect(res.data.templateId).toBe(t.data.id);
+    expect(res.data.variables).toEqual({ name: "<Mingu>" });
+  });
+
+  it("lets a request-level subject win over the template's", async () => {
+    const enqueue = vi.fn(async () => "job");
+    const { createEmail } = await import("@/services/emails");
+    const { createTemplate } = await import("@/services/templates");
+    const { actor, team, from } = await seedVerifiedDomain();
+    await createTemplate(actor, {
+      slug: "welcome",
+      name: "W",
+      subject: "From the template",
+      bodyHtml: "<p>x</p>",
+    });
+    const res = await createEmail(
+      sendCtx(team.id),
+      { from, to: "c@d.io", template: "welcome", subject: "From the request" },
+      { enqueue },
+    );
+    if (!res.ok) throw new Error(`send failed: ${res.error}`);
+    expect(res.data.subject).toBe("From the request");
+  });
+
+  it("refuses an unknown template and a template whose variables are missing", async () => {
+    const enqueue = vi.fn(async () => "job");
+    const { createEmail } = await import("@/services/emails");
+    const { createTemplate } = await import("@/services/templates");
+    const { actor, team, from } = await seedVerifiedDomain();
+    await createTemplate(actor, {
+      slug: "welcome",
+      name: "W",
+      subject: "Hi {{name}}",
+      bodyHtml: "<p>{{name}}</p>",
+    });
+    const missingTemplate = await createEmail(
+      sendCtx(team.id),
+      { from, to: "c@d.io", template: "nope" },
+      { enqueue },
+    );
+    expect(missingTemplate).toMatchObject({
+      ok: false,
+      code: "validation_error",
+      details: { field: "template" },
+    });
+    expect(missingTemplate.ok ? "" : missingTemplate.error).toContain("nope");
+    const missingVariable = await createEmail(
+      sendCtx(team.id),
+      { from, to: "c@d.io", template: "welcome" },
+      { enqueue },
+    );
+    expect(missingVariable).toMatchObject({
+      ok: false,
+      code: "validation_error",
+    });
+    expect(
+      (missingVariable as { details: { missing: string[] } }).details.missing,
+    ).toEqual(["name"]);
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it("refuses a rendered subject carrying a line break", async () => {
+    const enqueue = vi.fn(async () => "job");
+    const { createEmail } = await import("@/services/emails");
+    const { createTemplate } = await import("@/services/templates");
+    const { actor, team, from } = await seedVerifiedDomain();
+    await createTemplate(actor, {
+      slug: "inject",
+      name: "I",
+      subject: "Hi {{name}}",
+      bodyHtml: "<p>x</p>",
+    });
+    const res = await createEmail(
+      sendCtx(team.id),
+      {
+        from,
+        to: "c@d.io",
+        template: "inject",
+        variables: { name: "x\r\nBcc: evil@x.io" },
+      },
+      { enqueue },
+    );
+    expect(res).toMatchObject({ ok: false, code: "validation_error" });
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it("replays an idempotent template send, and conflicts once the template changed", async () => {
+    const enqueue = vi.fn(async () => "job");
+    const { createEmail } = await import("@/services/emails");
+    const { createTemplate, updateTemplate } =
+      await import("@/services/templates");
+    const { actor, team, from } = await seedVerifiedDomain();
+    await createTemplate(actor, {
+      slug: "welcome",
+      name: "W",
+      subject: "Hi",
+      bodyHtml: "<p>v1</p>",
+    });
+    const body = {
+      from,
+      to: "c@d.io",
+      template: "welcome",
+      idempotencyKey: "k1",
+    };
+    const first = await createEmail(sendCtx(team.id), body, { enqueue });
+    if (!first.ok) throw new Error(`send failed: ${first.error}`);
+    // The replay only matches because the render happened *before* the
+    // idempotency lookup: the fingerprint is over rendered bytes on both.
+    const replay = await createEmail(sendCtx(team.id), body, { enqueue });
+    if (!replay.ok) throw new Error(`replay failed: ${replay.error}`);
+    expect(replay.created).toBe(false);
+    expect(replay.data.id).toBe(first.data.id);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    // And once the template moves on, the same key is a conflict rather than
+    // a silent return of an email whose body no longer matches the request.
+    expect(
+      (await updateTemplate(actor, "welcome", { bodyHtml: "<p>v2</p>" })).ok,
+    ).toBe(true);
+    expect(
+      await createEmail(sendCtx(team.id), body, { enqueue }),
+    ).toMatchObject({ ok: false, code: "idempotency_conflict" });
   });
 });

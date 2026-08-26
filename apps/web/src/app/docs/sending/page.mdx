@@ -17,9 +17,11 @@ job is queued, and the timeline fills in as SES reports back.
 | `from`                      | string               | Required. `a@b.com` or `Name <a@b.com>`. Must be on a verified domain of this team.  |
 | `to`                        | string or string[]   | Required, at least one address.                                                      |
 | `cc`, `bcc`, `replyTo`      | string or string[]   | Optional; a bare string is accepted and wrapped.                                     |
-| `subject`                   | string               | Required, 1–998 characters, no line breaks.                                          |
+| `subject`                   | string               | 1–998 characters, no line breaks. Required unless `template` supplies one.           |
 | `html`                      | string               | Up to 5 MB.                                                                          |
 | `text`                      | string               | Up to 5 MB.                                                                          |
+| `template`                  | string               | Slug of a stored template, rendered server-side. Not combinable with `html`/`text`.  |
+| `variables`                 | object               | Values for the template's `{{placeholders}}`; only valid with `template`.            |
 | `headers`                   | object               | Custom headers, `[A-Za-z0-9-]{1,80}` names, values ≤ 1000 chars without line breaks. |
 | `attachments`               | object[]             | Up to 20; see below.                                                                 |
 | `tags`                      | object               | Up to 20 key/value pairs.                                                            |
@@ -28,9 +30,16 @@ job is queued, and the timeline fills in as SES reports back.
 | `trackOpens`, `trackClicks` | boolean              | Override the team defaults for this message.                                         |
 | `overrideSuppression`       | boolean              | Ignore _manual_ suppression entries.                                                 |
 
-At least one of `html`, `text` or `template` must be present — but
-`template` is reserved and currently rejected, so in practice: `html`,
-`text` or both.
+One content source must be present: `html`, `text` (or both), **or** a
+`template`. A `template` together with `html` or `text` is refused rather
+than silently preferring one of them.
+
+A send naming a `template` renders it server-side with the supplied
+`variables` — the same renderer the dashboard preview uses, so what you
+previewed is what is sent — and stores the rendered subject and body. The
+template's subject is used unless the request carries its own. A missing
+template, or a variable with no value and no declared default, is a
+`validation_error` naming what is wrong.
 
 `to`, `cc` and `bcc` together may not exceed **50** recipients.
 
