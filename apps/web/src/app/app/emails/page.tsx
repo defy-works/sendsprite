@@ -31,6 +31,11 @@ export default async function EmailsPage({
     to: one(sp.to),
     domainId: one(sp.domainId),
     tag: one(sp.tag),
+    // Set by the links on a campaign's results panel. There is no control for
+    // it in the form below — a select of every campaign a team has ever sent
+    // would be a long list nobody scrolls — so it rides along as a hidden
+    // field and is cleared by "Clear" like any other filter.
+    campaignId: one(sp.campaignId),
   };
   const [res, domains] = await Promise.all([
     listEmails(ctx.team.id, {
@@ -102,6 +107,9 @@ export default async function EmailsPage({
             autoComplete="off"
           />
         </label>
+        {filters.campaignId && (
+          <input type="hidden" name="campaignId" value={filters.campaignId} />
+        )}
         <Button type="submit" variant="secondary">
           Filter
         </Button>
@@ -111,6 +119,15 @@ export default async function EmailsPage({
           </Link>
         )}
       </form>
+
+      {filters.campaignId && (
+        <p className="text-sm text-white/60">
+          Showing one campaign&rsquo;s mail.{" "}
+          <Link href={`/app/campaigns/${filters.campaignId}`}>
+            Back to the campaign
+          </Link>
+        </p>
+      )}
 
       <EmailsTable
         emails={rows}

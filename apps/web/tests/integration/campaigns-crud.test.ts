@@ -209,6 +209,41 @@ describe("campaign CRUD", () => {
     ).toMatchObject({ ok: false, code: "not_found" });
   });
 
+  /*
+   * Schedule and cancel are the two irreversible controls on the dashboard's
+   * send card, and the card hides them from a member — which is not a
+   * control. A server action is a POST endpoint reachable without the UI, so
+   * the refusal that matters is this one, in the service, before any lookup.
+   */
+  it("refuses a member without campaigns.manage to schedule or cancel", async () => {
+    const { actor, campaign } = await createDraft();
+    const member = { ...actor, role: "member" as const };
+    expect(
+      await (await svc()).scheduleCampaign(member, campaign.id, {}),
+    ).toMatchObject({ ok: false, code: "forbidden" });
+
+    // Armed by someone who may, then un-armed by someone who may not.
+    const armed = await (await svc()).scheduleCampaign(actor, campaign.id, {});
+    expect(armed.ok).toBe(true);
+    expect(
+      await (await svc()).cancelCampaign(member, campaign.id),
+    ).toMatchObject({ ok: false, code: "forbidden" });
+    // Still armed: the refusal refused rather than quietly doing nothing.
+    const after = await (await svc()).getCampaign(actor.teamId, campaign.id);
+    expect(after?.status).toBe("scheduled");
+
+    // Same ordering property as above: a forbidden actor asking about an id
+    // that does not exist gets `forbidden`, never `not_found`.
+    const nobody = "cmp_00000000000000000000000000";
+    expect(
+      await (await svc()).scheduleCampaign(member, nobody, {}),
+    ).toMatchObject({ ok: false, code: "forbidden" });
+    expect(await (await svc()).cancelCampaign(member, nobody)).toMatchObject({
+      ok: false,
+      code: "forbidden",
+    });
+  });
+
   it("edits a draft", async () => {
     const { actor, campaign } = await createDraft();
     const res = await (

@@ -1,11 +1,16 @@
 "use server";
 import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
-import type { CampaignBlock, CampaignStatus } from "@sendsprite/shared";
+import {
+  can,
+  type CampaignBlock,
+  type CampaignStatus,
+} from "@sendsprite/shared";
 import { requestMeta } from "@/lib/audit";
 import type { Result } from "@/lib/result";
 import { requireTeam } from "@/lib/session";
 import * as campaigns from "@/services/campaigns/crud";
+import { confirmationMatches } from "./send";
 
 export type { Result } from "@/lib/result";
 
@@ -18,10 +23,14 @@ export type { Result } from "@/lib/result";
  * again inside `renderBlocks` on the way to the inbox — a check added here
  * would be a third set of rules to keep in step, and the first one to drift.
  *
- * Nothing here checks permissions either, for the same reason: `campaigns.*`
- * in `services/campaigns/crud.ts` checks `campaigns.manage` before it looks
- * anything up, so a member who reaches these functions directly (a server
- * action is a POST endpoint, not a button) gets the same refusal the UI shows.
+ * The CRUD actions check no permissions either, for the same reason:
+ * `campaigns.*` in `services/campaigns/crud.ts` checks `campaigns.manage`
+ * before it looks anything up, so a member who reaches these functions
+ * directly (a server action is a POST endpoint, not a button) gets the same
+ * refusal the UI shows.
+ *
+ * {@link armCampaign} is the one exception, and it is an exception in the
+ * safe direction — see its own comment.
  */
 async function actor() {
   const ctx = await requireTeam();
@@ -82,4 +91,105 @@ export async function deleteCampaign(id: string): Promise<Result> {
   const res = await campaigns.deleteCampaign(await actor(), id);
   if (res.ok) revalidatePath("/app/campaigns");
   return res;
+}
+
+/**
+ * What arming a campaign returns, so the page can update without a reload.
+ * `scheduledAt` is an ISO string because a `Date` crossing the server-action
+ * boundary is fine but a string is what the UI formats anyway.
+ */
+export interface ArmedCampaign {
+  status: CampaignStatus;
+  scheduledAt: string | null;
+}
+
+const NOT_CONFIRMED: Result<never> = {
+  ok: false,
+  code: "validation_error",
+  error:
+    "Type the campaign's name exactly to confirm the send. Nothing was sent.",
+};
+
+/**
+ * Arm a campaign: schedule it, or — with no time — send it as soon as the
+ * sweep next runs.
+ *
+ * Both go through `scheduleCampaign`, which is the only supported way into
+ * `scheduled`; the `campaign.start-sweep` is the only thing that moves a
+ * campaign to `sending`, because starting renders the body once and stamps
+ * `started_at` and a second start path would race the sweep.
+ *
+ * ## Why the typed confirmation is re-checked here
+ *
+ * The Next.js docs are explicit that a Server Function is reachable by a
+ * direct POST regardless of what the UI renders, so a dialog that disables its
+ * own button is friction for the person who opened the dialog and no friction
+ * at all for anything else — a stray `fetch`, a replayed request, a second
+ * click that got through before the first navigated. This is the single most
+ * expensive action in the product, so the same string the dialog asks for is
+ * required as an argument and compared against the stored campaign name
+ * **here**, where it cannot be skipped.
+ *
+ * It is not a security control and it is not pretending to be one:
+ * `campaigns.manage` is the authorization, and it is enforced inside
+ * `scheduleCampaign` before that function looks anything up. The permission is
+ * checked once more at the top of this action purely so that the name lookup
+ * below cannot become an existence oracle for a member who is not allowed to
+ * send: without it, a read-only member could learn which campaign ids are real
+ * by watching "not found" turn into "type the name to confirm".
+ */
+export async function armCampaign(
+  id: string,
+  input: { scheduledAt: string | null; confirmation: string },
+): Promise<Result<ArmedCampaign>> {
+  const a = await actor();
+  if (!can(a.role, "campaigns.manage"))
+    return {
+      ok: false,
+      code: "forbidden",
+      error: "You don't have permission to do that.",
+    };
+  const current = await campaigns.getCampaign(a.teamId, id);
+  if (!current)
+    return { ok: false, code: "not_found", error: "Campaign not found." };
+  if (!confirmationMatches(input.confirmation, current.name))
+    return NOT_CONFIRMED;
+  const res = await campaigns.scheduleCampaign(
+    a,
+    id,
+    // Omitted rather than null: `ScheduleCampaignInput.scheduledAt` is
+    // `.optional()`, and an absent time means "due now" — a null would be a
+    // validation error instead.
+    input.scheduledAt ? { scheduledAt: input.scheduledAt } : {},
+  );
+  if (!res.ok) return res;
+  revalidatePath(`/app/campaigns/${id}`);
+  revalidatePath("/app/campaigns");
+  return {
+    ok: true,
+    data: {
+      status: res.data.status,
+      scheduledAt: res.data.scheduledAt?.toISOString() ?? null,
+    },
+  };
+}
+
+/**
+ * Un-arm a `scheduled` campaign, or stop a `sending` one.
+ *
+ * No typed confirmation, deliberately. Cancelling is the direction that stops
+ * mail rather than starting it, and the one moment somebody needs it most is
+ * the moment they have just realised a send is wrong — friction there costs
+ * recipients. The dialog still has to be honest about what stopping cannot do,
+ * which is the copy's job (`cancelConfirmation` in `send.ts`), not this
+ * function's.
+ */
+export async function cancelCampaign(
+  id: string,
+): Promise<Result<{ status: CampaignStatus }>> {
+  const res = await campaigns.cancelCampaign(await actor(), id);
+  if (!res.ok) return res;
+  revalidatePath(`/app/campaigns/${id}`);
+  revalidatePath("/app/campaigns");
+  return { ok: true, data: { status: res.data.status } };
 }

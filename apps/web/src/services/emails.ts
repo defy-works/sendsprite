@@ -440,6 +440,12 @@ export interface ListEmailsQuery {
   /** Exact (normalised) recipient in `to`. */
   to?: string;
   domainId?: string;
+  /**
+   * Everything one campaign sent. `emails_campaign_idx` serves it, which is
+   * what makes "50 000 rows, filtered by campaign" an index range scan rather
+   * than a table scan of the team's whole mail log.
+   */
+  campaignId?: string;
   /** `key:value`; a value may itself contain `:`. */
   tag?: string;
 }
@@ -459,6 +465,7 @@ export async function listEmails(
   const where: SQL[] = [eq(emails.teamId, teamId)];
   if (q.status) where.push(eq(emails.status, q.status));
   if (q.domainId) where.push(eq(emails.domainId, q.domainId));
+  if (q.campaignId) where.push(eq(emails.campaignId, q.campaignId));
   if (q.to) where.push(sql`${emails.to} ? ${q.to.trim().toLowerCase()}`);
   if (q.tag) {
     const i = q.tag.indexOf(":");
