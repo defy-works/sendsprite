@@ -311,6 +311,117 @@ describe("sendQueuedEmail", () => {
     });
   });
 
+  /*
+   * The window between "this email was created" and "this email is handed to
+   * SES" is seconds for an ordinary API send and hours for the two features
+   * built on top of it: a `scheduledAt` days out, and a campaign whose fan-out
+   * materialises `emails` rows in chunks. `createEmail` checked the
+   * suppression list and nothing looked again, so a hard bounce or a complaint
+   * arriving inside that window was ignored and the address was mailed anyway
+   * — which is how a sending reputation is destroyed, and for a complaint is a
+   * compliance failure rather than a deliverability one.
+   *
+   * This is the campaign case stated on a plain queued row, because that is
+   * what a campaign recipient *is*: the fan-out writes ordinary `emails` rows
+   * and the same `email.send` path delivers them.
+   */
+  it("does not hand a message to SES for an address suppressed after it was queued", async () => {
+    ses.on(SendEmailCommand).resolves({ MessageId: "never" });
+    const created = await create({ to: ["late-bounce@x.io"] });
+    const { suppressFromEvent } = await import("@/services/suppressions");
+    await suppressFromEvent(
+      "org_1",
+      [{ email: "late-bounce@x.io", reason: "bounce" }],
+      null,
+    );
+
+    const { sendQueuedEmail } = await import("@/services/ses-send");
+    const out = await sendQueuedEmail(created.id, {
+      enqueue: vi.fn(async () => ""),
+    });
+
+    expect(out).toEqual({ outcome: "suppressed", reason: "bounce" });
+    expect(ses.commandCalls(SendEmailCommand)).toHaveLength(0);
+    // `cancelled`, not `failed`: nothing failed, we declined to send. Filing
+    // it as `failed` would inflate the very failure rate an operator reads to
+    // judge their reputation, with messages that never reached SES.
+    const row = await load(created.id);
+    expect(row.status).toBe("cancelled");
+    expect(row.lastError).toBe(
+      "suppressed_recipient: late-bounce@x.io (bounce)",
+    );
+    // And the customer can see *why*, rather than finding an email that
+    // stopped at `queued` with nothing after it.
+    expect(await events(created.id)).toEqual(["queued", "cancelled"]);
+    const { listEvents } = await import("@/services/email-events");
+    const last = (await listEvents(created.id)).at(-1)!;
+    expect(last.payload).toMatchObject({
+      reason: "suppressed_recipient",
+      email: "late-bounce@x.io",
+      suppressionReason: "bounce",
+    });
+  });
+
+  it("re-checks cc and bcc at send time too, exactly as createEmail does", async () => {
+    ses.on(SendEmailCommand).resolves({ MessageId: "never" });
+    const created = await create({
+      to: ["fine@x.io"],
+      bcc: ["late-complaint@x.io"],
+    });
+    const { suppressFromEvent } = await import("@/services/suppressions");
+    await suppressFromEvent(
+      "org_1",
+      [{ email: "late-complaint@x.io", reason: "complaint" }],
+      null,
+    );
+
+    const { sendQueuedEmail } = await import("@/services/ses-send");
+    const out = await sendQueuedEmail(created.id, {
+      enqueue: vi.fn(async () => ""),
+    });
+
+    expect(out).toEqual({ outcome: "suppressed", reason: "complaint" });
+    expect(ses.commandCalls(SendEmailCommand)).toHaveLength(0);
+    expect(await load(created.id)).toMatchObject({ status: "cancelled" });
+  });
+
+  /*
+   * The counterpart, and the one that would break a paying feature if the
+   * send-time check were simply the create-time check run twice:
+   * `overrideSuppression` is not stored on the `emails` row, so the send path
+   * cannot recognise an email that was created *with* it. Excluding `manual`
+   * — the only reason the flag can waive — is what makes the flag survive the
+   * journey through the queue.
+   */
+  it("still sends an email created with overrideSuppression over a manual entry", async () => {
+    ses.on(SendEmailCommand).resolves({ MessageId: "ses-override" });
+    const { db } = await import("@/db");
+    const { suppressions } = await import("@/db/schema");
+    const { newId } = await import("@sendsprite/shared");
+    await db()
+      .insert(suppressions)
+      .values({
+        id: newId("sup"),
+        teamId: "org_1",
+        email: "manual-block@x.io",
+        reason: "manual",
+      })
+      .onConflictDoNothing();
+    const created = await create({
+      to: ["manual-block@x.io"],
+      overrideSuppression: true,
+    });
+
+    const { sendQueuedEmail } = await import("@/services/ses-send");
+    const out = await sendQueuedEmail(created.id, {
+      enqueue: vi.fn(async () => ""),
+    });
+
+    expect(out).toEqual({ outcome: "sent" });
+    expect(ses.commandCalls(SendEmailCommand)).toHaveLength(1);
+    expect(await load(created.id)).toMatchObject({ status: "sent" });
+  });
+
   it("defers a scheduled email that is not yet due: re-enqueues for scheduledAt, no SES call", async () => {
     ses.on(SendEmailCommand).resolves({ MessageId: "never" });
     const now = new Date();

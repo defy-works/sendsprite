@@ -191,6 +191,58 @@ const normalise = (r: { id: string; html: string | null }) =>
     .replace(/\/unsubscribe\/[A-Za-z0-9_-]+/g, "/unsubscribe/TOKEN")
     .replace(/&s=[A-Za-z0-9_-]+/g, "&s=SIG");
 
+/** Sets (or clears) the team's monthly cap, as an operator or a plan would. */
+async function setMonthlyCap(teamId: string, monthly: number | null) {
+  const { db } = await import("@/db");
+  const { teamSettings } = await import("@/db/schema");
+  await db()
+    .insert(teamSettings)
+    .values({ teamId, monthlyLimit: monthly })
+    .onConflictDoUpdate({
+      target: teamSettings.teamId,
+      set: { monthlyLimit: monthly, updatedAt: new Date() },
+    });
+}
+
+/** Contacts appended to a book after the cursor has passed the seeded ones. */
+async function addContacts(
+  teamId: string,
+  bookId: string,
+  suffix: string,
+  n: number,
+) {
+  const { db } = await import("@/db");
+  const { contacts } = await import("@/db/schema");
+  const ids = Array.from({ length: n }, (_, i) => `ct_${suffix}9${i}`);
+  await db()
+    .insert(contacts)
+    .values(
+      ids.map((id, i) => ({
+        id,
+        bookId,
+        teamId,
+        email: `late${i}@rcpt.test`,
+        subscribed: true,
+      })),
+    );
+  return ids;
+}
+
+const pauseAudits = async (campaignId: string) => {
+  const { db } = await import("@/db");
+  const { auditLog } = await import("@/db/schema");
+  const { and, eq } = await import("drizzle-orm");
+  return db()
+    .select()
+    .from(auditLog)
+    .where(
+      and(
+        eq(auditLog.targetId, campaignId),
+        eq(auditLog.action, "campaigns.paused"),
+      ),
+    );
+};
+
 /** Reset the cursor, which is exactly what a lost/rolled-back tick looks like. */
 async function rewindCursor(campaignId: string) {
   const { db } = await import("@/db");
@@ -384,8 +436,17 @@ describe("campaign fan-out", () => {
    * reputation. The fan-out writes `emails` rows directly, so `SendEmailInput`
    * never validates these values — the header-safety rules are re-asserted
    * here because this is the only place they are checked.
+   *
+   * **The header and the body point at two different routes, on purpose.**
+   * RFC 8058 requires the URI in `List-Unsubscribe` to accept a POST, and an
+   * App Router segment holding a `page.tsx` cannot also export one — so the
+   * header names `/api/unsubscribe/:token` while the footer a human clicks
+   * names the page at `/unsubscribe/:token`. Pointing the header at the page
+   * answers 405 to Gmail's native button: one-click silently broken, and
+   * invisible to any test that only asserted the two links were equal. What
+   * must be identical is the *token*, which is the recipient's identity.
    */
-  it("puts List-Unsubscribe and List-Unsubscribe-Post on every row", async () => {
+  it("puts List-Unsubscribe (the API route) and List-Unsubscribe-Post on every row", async () => {
     const { campaignId } = await seed();
     const q = recorder();
     await (await fanout()).fanoutChunk(campaignId, q);
@@ -398,12 +459,20 @@ describe("campaign fan-out", () => {
       expect(r.headers["List-Unsubscribe-Post"]).toBe(
         "List-Unsubscribe=One-Click",
       );
-      expect(r.headers["List-Unsubscribe"]).toMatch(
-        new RegExp(`^<${APP_URL}/unsubscribe/[A-Za-z0-9_-]+>$`),
+      // The header is the POST-able API route...
+      const header = /^<(.+)>$/.exec(r.headers["List-Unsubscribe"]!)![1]!;
+      expect(header).toMatch(
+        new RegExp(`^${APP_URL}/api/unsubscribe/[A-Za-z0-9_-]+$`),
       );
-      // The header must carry the same link the body does.
-      const inBody = /\/unsubscribe\/([A-Za-z0-9_-]+)/.exec(r.html ?? "")![1];
-      expect(r.headers["List-Unsubscribe"]).toContain(inBody!);
+      // ...the body is the human-facing page, and it is *not* the same URL.
+      // Anchored on APP_URL so `/api/unsubscribe/` cannot satisfy it.
+      const inBody = new RegExp(`${APP_URL}/unsubscribe/[A-Za-z0-9_-]+`).exec(
+        r.html ?? "",
+      )![0];
+      expect(inBody).not.toBe(header);
+      expect(header).toContain(`${APP_URL}/api/unsubscribe/`);
+      // Same recipient, so the same token on both.
+      expect(header.split("/").at(-1)).toBe(inBody.split("/").at(-1));
       for (const [name, value] of Object.entries(r.headers)) {
         expect(name).toMatch(HEADER_NAME);
         expect(value).toMatch(NO_CONTROL_CHARS);
@@ -651,6 +720,154 @@ describe("campaign fan-out", () => {
     } finally {
       process.env.APP_URL = APP_URL;
       resetEnvCache();
+    }
+  });
+
+  /*
+   * `checkTeamCaps` and `checkInstanceQuota` are called from `createEmail`,
+   * which the fan-out never calls — so a campaign was counted by the billing
+   * meter and by no cap at all, and a Free-plan team could fan out 50 000
+   * recipients. The interesting case is not the refusal, it is the refusal
+   * arriving *mid-campaign*: the earlier chunks are already in inboxes.
+   */
+  it("pauses mid-campaign when the team's monthly cap is reached", async () => {
+    const { campaignId, team, bookId, suffix } = await seed();
+    await setMonthlyCap(team.id, 5);
+    const q = recorder();
+
+    // 3 of the 5 spent by the first chunk.
+    const first = await (await fanout()).fanoutChunk(campaignId, q);
+    expect(first.materialised).toBe(3);
+    await addContacts(team.id, bookId, suffix, 3);
+
+    // The next chunk wants 3 more and only 2 remain: refused whole.
+    const res = await (await fanout()).fanoutChunk(campaignId, q);
+    expect(res).toEqual({
+      materialised: 0,
+      skipped: 0,
+      done: false,
+      completed: false,
+      paused: {
+        code: "monthly_quota_exceeded",
+        message: "Monthly limit of 5 emails reached.",
+      },
+    });
+    expect(await emailCount(campaignId)).toBe(3);
+    expect(q.emailIds()).toHaveLength(3);
+    // Paused, not cancelled: a cap stops being true on its own, and a
+    // `cancelled` campaign cannot be restarted — the customer's only route
+    // back would be a new campaign, which would re-mail everyone already sent.
+    const row = await campaignRow(campaignId);
+    expect(row.status).toBe("sending");
+    expect(row.sentAt).toBeNull();
+    // The cursor has not moved past work that was never done.
+    expect(row.fanoutCursor).toBe(`ct_${suffix}02`);
+    // And it is visible, naming the cap that refused and why.
+    const audits = await pauseAudits(campaignId);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.diff).toMatchObject({
+      reason: { to: "monthly_quota_exceeded" },
+      detail: { to: "Monthly limit of 5 emails reached." },
+    });
+  });
+
+  /*
+   * The property that makes "pause" the right choice rather than "cancel":
+   * lifting the cap resumes the same campaign from the recipient it stopped
+   * at, and nobody is mailed twice on the way through.
+   */
+  it("resumes from where the cap paused it, once the cap is lifted", async () => {
+    const { campaignId, team, bookId, suffix } = await seed();
+    await setMonthlyCap(team.id, 5);
+    const q = recorder();
+    await (await fanout()).fanoutChunk(campaignId, q);
+    const late = await addContacts(team.id, bookId, suffix, 3);
+    const paused = await (await fanout()).fanoutChunk(campaignId, q);
+    expect(paused.paused).toMatchObject({ code: "monthly_quota_exceeded" });
+
+    await setMonthlyCap(team.id, 100);
+    const resumed = await (await fanout()).fanoutChunk(campaignId, q);
+
+    expect(resumed).toMatchObject({ materialised: 3, done: false });
+    const rows = await emailRows(campaignId);
+    expect(rows).toHaveLength(6);
+    expect(rows.map((r) => r.contactId)).toEqual([
+      `ct_${suffix}00`,
+      `ct_${suffix}01`,
+      `ct_${suffix}02`,
+      ...late,
+    ]);
+    // Exactly one email per contact, across the pause.
+    expect(new Set(rows.map((r) => r.contactId)).size).toBe(6);
+    expect(await (await fanout()).fanoutChunk(campaignId, q)).toMatchObject({
+      done: true,
+      completed: true,
+    });
+    expect((await campaignRow(campaignId)).status).toBe("sent");
+  });
+
+  /*
+   * A paused campaign is asked again on every sweep tick for as long as the
+   * cap holds — which can be the rest of a billing month. One audit row per
+   * cap, not one per minute, or the log has no signal left in it.
+   */
+  it("records the pause once however many ticks it stays capped", async () => {
+    const { campaignId, team } = await seed();
+    await setMonthlyCap(team.id, 1);
+    const q = recorder();
+
+    for (let i = 0; i < 3; i++) {
+      const res = await (await fanout()).fanoutChunk(campaignId, q);
+      expect(res.paused).toMatchObject({ code: "monthly_quota_exceeded" });
+    }
+
+    expect(await pauseAudits(campaignId)).toHaveLength(1);
+    expect(await emailCount(campaignId)).toBe(0);
+    expect(await recipientRows(campaignId)).toEqual([]);
+    expect(q.jobs).toEqual([]);
+    expect((await campaignRow(campaignId)).status).toBe("sending");
+  });
+
+  /*
+   * The self-hoster's version of the same hole: `ses_daily_quota` is an
+   * instance setting somebody chose deliberately, and a campaign ignoring it
+   * is a broken setting rather than a missed invoice.
+   */
+  it("pauses on the instance SES quota as well as the team cap", async () => {
+    const { campaignId, team } = await seed();
+    const { db } = await import("@/db");
+    const { emails } = await import("@/db/schema");
+    const { newId } = await import("@sendsprite/shared");
+    const { updateInstanceSettings } =
+      await import("@/services/instance-settings");
+    // One send already accepted by SES inside the trailing 24 h.
+    await db()
+      .insert(emails)
+      .values({
+        id: newId("em"),
+        teamId: team.id,
+        from: "a@x.io",
+        fromEmail: "a@x.io",
+        to: ["prior@rcpt.test"],
+        subject: "prior",
+        text: "t",
+        status: "sent",
+        sentAt: new Date(),
+      });
+    await updateInstanceSettings({ sesDailyQuota: 2 }, undefined, {
+      audit: false,
+    });
+    try {
+      const q = recorder();
+      const res = await (await fanout()).fanoutChunk(campaignId, q);
+
+      expect(res.paused).toMatchObject({ code: "daily_quota_exceeded" });
+      expect(await emailCount(campaignId)).toBe(0);
+      expect((await campaignRow(campaignId)).status).toBe("sending");
+    } finally {
+      await updateInstanceSettings({ sesDailyQuota: null }, undefined, {
+        audit: false,
+      });
     }
   });
 });

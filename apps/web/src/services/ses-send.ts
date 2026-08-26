@@ -1,5 +1,9 @@
 import { SendEmailCommand } from "@aws-sdk/client-sesv2";
 import { and, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
+import {
+  SUPPRESSION_REASONS,
+  type SuppressionReason,
+} from "@sendsprite/shared";
 import { db } from "@/db";
 import { emailAttachments, emails } from "@/db/schema";
 import { makeSes } from "@/lib/aws/clients";
@@ -10,6 +14,7 @@ import { getInstanceSettings } from "./instance-settings";
 import { takeSesToken } from "./send-limits";
 import { RECONCILED_FAILED_PREFIX, recordEvent } from "./email-events";
 import { publicEmail } from "./ingest";
+import { isSuppressed } from "./suppressions";
 import { fanOutEvent } from "./webhooks";
 import type { Enqueue } from "./domains";
 
@@ -19,7 +24,36 @@ export type SendOutcome =
   | { outcome: "throttled"; retryInMs: number }
   | { outcome: "deferred"; retryInMs: number }
   | { outcome: "skipped"; reason: string }
+  | { outcome: "suppressed"; reason: SuppressionReason }
   | { outcome: "failed"; error: string };
+
+/**
+ * Suppression reasons that block a send **at send time**, as opposed to at
+ * create time — every reason except `manual`, derived rather than listed so a
+ * reason added later blocks by default instead of silently slipping through.
+ *
+ * ## Why `manual` is the one exclusion, and how that honours `overrideSuppression`
+ *
+ * `createEmail` lets a caller set `overrideSuppression`, which bypasses
+ * `manual` entries and nothing else (a `sending_only` key cannot even do
+ * that). The flag is not persisted on the `emails` row, so this function
+ * cannot tell an email created *with* it from any other — and re-applying the
+ * full create-time check here would cancel exactly the emails the flag exists
+ * to let through, silently, hours later, with no way for the caller to know.
+ *
+ * Excluding `manual` makes the question moot: the only reason the flag can
+ * bypass is the only reason this does not check, so an override-created email
+ * still sends, and no email is refused here on a ground a caller was
+ * permitted to waive. The cost is that a `manual` entry added *after* an email
+ * was created does not stop it — the operator's own list, added by hand, is
+ * not the reputation or compliance emergency this check exists for. Bounces
+ * and complaints are, and they are also precisely the two reasons the flag has
+ * never been able to waive. (Persisting the flag on `emails` would let this
+ * check `manual` too; that is a migration, and it buys very little.)
+ */
+const BLOCKS_AT_SEND: ReadonlySet<SuppressionReason> = new Set(
+  SUPPRESSION_REASONS.filter((r) => r !== "manual"),
+);
 
 /** SES errors a retry cannot fix: the message is marked `failed` at once. */
 const NO_RETRY = new Set([
@@ -77,7 +111,11 @@ const SENDABLE = ["queued", "scheduled"] as const;
  *     `sending` while they wait for a token (and a crash there strands them,
  *     see `reconcileStuckSending`), whereas this order only wastes a token
  *     in the rare case the claim loses a race;
- *  4. SES SendEmail. Success writes `ses_message_id` before the `sent` event
+ *  4. re-check the suppression list (see {@link blockingSuppression}). It is
+ *     after the claim rather than before it because the row must be *ours*
+ *     before we may move it: a check on the pre-read would have to cancel a
+ *     row another worker could already be handing to SES;
+ *  5. SES SendEmail. Success writes `ses_message_id` before the `sent` event
  *     so an early SNS `Delivery` can already match by message id.
  * A row never stays `sending`: a non-retryable SES error marks it `failed`;
  * a retryable one reverts it to `queued` and rethrows for pg-boss — except
@@ -129,6 +167,12 @@ export async function sendQueuedEmail(
     .returning();
   // Cancelled, rescheduled or claimed by another worker since the pre-read.
   if (!e) return { outcome: "skipped", reason: "not_claimed" };
+
+  const hit = await blockingSuppression(e);
+  if (hit) {
+    await markSuppressed(e, hit);
+    return { outcome: "suppressed", reason: hit.reason };
+  }
 
   try {
     const ctx = await resolveAwsContext();
@@ -226,6 +270,115 @@ export async function sendQueuedEmail(
       .where(and(eq(emails.id, emailId), eq(emails.status, "sending")));
     throw err; // pg-boss retries with backoff
   }
+}
+
+/**
+ * The suppression entry that must stop this send, or null.
+ *
+ * ## Why the check is here and not only in `createEmail`
+ *
+ * Create and send are the same second for an ordinary API call, and were the
+ * only two moments the product had — so one check at create time looked like
+ * enough. Two later features opened a gap between them that is measured in
+ * hours: `scheduledAt` on `POST /emails`, and campaigns, whose fan-out
+ * materialises `emails` rows in chunks and can hand the last recipient to SES
+ * long after `selectEligible` filtered the suppressed contacts out of the
+ * first. A hard bounce or a complaint landing in that window was ignored
+ * entirely: the fan-out does not call `createEmail`, and nothing downstream
+ * looked again. Mailing an address SES already bounced is how a sending
+ * reputation is destroyed, and mailing one that already complained is a
+ * compliance failure rather than merely a deliverability one — so the list is
+ * read once more with the row already claimed.
+ *
+ * ## Cost
+ *
+ * One indexed lookup per send: `suppressions_team_email_uidx` is exactly
+ * `(team_id, email)` and `isSuppressed` takes the whole recipient set as one
+ * `in (...)`, so a send costs one index probe however many recipients it has.
+ * That sits behind `takeSesToken` — a transaction that takes a row lock
+ * `for update` on a single global row and therefore serialises every worker in
+ * the instance — and beside `resolveAwsContext`, `getInstanceSettings` and
+ * the claim, all of which are already per-send round trips. It is noise on
+ * this path. If it ever stops being noise, the alternative is not to drop it
+ * but to fold it into the claim (a `not exists` sub-select on the conditional
+ * UPDATE), which costs nothing extra at all; that was not done here because
+ * the claim would then have no way to report *which* address was suppressed,
+ * and the timeline event is half the point.
+ *
+ * Addresses are compared as `isSuppressed` normalises them, so `cc` and `bcc`
+ * are checked exactly as `createEmail` checks them.
+ */
+async function blockingSuppression(
+  e: EmailRow,
+): Promise<{ email: string; reason: SuppressionReason } | null> {
+  const hits = await isSuppressed(e.teamId, [...e.to, ...e.cc, ...e.bcc]);
+  return hits.find((h) => BLOCKS_AT_SEND.has(h.reason)) ?? null;
+}
+
+/**
+ * `sending` → `cancelled`, with a `cancelled` event naming the address and
+ * the reason.
+ *
+ * ## Why `cancelled` and not `failed`
+ *
+ * `failed` means the transport refused the message, and it is the status a
+ * `MessageRejected` or an exhausted retry produces; it carries an
+ * `email.failed` webhook and it is what a customer reads as "SES had a
+ * problem with this". Nothing failed here — we declined to send, on purpose,
+ * for a reason that is ours and not SES's. Filing it under `failed` would
+ * inflate exactly the failure rate an operator watches to judge their
+ * reputation, using messages that never touched SES: the metric would move in
+ * response to the guard protecting it.
+ *
+ * `cancelled` already means "queued, then deliberately not sent" — it is what
+ * `cancelEmail` writes, `emailEvents` ranks it with the pre-send states, and
+ * neither it nor `failed` is in `SEND_CONSUMING_STATUS`, so the customer is
+ * not billed for it either way. In a mail log "cancelled — suppressed
+ * recipient (bounce)" reads as the truth; "failed" would not.
+ *
+ * (`rejected` exists as an *event* type, not a status: `email_events.rejected`
+ * is SES's own rejection, mapped to the `failed` status by `STATUS_FOR`. It is
+ * SES's verdict and is not available to mean ours.)
+ *
+ * ## What the customer sees
+ *
+ * The timeline event, so the email is explained rather than merely absent:
+ * an email that stopped at `queued` with nothing after it is the outcome this
+ * function exists to avoid. `lastError` carries the same sentence for the list
+ * view. No webhook: there is no `email.cancelled` event type, and a
+ * suppression is not a delivery outcome — the same choice `cancelEmail`
+ * already makes.
+ *
+ * Guarded on `status = 'sending'`, like `markSendFailed`: if anything else
+ * moved the row since the claim, it is left alone and gets no event.
+ */
+async function markSuppressed(
+  e: EmailRow,
+  hit: { email: string; reason: SuppressionReason },
+): Promise<void> {
+  const [row] = await db()
+    .update(emails)
+    .set({
+      status: "cancelled",
+      lastError: `suppressed_recipient: ${hit.email} (${hit.reason})`,
+    })
+    .where(and(eq(emails.id, e.id), eq(emails.status, "sending")))
+    .returning({ id: emails.id });
+  if (!row) return;
+  await recordEvent({
+    emailId: e.id,
+    teamId: e.teamId,
+    type: "cancelled",
+    // Distinct from `cancelEmail`'s `local:<id>:cancelled`: a customer cancel
+    // and a suppression stop are different facts and both belong on the
+    // timeline if both happen.
+    dedupeKey: `local:${e.id}:suppressed`,
+    payload: {
+      reason: "suppressed_recipient",
+      email: hit.email,
+      suppressionReason: hit.reason,
+    },
+  });
 }
 
 /**
