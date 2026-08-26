@@ -231,7 +231,25 @@ describe("webhooks", () => {
     const boom = async () => {
       throw new Error("ECONNREFUSED");
     };
-    expect(await deliver(id2!, { fetch: boom, enqueue })).toMatchObject({
+    /*
+     * `now` is passed here, and it was not before.
+     *
+     * These two calls used the real clock while every call above them used
+     * `t0`, which is a fixed date. `failingSince` is still `t0 + 1s` from the
+     * retry-schedule failures above, so the disable rule compared a stored
+     * 2026-08-25 against whatever today is — and the moment the wall clock
+     * passed `t0 + 24h`, the ECONNREFUSED failure below started disabling the
+     * webhook as a side effect. The next `deliver` then found it disabled and
+     * returned `null` instead of a delivery.
+     *
+     * So the suite was a time bomb: green on the day `t0` was written, red
+     * from the day after, for a product bug that does not exist. Every call in
+     * this test now runs on the same fixed clock.
+     */
+    const tBoom = new Date(t0.getTime() + 1e6);
+    expect(
+      await deliver(id2!, { fetch: boom, enqueue, now: tBoom }),
+    ).toMatchObject({
       status: "pending",
       attempt: 1,
       statusCode: null,
@@ -239,7 +257,11 @@ describe("webhooks", () => {
     });
     // Success clears the failure clock.
     expect(
-      await deliver(id2!, { fetch: fetchWith(204), enqueue }),
+      await deliver(id2!, {
+        fetch: fetchWith(204),
+        enqueue,
+        now: new Date(tBoom.getTime() + 1000),
+      }),
     ).toMatchObject({ status: "delivered", statusCode: 204 });
     expect((await hook(w.data.id)).failingSince).toBeNull();
     // Failing for 24 h disables the webhook and later deliveries are dropped.
