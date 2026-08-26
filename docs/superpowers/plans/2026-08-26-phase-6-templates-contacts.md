@@ -263,6 +263,25 @@ and make sure the validation message says "line breaks or control characters" ra
 "line breaks" — otherwise a customer with a tab is told their subject contains a line break,
 which is both wrong and unactionable.
 
+## Decisions from the CSV work (Tasks 7 and 15)
+
+- **Raise `MAX_CSV_COLUMNS` to at least 32.** The export writes 6 fixed columns plus one per
+  property key, and the contract allows 20 properties — 26 columns — against a parser cap of 24.
+  An export the product cannot re-import is broken, and the failure only appears for customers
+  with the most data. Raise the cap with headroom rather than trimming the export; the cap
+  exists to bound work, and 32 columns bounds it just as well.
+- **`parseCsv` returns `data.errors` and the sketched `importContacts` ignores them.** Shipping
+  that as drafted means ragged and over-long rows vanish from the import with no report at all,
+  which is worse than the fatal error it replaced. Merge them into `ImportContactsResult.errors`
+  as `{ line, email: null, reason }`, respect the 100-error cap, and count them in `skipped`.
+- **Ragged rows are dropped, not truncated** — a stray comma shifts every later value one column
+  left, so truncating lands one person's data in another person's field. Dropping and reporting
+  is the honest failure.
+- **The byte cap and the character cap are deliberately different.** `MAX_CSV_BYTES` bounds the
+  real resource; `MAX_IMPORT_CSV_CHARS` bounds the decoded JSON string. A payload of multi-byte
+  text can pass the contract and be refused by the parser — intentional, and the message already
+  tells the customer to split the file.
+
 ## Carry-forwards for Task 7 (from the Task 3 contracts)
 
 - **Normalise emails identically on both sides.** The contract's email schema is
