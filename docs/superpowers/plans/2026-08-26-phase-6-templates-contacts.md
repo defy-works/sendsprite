@@ -263,6 +263,29 @@ and make sure the validation message says "line breaks or control characters" ra
 "line breaks" — otherwise a customer with a tab is told their subject contains a line break,
 which is both wrong and unactionable.
 
+## Import must honour consent, and round-trip its own export
+
+Two connected problems, both surfaced by Task 7 and both decided here.
+
+**Reserved headers.** The documented rule "every column other than the known ones becomes a
+property" turns our own export's `subscribed`, `unsubscribe_reason` and `created_at` into three
+junk properties on re-import — and for a contact already at the 20-property cap, every row then
+fails validation. Export → edit in a spreadsheet → re-import is the single most common thing a
+customer does with a contact list, so it has to be clean. The import recognises a reserved
+header set — `email`, `first_name`, `last_name`, `subscribed`, `unsubscribe_reason` — maps them
+to their fields, and ignores `created_at` (it is ours to assign, not theirs to set). Everything
+else still becomes a property. Document the reserved list in `/docs/contacts` next to the
+property rule, because it is now load-bearing rather than incidental.
+
+**A `subscribed: false` column must be honoured.** Import currently inserts every new row as
+subscribed. A list exported from another provider routinely carries people who opted out, so
+importing it silently resubscribes them — a consent failure, and exactly the kind that surfaces
+as a complaint rather than a bug report. Parse `subscribed` when the column is present (accept
+`false`/`0`/`no`/`unsubscribed`, case-insensitive), default to subscribed only when it is
+absent, and set `unsubscribed_at` for rows that arrive unsubscribed. The existing rule stands
+unchanged in the other direction: a re-import can never _resubscribe_ someone, because the
+upsert's `set` clause does not touch consent columns.
+
 ## Decisions from the CSV work (Tasks 7 and 15)
 
 - **Raise `MAX_CSV_COLUMNS` to at least 32.** The export writes 6 fixed columns plus one per
