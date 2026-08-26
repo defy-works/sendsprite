@@ -11,6 +11,7 @@ import { recordAudit } from "@/lib/audit";
 // No runtime cycle: `@/lib/team` only `import type`s this module.
 import { resolveTeam } from "@/lib/team";
 import { canSignUp, resolveSignupMode } from "./signup-policy";
+import { parseAdminEmails } from "./instance-admin";
 
 /**
  * Race window: two concurrent *first* signups can both observe zero users
@@ -105,7 +106,17 @@ function createAuth() {
                     : "Sign-ups are invite-only. Ask a team admin for an invitation link.",
               });
             }
-            return { data: user };
+            // The first account on an instance with no env allowlist becomes
+            // the instance admin, so a fresh self-hosted deployment is never
+            // left with nobody able to reach /app/admin. Same race window as
+            // `currentSignupMode` above, and accepted for the same reason.
+            const [users] = await db()
+              .select({ n: count() })
+              .from(schema.user);
+            const firstUser =
+              Number(users?.n ?? 0) === 0 &&
+              parseAdminEmails(env.INSTANCE_ADMIN_EMAILS).length === 0;
+            return { data: { ...user, instanceAdmin: firstUser } };
           },
         },
       },

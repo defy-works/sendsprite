@@ -177,3 +177,49 @@ describe("route handler", () => {
     });
   });
 });
+
+/**
+ * Runs last: it reads the users the blocks above created, and the final test
+ * signs one more up. `first@example.com` was the very first account on this
+ * instance, so it must carry the flag; nobody after it may.
+ */
+describe("instance admin flag", () => {
+  const flagOf = async (email: string) => {
+    const [row] = await pg.db
+      .select({ flag: schema.user.instanceAdmin })
+      .from(schema.user)
+      .where(eq(schema.user.email, email));
+    return row?.flag;
+  };
+
+  it("flags the first user to sign up", async () => {
+    expect(await flagOf("first@example.com")).toBe(true);
+  });
+
+  it("does not flag later users", async () => {
+    expect(await flagOf("invited@example.com")).toBe(false);
+    expect(await flagOf("route@example.com")).toBe(false);
+  });
+
+  it("flags nobody when INSTANCE_ADMIN_EMAILS is set", async () => {
+    // Wipe every user so this signup is genuinely "the first", isolating the
+    // env allowlist as the only reason the flag stays off.
+    await pg.db.delete(schema.user);
+    process.env.INSTANCE_ADMIN_EMAILS = "ops@example.com";
+    await setSignupMode("open");
+    await expect(signUp("solo@example.com")).resolves.toMatchObject({
+      user: { email: "solo@example.com" },
+    });
+    expect(await flagOf("solo@example.com")).toBe(false);
+    delete process.env.INSTANCE_ADMIN_EMAILS;
+    await setSignupMode("open");
+  });
+
+  it("flags the first user when the allowlist is empty", async () => {
+    await pg.db.delete(schema.user);
+    await expect(signUp("fresh@example.com")).resolves.toMatchObject({
+      user: { email: "fresh@example.com" },
+    });
+    expect(await flagOf("fresh@example.com")).toBe(true);
+  });
+});
