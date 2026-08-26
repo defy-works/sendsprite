@@ -45,6 +45,14 @@ import {
   UpdateContactBookInput,
   UpdateContactInput,
 } from "./api/contacts";
+import {
+  AudiencePreview,
+  CAMPAIGN_STATUSES,
+  CampaignObject,
+  CreateCampaignInput,
+  ScheduleCampaignInput,
+  UpdateCampaignInput,
+} from "./api/campaigns";
 import { SendStatsObject } from "./api/stats";
 import { MeObject } from "./api/me";
 import { StreamChange } from "./api/stream";
@@ -99,7 +107,7 @@ export interface Operation {
   description?: string;
   tags: string[];
   parameters?: ParameterObject[];
-  requestBody?: { required: true; content: Record<string, MediaTypeObject> };
+  requestBody?: { required: boolean; content: Record<string, MediaTypeObject> };
   responses: Record<string, ResponseObject>;
 }
 
@@ -130,6 +138,9 @@ const inputSchemas = {
   UpdateContactInput,
   ImportContactsInput,
   UnsubscribeContactInput,
+  CreateCampaignInput,
+  UpdateCampaignInput,
+  ScheduleCampaignInput,
 };
 /** Response bodies: emitted with `io: "output"`. */
 const outputSchemas = {
@@ -161,6 +172,9 @@ const outputSchemas = {
   ContactPage: pageOf(ContactObject),
   ImportContactsResult,
   UnsubscribeResult,
+  CampaignObject,
+  CampaignPage: pageOf(CampaignObject),
+  AudiencePreview,
   SendStatsObject,
   MeObject,
   // Registered only so `/stream`'s description can name it; no operation refers to it.
@@ -268,6 +282,18 @@ const idParam = (name = "id", description?: string): ParameterObject => ({
 });
 const body = (name: SchemaId): Operation["requestBody"] => ({
   required: true,
+  content: { "application/json": { schema: ref(name) } },
+});
+/**
+ * A body the caller may leave off entirely.
+ *
+ * Only `POST /campaigns/{id}/schedule` uses it, and the distinction is not
+ * cosmetic: an omitted body there *is* the "start now" request, so marking it
+ * `required` would make every generated client demand a payload for the most
+ * common call on the endpoint.
+ */
+const optionalBody = (name: SchemaId): Operation["requestBody"] => ({
+  required: false,
   content: { "application/json": { schema: ref(name) } },
 });
 const op = (
@@ -764,6 +790,107 @@ export function buildOpenApiDocument(opts: OpenApiOptions) {
         },
       }),
     },
+    "/campaigns": {
+      get: op("Campaigns", "listCampaigns", "List campaigns", {
+        description:
+          "Newest first, optionally filtered by `status`. Every campaigns route needs a full key: a sending-only key that could reach this surface could mail the team's whole contact book.",
+        parameters: [
+          ...pageParams,
+          {
+            name: "status",
+            in: "query",
+            schema: { type: "string", enum: CAMPAIGN_STATUSES },
+          },
+        ],
+        responses: {
+          "200": json(ref("CampaignPage"), "Page of campaigns"),
+          ...errors(...common, "validation_error"),
+        },
+      }),
+      post: op("Campaigns", "createCampaign", "Create a campaign", {
+        description:
+          "Creates a `draft`; nothing is scheduled or sent until `POST /campaigns/{id}/schedule`. The body is a typed block list, not free HTML — the renderer escapes every value it interpolates and URLs are limited to `http:`, `https:` and `mailto:`. `bookId` and `domainId` must belong to the calling team and the domain must be verified, or the field is named in the refusal.",
+        requestBody: body("CreateCampaignInput"),
+        responses: {
+          "201": json(ref("CampaignObject"), "Campaign, as a draft"),
+          ...errors(...common, "validation_error", "domain_not_verified"),
+        },
+      }),
+    },
+    "/campaigns/{id}": {
+      get: op("Campaigns", "getCampaign", "Get a campaign", {
+        parameters: [idParam()],
+        responses: {
+          "200": json(ref("CampaignObject"), "Campaign"),
+          ...errors(...common, "not_found"),
+        },
+      }),
+      patch: op("Campaigns", "updateCampaign", "Update a campaign", {
+        description:
+          "Only a `draft` or `scheduled` campaign can be edited; anything further along is a `409`, because half of a `sending` campaign has already gone out under the old content. Editing a `scheduled` campaign reverts it to `draft` and clears `scheduledAt`, so a change never ships on the old timer — re-arm it explicitly. An update that changes nothing does neither.",
+        parameters: [idParam()],
+        requestBody: body("UpdateCampaignInput"),
+        responses: {
+          "200": json(ref("CampaignObject"), "Updated campaign"),
+          ...errors(
+            ...common,
+            "validation_error",
+            "not_found",
+            "conflict",
+            "domain_not_verified",
+          ),
+        },
+      }),
+      delete: op("Campaigns", "deleteCampaign", "Delete a campaign", {
+        description:
+          "Refused with a `409` while the campaign is `sending`; cancel it first. Deleting stops the campaign being listed, it does not erase the send: the `emails` rows it produced keep their bodies, events and `campaignId`.",
+        parameters: [idParam()],
+        responses: {
+          "204": { description: "Deleted" },
+          ...errors(...common, "not_found", "conflict"),
+        },
+      }),
+    },
+    "/campaigns/{id}/schedule": {
+      post: op("Campaigns", "scheduleCampaign", "Schedule a campaign", {
+        description:
+          "Arms a `draft` or re-arms a `scheduled` campaign. **Send the body empty to start now.** Either way the campaign becomes `scheduled`, never `sending` directly: a background sweep renders the body once and starts the fan-out when the time is due. `scheduledAt` must be an offset-bearing ISO 8601 time in the future — a past time is refused rather than clamped to now, because the mistake that produces one is usually a timezone. The contact book and the domain are re-checked here, however long ago the campaign was written: this is the last moment before mail leaves.",
+        parameters: [idParam()],
+        requestBody: optionalBody("ScheduleCampaignInput"),
+        responses: {
+          "200": json(ref("CampaignObject"), "Scheduled campaign"),
+          ...errors(
+            ...common,
+            "validation_error",
+            "not_found",
+            "conflict",
+            "domain_not_verified",
+          ),
+        },
+      }),
+    },
+    "/campaigns/{id}/cancel": {
+      post: op("Campaigns", "cancelCampaign", "Cancel a campaign", {
+        description:
+          "A `scheduled` campaign is un-armed: it returns to `draft` with `scheduledAt` cleared, and nothing was sent. A `sending` campaign becomes `cancelled`, which **stops further fan-out and nothing more** — recipients already materialised are ordinary emails on the ordinary send path, and mail already handed to SES cannot be recalled. `counts` is therefore left standing and will keep rising for a while as events arrive for messages already in flight. Any other status is a `409`.",
+        parameters: [idParam()],
+        responses: {
+          "200": json(ref("CampaignObject"), "Campaign after the transition"),
+          ...errors(...common, "not_found", "conflict"),
+        },
+      }),
+    },
+    "/campaigns/{id}/audience": {
+      get: op("Campaigns", "getCampaignAudience", "Preview the audience", {
+        description:
+          "How many contacts the campaign would reach, counted live against its book. The four numbers are four views of one population rather than buckets that sum to it: `eligible` is `subscribed` **and** not `suppressed`, and it is the only one that will be mailed. A campaign whose book has since been deleted answers four zeros.",
+        parameters: [idParam()],
+        responses: {
+          "200": json(ref("AudiencePreview"), "Audience counts"),
+          ...errors(...common, "not_found"),
+        },
+      }),
+    },
     "/stats": {
       get: op("Account", "getSendStats", "Sending stats", {
         description: "Send counts, 30-day rates and SES account-health alerts.",
@@ -823,6 +950,7 @@ export function buildOpenApiDocument(opts: OpenApiOptions) {
       { name: "Suppressions" },
       { name: "Templates" },
       { name: "Contacts" },
+      { name: "Campaigns" },
       { name: "Account" },
     ],
     components: {

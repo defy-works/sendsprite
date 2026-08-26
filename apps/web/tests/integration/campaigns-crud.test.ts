@@ -568,3 +568,273 @@ describe("campaign CRUD", () => {
     );
   });
 });
+
+/**
+ * The status transitions. These are the two service functions the REST
+ * schedule/cancel routes and the dashboard both go through, and between them
+ * they are the only supported way into and out of `scheduled`.
+ */
+describe("campaign scheduling", () => {
+  const audits = async (teamId: string, action: string) => {
+    const { db } = await import("@/db");
+    const { auditLog } = await import("@/db/schema");
+    const { and, eq } = await import("drizzle-orm");
+    return db()
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.teamId, teamId), eq(auditLog.action, action)));
+  };
+
+  it("arms a draft for a future time and writes an audit row", async () => {
+    const { actor, campaign } = await createDraft();
+    const when = new Date(Date.now() + 3_600_000);
+    const res = await (
+      await svc()
+    ).scheduleCampaign(actor, campaign.id, { scheduledAt: when.toISOString() });
+    if (!res.ok) throw new Error(`unreachable: ${res.error}`);
+    expect(res.data.status).toBe("scheduled");
+    expect(res.data.scheduledAt?.toISOString()).toBe(when.toISOString());
+    const rows = await audits(actor.teamId, "campaigns.schedule");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.targetId).toBe(campaign.id);
+    expect(rows[0]!.diff).toMatchObject({
+      status: { from: "draft", to: "scheduled" },
+    });
+  });
+
+  /*
+   * "Send now" is `scheduled` with the time set to now, not `sending`.
+   * `campaign.start-sweep` is the only thing that starts a send — it renders
+   * the body once and stamps `started_at` — and a `scheduled` row with a null
+   * time is never due, so it would sit armed and silent forever.
+   */
+  it("treats an absent scheduledAt as due now, still via `scheduled`", async () => {
+    const { actor, campaign } = await createDraft();
+    const before = Date.now();
+    const res = await (await svc()).scheduleCampaign(actor, campaign.id, {});
+    if (!res.ok) throw new Error(`unreachable: ${res.error}`);
+    expect(res.data.status).toBe("scheduled");
+    expect(res.data.scheduledAt).not.toBeNull();
+    expect(res.data.scheduledAt!.getTime()).toBeGreaterThanOrEqual(before - 1);
+    expect(res.data.scheduledAt!.getTime()).toBeLessThanOrEqual(Date.now() + 1);
+  });
+
+  /*
+   * Refused, never clamped to now. A skewed clock and a timezone mistake are
+   * indistinguishable here, and clamping the second one mails the list.
+   */
+  it("refuses a time in the past", async () => {
+    const { actor, campaign } = await createDraft();
+    const res = await (
+      await svc()
+    ).scheduleCampaign(actor, campaign.id, {
+      scheduledAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    expect(res).toMatchObject({
+      ok: false,
+      code: "validation_error",
+      details: { field: "scheduledAt" },
+    });
+    const after = await (await svc()).getCampaign(actor.teamId, campaign.id);
+    expect(after!.status).toBe("draft");
+    expect(after!.scheduledAt).toBeNull();
+  });
+
+  it("refuses a scheduledAt that is not an offset-bearing ISO time", async () => {
+    const { actor, campaign } = await createDraft();
+    expect(
+      await (
+        await svc()
+      ).scheduleCampaign(actor, campaign.id, { scheduledAt: "tomorrow" }),
+    ).toMatchObject({ ok: false });
+  });
+
+  it("re-arms an already scheduled campaign", async () => {
+    const { actor, campaign } = await createDraft();
+    const first = new Date(Date.now() + 3_600_000);
+    const second = new Date(Date.now() + 7_200_000);
+    await (
+      await svc()
+    ).scheduleCampaign(actor, campaign.id, {
+      scheduledAt: first.toISOString(),
+    });
+    const res = await (
+      await svc()
+    ).scheduleCampaign(actor, campaign.id, {
+      scheduledAt: second.toISOString(),
+    });
+    if (!res.ok) throw new Error(`unreachable: ${res.error}`);
+    expect(res.data.scheduledAt?.toISOString()).toBe(second.toISOString());
+  });
+
+  it("refuses to schedule anything past `draft`/`scheduled`", async () => {
+    for (const status of ["sending", "sent", "cancelled"] as const) {
+      const { actor, campaign } = await createDraft();
+      await forceStatus(campaign.id, status);
+      expect(
+        await (await svc()).scheduleCampaign(actor, campaign.id, {}),
+      ).toMatchObject({ ok: false, code: "conflict" });
+    }
+  });
+
+  /*
+   * The campaign may have been written weeks ago. This is the last moment
+   * before the sweep renders it and starts mailing, so both references and
+   * the domain's verification are checked again in full — a refusal here is a
+   * form error, the same problem a minute later is a campaign that
+   * hard-bounces for every recipient.
+   */
+  it("re-checks the book at schedule time, not only at create time", async () => {
+    const { db } = await import("@/db");
+    const { contactBooks } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    const { actor, campaign, bookId } = await createDraft();
+    await db().delete(contactBooks).where(eq(contactBooks.id, bookId));
+    expect(
+      await (await svc()).scheduleCampaign(actor, campaign.id, {}),
+    ).toMatchObject({
+      ok: false,
+      code: "validation_error",
+      details: { field: "bookId" },
+    });
+    const after = await (await svc()).getCampaign(actor.teamId, campaign.id);
+    expect(after!.status).toBe("draft");
+  });
+
+  it("re-checks the domain's verification at schedule time", async () => {
+    const { db } = await import("@/db");
+    const { domains } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    const { actor, campaign, domainId } = await createDraft();
+    await db()
+      .update(domains)
+      .set({ status: "failed" })
+      .where(eq(domains.id, domainId));
+    expect(
+      await (await svc()).scheduleCampaign(actor, campaign.id, {}),
+    ).toMatchObject({ ok: false, code: "domain_not_verified" });
+  });
+
+  it("checks the permission before the lookup on both transitions", async () => {
+    const seed = await seedTeam();
+    const member = { ...seed.actor, role: "member" as const };
+    const nobody = "cmp_00000000000000000000000000";
+    expect(
+      await (await svc()).scheduleCampaign(member, nobody, {}),
+    ).toMatchObject({ ok: false, code: "forbidden" });
+    expect(await (await svc()).cancelCampaign(member, nobody)).toMatchObject({
+      ok: false,
+      code: "forbidden",
+    });
+    expect(
+      await (await svc()).scheduleCampaign(seed.actor, nobody, {}),
+    ).toMatchObject({ ok: false, code: "not_found" });
+  });
+});
+
+describe("campaign cancellation", () => {
+  /*
+   * Nothing has been sent, so there is nothing to record: the campaign is
+   * simply un-armed. The time goes with it, for the same reason an edit
+   * clears it — a draft carrying a scheduled_at would make the sweep (which
+   * selects on status) and the dashboard (which shows the time) describe two
+   * different futures.
+   */
+  it("un-arms a scheduled campaign back to draft and clears the time", async () => {
+    const { actor, campaign } = await createDraft();
+    await (
+      await svc()
+    ).scheduleCampaign(actor, campaign.id, {
+      scheduledAt: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    const res = await (await svc()).cancelCampaign(actor, campaign.id);
+    if (!res.ok) throw new Error(`unreachable: ${res.error}`);
+    expect(res.data.status).toBe("draft");
+    expect(res.data.scheduledAt).toBeNull();
+    const { db } = await import("@/db");
+    const { auditLog } = await import("@/db/schema");
+    const { and, eq } = await import("drizzle-orm");
+    const rows = await db()
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.teamId, actor.teamId),
+          eq(auditLog.action, "campaigns.cancel"),
+        ),
+      );
+    expect(rows[0]!.diff).toMatchObject({
+      status: { from: "scheduled", to: "draft" },
+    });
+  });
+
+  /*
+   * The honesty test. Cancelling a `sending` campaign stops further fan-out
+   * and nothing else: the recipients already materialised are ordinary
+   * `emails` rows on the ordinary send path, and mail already handed to SES
+   * cannot be recalled. So the counts must survive the transition — zeroing
+   * them would make the row read as though nothing had been sent, which is
+   * the one thing the operator of a cancelled campaign must not believe.
+   */
+  it("stops a sending campaign without pretending nothing was sent", async () => {
+    const { db } = await import("@/db");
+    const { campaigns } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    const { actor, campaign } = await createDraft();
+    const counts = {
+      recipients: 1000,
+      sent: 400,
+      delivered: 380,
+      opened: 90,
+      clicked: 12,
+      unsubscribed: 3,
+      bounced: 8,
+      complained: 1,
+      failed: 2,
+    };
+    await db()
+      .update(campaigns)
+      .set({ status: "sending", startedAt: new Date(), counts })
+      .where(eq(campaigns.id, campaign.id));
+    const res = await (await svc()).cancelCampaign(actor, campaign.id);
+    if (!res.ok) throw new Error(`unreachable: ${res.error}`);
+    expect(res.data.status).toBe("cancelled");
+    expect(res.data.counts).toEqual(counts);
+    // The fan-out never finished, so no end is stamped on it either.
+    expect(res.data.sentAt).toBeNull();
+  });
+
+  it("refuses to cancel a draft, a sent or an already cancelled campaign", async () => {
+    for (const status of ["draft", "sent", "cancelled"] as const) {
+      const { actor, campaign } = await createDraft();
+      if (status !== "draft") await forceStatus(campaign.id, status);
+      expect(
+        await (await svc()).cancelCampaign(actor, campaign.id),
+      ).toMatchObject({ ok: false, code: "conflict" });
+    }
+  });
+
+  it("404s a campaign belonging to another team", async () => {
+    const mine = await createDraft();
+    const theirs = await createDraft();
+    expect(
+      await (await svc()).cancelCampaign(mine.actor, theirs.campaign.id),
+    ).toMatchObject({ ok: false, code: "not_found" });
+    expect(
+      await (await svc()).scheduleCampaign(mine.actor, theirs.campaign.id, {}),
+    ).toMatchObject({ ok: false, code: "not_found" });
+  });
+
+  it("leaves a cancelled campaign immutable but still deletable", async () => {
+    const { actor, campaign } = await createDraft();
+    await forceStatus(campaign.id, "sending");
+    await (await svc()).cancelCampaign(actor, campaign.id);
+    expect(
+      await (await svc()).updateCampaign(actor, campaign.id, { name: "x" }),
+    ).toMatchObject({ ok: false, code: "conflict" });
+    // Deleting is refused only while `sending`; a cancelled campaign can go.
+    expect(
+      await (await svc()).deleteCampaign(actor, campaign.id),
+    ).toMatchObject({ ok: true });
+  });
+});

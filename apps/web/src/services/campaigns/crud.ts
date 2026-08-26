@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray, ne, sql, type SQL } from "drizzle-orm";
 import {
   CreateCampaignInput,
+  ScheduleCampaignInput,
   UpdateCampaignInput,
   can,
   newId,
@@ -569,4 +570,191 @@ export async function deleteCampaign(
     diff: { name: { from: row.name }, status: { from: row.status } },
   });
   return { ok: true, data: undefined };
+}
+
+/**
+ * Arm a `draft` (or re-arm a `scheduled`) campaign.
+ *
+ * The end state is always `scheduled`, never `sending` — even for "send now",
+ * which is `scheduledAt` omitted and therefore `scheduledAt = now`. The
+ * `campaign.start-sweep` is the only thing that moves a campaign into
+ * `sending`, because starting is not a status flip: it renders `html`/`text`
+ * once and stamps `started_at`, and a request handler that did that itself
+ * would be a second start path racing the sweep for the same campaign. So
+ * "start now" means "due now", and the next sweep tick picks it up.
+ *
+ * That is also why the sweep's `scheduled_at <= now` comparison forces a
+ * concrete timestamp here rather than a null one: a `scheduled` row with no
+ * time is never due, so it would sit armed and silent forever.
+ *
+ * ## Everything is re-checked, because this is the last quiet moment
+ *
+ * A campaign may have been authored weeks ago. Between then and now its book
+ * or its domain can have been deleted (neither is a foreign key — see the
+ * module comment), and the domain can have failed re-verification. `checkRefs`
+ * is therefore run again in full, exactly as `createCampaign` runs it: after
+ * this call the next thing to touch the campaign is the sweep, which renders
+ * and fans out. A refusal here is a form error; the same problem noticed a
+ * minute later is a campaign that hard-bounces for every recipient.
+ *
+ * A time in the past is refused rather than clamped to `now`. Both readings
+ * are defensible for a clock skewed by a second, and neither is defensible
+ * for the one that matters — a timezone mistake that means yesterday — where
+ * clamping silently mails the list immediately.
+ */
+export async function scheduleCampaign(
+  actor: CampaignActor,
+  id: string,
+  raw: unknown,
+): Promise<Result<Campaign>> {
+  if (!can(actor.role, "campaigns.manage")) return DENIED;
+  const p = ScheduleCampaignInput.safeParse(raw ?? {});
+  if (!p.success)
+    return { ok: false, error: p.error.issues[0]?.message ?? "Invalid input." };
+  const now = new Date();
+  // No `scheduledAt` is "start now": due on the next sweep tick, not null.
+  const at = p.data.scheduledAt ? new Date(p.data.scheduledAt) : now;
+  if (at.getTime() < now.getTime())
+    return {
+      ok: false,
+      code: "validation_error",
+      error: "scheduledAt must be an ISO 8601 date-time in the future.",
+      details: { field: "scheduledAt" },
+    };
+  const current = await getCampaign(actor.teamId, id);
+  if (!current) return NOT_FOUND;
+  if (!(EDITABLE_STATUSES as readonly string[]).includes(current.status))
+    return {
+      ok: false,
+      code: "conflict",
+      error: `A campaign that is ${current.status} cannot be scheduled.`,
+    };
+  const refs = await checkRefs(
+    actor.teamId,
+    current.bookId,
+    current.domainId,
+    current.from,
+  );
+  if (!refs.ok) return refs;
+  const [row] = await db()
+    .update(campaigns)
+    .set({ status: "scheduled", scheduledAt: at })
+    .where(
+      and(
+        eq(campaigns.id, current.id),
+        eq(campaigns.teamId, actor.teamId),
+        // Re-asserted, as in `updateCampaign`: the sweep can start a
+        // `scheduled` campaign between the read above and this write, and
+        // re-arming one that is already fanning out would give the sweep two
+        // contradictory instructions about the same send.
+        inArray(campaigns.status, [...EDITABLE_STATUSES]),
+      ),
+    )
+    .returning();
+  if (!row)
+    return {
+      ok: false,
+      code: "conflict",
+      error: "This campaign started sending while you were scheduling it.",
+    };
+  await recordAudit({
+    teamId: actor.teamId,
+    actorUserId: actor.userId,
+    ...actor.meta,
+    action: "campaigns.schedule",
+    targetType: "campaign",
+    targetId: row.id,
+    diff: {
+      status: { from: current.status, to: row.status },
+      scheduledAt: {
+        from: current.scheduledAt?.toISOString() ?? null,
+        to: at.toISOString(),
+      },
+    },
+  });
+  return { ok: true, data: row };
+}
+
+/**
+ * Un-arm a `scheduled` campaign, or stop a `sending` one.
+ *
+ * Two transitions, and they are deliberately not the same one:
+ *
+ * - **`scheduled` → `draft`.** Nothing has been sent, so there is nothing to
+ *   record; the campaign goes back to being an editable draft. `scheduledAt`
+ *   is cleared with it for the same reason an edit clears it — a draft that
+ *   still carries a time makes the sweep (which selects on `status`) and the
+ *   dashboard (which shows the time) describe two different futures.
+ * - **`sending` → `cancelled`.** Mail has left. `cancelled` is a terminal,
+ *   immutable status precisely so the row keeps saying so.
+ *
+ * Everything else is refused. `draft` has nothing to cancel, and `sent` and
+ * `cancelled` are already at the end.
+ *
+ * ## What cancelling a `sending` campaign does *not* do
+ *
+ * It stops **further fan-out** and nothing more. The fan-out sweep selects
+ * campaigns in `sending`, so a cancelled campaign materialises no further
+ * recipients — but every recipient already materialised is an ordinary
+ * `emails` row on the ordinary send path, and the ones already handed to SES
+ * are gone. There is no recall in SES and there is none here.
+ *
+ * So `counts` is left exactly as it stands. Zeroing it would make the row
+ * read as though nothing had been sent, which is the one thing a cancelled
+ * campaign's operator must not believe: the numbers are the evidence of what
+ * did go out, and they keep rising for a while afterwards as delivery and
+ * open events land for mail that was already in flight. `sentAt` is likewise
+ * untouched — the fan-out never finished, and stamping an end it did not
+ * reach would be the same lie in a different column.
+ */
+export async function cancelCampaign(
+  actor: CampaignActor,
+  id: string,
+): Promise<Result<Campaign>> {
+  if (!can(actor.role, "campaigns.manage")) return DENIED;
+  const current = await getCampaign(actor.teamId, id);
+  if (!current) return NOT_FOUND;
+  if (current.status !== "scheduled" && current.status !== "sending")
+    return {
+      ok: false,
+      code: "conflict",
+      error: `A campaign that is ${current.status} cannot be cancelled.`,
+    };
+  const to = current.status === "scheduled" ? "draft" : "cancelled";
+  const [row] = await db()
+    .update(campaigns)
+    .set({
+      status: to,
+      // Only on the un-arming path: a cancelled send keeps the time it was
+      // armed for, which is part of what happened.
+      ...(to === "draft" && { scheduledAt: null }),
+    })
+    .where(
+      and(
+        eq(campaigns.id, current.id),
+        eq(campaigns.teamId, actor.teamId),
+        // The status this call decided on, re-asserted. Without it a sweep
+        // that flips `scheduled` → `sending` between the read and the write
+        // would see the campaign reverted to `draft` mid-fan-out — a draft
+        // that is quietly still mailing people.
+        eq(campaigns.status, current.status),
+      ),
+    )
+    .returning();
+  if (!row)
+    return {
+      ok: false,
+      code: "conflict",
+      error: "This campaign changed status while you were cancelling it.",
+    };
+  await recordAudit({
+    teamId: actor.teamId,
+    actorUserId: actor.userId,
+    ...actor.meta,
+    action: "campaigns.cancel",
+    targetType: "campaign",
+    targetId: row.id,
+    diff: { status: { from: current.status, to: row.status } },
+  });
+  return { ok: true, data: row };
 }
