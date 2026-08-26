@@ -254,6 +254,18 @@ async function rewindCursor(campaignId: string) {
     .where(eq(campaigns.id, campaignId));
 }
 
+/** What `deleteBook` used to do unconditionally: the contacts cascade with it. */
+async function deleteBookRow(bookId: string) {
+  const { db } = await import("@/db");
+  const { contactBooks } = await import("@/db/schema");
+  const { eq } = await import("drizzle-orm");
+  await db().delete(contactBooks).where(eq(contactBooks.id, bookId));
+}
+
+/** The verbatim refusal a vanished book pauses with. */
+const BOOK_GONE =
+  "The contact book this campaign sends to no longer exists, so the rest of its audience cannot be reached. Cancel the campaign, or restore the book to let it finish.";
+
 describe("campaign fan-out", () => {
   it("materialises one chunk and advances the cursor", async () => {
     const { campaignId, ids } = await seed();
@@ -869,5 +881,145 @@ describe("campaign fan-out", () => {
         audit: false,
       });
     }
+  });
+
+  /*
+   * The fourth guard gap in this file, and the only one with no downstream
+   * symptom at all. The finish condition is an empty select; `contacts.book_id`
+   * cascades from `contact_books` and `campaigns.book_id` carries no foreign
+   * key — so deleting a book mid-send empties the next chunk and the fan-out
+   * reads that as "the book is walked out". Before the check, this test ended
+   * with the campaign `sent`, a `sent_at`, and a `campaign.sent` webhook owed,
+   * having mailed 3 of the 6 people it claimed.
+   */
+  it("pauses instead of finishing when the book is deleted mid-send", async () => {
+    const { campaignId, bookId, team, suffix } = await seed();
+    const q = recorder();
+    const first = await (await fanout()).fanoutChunk(campaignId, q);
+    expect(first.materialised).toBe(3);
+    // Three more it still owes, so "walked out" would be a lie about them.
+    await addContacts(team.id, bookId, suffix, 3);
+
+    await deleteBookRow(bookId);
+    const res = await (await fanout()).fanoutChunk(campaignId, q);
+
+    expect(res).toEqual({
+      materialised: 0,
+      skipped: 0,
+      done: false,
+      completed: false,
+      paused: { code: "not_found", message: BOOK_GONE },
+    });
+    // `completed` is the once-only edge that fires `campaign.sent`; it must
+    // never have been true, and `sent_at` is the same claim in a column.
+    const row = await campaignRow(campaignId);
+    expect(row.status).toBe("sending");
+    expect(row.sentAt).toBeNull();
+    expect(await emailCount(campaignId)).toBe(3);
+    const audits = await pauseAudits(campaignId);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.diff).toMatchObject({
+      reason: { to: "not_found" },
+      detail: { to: BOOK_GONE },
+    });
+
+    // Asked again every minute for as long as nobody looks: still paused,
+    // still not `sent`, and still one audit row rather than one per tick.
+    for (let i = 0; i < 2; i++)
+      expect(await (await fanout()).fanoutChunk(campaignId, q)).toMatchObject({
+        done: false,
+        completed: false,
+      });
+    expect(await pauseAudits(campaignId)).toHaveLength(1);
+    expect((await campaignRow(campaignId)).status).toBe("sending");
+  });
+
+  /*
+   * The property that makes pausing the right call rather than cancelling:
+   * restoring the book leaves the campaign able to finish from its cursor,
+   * where `cancelled` would be terminal and the only route on would be a
+   * second campaign that re-mails everyone already sent.
+   */
+  it("finishes normally once a deleted book is restored", async () => {
+    const { campaignId, bookId, team } = await seed();
+    const q = recorder();
+    await (await fanout()).fanoutChunk(campaignId, q);
+    await deleteBookRow(bookId);
+    expect(
+      (await (await fanout()).fanoutChunk(campaignId, q)).paused,
+    ).toMatchObject({ code: "not_found" });
+
+    const { db } = await import("@/db");
+    const { contactBooks } = await import("@/db/schema");
+    await db()
+      .insert(contactBooks)
+      .values({ id: bookId, teamId: team.id, name: "News" });
+
+    const res = await (await fanout()).fanoutChunk(campaignId, q);
+    expect(res).toEqual({
+      materialised: 0,
+      skipped: 0,
+      done: true,
+      completed: true,
+    });
+    expect((await campaignRow(campaignId)).status).toBe("sent");
+    expect(await emailCount(campaignId)).toBe(3);
+  });
+
+  /*
+   * A book walked out for real is not the anomaly, and the check must not
+   * make it one: an empty select with the book still there finishes on the
+   * same tick it always did.
+   */
+  it("still finishes a campaign whose book is genuinely walked out", async () => {
+    const { campaignId } = await seed();
+    const q = recorder();
+    await (await fanout()).fanoutChunk(campaignId, q);
+
+    expect(await (await fanout()).fanoutChunk(campaignId, q)).toEqual({
+      materialised: 0,
+      skipped: 0,
+      done: true,
+      completed: true,
+    });
+    expect(await pauseAudits(campaignId)).toEqual([]);
+  });
+
+  /*
+   * The same hole one moment earlier: `startCampaign` renders and flips, and
+   * checked the domain but not the book — so a campaign scheduled for
+   * Thursday whose audience was deleted on Wednesday flipped to `sending`,
+   * selected nobody on its first chunk and reported itself `sent` to nought
+   * recipients. `scheduled` is still editable, so this defers rather than
+   * cancels, exactly as the domain check does.
+   */
+  it("does not start a scheduled campaign whose book was deleted", async () => {
+    const { campaignId, bookId, team } = await seed({
+      status: "scheduled",
+      render: false,
+    });
+    await deleteBookRow(bookId);
+
+    const res = await (await fanout()).startCampaign(campaignId);
+
+    expect(res.started).toBe(false);
+    expect(res.deferred).toMatchObject({ code: "not_found" });
+    const row = await campaignRow(campaignId);
+    expect(row.status).toBe("scheduled");
+    // Deferred before the render, so nothing was stored on the way past.
+    expect(row.html).toBeNull();
+    expect(await pauseAudits(campaignId)).toHaveLength(1);
+
+    // And it is a defer, not a stop: a book at that id again and the very
+    // next tick starts it.
+    const { db } = await import("@/db");
+    const { contactBooks } = await import("@/db/schema");
+    await db()
+      .insert(contactBooks)
+      .values({ id: bookId, teamId: team.id, name: "News" });
+    expect((await (await fanout()).startCampaign(campaignId)).started).toBe(
+      true,
+    );
+    expect((await campaignRow(campaignId)).status).toBe("sending");
   });
 });

@@ -17,6 +17,7 @@ import {
 import { db } from "@/db";
 import { keysetPage, type Page } from "@/db/keyset";
 import {
+  campaigns,
   contactBooks,
   contacts,
   type Contact,
@@ -259,23 +260,107 @@ export async function updateBook(
 }
 
 /**
+ * The campaign, if any, that is mid-send over this book.
+ *
+ * `campaigns.book_id` carries no foreign key, so this is a plain equality on
+ * a text column; it is scoped by team as well because an id is not proof of
+ * ownership. Only `sending` counts — see {@link deleteBook}.
+ */
+async function sendingCampaignFor(
+  teamId: string,
+  bookId: string,
+): Promise<{ id: string; name: string } | null> {
+  const [row] = await db()
+    .select({ id: campaigns.id, name: campaigns.name })
+    .from(campaigns)
+    .where(
+      and(
+        eq(campaigns.teamId, teamId),
+        eq(campaigns.bookId, bookId),
+        eq(campaigns.status, "sending"),
+      ),
+    )
+    .limit(1);
+  return row ?? null;
+}
+
+/** Names the campaign to cancel, because "no" on its own is not actionable. */
+const bookInUse = (c: { name: string }): Result<never> => ({
+  ok: false,
+  code: "conflict",
+  error: `The campaign "${c.name}" is sending to this contact book and would lose the rest of its audience. Cancel that campaign first, then delete the book.`,
+});
+
+/**
  * Deleting a book cascades every contact in it away in one statement and
  * there is no history to restore from — so unlike the other contact
  * mutations it needs `settings.manage` (the same reasoning that makes
  * removing a suppression admin-only).
+ *
+ * ## Refused while a campaign over the book is sending
+ *
+ * The same refusal `deleteCampaign` makes, for the same class of reason and
+ * with the same `conflict` code: a delete that races a fan-out leaves work in
+ * a state with no honest end. It is worse in this direction, though. A
+ * campaign walks its book in chunks and **an empty chunk is its finish
+ * condition**, so cascading the contacts away mid-send does not stop the
+ * campaign — it makes the campaign believe it is done. It flips to `sent`,
+ * fires `campaign.sent`, and tells the customer that 50 000 people were
+ * mailed when 12 000 were. `services/campaigns/fanout.ts` now pauses instead
+ * of finishing on that select, so nothing lies either way; this check is what
+ * stops the situation arising at all, and it is the only one of the two the
+ * customer can see and act on.
+ *
+ * ## Why a service check and not a foreign key
+ *
+ * `restrict` is the constraint that expresses this, and there is not one
+ * `restrict` anywhere in this schema (26 cascade, 4 set null — see
+ * `db/schema/campaigns.ts`). Nothing here catches a foreign-key violation, so
+ * the symptom would not be this message but an unhandled Postgres error
+ * surfacing as a 500 on the contacts screen, and it would additionally block
+ * deleting a book that a campaign *finished* with two years ago. A `Result` is
+ * the instrument that can say which campaign, and say it only while it is
+ * true.
+ *
+ * The predicate is re-asserted in the `where` of the delete rather than only
+ * read beforehand — `services/campaigns/crud.ts` does the same on every
+ * campaign write — because `campaign.start-sweep` flips `scheduled` →
+ * `sending` every minute and could do it between the two statements.
+ *
+ * A `scheduled` campaign is deliberately **not** refused: nothing has been
+ * mailed, `scheduled` is still editable, and `startCampaign` defers a campaign
+ * whose book has gone rather than starting it — so the customer can repoint
+ * or cancel it at their leisure instead of being blocked from tidying up.
  */
 export async function deleteBook(
   actor: TeamActor,
   bookId: string,
 ): Promise<Result> {
   if (!can(actor.role, "settings.manage")) return DENIED;
+  const holder = await sendingCampaignFor(actor.teamId, bookId);
+  if (holder) return bookInUse(holder);
   const [row] = await db()
     .delete(contactBooks)
     .where(
-      and(eq(contactBooks.id, bookId), eq(contactBooks.teamId, actor.teamId)),
+      and(
+        eq(contactBooks.id, bookId),
+        eq(contactBooks.teamId, actor.teamId),
+        sql`not exists (
+          select 1 from ${campaigns}
+          where ${campaigns.teamId} = ${actor.teamId}
+            and ${campaigns.bookId} = ${contactBooks.id}
+            and ${campaigns.status} = 'sending'
+        )`,
+      ),
     )
     .returning({ id: contactBooks.id, name: contactBooks.name });
-  if (!row) return NO_BOOK;
+  // No row means one of two different things, and they need different
+  // answers: a campaign started sending under us, or the book was never this
+  // team's in the first place.
+  if (!row) {
+    const late = await sendingCampaignFor(actor.teamId, bookId);
+    return late ? bookInUse(late) : NO_BOOK;
+  }
   await recordAudit({
     teamId: actor.teamId,
     actorUserId: actor.userId,

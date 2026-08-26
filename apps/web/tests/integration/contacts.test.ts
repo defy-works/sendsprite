@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startPg } from "./_pg";
 import { seedTeamWithKey } from "./helpers";
@@ -19,6 +20,39 @@ async function book(name = "News") {
   const created = await svc.createBook(actor, { name });
   if (!created.ok) throw new Error("seed failed");
   return { actor, book: created.data, svc };
+}
+
+/**
+ * A campaign over `bookId` in the given status, written straight to the table.
+ *
+ * `campaigns.book_id` and `domain_id` carry no foreign key at all (see
+ * `db/schema/campaigns.ts`), which is the whole reason the refusal below has
+ * to be a service check — and which is also why this needs no domain.
+ */
+async function campaignOver(
+  teamId: string,
+  bookId: string,
+  status: "sending" | "scheduled" | "cancelled",
+  name = "August news",
+) {
+  const { db } = await import("@/db");
+  const { campaigns } = await import("@/db/schema");
+  const id = `cmp_${randomBytes(4).toString("hex")}`;
+  await db()
+    .insert(campaigns)
+    .values({
+      id,
+      teamId,
+      bookId,
+      domainId: `dom_${randomBytes(4).toString("hex")}`,
+      name,
+      subject: "Hello",
+      from: "news@example.test",
+      blocks: [{ kind: "text", html: "Hi" }] as never,
+      status,
+      startedAt: status === "sending" ? new Date() : null,
+    });
+  return id;
 }
 
 describe("contact books", () => {
@@ -67,6 +101,68 @@ describe("contact books", () => {
       ok: false,
       code: "forbidden",
     });
+  });
+
+  /*
+   * Deleting a book cascades every contact in it away, and a campaign walks
+   * its book in chunks with an *empty chunk* as its finish condition — so
+   * this delete does not stop a fan-out, it makes the fan-out believe it is
+   * done and report `sent` to an audience it never reached. The fan-out
+   * refuses to finish on that select now; this is the half the customer can
+   * see, and it has to name the campaign to cancel rather than only say no.
+   */
+  it("refuses to delete a book while a campaign over it is sending", async () => {
+    const { actor, book: b, svc } = await book();
+    await svc.createContact(actor, b.id, { email: "a@b.io" }, deps);
+    await campaignOver(actor.teamId, b.id, "sending", "August news");
+
+    expect(await svc.deleteBook(actor, b.id)).toEqual({
+      ok: false,
+      code: "conflict",
+      error:
+        'The campaign "August news" is sending to this contact book and would lose the rest of its audience. Cancel that campaign first, then delete the book.',
+    });
+    // Refused whole: the book and its contacts are untouched.
+    expect(await svc.listBooks(actor.teamId)).toMatchObject([
+      { id: b.id, contactCount: 1 },
+    ]);
+  });
+
+  /*
+   * Only `sending` is refused. A `scheduled` campaign has mailed nobody and
+   * is still editable — `startCampaign` defers one whose book has gone rather
+   * than starting it — and a `cancelled` or `sent` one is finished with the
+   * book for good. A book a team can never delete is its own defect.
+   */
+  it("deletes a book no campaign is mid-send over", async () => {
+    const { actor, book: b, svc } = await book();
+    await campaignOver(actor.teamId, b.id, "scheduled");
+    await campaignOver(actor.teamId, b.id, "cancelled");
+    // A campaign sending over a *different* book must not block this one.
+    const other = await svc.createBook(actor, { name: "Other" });
+    if (!other.ok) throw new Error("seed failed");
+    await campaignOver(actor.teamId, other.data.id, "sending");
+
+    expect(await svc.deleteBook(actor, b.id)).toEqual({
+      ok: true,
+      data: undefined,
+    });
+    expect((await svc.listBooks(actor.teamId)).map((x) => x.id)).toEqual([
+      other.data.id,
+    ]);
+  });
+
+  /*
+   * The refusal is team-scoped like every other read here: another team's
+   * campaign cannot reach into this book, and must not be able to hold it
+   * hostage either.
+   */
+  it("does not let another team's campaign block the delete", async () => {
+    const { actor, book: b, svc } = await book();
+    const outsider = await seedTeamWithKey();
+    await campaignOver(outsider.actor.teamId, b.id, "sending");
+
+    expect((await svc.deleteBook(actor, b.id)).ok).toBe(true);
   });
 });
 

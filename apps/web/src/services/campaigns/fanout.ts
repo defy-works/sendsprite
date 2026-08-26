@@ -12,6 +12,7 @@ import {
   auditLog,
   campaignRecipients,
   campaigns,
+  contactBooks,
   emailEvents,
   emails,
   teamSettings,
@@ -88,6 +89,17 @@ import { selectEligible, type EligibleContact } from "./audience";
  *    verification and nothing downstream notices per campaign — only per
  *    message, 38 000 times. See {@link domainRefusal}.
  *
+ * 7. **An empty select is not proof that the book was walked out.** The whole
+ *    finish condition is "this chunk selected nobody", and `contacts.book_id`
+ *    cascades from `contact_books` while `campaigns.book_id` carries no
+ *    foreign key at all — so deleting a book mid-send takes every contact
+ *    with it, empties the select, and the fan-out reads that as the end of
+ *    the audience. Unlike the domain and the caps this has **no downstream
+ *    symptom at all**: the campaign flips to `sent`, fires `campaign.sent`,
+ *    stamps a completion time, and nothing anywhere ever contradicts it. The
+ *    customer is told a 50 000-recipient campaign completed when 12 000
+ *    people got it. See {@link bookRefusal}.
+ *
  * ## Crash windows, and what recovers each
  *
  * - Crash **before** the commit: nothing happened. The next tick re-selects
@@ -135,12 +147,15 @@ export interface FanoutResult {
    */
   completed: boolean;
   /**
-   * Present only when a send cap stopped this chunk. The campaign is left
-   * `sending` and owes the rest of its audience; see {@link capRefusal}.
+   * Present only when a campaign-level refusal stopped this chunk: a send cap
+   * ({@link capRefusal}), a sending domain that is no longer verified
+   * ({@link domainRefusal}), or a contact book that no longer exists
+   * ({@link bookRefusal}). The campaign is left `sending` and owes the rest of
+   * its audience.
    *
    * Optional so the shape of an ordinary tick is unchanged — a caller that
-   * does not care about caps reads `materialised: 0, done: false` and simply
-   * ticks again, which is the correct behaviour anyway.
+   * does not care about refusals reads `materialised: 0, done: false` and
+   * simply ticks again, which is the correct behaviour anyway.
    */
   paused?: { code: ErrorCode; message: string };
 }
@@ -155,8 +170,8 @@ const DONE: FanoutResult = {
 
 /**
  * A campaign-level refusal that stops a chunk without ending the campaign —
- * the pair {@link capRefusal} and {@link domainRefusal} both return, and the
- * pair {@link notePaused} audits.
+ * what {@link capRefusal}, {@link domainRefusal} and {@link bookRefusal}
+ * return, and what {@link notePaused} audits.
  */
 type Refusal = { code: ErrorCode; message: string };
 
@@ -241,10 +256,20 @@ export async function fanoutChunk(
     afterContactId: campaign.fanoutCursor,
     limit: CHUNK,
   });
-  // The book is walked out. Only an *empty* select finishes a campaign — a
-  // short chunk must not, because a contact added mid-send sorts after the
-  // cursor and the next tick is what picks it up.
-  if (!contacts.length) return finish(campaign, now);
+  // Only an *empty* select can finish a campaign — a short chunk must not,
+  // because a contact added mid-send sorts after the cursor and the next tick
+  // is what picks it up. But an empty select has two possible meanings and
+  // only one of them is "the book is walked out", so the other is ruled out
+  // before the campaign is allowed to say it is sent. See {@link bookRefusal}
+  // for why that check is inside this branch rather than above it.
+  if (!contacts.length) {
+    const gone = await bookRefusal(campaign);
+    if (gone) {
+      await notePaused(campaign, gone);
+      return pausedResult(gone);
+    }
+    return finish(campaign, now);
+  }
 
   // Checked here rather than above the empty-select test on purpose: a
   // campaign whose book is walked out owes nobody anything, and pausing it
@@ -536,6 +561,16 @@ export async function startCampaign(
   // days ahead of its send. See {@link domainRefusal}.
   const { refusal } = await domainRefusal(campaign, from.email);
   if (refusal) return defer(campaign, refusal);
+  // The book, for exactly the same reason and at exactly the same moment: it
+  // carries no foreign key either, and a campaign scheduled for Thursday can
+  // reach Thursday with its audience deleted. Without this the campaign flips
+  // to `sending`, the first chunk selects nobody, and it reports itself
+  // `sent` to nought recipients — the worst version of the lie in
+  // {@link bookRefusal}, because not one person was mailed. Deferring leaves
+  // it `scheduled`, which is still editable, so the customer can point it at
+  // a book that exists and send it.
+  const gone = await bookRefusal(campaign);
+  if (gone) return defer(campaign, gone);
 
   let rendered;
   try {
@@ -595,6 +630,110 @@ async function defer(
 
 /** The audit action a paused campaign writes, once per campaign per reason. */
 const PAUSED_ACTION = "campaigns.paused";
+
+/**
+ * The reason this campaign's contact book is gone, or null.
+ *
+ * ## The hole this closes
+ *
+ * The fan-out's finish condition is an empty chunk, and `contacts.book_id`
+ * cascades from `contact_books` while `campaigns.book_id` carries no foreign
+ * key at all (see `db/schema/campaigns.ts` for why there is no `restrict`
+ * anywhere in this schema). Delete a book while a campaign over it is
+ * `sending` and every contact in it goes at once; the next chunk selects
+ * nothing; {@link fanoutChunk} reads that as "the book is walked out" and
+ * calls {@link finish}.
+ *
+ * That is the only one of this file's four guard gaps with **no downstream
+ * symptom whatsoever**. An unverified domain fails per message; a cap shows
+ * up on a bill; unrendered blocks throw. This one writes `status = 'sent'`
+ * and a `sent_at`, fires the `campaign.sent` webhook into the customer's
+ * automation, and stops — and nothing in the product ever disagrees. The
+ * customer is told a 50 000-recipient campaign completed when 12 000 people
+ * received it, and there is nowhere they could look to find out otherwise.
+ *
+ * ## Why the check is inside the empty branch and not above it
+ *
+ * Ordering matters in both directions here. Task 8 put {@link domainRefusal}
+ * *after* the empty-select test because a campaign whose book is genuinely
+ * walked out owes nobody anything, and pausing it over a domain it will never
+ * use again would strand it `sending` for ever instead of letting it finish.
+ * This check has to go the other way — it is precisely the finish that is
+ * wrong — so it is asked only **when the select came back empty**, which
+ * keeps both properties at once: an ordinary chunk pays nothing for it, a
+ * campaign that really has walked its book out still finishes normally on the
+ * very same tick, and the only behaviour that changes is the one that was a
+ * lie. It is one indexed read on the single tick of a campaign's life that
+ * would otherwise complete it.
+ *
+ * The question is "does this book still exist for this team?" rather than
+ * "did the select return rows?", and it is scoped by team for the reason
+ * `crud.ts` gives for scoping its joins: an id is not proof of ownership.
+ *
+ * ## Why this pauses rather than stops
+ *
+ * This is the hardest of the four to place on the reversible/irreversible
+ * line {@link notePaused} draws, and it does not sit cleanly on either side.
+ * A deleted book is *not* reversible the way an unverified domain is: the
+ * contacts went with it, re-importing them mints new ULIDs, and a re-created
+ * book gets a new id that this campaign's `book_id` will never name — so
+ * unlike every other pause in this file, this one does not resume by itself.
+ * Only restoring the book row under its original id brings it back, and
+ * nothing in the product does that.
+ *
+ * It pauses anyway, for two reasons.
+ *
+ * First, **pausing cannot lie and finishing can**. That is the entire defect:
+ * `sent` is a claim about the audience, and the one thing this code must
+ * never do again is make that claim without having walked the audience. A
+ * paused campaign is `sending` with an audit row naming the book that
+ * vanished — visibly unfinished, which is the truth.
+ *
+ * Second, and this is what settles it against {@link stopCampaign}: cancelling
+ * is **terminal and immutable** (`crud.ts`), and it is a decision only the
+ * person who owns the audience can make. Their route out of a cancelled
+ * campaign is a second campaign over a rebuilt book, which has its own
+ * `campaign_recipients` rows and therefore re-mails everyone who already
+ * received the first half — the exact duplicate send {@link notePaused}
+ * refuses to force on a customer. If the deletion was a mistake and the book
+ * is restored, a paused campaign resumes from its cursor and finishes
+ * correctly; a cancelled one cannot be recovered at all. So the cron records
+ * the fact and stops, and `cancelCampaign` stays where it belongs — with a
+ * human, who can reach it the moment they see the pause.
+ *
+ * The price is a campaign that can sit `sending` indefinitely, holding one of
+ * the sweep's `SWEEP_BATCH` slots every minute (see
+ * `jobs/handlers/campaign-fanout.ts`, where that starvation is already a
+ * recorded Phase 8 opener). That is an operational cost paid in scheduling;
+ * the alternative was paid in someone's inbox.
+ *
+ * ## And it should almost never be reached
+ *
+ * `deleteBook` now refuses while a campaign over the book is `sending`
+ * (`services/contacts.ts`), which is where a customer meets this problem —
+ * with a message naming the campaign to cancel, rather than a campaign that
+ * silently died. This is the backstop for what that check cannot cover: the
+ * race between it and the start sweep, a book deleted before this shipped,
+ * and anything that reaches the table without going through the service.
+ */
+async function bookRefusal(campaign: Campaign): Promise<Refusal | null> {
+  const [book] = await db()
+    .select({ id: contactBooks.id })
+    .from(contactBooks)
+    .where(
+      and(
+        eq(contactBooks.id, campaign.bookId),
+        eq(contactBooks.teamId, campaign.teamId),
+      ),
+    )
+    .limit(1);
+  if (book) return null;
+  return {
+    code: "not_found",
+    message:
+      "The contact book this campaign sends to no longer exists, so the rest of its audience cannot be reached. Cancel the campaign, or restore the book to let it finish.",
+  };
+}
 
 /**
  * The domain this chunk's messages will be sent from, or the reason there is
@@ -728,10 +867,13 @@ async function capRefusal(
 /**
  * Record that something paused this campaign — once, not once a minute.
  *
- * Two facts reach here: a send cap ({@link capRefusal}) and a sending domain
- * that is no longer verified ({@link domainRefusal}). They pause for the same
- * reason and are recorded the same way; the text below is written about the
- * cap because it is the one whose alternative is tempting.
+ * Three facts reach here: a send cap ({@link capRefusal}), a sending domain
+ * that is no longer verified ({@link domainRefusal}) and a contact book that
+ * has been deleted ({@link bookRefusal}). They are recorded the same way, and
+ * the first two pause for the same reason; the text below is written about
+ * the cap because it is the one whose alternative is tempting, and
+ * {@link bookRefusal} carries its own argument because it is the one fact
+ * here that does *not* stop being true on its own.
  *
  * ## Why a cap pauses rather than cancels
  *
