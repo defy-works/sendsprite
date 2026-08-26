@@ -122,7 +122,7 @@ export function Modal({
         aria-describedby={description ? descId : undefined}
         tabIndex={-1}
         className={cn(
-          "glass-strong flex max-h-full w-full flex-col gap-4 overflow-y-auto p-6 shadow-glass outline-none",
+          "popover flex max-h-full w-full flex-col gap-4 overflow-y-auto p-6 shadow-glass outline-none",
           "motion-safe:animate-[modal-rise_var(--duration-normal)_var(--ease-out-soft)]",
           size === "sm" && "max-w-sm",
           size === "md" && "max-w-lg",

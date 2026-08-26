@@ -120,7 +120,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                   key={i.id}
                   role="status"
                   className={cn(
-                    "glass-strong pointer-events-auto flex items-start gap-3 border p-3.5 shadow-glass",
+                    "popover pointer-events-auto flex items-start gap-3 border p-3.5 shadow-glass",
                     "motion-safe:animate-[toast-in_var(--duration-normal)_var(--ease-out-soft)]",
                     tone.ring,
                   )}

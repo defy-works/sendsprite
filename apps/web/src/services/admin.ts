@@ -79,14 +79,37 @@ export async function listOrganizations(q?: string): Promise<OrgSummary[]> {
       name: organization.name,
       slug: organization.slug,
       createdAt: organization.createdAt,
-      members: sql<number>`(select count(*) from ${member} where ${member.organizationId} = ${organization.id})`,
-      domains: sql<number>`(select count(*) from ${domains} where ${domains.teamId} = ${organization.id})`,
-      // `sql.join`, not `in ${array}`: interpolating an array binds it as one
-      // parameter, and Postgres rejects `status in $1` when $1 is an array.
-      sent30d: sql<number>`(select count(*) from ${emails} where ${emails.teamId} = ${organization.id} and ${emails.createdAt} >= ${since} and ${emails.status} in (${sql.join(
-        SEND_CONSUMING_STATUS.map((v) => sql`${v}`),
-        sql`, `,
-      )}))`,
+      /*
+       * Correlated subqueries built with the query builder, not hand-written
+       * `sql` fragments.
+       *
+       * The `sent30d` fragment used to interpolate `since` — a `Date` — into a
+       * raw template, and a raw template runs no column encoder. drizzle hands
+       * the value to postgres.js as-is, which expects something already
+       * serialised and dies on the object: `The "string" argument must be of
+       * type string or an instance of Buffer or ArrayBuffer. Received an
+       * instance of Date`. The whole page 500'd. Going through `gte()` applies
+       * `timestamp`'s encoder, which is the thing that was missing, and
+       * `inArray()` replaces the `sql.join` the array binding needed.
+       */
+      members: sql<number>`(${db()
+        .select({ n: count() })
+        .from(member)
+        .where(eq(member.organizationId, organization.id))})`,
+      domains: sql<number>`(${db()
+        .select({ n: count() })
+        .from(domains)
+        .where(eq(domains.teamId, organization.id))})`,
+      sent30d: sql<number>`(${db()
+        .select({ n: count() })
+        .from(emails)
+        .where(
+          and(
+            eq(emails.teamId, organization.id),
+            gte(emails.createdAt, since),
+            inArray(emails.status, SEND_CONSUMING_STATUS),
+          ),
+        )})`,
       sesStatus: teamAws.sesAccountStatus,
       awsTeam: teamAws.teamId,
       cfTeam: teamCloudflare.teamId,

@@ -12,7 +12,7 @@ import { ProductionStep } from "./steps/ProductionStep";
 import { CloudflareStep } from "./steps/CloudflareStep";
 import { DoneStep } from "./steps/DoneStep";
 import { finishSetup } from "./actions";
-import { STEPS, type Step, type WizardProps } from "./types";
+import { stepsFor, type Step, type WizardProps } from "./types";
 
 const LABELS: Record<Step, string> = {
   aws: "AWS",
@@ -33,12 +33,7 @@ function completion(p: WizardProps): Record<Step, boolean> {
 
 export function SetupWizard(props: WizardProps) {
   const { step } = props;
-  // A step nobody on this instance can complete is not a step. Without an
-  // OAuth client the Cloudflare step renders nothing, and a numbered rail
-  // with an empty stop on it is worse than three stops.
-  const steps: readonly Step[] = props.oauthAvailable
-    ? STEPS
-    : STEPS.filter((s) => s !== "cloudflare");
+  const steps = stepsFor(props.oauthAvailable);
   const router = useRouter();
   const confirm = useConfirm();
   const toast = useToast();

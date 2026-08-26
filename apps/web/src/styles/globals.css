@@ -34,6 +34,8 @@
   /* Colors — ink + indigo scale */
   --color-ink: #000000;
   --color-shadow: #0a0a0a;
+  /* One step above the page, for anything that floats over it. */
+  --color-raised: #131317;
   --color-indigo-50: #eef2ff;
   --color-indigo-100: #e0e7ff;
   --color-indigo-200: #c7d2fe;
@@ -171,6 +173,26 @@ table {
   backdrop-filter: blur(18px) saturate(1.2);
   -webkit-backdrop-filter: blur(18px) saturate(1.2);
   border: 1px solid color-mix(in srgb, white 22%, transparent);
+  border-radius: var(--radius-lg);
+}
+
+/*
+ * Anything that floats *over* content: menus, listboxes, the date popover,
+ * toasts, dialogs.
+ *
+ * Not `glass` or `glass-strong`. Those are for panels that sit *in* the page,
+ * where letting the backdrop through is the point. A dropdown is read against
+ * whatever it happens to cover, and at 52–64% the rows underneath came
+ * straight through the labels — the team switcher over a list of teams was
+ * two lists of teams. Near-opaque and one step lighter than the page, so the
+ * panel reads as a layer above rather than a tint of what is behind it. The
+ * blur stays for the edge, not for the fill.
+ */
+@utility popover {
+  background: color-mix(in srgb, var(--color-raised) 97%, transparent);
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  border: 1px solid color-mix(in srgb, white 14%, transparent);
   border-radius: var(--radius-lg);
 }
 

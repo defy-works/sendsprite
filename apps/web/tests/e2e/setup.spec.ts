@@ -70,14 +70,15 @@ test("owner completes setup via manual keys, adds a domain, sees records", async
     ).toBeVisible();
     await expect(page.getByText("sandbox", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Skip for now" }).click();
-    await expect(page).toHaveURL(/step=cloudflare/);
-    // With a Cloudflare OAuth client configured the step offers Connect/Skip;
-    // without one (the default, and CI) it is informational with a Continue.
-    const skip = page.getByRole("button", { name: "Skip", exact: true });
-    const carryOn = page.getByRole("link", { name: "Continue", exact: true });
-    await expect(skip.or(carryOn)).toBeVisible();
-    await ((await skip.isVisible()) ? skip : carryOn).click();
-    await expect(page).toHaveURL(/step=done/);
+    // The Cloudflare step exists only on an instance with an OAuth client for
+    // it. Without one — the default, and CI — there is nothing on that step a
+    // team could do, so the wizard does not have it and production leads
+    // straight to the last step.
+    await expect(page).toHaveURL(/step=(cloudflare|done)/);
+    if (/step=cloudflare/.test(page.url())) {
+      await page.getByRole("button", { name: "Skip", exact: true }).click();
+      await expect(page).toHaveURL(/step=done/);
+    }
     await expect(
       page.getByText("AWS connected · 111111111111 · us-east-1"),
     ).toBeVisible();

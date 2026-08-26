@@ -123,7 +123,7 @@ export function Menu({
               setOpen(false);
           }}
           className={cn(
-            "glass-strong absolute z-50 mt-1.5 min-w-52 p-1 shadow-glass",
+            "popover absolute z-50 mt-1.5 min-w-52 p-1 shadow-glass",
             "motion-safe:animate-[pop-in_var(--duration-fast)_var(--ease-out-soft)]",
             align === "end" ? "right-0" : "left-0",
           )}

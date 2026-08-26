@@ -273,7 +273,7 @@ export function DateTimePicker({
         <div
           role="dialog"
           aria-label="Choose a date and time"
-          className="glass-strong absolute z-50 mt-1 w-[19rem] p-3 shadow-glass motion-safe:animate-[pop-in_var(--duration-fast)_var(--ease-out-soft)]"
+          className="popover absolute z-50 mt-1 w-[19rem] p-3 shadow-glass motion-safe:animate-[pop-in_var(--duration-fast)_var(--ease-out-soft)]"
         >
           <div className="mb-2 flex items-center justify-between">
             <Button

@@ -39,7 +39,7 @@ export function MobileNav({ children }: { children: ReactNode }) {
             onClick={() => setOpen(false)}
           />
           <div
-            className="glass-strong fixed top-14 bottom-0 left-0 z-40 flex w-72 flex-col gap-5 overflow-y-auto rounded-none border-y-0 border-l-0 p-4 motion-safe:animate-[drawer-in_var(--duration-normal)_var(--ease-out-soft)]"
+            className="popover fixed top-14 bottom-0 left-0 z-40 flex w-72 flex-col gap-5 overflow-y-auto rounded-none border-y-0 border-l-0 p-4 motion-safe:animate-[drawer-in_var(--duration-normal)_var(--ease-out-soft)]"
             onClick={(e) => {
               if ((e.target as HTMLElement).closest("a")) setOpen(false);
             }}

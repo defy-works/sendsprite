@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/Label";
 import { Select } from "@/components/ui/Select";
 import { StatusDot, type Status } from "@/components/ui/StatusDot";
 import { Textarea } from "@/components/ui/Textarea";
-import type { WizardProps } from "../types";
+import { nextStep, type WizardProps } from "../types";
 import { refreshAccount, requestProduction } from "../actions";
 import { Alert, Heading, Notice } from "./shared";
 
@@ -18,9 +18,16 @@ const DOT: Record<string, Status> = {
   sandbox: "warning",
 };
 
-export function ProductionStep({ settings, mode = "wizard" }: WizardProps) {
+export function ProductionStep({
+  settings,
+  oauthAvailable,
+  mode = "wizard",
+}: WizardProps) {
   const router = useRouter();
   const status = settings.sesAccountStatus;
+  // Cloudflare when this instance has a client for it, otherwise straight to
+  // the last step — the one in between renders nothing without one.
+  const onward = `/setup?step=${nextStep("production", oauthAvailable)}`;
   const [state, action, pending] = useActionState(
     async (_prev: unknown, fd: FormData) => {
       const res = await requestProduction(fd);
@@ -157,13 +164,10 @@ export function ProductionStep({ settings, mode = "wizard" }: WizardProps) {
         <div className="flex items-center gap-3">
           {status === "production" ? (
             <Button asChild>
-              <Link href="/setup?step=cloudflare">Continue</Link>
+              <Link href={onward}>Continue</Link>
             </Button>
           ) : (
-            <Button
-              variant="subtle"
-              onClick={() => router.push("/setup?step=cloudflare")}
-            >
+            <Button variant="subtle" onClick={() => router.push(onward)}>
               Skip for now
             </Button>
           )}

@@ -43,14 +43,19 @@ export default async function SetupPage({
     cloudflareAccountName: cf?.accountName ?? null,
     setupCompleted: team?.setupCompleted ?? false,
   };
+  const cloudflare = oauthAvailable();
   const requested = (await searchParams).step;
-  const step: Step = isStep(requested)
-    ? requested
+  // A `?step=cloudflare` this instance cannot serve — a stale link, or a rail
+  // from before the client was removed — lands on the last step rather than on
+  // a panel that renders nothing.
+  const asked = isStep(requested) && (cloudflare || requested !== "cloudflare");
+  const step: Step = asked
+    ? (requested as Step)
     : !settings.awsConnected
       ? "aws"
       : settings.sesAccountStatus !== "production"
         ? "production"
-        : !settings.cloudflareConnectedAt
+        : cloudflare && !settings.cloudflareConnectedAt
           ? "cloudflare"
           : "done";
   return (
@@ -67,7 +72,7 @@ export default async function SetupPage({
             regions={SES_REGIONS}
             defaultRegion={env.AWS_DEFAULT_REGION}
             oneClickAvailable={env.APP_URL.startsWith("https://")}
-            oauthAvailable={oauthAvailable()}
+            oauthAvailable={cloudflare}
           />
         </div>
       </div>

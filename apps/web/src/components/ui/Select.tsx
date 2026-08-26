@@ -247,7 +247,7 @@ export function Select<T extends string = string>({
           aria-labelledby={buttonId}
           tabIndex={-1}
           className={cn(
-            "glass-strong absolute z-50 mt-1 max-h-72 w-full overflow-y-auto p-1 shadow-glass",
+            "popover absolute z-50 mt-1 max-h-72 w-full overflow-y-auto p-1 shadow-glass",
             "motion-safe:animate-[pop-in_var(--duration-fast)_var(--ease-out-soft)]",
           )}
         >
