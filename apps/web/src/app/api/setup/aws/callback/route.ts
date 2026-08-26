@@ -37,7 +37,11 @@ export async function POST(req: Request) {
     );
     return NextResponse.json({ error: "region_mismatch" }, { status: 400 });
   }
+  // The team comes off the token, never off the request: a stack created for
+  // one team must not be able to connect into another.
   const res = await connectWithKeys(
+    tok.teamId,
+    tok.teamSlug,
     {
       accessKeyId: parsed.data.accessKeyId,
       secretAccessKey: parsed.data.secretAccessKey,

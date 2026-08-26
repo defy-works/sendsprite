@@ -5,6 +5,7 @@ import { loadEnv } from "@/env.schema";
 import { requireTeamAdmin } from "@/lib/session";
 import { requestMeta } from "@/lib/audit";
 import { buildQuickCreateUrl } from "@/lib/aws/quick-create";
+import { stackName } from "@/lib/aws/naming";
 import { SES_REGIONS } from "@/lib/aws/regions";
 import type { Result } from "@/lib/result";
 import * as aws from "@/services/aws-connect";
@@ -13,20 +14,31 @@ import {
   issueSetupToken,
   revokePendingSetupTokens,
 } from "@/services/setup-tokens";
-import { updateInstanceSettings } from "@/services/instance-settings";
+import { setTeamSetupCompleted } from "@/services/team-settings";
 
 export type { Result } from "@/lib/result";
 
-/** Server actions are thin: resolve the owner, delegate, revalidate. */
+/** Server actions are thin: resolve the team admin, delegate, revalidate. */
 async function actor() {
   const ctx = await requireTeamAdmin();
-  return { userId: ctx.userId, meta: requestMeta(await headers()) };
+  return {
+    userId: ctx.userId,
+    teamId: ctx.team.id,
+    teamSlug: ctx.team.slug,
+    meta: requestMeta(await headers()),
+  };
 }
 
-/** The wizard and the Instance settings tab render the same steps. */
+/** What the services want: an actor with no team fields attached. */
+const who = (a: Awaited<ReturnType<typeof actor>>) => ({
+  userId: a.userId,
+  meta: a.meta,
+});
+
+/** The wizard and the Sending settings tab render the same steps. */
 function revalidate() {
   revalidatePath("/setup");
-  revalidatePath("/app/settings/instance");
+  revalidatePath("/app/settings/sending");
 }
 
 const UNSUPPORTED_REGION = {
@@ -55,10 +67,11 @@ export async function startQuickCreate(
     };
   const r = region(fd.get("region"));
   if (!r) return UNSUPPORTED_REGION;
-  await revokePendingSetupTokens("aws_callback", a.userId);
+  await revokePendingSetupTokens("aws_callback", a.userId, a.teamId);
   const { token } = await issueSetupToken({
     purpose: "aws_callback",
     issuedBy: a.userId,
+    teamId: a.teamId,
     region: r,
     // Covers the whole flow, not just the click: the owner reads the review
     // page, ticks the IAM checkbox, and then waits out the stack build. At 15
@@ -74,19 +87,11 @@ export async function startQuickCreate(
         templateUrl: env.CFN_TEMPLATE_URL,
         callbackUrl: `${env.APP_URL}/api/setup/aws/callback`,
         callbackToken: token,
-        stackName: "sendsprite-connect",
+        // Named after the org: two teams may connect the same AWS account.
+        stackName: stackName(a.teamSlug),
       }),
     },
   };
-}
-
-export async function detectRole(fd: FormData) {
-  const a = await actor();
-  const r = region(fd.get("region"));
-  if (!r) return UNSUPPORTED_REGION;
-  const res = await aws.detectInstanceRole(r, a);
-  revalidate();
-  return res;
 }
 
 export async function connectKeys(fd: FormData) {
@@ -94,12 +99,14 @@ export async function connectKeys(fd: FormData) {
   const r = region(fd.get("region"));
   if (!r) return UNSUPPORTED_REGION;
   const res = await aws.connectWithKeys(
+    a.teamId,
+    a.teamSlug,
     {
       accessKeyId: fd.get("accessKeyId"),
       secretAccessKey: fd.get("secretAccessKey"),
       region: r,
     },
-    a,
+    who(a),
   );
   revalidate();
   return res;
@@ -108,13 +115,14 @@ export async function connectKeys(fd: FormData) {
 export async function requestProduction(fd: FormData) {
   const a = await actor();
   const res = await aws.requestProductionAccess(
+    a.teamId,
     {
       websiteUrl: fd.get("websiteUrl"),
       mailType: fd.get("mailType"),
       useCase: fd.get("useCase"),
       contactEmail: fd.get("contactEmail") || undefined,
     },
-    a,
+    who(a),
   );
   revalidate();
   return res;
@@ -122,28 +130,29 @@ export async function requestProduction(fd: FormData) {
 
 export async function refreshAccount() {
   const a = await actor();
-  const res = await aws.refreshSesAccount(a);
+  const res = await aws.refreshSesAccount(a.teamId, who(a));
   revalidate();
   return res;
 }
 
 export async function disconnectAws() {
   const a = await actor();
-  const res = await aws.disconnectAws(a);
+  const res = await aws.disconnectAws(a.teamId, who(a));
   revalidate();
   return res;
 }
 
 export async function disconnectCloudflareAction() {
   const a = await actor();
-  const res = await cf.disconnectCloudflare(a);
+  const res = await cf.disconnectCloudflare(a.teamId, who(a));
   revalidate();
   return res;
 }
 
+/** Marks this team's wizard finished; the /app layout gates on it. */
 export async function finishSetup(): Promise<Result> {
   const a = await actor();
-  await updateInstanceSettings({ setupCompleted: true }, a);
+  await setTeamSetupCompleted(a.teamId);
   revalidatePath("/app", "layout");
   return { ok: true, data: undefined };
 }

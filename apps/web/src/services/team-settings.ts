@@ -61,3 +61,16 @@ export async function setTeamRetention(
   });
   return { ok: true, data: row };
 }
+
+/**
+ * Mark this team's connect wizard finished. Upserted because a team that has
+ * never touched its settings has no row yet, and `$onUpdate` does not fire on
+ * `onConflictDoUpdate` — so `updatedAt` is set explicitly.
+ */
+export async function setTeamSetupCompleted(teamId: string): Promise<void> {
+  const set = { setupCompleted: true, updatedAt: new Date() };
+  await db()
+    .insert(teamSettings)
+    .values({ teamId, ...set })
+    .onConflictDoUpdate({ target: teamSettings.teamId, set });
+}
