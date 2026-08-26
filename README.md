@@ -1,0 +1,516 @@
+# Sendsprite
+
+Self-hosted email API and marketing platform on Amazon SES. A Resend / useSend
+alternative that sets up SES and Cloudflare DNS for you, ships an npm SDK with
+first-class React support, and runs from a single `docker compose up`.
+
+Bun · Next.js 16 · Postgres · Drizzle · pg-boss · BetterAuth · AGPL-3.0 server, MIT SDK
+
+## Install (self-host)
+
+```bash
+curl -fsSL https://sendsprite.com/install.sh | sh
+```
+
+That writes `~/sendsprite/.env` with generated secrets, starts the app and
+Postgres, and prints the signup URL. The first account becomes the instance
+owner; after that, sign-ups are invite-only unless you change `SIGNUP_MODE`.
+
+Manual alternative: copy `.env.example` to `.env`, set `APP_URL`, `APP_SECRET`
+(≥ 32 random chars) and `POSTGRES_PASSWORD`, then `docker compose up -d`.
+
+On [Coolify](https://coolify.io): **New Resource → Docker Compose**, point it at
+this repository and set the compose path to `docker-compose.coolify.yml`. Coolify
+assigns the domain, terminates TLS and generates `APP_SECRET` and the Postgres
+password itself. See [the docs](https://sendsprite.com/docs/self-hosting#coolify).
+
+## Send your first email
+
+Verify a domain (Domains → Add domain, then add the DNS records it lists) and
+create an API key (Team → API keys — the `ss_live_…` secret is shown once).
+Then:
+
+```bash
+curl -X POST "$APP_URL/api/v1/emails"   -H "Authorization: Bearer ss_live_..."   -H "Content-Type: application/json"   -d '{"from":"Acme <hello@mail.acme.com>","to":"ada@example.com","subject":"Hello","html":"<p>It works.</p>"}'
+# → 201 {"id":"em_..."}
+```
+
+```ts
+import { Sendsprite } from "sendsprite";
+
+const sendsprite = new Sendsprite({
+  apiKey: process.env.SENDSPRITE_API_KEY, // ss_live_…
+  baseUrl: "https://mail.acme.com", // your instance
+});
+
+const { id } = await sendsprite.emails.send({
+  from: "Acme <hello@mail.acme.com>",
+  to: "ada@example.com",
+  subject: "Hello",
+  html: "<p>It works.</p>",
+});
+```
+
+Full request/response reference: [Sending](#sending) below, or `/docs` on your
+own instance.
+
+## Packages
+
+Two packages are published from this repo. Neither has had its first release
+yet, so the install lines below will not resolve until it happens; build them
+from the repository in the meantime (`bun run --filter sendsprite build`,
+`bun run --filter @sendsprite/mcp build`).
+
+| Package                           | Install                       | What it is                                                                                                                                                                                       |
+| --------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [`sendsprite`](packages/sdk)      | `npm install sendsprite`      | Typed API client (`emails`, `templates`, `contactBooks`, `contacts`, `campaigns`, `domains`, `apiKeys`, `webhooks`, `suppressions`, `stats`, `me`, SSE `stream`), plus three extra entry points. |
+| [`@sendsprite/mcp`](packages/mcp) | `npm install @sendsprite/mcp` | Model Context Protocol server — `send_email`, `get_email_status`, `list_emails`, `search_emails`, `list_domains`, `get_send_stats`, `list_templates`, `render_template`, `add_contact`.          |
+
+- `sendsprite/react` re-exports the React Email primitives and `renderEmail`,
+  and `emails.send({ react: <Email /> })` renders an element for you.
+  `@react-email/components` and `@react-email/render` are optional peers.
+- `sendsprite/next` has `verifyWebhook` and `createWebhookHandler` for a
+  Next.js route handler.
+- `npx sendsprite` is the same package's binary: `login`, `whoami`,
+  `domains list`, `emails send`, `emails tail`, `templates pull|push <dir>`.
+- `npx sendsprite-mcp` speaks MCP over stdio, or `--http [port]` for the
+  streamable HTTP transport (loopback-bound; it holds an API key and
+  authenticates nobody).
+
+Both bundles inline `@sendsprite/shared`, so neither drags a private workspace
+package or `zod` into your dependency tree.
+
+## Docs
+
+Every instance serves its own documentation at `/docs` — getting started,
+self-hosting, domains, sending, templates, contacts, campaigns, unsubscribe,
+API keys, webhooks, billing, SDK, CLI, MCP server —
+with an interactive API reference at `/docs/api` rendered from
+`/api/v1/openapi.json` (OpenAPI 3.1, generated from the same zod contracts the
+server validates with). The pages live in
+[`apps/web/src/app/docs`](apps/web/src/app/docs).
+
+## Why it works the way it does
+
+**One container, one database.** Everything — web, REST API, background jobs,
+SMTP relay — runs in the Next.js process. Jobs use pg-boss on the same Postgres,
+so there is no Redis and no second service to operate. When you outgrow one
+box, set `WORKER_MODE=separate` on `app` and start the `worker` compose
+profile: it runs the same image with `WORKER_MODE=inline` and no published
+port, so jobs move to that replica while `app` only serves HTTP.
+(`bun run worker` is for non-Docker installs; the standalone image has no
+`src/`.)
+
+**Secrets never live in env.** AWS keys and the Cloudflare token are entered in
+the browser and stored encrypted (AES-256-GCM, key derived from `APP_SECRET`).
+Losing `APP_SECRET` means re-connecting AWS/Cloudflare, not losing data.
+
+**Auth providers are switched on by presence.** Set `GOOGLE_CLIENT_ID` +
+`GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID` + `GITHUB_CLIENT_SECRET`, and/or
+`EMAIL_PASSWORD_ENABLED=true`. Nothing else to configure.
+
+**Migrations run on boot.** The image applies pending migrations before it
+serves traffic, so upgrading is `docker compose pull && docker compose up -d`.
+
+## Connect AWS & Cloudflare
+
+The first owner lands in a setup wizard (`/setup`); every step is re-enterable
+later from Settings → Instance (owners only). AWS can be skipped during setup,
+but domains cannot be added until it is connected.
+
+**AWS — three paths, same result.**
+
+- **Instance role.** If the container already has AWS credentials (EC2/ECS
+  role, `AWS_PROFILE`, …) that pass `sts:GetCallerIdentity` and
+  `ses:GetAccount`, the wizard detects it and stores no keys.
+- **One-click CloudFormation.** Opens a quick-create link for
+  `infra/aws/sendsprite-connect.yaml`. The stack creates a least-privilege IAM
+  user; a Lambda inside the stack creates the access key and POSTs it once to
+  `<APP_URL>/api/setup/aws/callback` with a single-use token (15 minutes), so
+  the secret never enters CloudFormation state. Requires a public `https://`
+  `APP_URL`. Quick-create only accepts S3 template URLs, so the link points at
+  `CFN_TEMPLATE_URL` (our public bucket by default; point it at your own copy
+  if you prefer). Delete the stack to revoke access. Details in
+  [`infra/aws/README.md`](infra/aws/README.md).
+- **Manual.** Paste an access key, secret and SES region.
+
+After any path Sendsprite creates the `sendsprite` configuration set, the
+`sendsprite-events` SNS topic and an HTTPS subscription to
+`<APP_URL>/api/webhooks/ses` (confirmed automatically through the SNS SDK with
+`AuthenticateOnUnsubscribe` — the one-click policy grants
+`sns:ConfirmSubscription` for that; without it the webhook falls back to the
+plain SubscribeURL confirm), and reads your account status and quota.
+
+**Webhooks.** Endpoint URLs must be public https addresses: `localhost`,
+`*.local`/`*.internal`, single-label hosts and loopback, private (RFC 1918),
+link-local (incl. `169.254.169.254`), CGNAT and IPv6 ULA/link-local literals
+are rejected, redirects are not followed and replies are read up to 500 bytes.
+Failed deliveries retry after 1 m, 5 m, 30 m, 2 h and 8 h; a once-a-minute
+sweep enqueues the ones that are due, so a `nextRetryAt` is a floor rather
+than an exact time.
+Before each attempt the worker resolves the host and vets every answer
+against the same ranges; a name that resolves to a private address (DNS
+rebinding) is not fetched — the delivery is marked exhausted with "target
+resolves to a private address" — and the connection is pinned to the vetted
+addresses. Defence in depth still applies: run the worker in a network
+segment that cannot reach internal services.
+
+**Sandbox.** New SES accounts start in the sandbox: you can only send to
+verified addresses and at a low quota. The wizard's production step submits
+the request (`PutAccountDetails`: website, use case, expected volume) and an
+hourly job re-checks the review status; AWS reviews manually, typically within
+a day.
+
+**Cloudflare (optional).** Create an API token at
+`dash.cloudflare.com/profile/api-tokens` with _Zone → Zone → Read_ and
+_Zone → DNS → Edit_ (all zones, or just the ones you will send from) and paste
+it. With Cloudflare connected, domains whose zone is visible get their DNS
+records written automatically (**auto** mode). Without it — or for domains
+outside your Cloudflare zones — the domain page lists the records to add by
+hand (**manual** mode). A token that sees zero zones still connects, with a
+warning to add Zone:Read.
+
+**Domain verification.** Adding a domain creates the SES identity (Easy DKIM 2048) with `bounce.<domain>` as MAIL FROM and computes the expected records:
+three DKIM CNAMEs, MAIL FROM MX + SPF TXT, and a DMARC TXT at `_dmarc.<domain>`
+(`v=DMARC1; p=none` by default, no `rua`). SPF and DMARC are one-per-name, so in
+auto mode an existing `v=spf1`/`v=DMARC1` record at that name is updated rather
+than duplicated. A per-domain job then checks every 2 minutes for up to 72
+hours (first check after 30 s) — DKIM and MAIL FROM via SES, SPF and DMARC via
+public resolvers (`1.1.1.1`, `8.8.8.8`; the container needs outbound UDP/TCP 53) — and marks the domain `verified` once DKIM and MAIL FROM are. The domain
+page shows per-record ✓/✗ and a **Re-verify** button that restarts the window.
+
+## Sending
+
+Sending needs a **verified domain** and an **API key** (Team → API keys; the
+secret `ss_live_…` is shown once; `sending_only` keys can only call
+`POST /api/v1/emails*`, and a key can be pinned to one domain). Every REST call
+is `Authorization: Bearer ss_live_…` with a JSON body.
+
+```bash
+curl -X POST "$APP_URL/api/v1/emails" \
+  -H "Authorization: Bearer ss_live_..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "from": "Acme <hello@mail.acme.com>",
+    "to": ["a@example.com"],
+    "subject": "Hello",
+    "html": "<p>Hi <a href=\"https://acme.com\">there</a></p>",
+    "text": "Hi there",
+    "replyTo": ["support@acme.com"],
+    "headers": { "X-Entity-Ref-ID": "order-123" },
+    "tags": { "campaign": "onboarding" },
+    "attachments": [{ "filename": "invoice.pdf", "content": "<base64>", "contentType": "application/pdf" }],
+    "scheduledAt": "2026-09-01T09:00:00Z",
+    "idempotencyKey": "order-123",
+    "trackOpens": true,
+    "trackClicks": false
+  }'
+# → 201 {"id":"em_…"}  (200 with the earlier id on an idempotent replay)
+```
+
+- **Content:** `html` and/or `text` (≤ 5 MB each), **or** `template` (+
+  `variables`), which renders a stored template server-side and is mutually
+  exclusive with `html`/`text`; `subject` is optional when a template supplies
+  one. Up to 50 recipients across `to`/`cc`/`bcc`; custom headers may not set
+  the envelope headers (`From`, `To`, `Return-Path`, `DKIM-Signature`, …); at
+  most 20 tags. `subject`, addresses, attachment `filename`/`contentType`,
+  header values and tag values refuse every control character (tab included),
+  and `subject` is trimmed.
+- **Batch:** `POST /api/v1/emails/batch` with an array of ≤ 100 messages →
+  `201 { "data": [{ "id" }] }`. Items are created in order; on the first
+  failure the response is that item's error with `details.index`, and the
+  earlier items stay queued.
+- **Scheduling:** `scheduledAt` (ISO 8601, in the future) creates the email
+  as `scheduled`; `PATCH /api/v1/emails/:id { "scheduledAt" }` moves it and
+  `POST /api/v1/emails/:id/cancel` cancels anything still `queued`/`scheduled`.
+- **Idempotency:** `idempotencyKey` (≤ 256 chars, per team) replays the same
+  request with the earlier id; a different payload under the same key is
+  `409 idempotency_conflict`.
+- **Attachments:** base64 `content`, ≤ 10 MB each, sent as SESv2 attachments;
+  the request body is capped at 25 MB (`413 payload_too_large`).
+- **Tracking:** Sendsprite rewrites links to `/t/c/:id?u=…&s=<hmac>` and adds
+  a pixel at `/t/o/:id.gif`; the team defaults (`team_settings.track_opens`
+  / `track_clicks`, on by default; no dashboard control yet) are overridable
+  per request with `trackOpens`/`trackClicks`. SES's own open/click tracking
+  is disabled so each count has one source.
+- **Read back:** `GET /api/v1/emails/:id` (includes `events`),
+  `GET /api/v1/emails?limit&cursor&status&to&domainId&tag`.
+
+### Templates, contacts and campaigns
+
+- **Templates** (Templates in the sidebar; `GET/POST /api/v1/templates`,
+  `GET/PATCH/DELETE /api/v1/templates/:slug`,
+  `POST /api/v1/templates/:slug/render`): a stored subject and body with
+  `{{ variable }}` placeholders, rendered server-side at send time. Values are
+  HTML-escaped into the HTML body, left raw in the text body, and a rendered
+  subject carrying a control character is refused — the header-injection guard
+  runs on the output, not only on what you sent. There is no unescaped form and
+  no expression language, deliberately. Every content change bumps `version`
+  and appends a snapshot; `slug` is immutable, because a live send names a
+  template by slug. `sendsprite templates pull|push <dir>` keeps them in your
+  repository.
+- **Contacts** (Contacts in the sidebar; `/api/v1/contact-books`,
+  `/api/v1/contact-books/:id/contacts`, `POST /api/v1/contacts/unsubscribe`):
+  contact books, CSV import (2 MB / 10 000 rows, per-row error report) and
+  export, search, and a per-address unsubscribe. Subscription is **consent**,
+  not deliverability: it excludes a contact from campaigns and never blocks a
+  transactional send. The suppression list is what stops mail to an address
+  entirely, and no import can resubscribe someone who opted out.
+- **Campaigns** (Campaigns in the sidebar; `/api/v1/campaigns`,
+  `POST /api/v1/campaigns/:id/schedule|cancel`,
+  `GET /api/v1/campaigns/:id/audience`): one message to one contact book,
+  authored as a typed block list rather than free HTML and rendered to
+  table-based email HTML with a plain-text alternative. A recipient is mailed
+  only if they are **subscribed and not suppressed** — the one place consent
+  and deliverability meet. Sending is a resumable chunked fan-out that writes
+  ordinary `emails` rows, so campaigns inherit the same queue, SES token
+  bucket, tracking, events and metering as a transactional send; it pauses and
+  resumes by itself when a send cap or an unverified domain gets in the way.
+  Every message carries a per-recipient unsubscribe link and RFC 8058
+  one-click headers. `campaign.sent` means every recipient was **queued**, not
+  that anyone received it — `campaign.completed` is the one to wait on. Every
+  campaigns route needs a `full` key. Stats are derived from the mail log, not
+  tallied per event, so they cannot disagree with it.
+
+### Webhooks
+
+Team → Webhooks (or `POST /api/v1/webhooks { url, events }`) subscribes a URL
+to `email.sent|delivered|delayed|bounced|complained|opened|clicked|failed`,
+`domain.verified|failed`,
+`contact.created|updated|unsubscribed|resubscribed` and
+`campaign.sent|completed`; the `whsec_…` secret is shown once. Deliveries
+are `POST { id, type, createdAt, data }` with `Sendsprite-Signature:
+t=<unix>,v1=<hex hmac-sha256(secret, "<t>.<body>")>` and
+`Sendsprite-Event-Id`. Failures retry after 1 m, 5 m, 30 m, 2 h and 8 h
+(driven by a once-a-minute sweep); a webhook failing continuously for 24 h is
+disabled (the reason shows on Team → Webhooks; re-enable it there).
+`POST /api/v1/webhooks/:id/test` sends a synthetic event. In a Next.js app use
+`createWebhookHandler`/`verifyWebhook` from `sendsprite/next`; anywhere else,
+the pure helper from `@sendsprite/shared`:
+
+```ts
+import { verifyWebhookSignature } from "@sendsprite/shared";
+
+app.post("/hooks/sendsprite", express.raw({ type: "*/*" }), (req, res) => {
+  const ok = verifyWebhookSignature(
+    req.body.toString("utf8"), // the raw body, exactly as received
+    req.header("sendsprite-signature") ?? "",
+    process.env.SENDSPRITE_WEBHOOK_SECRET!,
+  ); // 5-minute timestamp tolerance, constant-time compare
+  if (!ok) return res.status(400).end();
+  const event = JSON.parse(req.body);
+  res.status(204).end();
+});
+```
+
+### SMTP relay
+
+Port 587 (`SMTP_PORT`), STARTTLS, `AUTH PLAIN`/`LOGIN` with **any username and
+an API key as the password**. Under Docker the relay listens on 2587 inside
+the container — a non-root user cannot bind a port below 1024 — and compose
+publishes it as `SMTP_PORT` (587 by default) on the host. Messages are parsed
+and go through the same pipeline as the API (`source: smtp`; `bcc` = envelope
+recipients not in `To`/`Cc`). Without `SMTP_TLS_CERT`/`SMTP_TLS_KEY` the relay
+uses a self-signed certificate generated at boot, so clients must skip
+verification (nodemailer: `tls: { rejectUnauthorized: false }`); put real PEM
+files there for production. AUTH is refused on a plain connection unless
+`SMTP_ALLOW_INSECURE_AUTH=true` (development only — the key travels in clear).
+Refusals map to SMTP codes (invalid key 535, unverified domain / suppressed
+recipient 550, quota 452, too large 552, max 10 MB by default). Login
+throttling is per remote IP (5 failures → 10-minute lockout): behind a proxy
+that does not speak PROXY protocol every client shares one counter, so expose
+587 directly or terminate it on the app container.
+
+### Suppressions, limits, errors, retention
+
+- **Suppressions** (Team → Suppressions; `GET/POST /api/v1/suppressions`,
+  `DELETE /api/v1/suppressions/:email`): hard bounces and complaints are added
+  automatically from the SES feed (`bounce`/`complaint`; a `not-spam`
+  complaint is a retraction and does not suppress); `manual`/`unsubscribe`
+  entries are yours. Sends to a suppressed address fail with
+  `422 suppressed_recipient`; `manual` entries can be bypassed per request
+  with `overrideSuppression: true` (ignored for `sending_only` keys).
+- **Limits:** one instance-wide token bucket at SES `MaxSendRate` (a throttled
+  job re-queues itself, nothing is dropped) plus optional per-team daily and
+  monthly caps (`team_settings.daily_limit` / `monthly_limit`, unset by
+  default; UTC calendar windows → `429 daily_quota_exceeded` /
+  `monthly_quota_exceeded`) and, on an instance with `BILLING_ENABLED=1`, the
+  subscription plan's included volume — measured over the billing period, not
+  the calendar month, and only where `team_settings` has not been set, which
+  always wins. Email responses
+  carry `x-ratelimit-limit` and `x-ratelimit-remaining` (the team daily cap,
+  else the SES 24 h quota, else `unlimited`); `x-ratelimit-reset` (next UTC
+  midnight) is present only with a team daily cap.
+- **Errors:** `{ "error": { "code", "message", "details"? } }` with codes
+  `validation_error` 400, `unauthorized` 401, `forbidden` 403, `not_found`
+  404, `idempotency_conflict`/`conflict` 409, `payload_too_large` 413,
+  `domain_not_verified`/`suppressed_recipient`/`sandbox_restricted` 422,
+  `rate_limited`/`daily_quota_exceeded`/`monthly_quota_exceeded` 429,
+  `internal_error` 500. SES throttling and 5xx retry up to 5 times with
+  backoff, then the email is `failed` (event + webhook); `MessageRejected` and
+  sandbox refusals fail at once.
+- **Retention:** bodies and attachments are purged nightly after
+  `retention_days` (Settings → Instance, default 90); metadata and events stay.
+  The overview shows bounce ≥ 4 % / complaint ≥ 0.08 % banners (rolling 24 h,
+  after 20 sends) and the email log streams updates over SSE.
+
+## Development
+
+```bash
+bun install
+bun run --filter @sendsprite/web db:dev   # embedded Postgres 16 in apps/web/.pgdata (no Docker needed); or point DATABASE_URL at your own
+cp .env.example apps/web/.env.local
+bun run db:migrate
+bun dev                      # http://localhost:3000
+```
+
+```bash
+bun run typecheck            # next typegen + tsc, every workspace
+bun run lint · format · format:check
+bun run test                 # unit (vitest)
+bun run test:integration     # vitest against an embedded Postgres (or TEST_DATABASE_URL)
+bun run test:e2e             # Playwright: builds sendsprite + @sendsprite/mcp (the e2e drives the real
+                             # bundles), then the app itself, and runs against the built server so no
+                             # route compiles mid-test. `E2E_SERVER=dev` swaps in `next dev` instead
+bun run db:generate          # new migration from schema changes
+```
+
+CI builds the image (see `.github/workflows/ci.yml`); `docker compose build`
+does the same locally.
+
+## Releasing
+
+Two packages are published from this repo: `sendsprite` (`packages/sdk`) and
+`@sendsprite/mcp` (`packages/mcp`). `@sendsprite/web` is never published and
+`@sendsprite/shared` is private — tsup inlines it into both bundles — so both
+sit in the `ignore` list in `.changeset/config.json`.
+
+One-time setup: create an npm automation token with publish rights to those two
+names and add it as the repository secret `NPM_TOKEN` (Settings → Secrets and
+variables → Actions). `.github/workflows/release.yml` writes it to `~/.npmrc`
+at run time; no token is stored in the repo. Rotate the token on npm after the
+first successful publish.
+
+Per change, record what it does to each package:
+
+```bash
+bun run changeset            # pick packages, pick the bump, write the summary
+```
+
+Commit the generated `.changeset/*.md` file with the change. On a push to the
+default branch the release workflow runs `changesets/action`:
+
+1. With changesets pending it opens (or refreshes) a **"chore: version
+   packages"** PR that applies the bumps, rewrites the changelogs, re-runs
+   `bun run sync:version` so `SDK_VERSION`/`MCP_VERSION` match their manifests,
+   and updates the lockfile.
+2. Merging that PR leaves no changesets, so the same workflow then builds both
+   packages and runs `changeset publish` — publishing to npm and pushing the
+   release tags.
+
+## Environment reference
+
+| Variable                                             | Default       | Notes                                                                                       |
+| ---------------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------- |
+| `APP_URL`                                            | —             | Public URL, with protocol                                                                   |
+| `APP_SECRET`                                         | —             | ≥ 32 chars; encrypts stored credentials                                                     |
+| `DATABASE_URL`                                       | —             | Postgres connection string                                                                  |
+| `POSTGRES_PASSWORD`                                  | —             | Compose only; alphanumeric recommended (interpolated unencoded into URL)                    |
+| `SIGNUP_MODE`                                        | `auto`        | `auto` → open until first user, then invite; or `open`/`invite`/`closed`                    |
+| `EMAIL_PASSWORD_ENABLED`                             | `false`       | Email + password sign-in                                                                    |
+| `GOOGLE_CLIENT_ID/SECRET`, `GITHUB_CLIENT_ID/SECRET` | —             | OAuth providers                                                                             |
+| `WORKER_MODE`                                        | `inline`      | `inline` / `separate` / `none`                                                              |
+| `SMTP_ENABLED`                                       | `true`        | SMTP relay (username anything, password = API key); AUTH requires STARTTLS                  |
+| `SMTP_ALLOW_INSECURE_AUTH`                           | `false`       | Dev only: accept AUTH on a plain connection (the API key travels in clear)                  |
+| `SMTP_PORT`                                          | `587`         | Relay port. Under compose: the host port, mapped onto 2587 in the container                 |
+| `SMTP_TLS_CERT`, `SMTP_TLS_KEY`                      | —             | PEM paths for STARTTLS; unset → self-signed cert (clients must skip verify)                 |
+| `SMTP_MAX_SIZE`                                      | `10485760`    | Max message size in bytes (552 above it)                                                    |
+| `LANDING_ENABLED`                                    | `true`        | `false` sends `/` to `/app`                                                                 |
+| `AWS_DEFAULT_REGION`                                 | `us-east-1`   | Region preselected in the AWS connect wizard                                                |
+| `CFN_TEMPLATE_URL`                                   | Sendsprite S3 | S3 URL of the one-click CloudFormation template (must be S3)                                |
+| `SOURCE_URL`                                         | this repo     | Source offered to users (AGPL §13); set it to yours if you modify the server                |
+| `AWS_E2E_MOCK`                                       | —             | `1` swaps AWS clients for an in-memory fake; ignored in production (tests)                  |
+| `AWS_E2E_VERIFY`                                     | —             | With the fake: `1` reports DKIM/MAIL FROM as SUCCESS (dev/test only)                        |
+| `BILLING_ENABLED`                                    | `false`       | Hosted-service billing. Off: no Billing page, no checkout, no webhook route, no plan limits |
+| `POLAR_ACCESS_TOKEN`                                 | —             | Polar organization token; required when billing is on                                       |
+| `POLAR_WEBHOOK_SECRET`                               | —             | Polar webhook signing secret; required when billing is on                                   |
+| `POLAR_SERVER`                                       | `production`  | `sandbox` while developing                                                                  |
+| `POLAR_METER_ID`                                     | —             | Optional, display only: shows Polar's own meter balance on the billing page                 |
+
+Billing is a hosted-service feature and is off by default; a self-hosted
+instance never loads the payment SDK and never registers the billing job.
+Plans are read from the provider's product metadata (`plan`,
+`included_emails`, `overage_per_1k_cents`), so prices change in the Polar
+dashboard without a deploy — no product id is compiled in. Turning the flag
+on an instance that already has teams caps every one of them at the Free
+allowance retroactively; grandfather them first — the runbook is in
+[`/docs/self-hosting`](apps/web/src/app/docs/self-hosting/page.mdx), under
+"Turning billing on".
+
+SMTP login throttling is per remote IP (5 failed logins → 10 minute lockout)
+and per process. Behind a proxy or load balancer that does not speak PROXY
+protocol, every client arrives from the proxy's address and shares one
+counter, so expose 587 directly or terminate it on the app container.
+
+Email body/attachment retention has no env var: the window (default 90 days)
+is set in Settings → Instance (`retention_days`) and applied by the nightly
+`retention.purge` job (03:15), which also drops webhook deliveries older than
+the window.
+
+Settings → Instance can override two of these: `SIGNUP_MODE=auto` defers to the
+signup mode saved there (an explicit env value wins), and `LANDING_ENABLED` is
+only the default until a landing value is saved.
+
+## Roadmap
+
+Phase 1: foundation — done. Phase 2: AWS one-click connect, Cloudflare,
+domains — done. Phase 3: sending API, events, webhooks, tracking, SMTP relay —
+done. Phase 4: SDK, CLI, MCP, OpenAPI, `/docs`, landing page, release
+pipeline — done. Phase 5: billing — plans, usage metering, entitlements,
+`BILLING_ENABLED` — done. Phase 6: templates and contacts — versioned templates
+with a server-side render, contact books with CSV import/export and
+unsubscribe — done. Phase 7: campaigns — block editor with live preview,
+audience selection, scheduling, resumable fan-out, per-campaign stats and RFC
+8058 one-click unsubscribe — done. Phase 8 (next): the audit log UI and the
+analytics overview, a campaign test send, and per-campaign send-rate control.
+Design: `docs/superpowers/specs/2026-08-24-sendsprite-design.md`.
+
+## Licensing
+
+Sendsprite is split, on purpose:
+
+| Part                                             | Licence         |
+| ------------------------------------------------ | --------------- |
+| The server — `apps/web`, `infra/`, the repo root | `AGPL-3.0-only` |
+| `sendsprite` (`packages/sdk`)                    | `MIT`           |
+| `@sendsprite/mcp` (`packages/mcp`)               | `MIT`           |
+| `packages/shared`                                | `MIT`           |
+
+**The SDK is MIT so you can put it in a closed-source app.** That is the whole
+point of the split: the code you `npm install` and compile into your own product
+comes with no obligations at all — no copyleft, no source disclosure, nothing to
+publish. `packages/shared` is MIT for the same reason, one step removed: tsup
+inlines it into the published SDK and MCP bundles, so its code physically ships
+inside those MIT packages and has to match them.
+
+**Self-hosting is free, and using it internally obliges you to nothing.**
+Running Sendsprite — unmodified or patched to death — for your own company, your
+own products, your own customers' email, is exactly what the AGPL is fine with.
+Nobody has to publish anything, and no clause is waiting to catch you.
+
+**Section 13 applies only if you modify the server _and_ offer it to others over
+a network.** In that case those users must be offered your modified source. That
+is what `SOURCE_URL` is for: point it at your repository, mirror or tarball, and
+the dashboard footer and `/api/health` offer it for you. Leave it at the default
+and it points at this repository, which is the correct answer for an unmodified
+instance.
+
+The name is not covered by any of this — see [TRADEMARK.md](TRADEMARK.md). Forks
+are welcome; call yours something else.
+
+**Commercial licences.** If your organisation cannot deploy AGPL software — some
+cannot, as policy, whatever the facts — the same server is available under
+commercial terms. Email <hello@defy.works>.
+
+Contributions are covered by a [CLA](CLA.md); see
+[CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and the reasoning.

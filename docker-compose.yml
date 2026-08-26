@@ -1,0 +1,56 @@
+services:
+  app:
+    image: ghcr.io/defy-works/sendsprite:latest
+    build: .
+    ports:
+      - "${APP_PORT:-3000}:3000"
+      # SMTP_PORT is the port on the host. Inside, the relay always listens on
+      # 2587: the container runs as a non-root user, which cannot bind 587.
+      - "${SMTP_PORT:-587}:2587"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://sendsprite:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/sendsprite
+      # `environment` wins over `env_file`, so an SMTP_PORT in .env moves the
+      # published port above without breaking the mapping.
+      SMTP_PORT: "2587"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sendsprite
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: sendsprite
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sendsprite -d sendsprite"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # Optional: `docker compose --profile worker up -d` runs jobs in a second
+  # container. Set WORKER_MODE=separate in .env so `app` stops running them.
+  # The worker is the same image with the worker forced on; it only listens
+  # on the internal network (no ports published).
+  worker:
+    profiles: ["worker"]
+    image: ghcr.io/defy-works/sendsprite:latest
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://sendsprite:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/sendsprite
+      WORKER_MODE: inline
+      # The relay belongs to the web tier; `app` already publishes it.
+      SMTP_ENABLED: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:

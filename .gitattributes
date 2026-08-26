@@ -1,0 +1,9 @@
+# LF everywhere. install.sh and docker-compose.yml are served verbatim at
+# /install.sh and /docker-compose.yml and copied into the Docker image; CRLF
+# would break `curl -fsSL … | sh` and the container entrypoints.
+* text=auto eol=lf
+
+*.png binary
+*.ico binary
+*.woff binary
+*.woff2 binary

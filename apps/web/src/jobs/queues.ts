@@ -1,0 +1,18 @@
+export const Q = {
+  heartbeat: "system.heartbeat",
+  sesRefreshAccount: "ses.refresh-account",
+  domainProvision: "domain.provision",
+  domainVerify: "domain.verify",
+  domainVerifySweep: "domain.verify-sweep",
+  emailSend: "email.send",
+  emailReconcile: "email.reconcile-sending",
+  emailQueuedSweep: "email.queued-sweep",
+  campaignStartSweep: "campaign.start-sweep",
+  campaignFanoutSweep: "campaign.fan-out-sweep",
+  campaignSettleSweep: "campaign.settle-sweep",
+  webhookDeliver: "webhook.deliver",
+  webhookRetrySweep: "webhook.retry-sweep",
+  retentionPurge: "retention.purge",
+  billingMeterSweep: "billing.meter-sweep",
+} as const;
+export type QueueName = (typeof Q)[keyof typeof Q];

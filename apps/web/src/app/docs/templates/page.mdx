@@ -1,0 +1,195 @@
+export const metadata = {
+  title: "Templates",
+  description:
+    "Sendsprite templates: the placeholder syntax, escaping rules, versioning, previewing, and sending with a template.",
+};
+
+# Templates
+
+A template is a stored subject and body with `{{ variable }}` placeholders.
+Send one by naming its **slug** instead of passing `html`:
+
+```bash
+curl -X POST "$APP_URL/api/v1/emails" \
+  -H "Authorization: Bearer ss_live_..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "from": "Acme <hello@mail.acme.com>",
+    "to": ["ada@example.com"],
+    "template": "welcome",
+    "variables": { "name": "Ada" }
+  }'
+# → 201 {"id":"em_…"}
+```
+
+The render happens on the server, and the rendered subject and bodies are what
+is stored and what is sent. `template` cannot be combined with `html` or
+`text` — exactly one content source. `subject` is optional when a template
+supplies one, and a request-level `subject` overrides the template's.
+
+Managing templates needs a **`full`** API key, `POST /templates/:slug/render`
+included, because both return template content. Sending _with_ a template does
+not: a `sending_only` key calls `POST /emails` and the server renders. In the
+dashboard, every team role can manage templates.
+
+## The syntax
+
+`{{ name }}`, and nothing else. Whitespace inside the braces is ignored, and
+names may be dotted (`{{ user.firstName }}`, up to four segments) to reach into
+a nested object. A name is letters, digits and underscores, starting with a
+letter or an underscore.
+
+There are **no** helpers, filters, conditionals or loops, and there is **no
+unescaped form** — no `{{{ }}}`, no `| safe`. A template engine's value is its
+expression language, and its expression language is its attack surface; this
+renders your customers' data into HTML that is then emailed, so there is
+deliberately nothing to sandbox. For anything that needs logic, render it
+yourself and pass `html` (the SDK's `react` option does exactly that).
+
+Substituted text is never re-scanned, so a value containing `{{x}}` produces
+the literal `{{x}}`. Dotted lookups walk own properties only, so
+`{{ a.constructor }}` resolves to nothing rather than to a function.
+
+A single field may use at most **500 placeholder occurrences**.
+
+## Escaping
+
+Escaping is decided by the field, not by you:
+
+| Field      | Rule                                                                                                                                                  |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bodyHtml` | Every substituted value is HTML-escaped: `&`, `<`, `>`, `"`, `'`, and also `` ` `` and `=`.                                                            |
+| `bodyText` | No escaping — it is not markup.                                                                                                                       |
+| `subject`  | No HTML escaping, but the **rendered** subject is trimmed and then refused if it is empty, longer than 998 characters, or holds a control character.   |
+
+The backtick and `=` are escaped because unquoted attributes are ordinary in
+hand-written email HTML: in `<a href={{u}}>`, a value of
+`x onmouseover=alert(1)` becomes a real event handler without using a single
+quote character. Escaping `=` is what actually closes that, because attribute
+_names_ are not entity-decoded. The cost is that a literal `=` in visible text
+is emitted as `&#61;`, which the mail client decodes back to `=`.
+
+The subject rule is the one that matters most: a CR or LF in a subject is
+header injection, and the check on what you _send_ cannot see what a template
+_renders_, so it is repeated on the output. The rendered check covers every C0
+control character and DEL, matching the rule `POST /emails` applies to a
+subject you write yourself.
+
+Three things escaping does not do, and you should know all three:
+
+- It does not make a URL safe. `<a href="{{link}}">` with a `javascript:` value
+  survives escaping. Validate URLs you interpolate.
+- It does not cover `<style>` or `<script>`. CSS `url()` and `@import` need no
+  HTML-special character, so a placeholder does not belong inside a style
+  element; inside a script, entities are not decoded, so a value arrives
+  corrupted rather than executed. Neither is a place for a placeholder.
+- It does not sanitise the **template**. Whatever your team writes into
+  `bodyHtml` is sent as written, exactly as `html` on `POST /emails` is.
+
+## Variables
+
+Every placeholder must resolve, or the send is refused with a
+`validation_error` naming what is missing. A silent empty string produces
+"Hi ," at volume, and you find out from a customer rather than from a test.
+
+Values may be strings, numbers or booleans. `null`, `NaN`, objects and arrays
+are refused rather than rendered. An empty or whitespace-only string counts as
+**missing**, not as a value — a blank CSV cell is `""`, and mailing "Hi ,"
+because of one is the failure this rule exists to prevent.
+
+Declare a variable with a `default` to make it genuinely optional:
+
+```json
+{
+  "variablesSchema": {
+    "variables": [
+      { "name": "name", "type": "string", "default": "there" },
+      { "name": "credits", "type": "number", "description": "Shown in the header" }
+    ]
+  }
+}
+```
+
+`default` is the only way to make a placeholder optional. There is deliberately
+no `required` flag: the renderer refuses every unresolved placeholder, so
+`required: true` would be a no-op, and `required: false` could only mean
+"render nothing here". To substitute a genuinely empty value, declare
+`default: ""` — explicit rather than accidental.
+
+A declared `type` is enforced against the supplied value at render time and
+against the `default` when the template is saved; a name declared twice is
+refused. A `description` is shown in the dashboard editor and nowhere else. A
+template may declare up to 100 variables.
+
+A supplied `variables` payload is bounded: at most **200 keys** (counting
+nested objects and array items), **2 000 characters** per value, and **64 KB**
+serialised. Per-recipient content larger than that is what the `html` field is
+for.
+
+## Versioning
+
+Every content change bumps `version` and appends a snapshot.
+`GET /api/v1/templates/:slug` returns the 20 most recent versions alongside the
+template, and **Restore** in the dashboard applies an old snapshot as a _new_
+version — history is append-only, so what was live and when stays readable, and
+a restore is itself undoable. An update that changes nothing bumps nothing.
+
+`slug` cannot be changed; `PATCH` does not accept the field. A live send names a
+template by slug, so a rename would be a silent outage — create the new one and
+delete the old.
+
+Deleting a template leaves the emails it produced alone: their stored bodies
+stay exactly as they were sent, and the link back to the template becomes
+`null`.
+
+## Previewing
+
+`POST /api/v1/templates/:slug/render` with `{ "variables": { … } }` returns
+`{ subject, html, text }` without sending or storing anything. It runs the same
+renderer the send path runs, so the preview cannot differ from the send. The
+variables are not echoed back.
+
+The dashboard editor calls the same function in your browser, which is why its
+preview updates as you type. A variable with a declared default previews with
+that default; one without gets a visible stand-in — `{name}` for a string, `0`
+for a number, `true` for a boolean — so you can see where the value will land.
+The preview renders inside a sandboxed iframe.
+
+## From the CLI
+
+```bash
+sendsprite templates pull ./emails    # write every template to ./emails
+sendsprite templates push ./emails    # create what is missing, update the rest
+sendsprite templates push ./emails --dry-run
+```
+
+The directory is flat, three files per template, named by the slug:
+
+| File          | Holds                                               |
+| ------------- | --------------------------------------------------- |
+| `<slug>.json` | `name`, `subject`, `variablesSchema`                |
+| `<slug>.html` | `bodyHtml`                                          |
+| `<slug>.txt`  | `bodyText` — present only when the template has one |
+
+The slug is the identity: it is immutable server-side and already restricted to
+lower-case letters, digits and dashes, so the file name carries it and no
+manifest field repeats it.
+
+Two behaviours here are safety properties rather than incidentals:
+
+- **`push` never deletes a remote template.** A template on the instance with no
+  file in the directory is reported and left alone. Deleting is explicit:
+  the dashboard, or `DELETE /api/v1/templates/:slug`.
+- **A missing `<slug>.txt` means "no opinion", not "clear the text body".** An
+  absent file is ambiguous — never pulled, gitignored, lost — so `push` reports
+  it and leaves the stored text body as it is. There is currently no CLI path to
+  remove a text body; use the dashboard.
+
+Add a `.gitattributes` to the directory:
+
+```
+* text=auto eol=lf
+```
+
+On Windows with `core.autocrlf=true` a checked-out body becomes CRLF, and `push`
+will correctly — but confusingly — see that as a change to every template.

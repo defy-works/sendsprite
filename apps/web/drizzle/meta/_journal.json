@@ -1,0 +1,125 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1787584146573,
+      "tag": "0000_cloudy_moonstone",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1787585229251,
+      "tag": "0001_short_maginty",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787585597572,
+      "tag": "0002_wealthy_iceman",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1787610716389,
+      "tag": "0003_strong_grey_gargoyle",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1787611428437,
+      "tag": "0004_bizarre_reaper",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1787612194077,
+      "tag": "0005_lethal_nick_fury",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1787613677626,
+      "tag": "0006_same_pet_avengers",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1787622399938,
+      "tag": "0007_perfect_slipstream",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1787623230752,
+      "tag": "0008_flimsy_drax",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1787625029548,
+      "tag": "0009_emails_created_at_ms",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1787631689919,
+      "tag": "0010_emails_sent_at_idx",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1787639347731,
+      "tag": "0011_keyset_created_at_ms",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1787660254496,
+      "tag": "0012_billing",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1787704071921,
+      "tag": "0013_templates_contacts",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1787716511122,
+      "tag": "0014_campaigns",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1787717240770,
+      "tag": "0015_campaign_audience_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1787718419332,
+      "tag": "0016_campaign_webhook_markers",
+      "breakpoints": true
+    }
+  ]
+}

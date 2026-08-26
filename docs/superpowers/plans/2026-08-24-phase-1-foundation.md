@@ -1,0 +1,4936 @@
+# Sendsprite Phase 1 — Foundation Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** A runnable, self-hostable Sendsprite skeleton: Bun monorepo, themed Next.js app with auth (Google/GitHub/email-password by env), teams + invites, Postgres schema + migrations, encrypted instance settings, health endpoint, background job runtime, Docker Compose + one-line installer.
+
+**Architecture:** Single Next.js 16 app (`apps/web`) talks to Postgres through Drizzle. BetterAuth (Drizzle adapter + `organization` plugin) provides users, sessions, teams, members, invitations. Background work runs in-process via pg-boss started from Next's `instrumentation.ts` hook (so the standalone Docker image is just `bun server.js`); migrations also run there on boot. All privileged secrets in the DB are encrypted with a key derived from `APP_SECRET`.
+
+**Tech Stack:** Bun 1.x, Next.js 16.3 (App Router, Turbopack), React 19.2, Tailwind v4, Drizzle ORM 0.45 + drizzle-kit 0.31, `postgres` (postgres-js) driver, better-auth 1.7 + `@better-auth/drizzle-adapter`, pg-boss 12, zod 4, Vitest 4, embedded-postgres (Testcontainers replaced: no Docker on dev machine), Playwright, Docker.
+
+**Deviations from spec (deliberate, small):**
+
+- Spec said Next 15; latest stable is 16.3 — we use 16 (`proxy.ts` not `middleware.ts`, async `headers()`/`params`, Turbopack default).
+- Spec's `teams`/`team_members`/`team_invites` tables are provided by better-auth's `organization` plugin as `organization`/`member`/`invitation`. "Team" remains the product word in the UI; code uses `organization` where better-auth requires it.
+- Spec's custom `server.ts` is replaced by `instrumentation.ts` (`register()`), which Next runs once per server process. Same effect (worker in-process), but compatible with `output: "standalone"`.
+- Invitation emails cannot be sent before a domain is verified (Phase 3), so Phase 1 invites are **link-based**: the inviter copies the accept URL from the UI.
+
+**Rules learned in review (apply to every later task):**
+
+- Every route is dynamic: the root layout exports `dynamic = "force-dynamic"`. Never rely on static prerendering; `next build` must succeed with no env set.
+- `@/env` is `server-only`. Client components never import it; pass `env.providers` etc. down as props from server components. Pure schema lives in `@/env.schema` (safe for tests).
+- Run `bun run format` before every commit so `format:check` stays green.
+- Health `worker` state is per-process; with `WORKER_MODE=separate` the web container reports `disabled` — Phase 2 adds heartbeat persistence so health reflects the separate worker.
+
+**Reference repos (read-only, copy from):**
+
+- `D:\Documents\Work\aws-cost-dashboard` — `src/styles/globals.css`, `public/fonts/*`, `src/components/ui/*`, `src/lib/cn.ts`, `Dockerfile`, `docker-compose.yml`
+- `D:\Documents\Work\Defyworks\site_v2` — `src/components/ui/{Input,Label,Select,Textarea,Divider,Skeleton,Spinner,Link}.tsx`
+
+---
+
+## Phase 1 status: COMPLETE (2026-08-25, HEAD after `91f3e57`)
+
+Final integration review verdict: ready. Open these as the **first tasks of the Phase 2 plan** (extension-point decisions, not Phase 1 defects):
+
+1. Audit completeness — wire better-auth `organizationHooks` (`afterCreateOrganization`, `afterAcceptInvitation`, `afterRemoveMember`, `afterUpdateMemberRole`) into `recordAudit`; pass `ip`/`userAgent` from `actions.ts`; make `updateInstanceSettings` self-audit (`teamId: null`).
+2. `registerQueue(name, handler, { cron?, queue?: QueueOptions })` so handlers own retry/expiry policy (`email.send` needs retryLimit 5 + backoff).
+3. Home for team-level settings (`daily_limit`, `monthly_limit`, `track_opens`, `track_clicks`): a `team_settings` 1:1 table keyed by organization id (keeps `schema/auth.ts` purely generated).
+4. Convention: every new table uses `timestamp(..., { withTimezone: true })`; better-auth tables are the only `timestamp` without tz.
+5. Session hook `session.create.before` should order memberships like `resolveTeam` (oldest first) or call it.
+6. Health for `WORKER_MODE=separate`: persist heartbeat so the web container reports the worker.
+7. `_pg.ts` embedded mode: `rm(..., { maxRetries: 5, retryDelay: 200 })` for Windows EBUSY.
+
+Docker image/compose are validated only by the CI `docker` job (no Docker on the dev machine); the first CI run is the real test of the standalone + Bun symlink layout.
+
+## File structure (end state of Phase 1)
+
+```
+sendsprite/
+├─ package.json                      Bun workspaces root; shared scripts
+├─ bunfig.toml
+├─ tsconfig.base.json
+├─ .prettierrc · eslint.config.mjs · .gitignore · .dockerignore
+├─ LICENSE (MIT) · README.md
+├─ docker-compose.yml · Dockerfile · install.sh · .env.example
+├─ .github/workflows/ci.yml
+├─ packages/shared/
+│  ├─ package.json · tsconfig.json
+│  └─ src/index.ts                   re-exports; Phase 1: `roles.ts`, `ids.ts`
+│     ├─ roles.ts                    TeamRole union + permission table
+│     └─ ids.ts                      prefixed ULID helper (`newId("em")`)
+└─ apps/web/
+   ├─ package.json · tsconfig.json · next.config.ts · postcss.config.mjs
+   ├─ drizzle.config.ts · drizzle/    generated SQL migrations
+   ├─ vitest.config.ts · playwright.config.ts
+   ├─ public/fonts/                  SpaceGrotesk-Variable.woff2, SUIT-Variable.woff2
+   ├─ public/favicon.svg
+   ├─ src/
+   │  ├─ instrumentation.ts          boot: migrate → start pg-boss (if WORKER_MODE≠none)
+   │  ├─ env.ts                      zod-validated process.env (server only)
+   │  ├─ styles/globals.css          theme (copied)
+   │  ├─ lib/cn.ts
+   │  ├─ lib/crypto.ts               encrypt/decrypt with APP_SECRET (AES-256-GCM, HKDF)
+   │  ├─ lib/auth.ts                 betterAuth() server instance
+   │  ├─ lib/auth-client.ts          createAuthClient() + organizationClient
+   │  ├─ lib/session.ts              requireSession(), requireTeam() server helpers
+   │  ├─ lib/audit.ts                recordAudit()
+   │  ├─ db/index.ts                 drizzle client
+   │  ├─ db/schema/index.ts          re-exports
+   │  ├─ db/schema/auth.ts           generated by better-auth CLI
+   │  ├─ db/schema/instance.ts       instance_settings
+   │  ├─ db/schema/audit.ts          audit_log
+   │  ├─ db/migrate.ts               programmatic migrate()
+   │  ├─ jobs/boss.ts                pg-boss singleton + startWorker()
+   │  ├─ jobs/queues.ts              queue name constants
+   │  ├─ jobs/handlers/heartbeat.ts  trivial recurring job proving the worker runs
+   │  ├─ services/instance-settings.ts  get/update singleton (encrypts secrets)
+   │  ├─ components/ui/*             Button, Card, Badge, Input, Label, Select, Textarea, Divider, Skeleton, Spinner, Link, StatusDot, EmptyState
+   │  ├─ components/app/AppShell.tsx  sidebar + topbar
+   │  ├─ components/app/TeamSwitcher.tsx
+   │  ├─ components/app/UserMenu.tsx
+   │  ├─ components/auth/AuthForm.tsx  login/signup form (email+password + social buttons)
+   │  └─ app/
+   │     ├─ layout.tsx · globals via import
+   │     ├─ page.tsx                 placeholder landing (real one in Phase 4) — redirects to /app if LANDING_ENABLED=false
+   │     ├─ api/auth/[...all]/route.ts
+   │     ├─ api/health/route.ts
+   │     ├─ (auth)/login/page.tsx · (auth)/signup/page.tsx
+   │     ├─ invite/[id]/page.tsx
+   │     ├─ (onboarding)/teams/new/page.tsx  create first team
+   │     ├─ app/layout.tsx           session gate + AppShell
+   │     ├─ app/page.tsx             overview placeholder ("setup checklist" stub)
+   │     ├─ app/settings/page.tsx    team name, members, invites
+   │     └─ app/settings/actions.ts  server actions (rename, invite, remove, change role)
+   └─ tests/
+      ├─ unit/crypto.test.ts · env.test.ts · ids.test.ts · roles.test.ts · audit.test.ts
+      ├─ integration/db.test.ts      migrations apply on an embedded Postgres
+      ├─ integration/instance-settings.test.ts
+      ├─ integration/auth.test.ts    signup modes
+      └─ e2e/smoke.spec.ts           login → app shell renders
+```
+
+---
+
+### Task 1: Monorepo scaffold
+
+**Files:**
+
+- Create: `package.json`, `bunfig.toml`, `tsconfig.base.json`, `.prettierrc`, `eslint.config.mjs`, `.gitignore`, `.dockerignore`, `LICENSE`, `packages/shared/package.json`, `packages/shared/tsconfig.json`, `packages/shared/src/index.ts`
+
+- [x] **Step 1: Root package.json**
+
+```json
+{
+  "name": "sendsprite-monorepo",
+  "private": true,
+  "type": "module",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "dev": "bun run --filter @sendsprite/web dev",
+    "build": "bun run --filter '*' build",
+    "typecheck": "bun run --filter '*' typecheck",
+    "lint": "eslint .",
+    "format": "prettier --write \"**/*.{ts,tsx,md,json,css,yml,yaml}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,md,json,css,yml,yaml}\"",
+    "test": "bun run --filter '*' test",
+    "test:integration": "bun run --filter @sendsprite/web test:integration",
+    "test:e2e": "bun run --filter @sendsprite/web test:e2e",
+    "db:generate": "bun run --filter @sendsprite/web db:generate",
+    "db:migrate": "bun run --filter @sendsprite/web db:migrate",
+    "db:studio": "bun run --filter @sendsprite/web db:studio"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.30.0",
+    "@next/eslint-plugin-next": "^16.3.2",
+    "eslint": "^9.30.0",
+    "prettier": "^3.6.0",
+    "typescript": "^5.9.0",
+    "typescript-eslint": "^8.40.0"
+  }
+}
+```
+
+- [x] **Step 2: bunfig.toml, tsconfig.base.json, prettier, eslint**
+
+`bunfig.toml`:
+
+```toml
+[install]
+exact = false
+```
+
+`tsconfig.base.json`:
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "types": ["bun-types"]
+  }
+}
+```
+
+`.prettierrc`:
+
+```json
+{ "semi": true, "singleQuote": false, "trailingComma": "all", "printWidth": 80 }
+```
+
+`eslint.config.mjs`:
+
+```js
+import js from "@eslint/js";
+import tseslint from "typescript-eslint";
+import nextPlugin from "@next/eslint-plugin-next";
+
+export default tseslint.config(
+  {
+    ignores: [
+      "**/node_modules/**",
+      "**/.next/**",
+      "**/dist/**",
+      "**/drizzle/**",
+    ],
+  },
+  js.configs.recommended,
+  ...tseslint.configs.recommended,
+  {
+    files: ["apps/web/**/*.{ts,tsx}"],
+    plugins: { "@next/next": nextPlugin },
+    rules: { ...nextPlugin.configs.recommended.rules },
+  },
+  {
+    rules: {
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        { argsIgnorePattern: "^_" },
+      ],
+    },
+  },
+);
+```
+
+- [x] **Step 3: .gitignore, .dockerignore, LICENSE**
+
+`.gitignore` (replace the existing one):
+
+```
+node_modules/
+.next/
+dist/
+out/
+.env
+.env.*
+!.env.example
+*.tsbuildinfo
+playwright-report/
+test-results/
+```
+
+`.dockerignore`:
+
+```
+node_modules
+**/node_modules
+.next
+**/.next
+.git
+docs
+tests
+**/tests
+playwright-report
+test-results
+.env
+.env.*
+```
+
+`LICENSE`: standard MIT text, `Copyright (c) 2026 Defy Works`.
+
+- [x] **Step 4: packages/shared skeleton**
+
+`packages/shared/package.json`:
+
+```json
+{
+  "name": "@sendsprite/shared",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "echo 'source package, nothing to build'"
+  },
+  "dependencies": { "ulid": "^3.0.2", "zod": "^4.4.3" },
+  "devDependencies": { "vitest": "^4.1.0", "bun-types": "^1.2.0" }
+}
+```
+
+`packages/shared/tsconfig.json`:
+
+```json
+{ "extends": "../../tsconfig.base.json", "include": ["src", "tests"] }
+```
+
+`packages/shared/src/index.ts`:
+
+```ts
+export * from "./ids";
+export * from "./roles";
+```
+
+(`ids.ts` and `roles.ts` are written in Task 2.)
+
+- [x] **Step 5: Install and verify**
+
+Run: `bun install`
+Expected: lockfile `bun.lock` created, no errors (packages/shared has no `ids.ts` yet — that's fine, nothing imports it).
+
+- [x] **Step 6: Commit**
+
+```bash
+git add -A
+git commit -m "chore: monorepo scaffold (bun workspaces, eslint, prettier, MIT)"
+```
+
+---
+
+### Task 2: Shared primitives — prefixed IDs and roles (TDD)
+
+**Files:**
+
+- Create: `packages/shared/src/ids.ts`, `packages/shared/src/roles.ts`, `packages/shared/tests/ids.test.ts`, `packages/shared/tests/roles.test.ts`, `packages/shared/vitest.config.ts`
+
+- [x] **Step 1: vitest config**
+
+`packages/shared/vitest.config.ts`:
+
+```ts
+import { defineConfig } from "vitest/config";
+export default defineConfig({ test: { include: ["tests/**/*.test.ts"] } });
+```
+
+- [x] **Step 2: Failing tests**
+
+`packages/shared/tests/ids.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { newId, parseId, ID_PREFIXES } from "../src/ids";
+
+describe("newId", () => {
+  it("prefixes with the entity tag and an underscore", () => {
+    const id = newId("em");
+    expect(id.startsWith("em_")).toBe(true);
+    expect(id.length).toBe(3 + 26); // ULID is 26 chars
+  });
+  it("is unique across calls", () => {
+    const a = newId("dom");
+    const b = newId("dom");
+    expect(a).not.toBe(b);
+  });
+  it("parseId returns prefix and ulid, rejects unknown prefixes", () => {
+    const id = newId("key");
+    expect(parseId(id)).toEqual({ prefix: "key", ulid: id.slice(4) });
+    expect(parseId("zzz_01ARZ3NDEKTSV4RRFFQ69G5FAV")).toBeNull();
+    expect(parseId("garbage")).toBeNull();
+  });
+  it("exposes every prefix we plan to use", () => {
+    expect(ID_PREFIXES).toContain("em");
+    expect(ID_PREFIXES).toContain("evt");
+  });
+});
+```
+
+`packages/shared/tests/roles.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { can, TEAM_ROLES, type TeamRole } from "../src/roles";
+
+describe("roles", () => {
+  it("lists owner, admin, member in that order", () => {
+    expect(TEAM_ROLES).toEqual(["owner", "admin", "member"]);
+  });
+  it.each<[TeamRole, string, boolean]>([
+    ["owner", "team.delete", true],
+    ["admin", "team.delete", false],
+    ["admin", "members.invite", true],
+    ["member", "members.invite", false],
+    ["member", "emails.send", true],
+    ["member", "apiKeys.create", false],
+    ["admin", "instance.manage", false],
+    ["owner", "instance.manage", true],
+  ])("%s can %s → %s", (role, action, expected) => {
+    expect(can(role, action as never)).toBe(expected);
+  });
+});
+```
+
+- [x] **Step 3: Run tests to verify they fail**
+
+Run: `cd packages/shared && bun run test`
+Expected: FAIL — cannot resolve `../src/ids` / `../src/roles`.
+
+- [x] **Step 4: Implement**
+
+`packages/shared/src/ids.ts`:
+
+```ts
+import { ulid } from "ulid";
+
+export const ID_PREFIXES = [
+  "usr",
+  "team",
+  "inv",
+  "em",
+  "evt",
+  "dom",
+  "key",
+  "wh",
+  "whd",
+  "tpl",
+  "cb",
+  "ct",
+  "cmp",
+  "sup",
+  "aud",
+] as const;
+export type IdPrefix = (typeof ID_PREFIXES)[number];
+
+/** Prefixed, sortable, URL-safe id: `em_01ARZ3NDEKTSV4RRFFQ69G5FAV`. */
+export function newId(prefix: IdPrefix): string {
+  return `${prefix}_${ulid()}`;
+}
+
+const ULID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+
+export function parseId(id: string): { prefix: IdPrefix; ulid: string } | null {
+  const i = id.indexOf("_");
+  if (i <= 0) return null;
+  const prefix = id.slice(0, i) as IdPrefix;
+  const rest = id.slice(i + 1);
+  if (!ID_PREFIXES.includes(prefix) || !ULID_RE.test(rest)) return null;
+  return { prefix, ulid: rest };
+}
+```
+
+`packages/shared/src/roles.ts`:
+
+```ts
+export const TEAM_ROLES = ["owner", "admin", "member"] as const;
+export type TeamRole = (typeof TEAM_ROLES)[number];
+
+export const ACTIONS = [
+  "team.rename",
+  "team.delete",
+  "members.invite",
+  "members.remove",
+  "members.changeRole",
+  "domains.manage",
+  "apiKeys.create",
+  "apiKeys.revoke",
+  "webhooks.manage",
+  "emails.send",
+  "emails.read",
+  "contacts.manage",
+  "campaigns.manage",
+  "templates.manage",
+  "settings.manage",
+  "instance.manage",
+] as const;
+export type Action = (typeof ACTIONS)[number];
+
+const MEMBER: readonly Action[] = [
+  "emails.send",
+  "emails.read",
+  "templates.manage",
+  "contacts.manage",
+];
+const ADMIN: readonly Action[] = [
+  ...MEMBER,
+  "team.rename",
+  "members.invite",
+  "members.remove",
+  "members.changeRole",
+  "domains.manage",
+  "apiKeys.create",
+  "apiKeys.revoke",
+  "webhooks.manage",
+  "campaigns.manage",
+  "settings.manage",
+];
+const OWNER: readonly Action[] = [...ADMIN, "team.delete", "instance.manage"];
+
+const TABLE: Record<TeamRole, ReadonlySet<Action>> = {
+  owner: new Set(OWNER),
+  admin: new Set(ADMIN),
+  member: new Set(MEMBER),
+};
+
+export function can(role: TeamRole, action: Action): boolean {
+  return TABLE[role].has(action);
+}
+```
+
+- [x] **Step 5: Run tests**
+
+Run: `cd packages/shared && bun run test`
+Expected: PASS (2 files, all tests green).
+
+- [x] **Step 6: Commit**
+
+```bash
+git add packages/shared
+git commit -m "feat(shared): prefixed ULID ids and team role permission table"
+```
+
+---
+
+### Task 3: Next.js app scaffold with theme
+
+**Files:**
+
+- Create: `apps/web/package.json`, `apps/web/tsconfig.json`, `apps/web/next.config.ts`, `apps/web/postcss.config.mjs`, `apps/web/next-env.d.ts` (generated), `apps/web/src/styles/globals.css`, `apps/web/public/fonts/*`, `apps/web/public/favicon.svg`, `apps/web/src/lib/cn.ts`, `apps/web/src/app/layout.tsx`, `apps/web/src/app/page.tsx`
+
+- [x] **Step 1: apps/web/package.json**
+
+```json
+{
+  "name": "@sendsprite/web",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "next typegen && tsc --noEmit",
+    "test": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "test:e2e": "playwright test",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "bun run src/db/migrate-cli.ts",
+    "db:studio": "drizzle-kit studio",
+    "auth:generate": "bunx @better-auth/cli@latest generate --config src/lib/auth.ts --output src/db/schema/auth.ts -y"
+  },
+  "dependencies": {
+    "@better-auth/drizzle-adapter": "^1.7.1",
+    "@radix-ui/react-slot": "^1.3.3",
+    "@sendsprite/shared": "workspace:*",
+    "better-auth": "^1.7.1",
+    "drizzle-orm": "^0.45.2",
+    "next": "^16.3.2",
+    "pg-boss": "^12.28.0",
+    "postgres": "^3.4.9",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0",
+    "@tailwindcss/postcss": "^4.3.3",
+    "embedded-postgres": "16.14.0-beta.17",
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.0",
+    "bun-types": "^1.2.0",
+    "drizzle-kit": "^0.31.10",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.0"
+  }
+}
+```
+
+- [x] **Step 2: tsconfig, next.config, postcss**
+
+`apps/web/tsconfig.json`:
+
+```json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [{ "name": "next" }],
+    "paths": { "@/*": ["./src/*"] },
+    "types": ["node", "bun-types"]
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules", ".next"]
+}
+```
+
+`apps/web/next.config.ts`:
+
+```ts
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  reactStrictMode: true,
+  // Self-contained server for the Docker image (see Dockerfile).
+  output: "standalone",
+  // Migrations run at boot from instrumentation.ts, so the SQL files must
+  // ship inside the standalone bundle.
+  outputFileTracingIncludes: { "/*": ["./drizzle/**/*"] },
+  // Node-only packages: keep out of the client bundle and Turbopack graph.
+  serverExternalPackages: ["pg-boss", "postgres"],
+};
+
+export default nextConfig;
+```
+
+`apps/web/postcss.config.mjs`:
+
+```js
+const config = { plugins: { "@tailwindcss/postcss": {} } };
+export default config;
+```
+
+- [x] **Step 3: Copy theme assets from aws-cost-dashboard**
+
+```bash
+mkdir -p apps/web/public/fonts apps/web/src/styles apps/web/src/lib
+cp /d/Documents/Work/aws-cost-dashboard/public/fonts/SpaceGrotesk-Variable.woff2 apps/web/public/fonts/
+cp /d/Documents/Work/aws-cost-dashboard/public/fonts/SUIT-Variable.woff2 apps/web/public/fonts/
+cp /d/Documents/Work/aws-cost-dashboard/src/styles/globals.css apps/web/src/styles/globals.css
+cp /d/Documents/Work/aws-cost-dashboard/src/lib/cn.ts apps/web/src/lib/cn.ts
+```
+
+Then edit the header comment of `globals.css` so the first block reads:
+
+```css
+/* ============================================================
+ * Design language inherited from Defyworks site_v2 /
+ * aws-cost-dashboard. Tokens, glass surfaces, hairlines and the
+ * mono "num-stamp" label are carried over verbatim so Sendsprite
+ * reads as part of the same family.
+ *
+ * App surfaces (/app/*) use the dense variant: no Lenis, no ring
+ * cursor, no marquees. The landing page (Phase 4) may add them.
+ * ============================================================ */
+```
+
+Everything else in the file stays as copied.
+
+`apps/web/public/favicon.svg`:
+
+```svg
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#0a0a0a"/><path d="M7 17l9-9 9 9-9 9z" fill="none" stroke="#818cf8" stroke-width="2.2" stroke-linejoin="round"/><circle cx="16" cy="17" r="2.2" fill="#6366f1"/></svg>
+```
+
+- [x] **Step 4: Root layout and placeholder home**
+
+`apps/web/src/app/layout.tsx`:
+
+```tsx
+import type { Metadata } from "next";
+import type { ReactNode } from "react";
+import "@/styles/globals.css";
+
+export const metadata: Metadata = {
+  title: { default: "Sendsprite", template: "%s · Sendsprite" },
+  description: "Self-hosted email API on Amazon SES.",
+  icons: { icon: "/favicon.svg" },
+};
+
+export default function RootLayout({ children }: { children: ReactNode }) {
+  return (
+    <html lang="en">
+      <body className="min-h-dvh bg-ink text-white antialiased">
+        {children}
+      </body>
+    </html>
+  );
+}
+```
+
+`apps/web/src/app/page.tsx` (placeholder until Phase 4; honours `LANDING_ENABLED`):
+
+```tsx
+import { redirect } from "next/navigation";
+import Link from "next/link";
+import { env } from "@/env";
+
+export default function HomePage() {
+  if (!env.LANDING_ENABLED) redirect("/app");
+  return (
+    <main className="grid-hairlines flex min-h-dvh flex-col items-center justify-center gap-6 p-8">
+      <p className="num-stamp">Sendsprite</p>
+      <h1 className="metric-xl text-center">
+        Self-hosted email API
+        <br />
+        on Amazon SES.
+      </h1>
+      <Link
+        href="/app"
+        className="rounded-md bg-indigo-500 px-5 py-2.5 text-sm font-medium hover:bg-indigo-400"
+      >
+        Open dashboard
+      </Link>
+    </main>
+  );
+}
+```
+
+(`@/env` is created in Task 4; the app won't compile until then — that's expected.)
+
+- [x] **Step 5: Install**
+
+Run: `bun install`
+Expected: success; `apps/web/node_modules/next` present.
+
+- [x] **Step 6: Commit**
+
+```bash
+git add -A
+git commit -m "feat(web): Next.js 16 app scaffold with inherited theme"
+```
+
+---
+
+### Task 4: Validated environment (`env.ts`) — TDD
+
+**Files:**
+
+- Create: `apps/web/src/env.ts`, `apps/web/tests/unit/env.test.ts`, `apps/web/vitest.config.ts`, `.env.example`
+
+- [x] **Step 1: vitest config with two projects**
+
+`apps/web/vitest.config.ts`:
+
+```ts
+import { defineConfig } from "vitest/config";
+import path from "node:path";
+
+export default defineConfig({
+  resolve: { alias: { "@": path.resolve(__dirname, "src") } },
+  test: {
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: "unit",
+          include: ["tests/unit/**/*.test.ts"],
+          environment: "node",
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "integration",
+          include: ["tests/integration/**/*.test.ts"],
+          environment: "node",
+          testTimeout: 120_000,
+          hookTimeout: 180_000,
+        },
+      },
+    ],
+  },
+});
+```
+
+- [x] **Step 2: Failing test**
+
+`apps/web/tests/unit/env.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { parseEnv } from "@/env";
+
+const BASE = {
+  APP_URL: "https://mail.example.com",
+  APP_SECRET: "a".repeat(32),
+  DATABASE_URL: "postgres://u:p@localhost:5432/db",
+};
+
+describe("parseEnv", () => {
+  it("applies defaults", () => {
+    const env = parseEnv(BASE);
+    expect(env.WORKER_MODE).toBe("inline");
+    expect(env.SMTP_ENABLED).toBe(true);
+    expect(env.LANDING_ENABLED).toBe(true);
+    expect(env.SIGNUP_MODE).toBe("auto");
+    expect(env.EMAIL_RETENTION_DAYS).toBe(90);
+    expect(env.EMAIL_PASSWORD_ENABLED).toBe(false);
+  });
+  it("derives auth provider flags from presence of both id and secret", () => {
+    const env = parseEnv({
+      ...BASE,
+      GOOGLE_CLIENT_ID: "x",
+      GOOGLE_CLIENT_SECRET: "y",
+      GITHUB_CLIENT_ID: "only-id",
+    });
+    expect(env.providers.google).toBe(true);
+    expect(env.providers.github).toBe(false);
+  });
+  it("rejects short APP_SECRET", () => {
+    expect(() => parseEnv({ ...BASE, APP_SECRET: "short" })).toThrow(
+      /APP_SECRET/,
+    );
+  });
+  it("rejects APP_URL without protocol", () => {
+    expect(() => parseEnv({ ...BASE, APP_URL: "mail.example.com" })).toThrow(
+      /APP_URL/,
+    );
+  });
+  it("parses booleans from strings", () => {
+    const env = parseEnv({
+      ...BASE,
+      SMTP_ENABLED: "false",
+      LANDING_ENABLED: "0",
+      EMAIL_PASSWORD_ENABLED: "true",
+    });
+    expect(env.SMTP_ENABLED).toBe(false);
+    expect(env.LANDING_ENABLED).toBe(false);
+    expect(env.EMAIL_PASSWORD_ENABLED).toBe(true);
+  });
+  it("requires at least one auth provider", () => {
+    expect(() => parseEnv(BASE)).not.toThrow(); // email/password off, no social → allowed but flagged
+    expect(parseEnv(BASE).providers.any).toBe(false);
+  });
+});
+```
+
+- [x] **Step 3: Run to verify failure**
+
+Run: `cd apps/web && bun run test`
+Expected: FAIL — cannot find module `@/env`.
+
+- [x] **Step 4: Implement**
+
+`apps/web/src/env.ts`:
+
+```ts
+import { z } from "zod";
+
+const bool = z
+  .union([z.boolean(), z.string()])
+  .transform((v) =>
+    typeof v === "boolean"
+      ? v
+      : !["false", "0", "no", "off", ""].includes(v.toLowerCase()),
+  );
+
+const schema = z.object({
+  NODE_ENV: z
+    .enum(["development", "test", "production"])
+    .default("development"),
+  APP_URL: z
+    .string()
+    .url({ message: "APP_URL must be a full URL incl. protocol" }),
+  APP_SECRET: z.string().min(32, "APP_SECRET must be at least 32 characters"),
+  DATABASE_URL: z.string().min(1),
+  WORKER_MODE: z.enum(["inline", "separate", "none"]).default("inline"),
+  SMTP_ENABLED: bool.default(true),
+  LANDING_ENABLED: bool.default(true),
+  SIGNUP_MODE: z.enum(["auto", "open", "invite", "closed"]).default("auto"),
+  EMAIL_RETENTION_DAYS: z.coerce.number().int().min(1).default(90),
+  EMAIL_PASSWORD_ENABLED: bool.default(false),
+  GOOGLE_CLIENT_ID: z.string().optional(),
+  GOOGLE_CLIENT_SECRET: z.string().optional(),
+  GITHUB_CLIENT_ID: z.string().optional(),
+  GITHUB_CLIENT_SECRET: z.string().optional(),
+});
+
+export type Env = z.infer<typeof schema> & {
+  providers: {
+    google: boolean;
+    github: boolean;
+    emailPassword: boolean;
+    any: boolean;
+  };
+};
+
+export function parseEnv(raw: Record<string, string | undefined>): Env {
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) {
+    const msg = parsed.error.issues
+      .map((i) => `${i.path.join(".")}: ${i.message}`)
+      .join("; ");
+    throw new Error(`Invalid environment: ${msg}`);
+  }
+  const e = parsed.data;
+  const google = Boolean(e.GOOGLE_CLIENT_ID && e.GOOGLE_CLIENT_SECRET);
+  const github = Boolean(e.GITHUB_CLIENT_ID && e.GITHUB_CLIENT_SECRET);
+  const emailPassword = e.EMAIL_PASSWORD_ENABLED;
+  return {
+    ...e,
+    providers: {
+      google,
+      github,
+      emailPassword,
+      any: google || github || emailPassword,
+    },
+  };
+}
+
+/** Lazily parsed so importing this module in tests doesn't require a real env. */
+let cached: Env | undefined;
+export const env: Env = new Proxy({} as Env, {
+  get(_t, key) {
+    cached ??= parseEnv(process.env);
+    return cached[key as keyof Env];
+  },
+});
+```
+
+- [x] **Step 5: Run tests**
+
+Run: `cd apps/web && bun run test`
+Expected: PASS (6 tests).
+
+- [x] **Step 6: .env.example at repo root**
+
+```bash
+# ---- Required ----
+APP_URL=http://localhost:3000
+APP_SECRET=change-me-to-a-random-string-of-at-least-32-chars
+DATABASE_URL=postgres://sendsprite:sendsprite@localhost:5432/sendsprite
+
+# ---- Auth providers (each enabled when its variables are set) ----
+EMAIL_PASSWORD_ENABLED=true
+#GOOGLE_CLIENT_ID=
+#GOOGLE_CLIENT_SECRET=
+#GITHUB_CLIENT_ID=
+#GITHUB_CLIENT_SECRET=
+
+# ---- Behaviour ----
+# auto = open until the first user exists, then invite-only
+SIGNUP_MODE=auto
+LANDING_ENABLED=true
+SMTP_ENABLED=true
+WORKER_MODE=inline
+EMAIL_RETENTION_DAYS=90
+
+# ---- docker-compose only ----
+POSTGRES_PASSWORD=sendsprite
+```
+
+- [x] **Step 7: Commit**
+
+```bash
+git add apps/web/src/env.ts apps/web/tests apps/web/vitest.config.ts .env.example
+git commit -m "feat(web): zod-validated environment with provider auto-detection"
+```
+
+---
+
+### Task 5: Secret encryption (`lib/crypto.ts`) — TDD
+
+**Files:**
+
+- Create: `apps/web/src/lib/crypto.ts`, `apps/web/tests/unit/crypto.test.ts`
+
+- [x] **Step 1: Failing test**
+
+`apps/web/tests/unit/crypto.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { createCipher } from "@/lib/crypto";
+
+const SECRET = "s".repeat(40);
+
+describe("createCipher", () => {
+  it("round-trips utf-8 text", () => {
+    const c = createCipher(SECRET);
+    const enc = c.encrypt("AKIA…/secret 🔐");
+    expect(enc).not.toContain("AKIA");
+    expect(c.decrypt(enc)).toBe("AKIA…/secret 🔐");
+  });
+  it("produces different ciphertext for the same plaintext (random IV)", () => {
+    const c = createCipher(SECRET);
+    expect(c.encrypt("x")).not.toBe(c.encrypt("x"));
+  });
+  it("fails to decrypt with a different secret", () => {
+    const a = createCipher(SECRET);
+    const b = createCipher("t".repeat(40));
+    expect(() => b.decrypt(a.encrypt("hello"))).toThrow();
+  });
+  it("detects tampering", () => {
+    const c = createCipher(SECRET);
+    const enc = c.encrypt("hello");
+    const tampered = enc.slice(0, -2) + (enc.endsWith("A") ? "BB" : "AA");
+    expect(() => c.decrypt(tampered)).toThrow();
+  });
+  it("round-trips the empty string", () => {
+    const c = createCipher(SECRET);
+    expect(c.decrypt(c.encrypt(""))).toBe("");
+  });
+  it("rejects a malformed payload", () => {
+    expect(() => createCipher(SECRET).decrypt("v1.a.b.c.d")).toThrow();
+  });
+  it("is versioned so the format can change later", () => {
+    expect(createCipher(SECRET).encrypt("v")).toMatch(/^v1\./);
+  });
+});
+```
+
+- [x] **Step 2: Run to verify failure**
+
+Run: `cd apps/web && bun run test`
+Expected: FAIL — cannot find `@/lib/crypto`.
+
+- [x] **Step 3: Implement**
+
+`apps/web/src/lib/crypto.ts`:
+
+```ts
+import {
+  createCipheriv,
+  createDecipheriv,
+  hkdfSync,
+  randomBytes,
+} from "node:crypto";
+
+/**
+ * AES-256-GCM with a key derived from APP_SECRET via HKDF-SHA256.
+ * Format: `v1.<base64url iv>.<base64url ciphertext>.<base64url tag>`.
+ * Used for AWS keys, Cloudflare tokens and webhook secrets at rest.
+ */
+export interface Cipher {
+  encrypt(plaintext: string): string;
+  decrypt(payload: string): string;
+}
+
+const b64u = {
+  enc: (b: Buffer) => b.toString("base64url"),
+  dec: (s: string) => Buffer.from(s, "base64url"),
+};
+
+export function createCipher(
+  appSecret: string,
+  info = "sendsprite/secrets/v1",
+): Cipher {
+  if (appSecret.length < 32) throw new Error("appSecret too short");
+  const key = Buffer.from(
+    hkdfSync("sha256", appSecret, "sendsprite", info, 32),
+  );
+  return {
+    encrypt(plaintext) {
+      const iv = randomBytes(12);
+      const c = createCipheriv("aes-256-gcm", key, iv);
+      const ct = Buffer.concat([c.update(plaintext, "utf8"), c.final()]);
+      return `v1.${b64u.enc(iv)}.${b64u.enc(ct)}.${b64u.enc(c.getAuthTag())}`;
+    },
+    decrypt(payload) {
+      const parts = payload.split(".");
+      if (parts.length !== 4 || parts[0] !== "v1")
+        throw new Error("bad ciphertext format");
+      const iv = b64u.dec(parts[1]!);
+      const ct = b64u.dec(parts[2]!); // may be empty: "" encrypts to no bytes
+      const tag = b64u.dec(parts[3]!);
+      if (iv.length !== 12 || tag.length !== 16)
+        throw new Error("bad ciphertext format");
+      const d = createDecipheriv("aes-256-gcm", key, iv);
+      d.setAuthTag(tag);
+      return Buffer.concat([d.update(ct), d.final()]).toString("utf8");
+    },
+  };
+}
+
+let appCipher: Cipher | undefined;
+/**
+ * Process-wide cipher bound to APP_SECRET. Import lazily from server code only.
+ * Reads `process.env` directly rather than `@/env` because env.ts is
+ * `server-only` (unimportable from tests) and validates the whole
+ * environment, which this module does not need.
+ */
+export function getCipher(): Cipher {
+  if (!appCipher) {
+    const secret = process.env.APP_SECRET;
+    if (!secret) throw new Error("APP_SECRET is not set");
+    appCipher = createCipher(secret);
+  }
+  return appCipher;
+}
+```
+
+- [x] **Step 4: Run tests**
+
+Run: `cd apps/web && bun run test`
+Expected: PASS.
+
+- [x] **Step 5: Commit**
+
+```bash
+git add apps/web/src/lib/crypto.ts apps/web/tests/unit/crypto.test.ts
+git commit -m "feat(web): AES-256-GCM secret cipher derived from APP_SECRET"
+```
+
+---
+
+### Task 6: Database client, schema, migrations (integration test on embedded-postgres)
+
+**Files:**
+
+- Create: `apps/web/drizzle.config.ts`, `apps/web/src/db/index.ts`, `apps/web/src/db/schema/index.ts`, `apps/web/src/db/schema/instance.ts`, `apps/web/src/db/schema/audit.ts`, `apps/web/src/db/migrate.ts`, `apps/web/src/db/migrate-cli.ts`, `apps/web/tests/integration/_pg.ts`, `apps/web/tests/integration/db.test.ts`
+
+- [x] **Step 1: drizzle config**
+
+`apps/web/drizzle.config.ts`:
+
+```ts
+import { defineConfig } from "drizzle-kit";
+
+export default defineConfig({
+  dialect: "postgresql",
+  schema: "./src/db/schema/index.ts",
+  out: "./drizzle",
+  dbCredentials: {
+    url:
+      process.env.DATABASE_URL ??
+      "postgres://sendsprite:sendsprite@localhost:5432/sendsprite",
+  },
+  strict: true,
+  verbose: true,
+});
+```
+
+- [x] **Step 2: Schema files**
+
+`apps/web/src/db/schema/instance.ts`:
+
+```ts
+import { sql } from "drizzle-orm";
+import {
+  boolean,
+  check,
+  doublePrecision,
+  integer,
+  pgTable,
+  text,
+  timestamp,
+} from "drizzle-orm/pg-core";
+
+/** Singleton row (id = 1, enforced by check). Encrypted columns end in `_enc`. */
+export const instanceSettings = pgTable(
+  "instance_settings",
+  {
+    id: integer("id").primaryKey().default(1),
+    setupCompleted: boolean("setup_completed").notNull().default(false),
+    signupMode: text("signup_mode", { enum: ["open", "invite", "closed"] }),
+    landingEnabled: boolean("landing_enabled"),
+    awsMode: text("aws_mode", { enum: ["none", "instance_role", "keys"] })
+      .notNull()
+      .default("none"),
+    awsRegion: text("aws_region"),
+    awsAccessKeyEnc: text("aws_access_key_enc"),
+    awsSecretEnc: text("aws_secret_enc"),
+    snsTopicArn: text("sns_topic_arn"),
+    sesConfigSet: text("ses_config_set"),
+    sesAccountStatus: text("ses_account_status", {
+      enum: ["sandbox", "requested", "production"],
+    }),
+    sesMaxSendRate: doublePrecision("ses_max_send_rate"),
+    sesDailyQuota: integer("ses_daily_quota"),
+    cloudflareTokenEnc: text("cloudflare_token_enc"),
+    retentionDays: integer("retention_days").notNull().default(90),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  () => [check("instance_settings_singleton", sql`id = 1`)],
+);
+```
+
+`apps/web/src/db/schema/audit.ts`:
+
+```ts
+import { index, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+
+export const auditLog = pgTable(
+  "audit_log",
+  {
+    id: text("id").primaryKey(), // aud_<ulid>
+    teamId: text("team_id"), // null = instance-level
+    actorUserId: text("actor_user_id"),
+    action: text("action").notNull(), // e.g. "team.rename"
+    targetType: text("target_type").notNull(),
+    targetId: text("target_id").notNull(),
+    diff: jsonb("diff").$type<
+      Record<string, { from?: unknown; to?: unknown }>
+    >(),
+    ip: text("ip"),
+    userAgent: text("user_agent"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("audit_log_team_created_idx").on(t.teamId, t.createdAt)],
+);
+```
+
+`apps/web/src/db/schema/index.ts`:
+
+```ts
+export * from "./auth"; // generated in Task 7 — create an empty file now: `export {};`
+export * from "./instance";
+export * from "./audit";
+```
+
+Create `apps/web/src/db/schema/auth.ts` containing only `export {};` for now.
+
+- [x] **Step 3: Client and migrator**
+
+`apps/web/src/db/index.ts`:
+
+```ts
+import { drizzle } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
+import * as schema from "./schema";
+
+export type Db = ReturnType<typeof createDb>;
+
+/**
+ * Connection budget per process: app pool 10 + pg-boss ~10 + migrator 1.
+ * With WORKER_MODE=separate there are two processes, so double it when
+ * sizing Postgres `max_connections`.
+ */
+export function createDb(url: string) {
+  const client = postgres(url, { max: 10 });
+  return drizzle(client, { schema });
+}
+
+let _db: Db | undefined;
+// Outside production the singleton lives on globalThis: Next dev HMR
+// re-evaluates this module and would otherwise leak a pool per reload.
+const g = globalThis as { __sendspriteDb?: Db };
+
+export function db(): Db {
+  const url = process.env.DATABASE_URL;
+  if (!url) throw new Error("DATABASE_URL is not set");
+  if (process.env.NODE_ENV === "production") return (_db ??= createDb(url));
+  return (g.__sendspriteDb ??= createDb(url));
+}
+
+export async function closeDb() {
+  await _db?.$client.end();
+  await g.__sendspriteDb?.$client.end();
+  _db = undefined;
+  g.__sendspriteDb = undefined;
+}
+```
+
+`apps/web/src/db/migrate.ts`:
+
+```ts
+import { migrate } from "drizzle-orm/postgres-js/migrator";
+import { drizzle } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
+import path from "node:path";
+
+/**
+ * Session-level advisory lock key. The web server and a separate worker
+ * (WORKER_MODE=separate) may boot at the same moment and both run
+ * migrations; drizzle's migrator takes no lock of its own, so two racers
+ * would each try to create the same tables. The lock serialises them on a
+ * single dedicated connection (`max: 1`) so lock and unlock share a session.
+ */
+const MIGRATION_LOCK = 7245631;
+
+/**
+ * Apply pending migrations from ./drizzle. Safe to run on every boot and
+ * concurrently from several processes.
+ *
+ * The default folder is resolved from `process.cwd()`, which is correct for
+ * both `next dev` (cwd = apps/web) and the standalone image (`server.js`
+ * chdirs to its own directory, where the Dockerfile copies `drizzle/`).
+ * `import.meta.dirname` would point inside the bundled output and break.
+ */
+export async function runMigrations(
+  url: string,
+  folder = path.join(process.cwd(), "drizzle"),
+) {
+  const client = postgres(url, { max: 1 });
+  try {
+    await client`select pg_advisory_lock(${MIGRATION_LOCK})`;
+    try {
+      await migrate(drizzle(client), { migrationsFolder: folder });
+    } finally {
+      await client`select pg_advisory_unlock(${MIGRATION_LOCK})`;
+    }
+  } finally {
+    await client.end();
+  }
+}
+```
+
+`apps/web/src/db/migrate-cli.ts`:
+
+```ts
+import { runMigrations } from "./migrate";
+await runMigrations(process.env.DATABASE_URL!);
+console.log("migrations applied");
+```
+
+- [x] **Step 4: Generate the first migration**
+
+Run: `cd apps/web && bun run db:generate`
+Expected: `apps/web/drizzle/0000_*.sql` + `drizzle/meta/` created, containing `CREATE TABLE "instance_settings"` and `CREATE TABLE "audit_log"`. (Review follow-up: `0001_*.sql` adds the `instance_settings_singleton` check and `ses_max_send_rate` as double precision.)
+
+- [x] **Step 5: embedded-postgres helper + failing integration test**
+
+`apps/web/tests/integration/_pg.ts`:
+
+```ts
+import EmbeddedPostgres from "embedded-postgres";
+import { randomBytes, randomInt } from "node:crypto";
+import { rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import postgres from "postgres";
+import { runMigrations } from "@/db/migrate";
+import { closeDb, createDb, type Db } from "@/db";
+
+export interface TestPg {
+  url: string;
+  db: Db;
+  stop(): Promise<void>;
+}
+
+/**
+ * Migrated Postgres for integration tests.
+ * Uses TEST_DATABASE_URL when set (CI service container); otherwise boots an
+ * embedded Postgres in a temp dir. No Docker required.
+ *
+ * Either way every call gets its own fresh database: vitest runs test files
+ * in parallel and each file assumes an empty, freshly migrated schema.
+ */
+export async function startPg(): Promise<TestPg> {
+  const external = process.env.TEST_DATABASE_URL;
+  if (external) return startExternal(external);
+
+  const { pg, databaseDir, port } = await bootEmbedded();
+  const url = `postgres://postgres:postgres@localhost:${port}/test`;
+  await runMigrations(url);
+  process.env.DATABASE_URL = url;
+  const db = createDb(url);
+  return {
+    url,
+    db,
+    async stop() {
+      await db.$client.end();
+      await closeDb();
+      await pg.stop();
+      await rm(databaseDir, { recursive: true, force: true });
+    },
+  };
+}
+
+/**
+ * External server (TEST_DATABASE_URL points at an admin database): create a
+ * throwaway `test_<hex>` database next to it, migrate it, and drop it (FORCE,
+ * Postgres 13+) on stop so parallel test files never share state.
+ */
+async function startExternal(adminUrl: string): Promise<TestPg> {
+  const name = `test_${randomBytes(4).toString("hex")}`;
+  const admin = postgres(adminUrl, { max: 1 });
+  await admin.unsafe(`CREATE DATABASE ${name}`);
+  const u = new URL(adminUrl);
+  u.pathname = `/${name}`;
+  const url = u.toString();
+  await runMigrations(url);
+  process.env.DATABASE_URL = url;
+  const db = createDb(url);
+  return {
+    url,
+    db,
+    async stop() {
+      await db.$client.end();
+      await closeDb();
+      await admin.unsafe(`DROP DATABASE ${name} WITH (FORCE)`);
+      await admin.end();
+    },
+  };
+}
+
+/** Start an embedded Postgres; retry once on a fresh dir/port (port clash). */
+async function bootEmbedded(attempt = 1): Promise<{
+  pg: EmbeddedPostgres;
+  databaseDir: string;
+  port: number;
+}> {
+  const databaseDir = path.join(
+    os.tmpdir(),
+    `sendsprite-pg-${randomBytes(6).toString("hex")}`,
+  );
+  const port = 54000 + randomInt(1000);
+  const pg = new EmbeddedPostgres({
+    databaseDir,
+    port,
+    user: "postgres",
+    password: "postgres",
+    persistent: false,
+  });
+  try {
+    await pg.initialise();
+    await pg.start();
+    await pg.createDatabase("test");
+    return { pg, databaseDir, port };
+  } catch (err) {
+    await pg.stop().catch(() => undefined);
+    await rm(databaseDir, { recursive: true, force: true });
+    if (attempt >= 2) throw err;
+    return bootEmbedded(attempt + 1);
+  }
+}
+```
+
+`apps/web/tests/integration/db.test.ts`:
+
+```ts
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { sql } from "drizzle-orm";
+import { startPg } from "./_pg";
+
+let pg: Awaited<ReturnType<typeof startPg>>;
+beforeAll(async () => {
+  pg = await startPg();
+});
+afterAll(async () => {
+  await pg.stop();
+});
+
+describe("migrations", () => {
+  it("create the foundation tables", async () => {
+    const rows = await pg.db.execute(
+      sql`select table_name from information_schema.tables where table_schema='public' order by 1`,
+    );
+    const names = rows.map((r) => r.table_name);
+    expect(names).toEqual(
+      expect.arrayContaining(["instance_settings", "audit_log"]),
+    );
+  });
+  it("are idempotent", async () => {
+    const { runMigrations } = await import("@/db/migrate");
+    await expect(runMigrations(pg.url)).resolves.toBeUndefined();
+  });
+});
+```
+
+- [x] **Step 6: Run integration tests**
+
+Run: `cd apps/web && bun run test:integration`
+Expected: PASS (embedded Postgres in a temp dir; set `TEST_DATABASE_URL` to use an external server, e.g. a CI service container).
+
+- [x] **Step 7: Commit**
+
+```bash
+git add apps/web/drizzle apps/web/drizzle.config.ts apps/web/src/db apps/web/tests/integration
+git commit -m "feat(web): drizzle client, instance_settings + audit_log schema, boot migrator"
+```
+
+---
+
+### Task 7: BetterAuth server, client, route handler, generated schema
+
+**Files:**
+
+- Create: `apps/web/src/lib/auth.ts`, `apps/web/src/lib/auth-client.ts`, `apps/web/src/app/api/auth/[...all]/route.ts`, `apps/web/src/lib/signup-policy.ts`, `apps/web/tests/unit/signup-policy.test.ts`
+- Modify: `apps/web/src/db/schema/auth.ts` (generated), new migration, `apps/web/src/env.schema.ts` (+`loadEnv`/`resetEnvCache`), `apps/web/src/env.ts` (Proxy over `loadEnv`)
+
+- [x] **Step 1: Failing test for the signup policy (pure function)**
+
+`apps/web/tests/unit/signup-policy.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { resolveSignupMode, canSignUp } from "@/lib/signup-policy";
+
+describe("resolveSignupMode", () => {
+  it("auto → open when no users exist, invite afterwards", () => {
+    expect(resolveSignupMode("auto", null, 0)).toBe("open");
+    expect(resolveSignupMode("auto", null, 1)).toBe("invite");
+  });
+  it("db override beats env auto but not an explicit env value", () => {
+    expect(resolveSignupMode("auto", "closed", 5)).toBe("closed");
+    expect(resolveSignupMode("open", "closed", 5)).toBe("open");
+  });
+});
+
+describe("canSignUp", () => {
+  it("open allows anyone", () => expect(canSignUp("open", false)).toBe(true));
+  it("invite requires a pending invitation", () => {
+    expect(canSignUp("invite", false)).toBe(false);
+    expect(canSignUp("invite", true)).toBe(true);
+  });
+  it("closed rejects even invited users", () =>
+    expect(canSignUp("closed", true)).toBe(false));
+});
+```
+
+- [x] **Step 2: Run to verify failure**
+
+Run: `cd apps/web && bun run test`
+Expected: FAIL — cannot find `@/lib/signup-policy`.
+
+- [x] **Step 3: Implement the policy**
+
+`apps/web/src/lib/signup-policy.ts`:
+
+```ts
+export type SignupMode = "open" | "invite" | "closed";
+export type EnvSignupMode = SignupMode | "auto";
+
+/**
+ * Env wins when explicit. `auto` defers to the DB override if present,
+ * otherwise opens signup only until the first user exists.
+ */
+export function resolveSignupMode(
+  envMode: EnvSignupMode,
+  dbOverride: SignupMode | null,
+  userCount: number,
+): SignupMode {
+  if (envMode !== "auto") return envMode;
+  if (dbOverride) return dbOverride;
+  return userCount === 0 ? "open" : "invite";
+}
+
+export function canSignUp(
+  mode: SignupMode,
+  hasPendingInvitation: boolean,
+): boolean {
+  if (mode === "open") return true;
+  if (mode === "invite") return hasPendingInvitation;
+  return false;
+}
+```
+
+- [x] **Step 4: Run tests**
+
+Run: `cd apps/web && bun run test`
+Expected: PASS.
+
+- [x] **Step 5: Auth server**
+
+`apps/web/src/lib/auth.ts`:
+
+```ts
+import { betterAuth } from "better-auth";
+import { APIError } from "better-auth/api";
+import { organization } from "better-auth/plugins";
+import { nextCookies } from "better-auth/next-js";
+import { drizzleAdapter } from "@better-auth/drizzle-adapter";
+import { and, count, eq, gt } from "drizzle-orm";
+import { db } from "@/db";
+import * as schema from "@/db/schema";
+import { loadEnv, type Env } from "@/env.schema";
+import { canSignUp, resolveSignupMode } from "./signup-policy";
+
+/**
+ * Race window: two concurrent *first* signups can both observe zero users
+ * and both pass. Accepted for a single-instance self-hosted tool. The hook
+ * runs before (outside) the adapter's insert, so a lock taken here would
+ * not cover the insert anyway.
+ */
+async function currentSignupMode(env: Env) {
+  const [settings] = await db().select().from(schema.instanceSettings).limit(1);
+  const [users] = await db().select({ n: count() }).from(schema.user);
+  return resolveSignupMode(
+    env.SIGNUP_MODE,
+    settings?.signupMode ?? null,
+    Number(users?.n ?? 0),
+  );
+}
+
+async function hasPendingInvitation(email: string) {
+  const [row] = await db()
+    .select({ id: schema.invitation.id })
+    .from(schema.invitation)
+    .where(
+      and(
+        eq(schema.invitation.email, email.toLowerCase()),
+        eq(schema.invitation.status, "pending"),
+        gt(schema.invitation.expiresAt, new Date()),
+      ),
+    )
+    .limit(1);
+  return Boolean(row);
+}
+
+// Not `@/env`: that module is `server-only` and throws under the CLI/vitest.
+function createAuth() {
+  const env = loadEnv();
+  return betterAuth({
+    baseURL: env.APP_URL,
+    secret: env.APP_SECRET,
+    database: drizzleAdapter(db(), { provider: "pg", schema }),
+    emailAndPassword: {
+      enabled: env.providers.emailPassword,
+      // Verification mail needs a verified sending domain (Phase 3). Until
+      // then accounts are usable immediately.
+      requireEmailVerification: false,
+    },
+    socialProviders: {
+      ...(env.providers.google && {
+        google: {
+          clientId: env.GOOGLE_CLIENT_ID!,
+          clientSecret: env.GOOGLE_CLIENT_SECRET!,
+        },
+      }),
+      ...(env.providers.github && {
+        github: {
+          clientId: env.GITHUB_CLIENT_ID!,
+          clientSecret: env.GITHUB_CLIENT_SECRET!,
+        },
+      }),
+    },
+    databaseHooks: {
+      user: {
+        create: {
+          before: async (user) => {
+            const mode = await currentSignupMode(env);
+            const invited =
+              mode === "invite"
+                ? await hasPendingInvitation(user.email)
+                : false;
+            if (!canSignUp(mode, invited)) {
+              throw new APIError("FORBIDDEN", {
+                message:
+                  mode === "closed"
+                    ? "Sign-ups are closed on this instance."
+                    : "Sign-ups are invite-only. Ask a team admin for an invitation link.",
+              });
+            }
+            return { data: user };
+          },
+        },
+      },
+      session: {
+        create: {
+          // Defaults activeOrganizationId on later logins. The very first
+          // session after signup has no membership yet; team creation
+          // (Task 11) sets the active org explicitly.
+          before: async (session) => {
+            const [m] = await db()
+              .select({ orgId: schema.member.organizationId })
+              .from(schema.member)
+              .where(eq(schema.member.userId, session.userId))
+              .limit(1);
+            return {
+              data: { ...session, activeOrganizationId: m?.orgId ?? null },
+            };
+          },
+        },
+      },
+    },
+    plugins: [
+      organization({
+        allowUserToCreateOrganization: true,
+        creatorRole: "owner",
+        invitationExpiresIn: 60 * 60 * 24 * 7,
+        // Email delivery arrives in Phase 3; the UI shows the accept link.
+        // Log it outside production so dev/e2e runs can find it.
+        sendInvitationEmail: async ({ id, email }) => {
+          if (env.NODE_ENV !== "production") {
+            console.info(`[invite] ${email} → ${env.APP_URL}/invite/${id}`);
+          }
+        },
+      }),
+      nextCookies(),
+    ],
+  });
+}
+
+type AuthInstance = ReturnType<typeof createAuth>;
+let instance: AuthInstance | undefined;
+
+/** Instantiated on first use so importing this module has no side effects. */
+export function getAuth(): AuthInstance {
+  return (instance ??= createAuth());
+}
+
+/** Test-only: drop the cached instance so the next access re-reads env. */
+export function resetAuthForTests() {
+  instance = undefined;
+}
+
+/**
+ * Lazy proxy: property access instantiates on first use. `has` is required
+ * because `toNextJsHandler` checks `"handler" in auth` before calling it.
+ */
+export const auth: AuthInstance = new Proxy({} as AuthInstance, {
+  get: (_t, key) => Reflect.get(getAuth(), key),
+  has: (_t, key) => key in getAuth(),
+  ownKeys: () => Reflect.ownKeys(getAuth()),
+  getOwnPropertyDescriptor: (_t, key) => {
+    const d = Reflect.getOwnPropertyDescriptor(getAuth(), key);
+    return d && { ...d, configurable: true };
+  },
+});
+
+export type Auth = AuthInstance;
+```
+
+- [x] **Step 6: Generate the better-auth Drizzle schema, then a migration**
+
+Run: `cd apps/web && bun run auth:generate` (the script uses `bunx auth@1.7.1`; the older `@better-auth/cli` package is stale for better-auth 1.7 and omits `account.issuer`). The CLI imports `auth.ts`, so `APP_URL`, `APP_SECRET`, `DATABASE_URL`, `EMAIL_PASSWORD_ENABLED` must be set in the shell (no connection is made).
+Expected: `src/db/schema/auth.ts` overwritten with `pgTable` definitions for `user`, `session` (incl. `activeOrganizationId`), `account`, `verification`, `organization`, `member`, `invitation`. Open the file and confirm exports are named `user`, `session`, `account`, `verification`, `organization`, `member`, `invitation`.
+
+Run: `bun run db:generate`
+Expected: `drizzle/0002_*.sql` creating those seven tables.
+
+- [x] **Step 7: Client + route handler**
+
+`apps/web/src/lib/auth-client.ts`:
+
+```ts
+"use client";
+import { createAuthClient } from "better-auth/react";
+import { organizationClient } from "better-auth/client/plugins";
+
+export const authClient = createAuthClient({ plugins: [organizationClient()] });
+export const { signIn, signUp, signOut, useSession } = authClient;
+```
+
+`apps/web/src/app/api/auth/[...all]/route.ts`:
+
+```ts
+import { auth } from "@/lib/auth";
+import { toNextJsHandler } from "better-auth/next-js";
+
+export const { GET, POST } = toNextJsHandler(auth);
+```
+
+- [x] **Step 8: Integration test — signup modes**
+
+`apps/web/tests/integration/auth.test.ts`:
+
+```ts
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
+import { resetEnvCache } from "@/env.schema";
+import * as schema from "@/db/schema";
+import { startPg } from "./_pg";
+
+let pg: Awaited<ReturnType<typeof startPg>>;
+beforeAll(async () => {
+  pg = await startPg();
+  process.env.APP_URL = "http://localhost:3000";
+  process.env.APP_SECRET = "x".repeat(40);
+  process.env.EMAIL_PASSWORD_ENABLED = "true";
+  await setSignupMode("auto");
+});
+afterAll(async () => {
+  await pg.stop();
+});
+
+/** Env is read once per auth instance, so a mode change needs both caches cleared. */
+async function setSignupMode(mode: string) {
+  process.env.SIGNUP_MODE = mode;
+  resetEnvCache();
+  const { resetAuthForTests } = await import("@/lib/auth");
+  resetAuthForTests();
+}
+
+// Dynamic so `@/lib/auth` is first evaluated after env + DATABASE_URL are set.
+async function signUp(email: string) {
+  const { auth } = await import("@/lib/auth");
+  return auth.api.signUpEmail({
+    body: {
+      email,
+      password: "correct-horse-battery",
+      name: email.split("@")[0]!,
+    },
+  });
+}
+
+function cookieHeaders(res: { headers: Headers }) {
+  const cookies = res.headers
+    .getSetCookie()
+    .map((c) => c.split(";")[0])
+    .join("; ");
+  return new Headers({ cookie: cookies });
+}
+
+async function invite(
+  email: string,
+  expiresAt = new Date(Date.now() + 60_000),
+) {
+  const [first] = await pg.db
+    .select({ id: schema.user.id })
+    .from(schema.user)
+    .where(eq(schema.user.email, "first@example.com"));
+  const now = new Date();
+  const [org] = await pg.db
+    .insert(schema.organization)
+    .values({ id: "org_1", name: "Team", slug: "team", createdAt: now })
+    .onConflictDoNothing()
+    .returning({ id: schema.organization.id });
+  const orgId = org?.id ?? "org_1";
+  await pg.db
+    .insert(schema.member)
+    .values({
+      id: `mem_${first!.id}`,
+      organizationId: orgId,
+      userId: first!.id,
+      role: "owner",
+      createdAt: now,
+    })
+    .onConflictDoNothing();
+  await pg.db.insert(schema.invitation).values({
+    id: `inv_${email}`,
+    organizationId: orgId,
+    email,
+    role: "member",
+    status: "pending",
+    expiresAt,
+    inviterId: first!.id,
+  });
+}
+
+const forbidden = { status: "FORBIDDEN" };
+
+// Order-dependent: each test builds on the users/invitations of the previous ones.
+describe("signup policy", () => {
+  it("auto: first user may sign up", async () => {
+    await expect(signUp("first@example.com")).resolves.toMatchObject({
+      user: { email: "first@example.com" },
+    });
+  });
+
+  it("auto: second user is rejected as invite-only", async () => {
+    const attempt = signUp("second@example.com");
+    await expect(attempt).rejects.toMatchObject(forbidden);
+    await expect(attempt).rejects.toThrow(/invite-only/i);
+  });
+
+  it("closed env override rejects even with a pending invitation", async () => {
+    await invite("closed@example.com");
+    await setSignupMode("closed");
+    const attempt = signUp("closed@example.com");
+    await expect(attempt).rejects.toMatchObject(forbidden);
+    await expect(attempt).rejects.toThrow(/closed/i);
+  });
+
+  it("invite mode + pending invitation allows signup", async () => {
+    await invite("invited@example.com");
+    await setSignupMode("invite");
+    await expect(signUp("invited@example.com")).resolves.toMatchObject({
+      user: { email: "invited@example.com" },
+    });
+  });
+
+  it("invite mode rejects an expired invitation", async () => {
+    await invite("expired@example.com", new Date(Date.now() - 60_000));
+    await expect(signUp("expired@example.com")).rejects.toMatchObject(
+      forbidden,
+    );
+  });
+
+  it("later sign-in defaults activeOrganizationId to the first membership", async () => {
+    const { auth } = await import("@/lib/auth");
+    const res = await auth.api.signInEmail({
+      body: { email: "first@example.com", password: "correct-horse-battery" },
+      returnHeaders: true,
+    });
+    const session = await auth.api.getSession({ headers: cookieHeaders(res) });
+    expect(session?.session.activeOrganizationId).toBe("org_1");
+  });
+
+  it("db override 'open' with env auto allows a further signup", async () => {
+    await pg.db
+      .insert(schema.instanceSettings)
+      .values({ id: 1, signupMode: "open" })
+      .onConflictDoUpdate({
+        target: schema.instanceSettings.id,
+        set: { signupMode: "open" },
+      });
+    await setSignupMode("auto");
+    await expect(signUp("open@example.com")).resolves.toMatchObject({
+      user: { email: "open@example.com" },
+    });
+  });
+});
+
+// Regression: the lazy proxy must satisfy `"handler" in auth` (next-js handler).
+describe("route handler", () => {
+  it("auth.handler answers /api/auth/ok", async () => {
+    const { auth } = await import("@/lib/auth");
+    const res = await auth.handler(
+      new Request("http://localhost:3000/api/auth/ok"),
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("POST route signs up a user (DB override still open)", async () => {
+    const { POST } = await import("@/app/api/auth/[...all]/route");
+    const res = await POST(
+      new Request("http://localhost:3000/api/auth/sign-up/email", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: "http://localhost:3000",
+        },
+        body: JSON.stringify({
+          email: "route@example.com",
+          password: "correct-horse-battery",
+          name: "route",
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("set-cookie")).toMatch(/better-auth/);
+    await expect(res.json()).resolves.toMatchObject({
+      user: { email: "route@example.com" },
+    });
+  });
+});
+```
+
+Run: `cd apps/web && bun run test:integration`
+Expected: PASS (both files). `auth` is a lazy proxy (`getAuth()`), so importing `@/lib/auth` has no side effects and `next build` succeeds with no env set.
+
+- [x] **Step 9: Commit**
+
+```bash
+git add apps/web/src/lib/auth.ts apps/web/src/lib/auth-client.ts apps/web/src/lib/signup-policy.ts apps/web/src/app/api/auth apps/web/src/db/schema/auth.ts apps/web/drizzle apps/web/tests
+git commit -m "feat(web): BetterAuth with organization plugin, signup policy, generated schema"
+```
+
+---
+
+### Task 8: UI primitives
+
+**Files:**
+
+- Create: `apps/web/src/components/ui/{Button,Card,Badge,Input,Label,Select,Textarea,Divider,Skeleton,Spinner,Link,StatusDot,EmptyState}.tsx`
+
+- [x] **Step 1: Copy the existing primitives**
+
+```bash
+mkdir -p apps/web/src/components/ui
+cp /d/Documents/Work/aws-cost-dashboard/src/components/ui/Button.tsx apps/web/src/components/ui/
+cp /d/Documents/Work/aws-cost-dashboard/src/components/ui/Card.tsx apps/web/src/components/ui/
+cp /d/Documents/Work/Defyworks/site_v2/src/components/ui/{Input,Label,Select,Textarea,Divider,Skeleton,Spinner,Link}.tsx apps/web/src/components/ui/
+```
+
+Open each copied file and remove any import that references the source project's domain (e.g. `@/lib/forecast`); they must only import `react`, `next/link`, `@radix-ui/react-slot`, and `@/lib/cn`.
+
+- [x] **Step 2: Badge (rewritten without the budget coupling)**
+
+`apps/web/src/components/ui/Badge.tsx`:
+
+```tsx
+import { forwardRef, type HTMLAttributes } from "react";
+import { cn } from "@/lib/cn";
+
+export type BadgeVariant =
+  "indigo" | "muted" | "success" | "warning" | "danger";
+export interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
+  variant?: BadgeVariant;
+}
+
+const BASE =
+  "inline-flex items-center px-2 py-[3px] rounded-full text-[10px] font-semibold tracking-[0.08em] uppercase";
+const VARIANTS: Record<BadgeVariant, string> = {
+  indigo: "bg-indigo-500/18 text-indigo-300",
+  muted: "bg-white/8 text-white/65",
+  success: "bg-success/18 text-green-300",
+  warning: "bg-warning/18 text-amber-300",
+  danger: "bg-danger/18 text-red-300",
+};
+
+export const Badge = forwardRef<HTMLSpanElement, BadgeProps>(function Badge(
+  { variant = "indigo", className, ...rest },
+  ref,
+) {
+  return (
+    <span
+      ref={ref}
+      className={cn(BASE, VARIANTS[variant], className)}
+      {...rest}
+    />
+  );
+});
+```
+
+- [x] **Step 3: StatusDot and EmptyState**
+
+`apps/web/src/components/ui/StatusDot.tsx`:
+
+```tsx
+import { cn } from "@/lib/cn";
+
+export type Status = "ok" | "pending" | "warning" | "error" | "off";
+const COLOR: Record<Status, string> = {
+  ok: "bg-success shadow-[0_0_8px_rgba(34,197,94,0.6)]",
+  pending: "bg-indigo-400 animate-pulse",
+  warning: "bg-warning",
+  error: "bg-danger",
+  off: "bg-white/25",
+};
+
+export function StatusDot({
+  status,
+  className,
+  label,
+}: {
+  status: Status;
+  className?: string;
+  label?: string;
+}) {
+  return (
+    <span className={cn("inline-flex items-center gap-2", className)}>
+      <span aria-hidden className={cn("h-2 w-2 rounded-full", COLOR[status])} />
+      {label && <span className="text-sm text-white/75">{label}</span>}
+    </span>
+  );
+}
+```
+
+`apps/web/src/components/ui/EmptyState.tsx`:
+
+```tsx
+import type { ReactNode } from "react";
+
+export function EmptyState({
+  title,
+  body,
+  action,
+}: {
+  title: string;
+  body?: string;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="glass flex flex-col items-center gap-3 px-6 py-12 text-center">
+      <p className="num-stamp">Nothing here yet</p>
+      <h3 className="text-lg font-medium">{title}</h3>
+      {body && <p className="max-w-md text-sm text-white/60">{body}</p>}
+      {action}
+    </div>
+  );
+}
+```
+
+- [x] **Step 4: Typecheck**
+
+Run: `cd apps/web && bun run typecheck`
+Expected: no errors from `src/components/ui/*` (errors elsewhere are acceptable until later tasks).
+
+- [x] **Step 5: Commit**
+
+```bash
+git add apps/web/src/components/ui
+git commit -m "feat(web): port UI primitives from Defyworks family, add StatusDot + EmptyState"
+```
+
+---
+
+### Task 9: Session helpers and audit helper (TDD for audit)
+
+**Files:**
+
+- Create: `apps/web/src/lib/session.ts`, `apps/web/src/lib/team.ts`, `apps/web/src/lib/audit.ts`, `apps/web/tests/unit/audit.test.ts`, `apps/web/tests/integration/session.test.ts`
+
+- [x] **Step 1: Failing test for diff computation**
+
+`apps/web/tests/unit/audit.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { computeDiff } from "@/lib/audit";
+
+describe("computeDiff", () => {
+  it("records only changed keys", () => {
+    expect(
+      computeDiff({ name: "A", slug: "a" }, { name: "B", slug: "a" }),
+    ).toEqual({ name: { from: "A", to: "B" } });
+  });
+  it("returns null when nothing changed", () => {
+    expect(computeDiff({ a: 1 }, { a: 1 })).toBeNull();
+  });
+  it("redacts keys containing enc, secret, token, password, hash or key", () => {
+    for (const key of [
+      "awsSecretEnc",
+      "token",
+      "keyHash",
+      "passwordHash",
+      "awsAccessKeyId",
+    ]) {
+      expect(computeDiff({ [key]: "1" }, { [key]: "2" })).toEqual({
+        [key]: { from: "[redacted]", to: "[redacted]" },
+      });
+    }
+  });
+  it("does not redact plain keys, but fails closed on substrings like tokenCount", () => {
+    expect(
+      computeDiff({ name: "A", slug: "a" }, { name: "B", slug: "b" }),
+    ).toEqual({
+      name: { from: "A", to: "B" },
+      slug: { from: "a", to: "b" },
+    });
+    expect(computeDiff({ tokenCount: 1 }, { tokenCount: 2 })).toEqual({
+      tokenCount: { from: "[redacted]", to: "[redacted]" },
+    });
+  });
+});
+```
+
+- [x] **Step 2: Run to verify failure**
+
+Run: `cd apps/web && bun run test`
+Expected: FAIL — cannot find `@/lib/audit`.
+
+- [x] **Step 3: Implement audit + session helpers**
+
+`apps/web/src/lib/audit.ts`:
+
+```ts
+import { newId } from "@sendsprite/shared";
+import { db } from "@/db";
+import { auditLog } from "@/db/schema";
+
+export type Diff = Record<string, { from?: unknown; to?: unknown }>;
+// Substring match, fail-closed: "tokenCount" is redacted too.
+const REDACT = /(enc|secret|token|password|hash|key)/i;
+
+export function computeDiff(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): Diff | null {
+  const diff: Diff = {};
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (Object.is(before[key], after[key])) continue;
+    diff[key] = REDACT.test(key)
+      ? { from: "[redacted]", to: "[redacted]" }
+      : { from: before[key], to: after[key] };
+  }
+  return Object.keys(diff).length ? diff : null;
+}
+
+export interface AuditInput {
+  teamId?: string | null;
+  actorUserId?: string | null;
+  action: string;
+  targetType: string;
+  targetId: string;
+  diff?: Diff | null;
+  ip?: string | null;
+  userAgent?: string | null;
+}
+
+/**
+ * Best-effort audit write. Never throws: mutations happen via better-auth
+ * outside our transaction, so an audit failure must not break (or half-apply)
+ * the mutation it describes. Failures are logged instead.
+ */
+export async function recordAudit(input: AuditInput): Promise<void> {
+  try {
+    await db()
+      .insert(auditLog)
+      .values({ id: newId("aud"), ...input });
+  } catch (err) {
+    console.error("[audit] failed", err);
+  }
+}
+```
+
+`apps/web/src/lib/team.ts` (pure, no `next/*`, integration-tested):
+
+```ts
+import { eq } from "drizzle-orm";
+import { TEAM_ROLES, type TeamRole } from "@sendsprite/shared";
+import { db } from "@/db";
+import { member, organization } from "@/db/schema";
+import type { auth } from "./auth";
+
+export type Session = NonNullable<
+  Awaited<ReturnType<typeof auth.api.getSession>>
+>;
+
+export interface ResolvedTeam {
+  userId: string;
+  team: { id: string; name: string; slug: string };
+  role: TeamRole;
+}
+
+/** What `requireTeam()` hands to pages: the team plus the session it came from. */
+export interface TeamContext extends ResolvedTeam {
+  session: Session;
+}
+
+/**
+ * Resolves the team a user should act in. Prefers the membership matching
+ * `activeId`; if that id is stale (user removed, org deleted) falls back to
+ * the oldest membership. Returns null when the user has no memberships.
+ * Pure data access - no `next/*` - so it is integration-testable.
+ */
+export async function resolveTeam(
+  userId: string,
+  activeId: string | null,
+): Promise<ResolvedTeam | null> {
+  const rows = await db()
+    .select({
+      id: organization.id,
+      name: organization.name,
+      slug: organization.slug,
+      role: member.role,
+    })
+    .from(member)
+    .innerJoin(organization, eq(member.organizationId, organization.id))
+    .where(eq(member.userId, userId))
+    .orderBy(member.createdAt);
+  const row =
+    (activeId ? rows.find((r) => r.id === activeId) : undefined) ?? rows[0];
+  if (!row) return null;
+  const role: TeamRole = TEAM_ROLES.includes(row.role as TeamRole)
+    ? (row.role as TeamRole)
+    : "member";
+  return { userId, team: { id: row.id, name: row.name, slug: row.slug }, role };
+}
+```
+
+`apps/web/src/lib/session.ts`:
+
+```ts
+import { cache } from "react";
+import { headers } from "next/headers";
+import { redirect } from "next/navigation";
+import { auth } from "./auth";
+import { resolveTeam, type TeamContext } from "./team";
+
+export type { TeamContext } from "./team";
+
+/** Request-scoped: layout and page share one session lookup. */
+export const getSession = cache(async () =>
+  auth.api.getSession({ headers: await headers() }),
+);
+
+const cachedResolveTeam = cache((userId: string, activeId: string | null) =>
+  resolveTeam(userId, activeId),
+);
+
+/** Redirects to /login when unauthenticated. */
+export async function requireSession() {
+  const s = await getSession();
+  if (!s) redirect("/login");
+  return s;
+}
+
+/** Resolves the active team; if the user has none, sends them to create one. */
+export async function requireTeam(): Promise<TeamContext> {
+  const s = await requireSession();
+  const ctx = await cachedResolveTeam(
+    s.user.id,
+    s.session.activeOrganizationId ?? null,
+  );
+  if (!ctx) redirect("/teams/new");
+  return { ...ctx, session: s };
+}
+```
+
+`apps/web/tests/integration/session.test.ts` covers `resolveTeam`: active id honoured, stale id falls back to oldest membership, null id uses oldest, no memberships returns null.
+
+- [x] **Step 4: Run tests**
+
+Run: `cd apps/web && bun run test`
+Expected: PASS.
+
+- [x] **Step 5: Commit**
+
+```bash
+git add apps/web/src/lib/audit.ts apps/web/src/lib/session.ts apps/web/src/lib/team.ts apps/web/tests/unit/audit.test.ts apps/web/tests/integration/session.test.ts
+git commit -m "feat(web): session/team helpers and redacting audit recorder"
+```
+
+---
+
+### Task 10: Auth pages and invite acceptance
+
+**Files:**
+
+- Create: `apps/web/src/components/auth/AuthForm.tsx`, `apps/web/src/app/(auth)/layout.tsx`, `apps/web/src/app/(auth)/login/page.tsx`, `apps/web/src/app/(auth)/signup/page.tsx`, `apps/web/src/app/invite/[id]/page.tsx`, `apps/web/src/app/invite/[id]/AcceptInvite.tsx`
+
+- [x] **Step 1: Auth layout (centered glass card)**
+
+`apps/web/src/app/(auth)/layout.tsx`:
+
+```tsx
+import type { ReactNode } from "react";
+import Link from "next/link";
+
+export default function AuthLayout({ children }: { children: ReactNode }) {
+  return (
+    <main className="grid-hairlines flex min-h-dvh items-center justify-center p-6">
+      <div className="glass-strong w-full max-w-sm p-8">
+        <Link href="/" className="num-stamp">
+          Sendsprite
+        </Link>
+        <div className="mt-6">{children}</div>
+      </div>
+    </main>
+  );
+}
+```
+
+- [x] **Step 2: AuthForm (client)**
+
+`apps/web/src/components/auth/AuthForm.tsx`:
+
+```tsx
+"use client";
+import { useState, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
+import { authClient } from "@/lib/auth-client";
+import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
+import { Label } from "@/components/ui/Label";
+import { Divider } from "@/components/ui/Divider";
+
+export interface AuthFormProps {
+  mode: "login" | "signup";
+  providers: { google: boolean; github: boolean; emailPassword: boolean };
+  /** Where to go after success. */
+  next?: string;
+}
+
+export function AuthForm({ mode, providers, next = "/app" }: AuthFormProps) {
+  const router = useRouter();
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function onSubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    const fd = new FormData(e.currentTarget);
+    const email = String(fd.get("email"));
+    const password = String(fd.get("password"));
+    try {
+      const res =
+        mode === "signup"
+          ? await authClient.signUp.email({
+              email,
+              password,
+              name: String(fd.get("name") || email.split("@")[0]),
+            })
+          : await authClient.signIn.email({ email, password });
+      if (res.error) {
+        setError(res.error.message ?? "Something went wrong");
+        return;
+      }
+      router.push(next);
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function social(provider: "google" | "github") {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await authClient.signIn.social({
+        provider,
+        callbackURL: next,
+      });
+      if (res.error) setError(res.error.message ?? "Sign-in failed");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <h1 className="text-xl font-medium">
+        {mode === "login" ? "Sign in" : "Create your account"}
+      </h1>
+      {(providers.google || providers.github) && (
+        <div className="flex flex-col gap-2">
+          {providers.google && (
+            <Button
+              variant="secondary"
+              disabled={busy}
+              onClick={() => social("google")}
+            >
+              Continue with Google
+            </Button>
+          )}
+          {providers.github && (
+            <Button
+              variant="secondary"
+              disabled={busy}
+              onClick={() => social("github")}
+            >
+              Continue with GitHub
+            </Button>
+          )}
+        </div>
+      )}
+      {providers.emailPassword && (providers.google || providers.github) && (
+        <Divider />
+      )}
+      {providers.emailPassword && (
+        <form onSubmit={onSubmit} className="flex flex-col gap-3">
+          {mode === "signup" && (
+            <div>
+              <Label htmlFor="name">Name</Label>
+              <Input id="name" name="name" autoComplete="name" />
+            </div>
+          )}
+          <div>
+            <Label htmlFor="email">Email</Label>
+            <Input
+              id="email"
+              name="email"
+              type="email"
+              required
+              autoComplete="email"
+            />
+          </div>
+          <div>
+            <Label htmlFor="password">Password</Label>
+            <Input
+              id="password"
+              name="password"
+              type="password"
+              required
+              minLength={8}
+              autoComplete={
+                mode === "signup" ? "new-password" : "current-password"
+              }
+            />
+          </div>
+          {error && (
+            <p role="alert" className="text-sm text-red-300">
+              {error}
+            </p>
+          )}
+          <Button type="submit" disabled={busy}>
+            {busy ? "…" : mode === "login" ? "Sign in" : "Sign up"}
+          </Button>
+        </form>
+      )}
+      {!providers.emailPassword && !providers.google && !providers.github && (
+        <p className="text-sm text-amber-300">
+          No auth provider is configured. Set EMAIL_PASSWORD_ENABLED=true or a
+          Google/GitHub client id + secret.
+        </p>
+      )}
+    </div>
+  );
+}
+```
+
+- [x] **Step 3: Login and signup pages**
+
+`apps/web/src/lib/safe-next.ts` (open-redirect guard; both pages use it):
+
+```ts
+/**
+ * Accepts only same-origin absolute paths for post-auth redirects.
+ * Rejects protocol-relative (`//x`), backslash tricks (`/\x`) and encoded
+ * slashes that some routers decode into the same thing.
+ */
+export function safeNext(raw: unknown, fallback = "/app"): string {
+  if (typeof raw !== "string") return fallback;
+  if (!/^\/(?![/\\])/.test(raw)) return fallback;
+  if (raw.includes("\\")) return fallback;
+  if (/%2f|%5c/i.test(raw)) return fallback;
+  return raw;
+}
+```
+
+`apps/web/tests/unit/safe-next.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { safeNext } from "@/lib/safe-next";
+
+describe("safeNext", () => {
+  it("accepts same-origin paths", () => {
+    expect(safeNext("/app/x")).toBe("/app/x");
+    expect(safeNext("/invite/abc?x=1")).toBe("/invite/abc?x=1");
+  });
+  it.each([
+    ["//evil.com"],
+    ["/\\evil.com"],
+    ["/%2fevil.com"],
+    ["/%2Fevil.com"],
+    ["/%5cevil.com"],
+    ["https://x"],
+    [""],
+    [undefined],
+    [42],
+  ])("falls back for %p", (raw) => {
+    expect(safeNext(raw)).toBe("/app");
+    expect(safeNext(raw, "/x")).toBe("/x");
+  });
+});
+```
+
+`apps/web/src/app/(auth)/login/page.tsx`:
+
+```tsx
+import Link from "next/link";
+import { redirect } from "next/navigation";
+import { env } from "@/env";
+import { getSession } from "@/lib/session";
+import { safeNext } from "@/lib/safe-next";
+import { AuthForm } from "@/components/auth/AuthForm";
+
+export const metadata = { title: "Sign in" };
+
+export default async function LoginPage(props: PageProps<"/login">) {
+  const sp = await props.searchParams;
+  const next = safeNext(sp.next);
+  if (await getSession()) redirect(next);
+  return (
+    <>
+      <AuthForm mode="login" providers={env.providers} next={next} />
+      <p className="mt-6 text-sm text-white/60">
+        No account?{" "}
+        <Link
+          className="text-indigo-300"
+          href={`/signup?next=${encodeURIComponent(next)}`}
+        >
+          Sign up
+        </Link>
+      </p>
+    </>
+  );
+}
+```
+
+`apps/web/src/app/(auth)/signup/page.tsx`:
+
+```tsx
+import Link from "next/link";
+import { redirect } from "next/navigation";
+import { env } from "@/env";
+import { getSession } from "@/lib/session";
+import { safeNext } from "@/lib/safe-next";
+import { AuthForm } from "@/components/auth/AuthForm";
+
+export const metadata = { title: "Sign up" };
+
+export default async function SignupPage(props: PageProps<"/signup">) {
+  const sp = await props.searchParams;
+  const next = safeNext(sp.next);
+  if (await getSession()) redirect(next);
+  return (
+    <>
+      <AuthForm mode="signup" providers={env.providers} next={next} />
+      <p className="mt-6 text-sm text-white/60">
+        Already have an account?{" "}
+        <Link
+          className="text-indigo-300"
+          href={`/login?next=${encodeURIComponent(next)}`}
+        >
+          Sign in
+        </Link>
+      </p>
+    </>
+  );
+}
+```
+
+Run `cd apps/web && bunx next typegen` once so the global `PageProps<...>` helper types exist.
+
+- [x] **Step 4: Invite page**
+
+`apps/web/src/app/invite/[id]/page.tsx`:
+
+```tsx
+import Link from "next/link";
+import { redirect } from "next/navigation";
+import { eq } from "drizzle-orm";
+import { db } from "@/db";
+import { invitation, organization } from "@/db/schema";
+import { getSession } from "@/lib/session";
+import { AcceptInvite } from "./AcceptInvite";
+
+export default async function InvitePage(props: PageProps<"/invite/[id]">) {
+  const { id } = await props.params;
+  const [inv] = await db()
+    .select({
+      id: invitation.id,
+      email: invitation.email,
+      status: invitation.status,
+      expiresAt: invitation.expiresAt,
+      team: organization.name,
+    })
+    .from(invitation)
+    .innerJoin(organization, eq(invitation.organizationId, organization.id))
+    .where(eq(invitation.id, id))
+    .limit(1);
+  const session = await getSession();
+  if (!session) redirect(`/signup?next=${encodeURIComponent(`/invite/${id}`)}`);
+  const valid = Boolean(
+    inv && inv.status === "pending" && inv.expiresAt > new Date(),
+  );
+  return (
+    <main className="grid-hairlines flex min-h-dvh items-center justify-center p-6">
+      <div className="glass-strong w-full max-w-sm p-8">
+        <p className="num-stamp">Invitation</p>
+        {inv?.status === "accepted" ? (
+          <p className="mt-4 text-sm text-white/70">
+            Already accepted.{" "}
+            <Link className="text-indigo-300" href="/app">
+              Go to the app
+            </Link>
+          </p>
+        ) : !valid ? (
+          <p className="mt-4 text-sm text-white/70">
+            This invitation is invalid or has expired.
+          </p>
+        ) : (
+          <AcceptInvite
+            invitationId={id}
+            teamName={inv!.team}
+            invitedEmail={inv!.email}
+            currentEmail={session.user.email}
+          />
+        )}
+      </div>
+    </main>
+  );
+}
+```
+
+`apps/web/src/app/invite/[id]/AcceptInvite.tsx`:
+
+```tsx
+"use client";
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { authClient } from "@/lib/auth-client";
+import { Button } from "@/components/ui/Button";
+
+export function AcceptInvite(p: {
+  invitationId: string;
+  teamName: string;
+  invitedEmail: string;
+  currentEmail: string;
+}) {
+  const router = useRouter();
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const mismatch =
+    p.invitedEmail.toLowerCase() !== p.currentEmail.toLowerCase();
+  async function accept() {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await authClient.organization.acceptInvitation({
+        invitationId: p.invitationId,
+      });
+      if (res.error) {
+        setError(res.error.message ?? "Could not accept");
+        return;
+      }
+      await authClient.organization.setActive({
+        organizationId: res.data.invitation.organizationId,
+      });
+      router.push("/app");
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="mt-4 flex flex-col gap-4">
+      <p className="text-sm text-white/80">
+        You&apos;ve been invited to join <strong>{p.teamName}</strong>.
+      </p>
+      {mismatch && (
+        <p className="text-sm text-amber-300">
+          This invitation is for a different account than the one you&apos;re
+          signed in as ({p.currentEmail}).
+        </p>
+      )}
+      {error && (
+        <p role="alert" className="text-sm text-red-300">
+          {error}
+        </p>
+      )}
+      <Button onClick={accept} disabled={mismatch || busy}>
+        {busy ? "…" : "Accept invitation"}
+      </Button>
+    </div>
+  );
+}
+```
+
+- [x] **Step 5: Typecheck and run dev server manually**
+
+Run: `cd apps/web && bun run typecheck`
+Expected: no errors in `src/app/(auth)/**`, `src/app/invite/**`, `src/components/auth/**`.
+
+Start Postgres for local dev with `bun run db:dev` (embedded Postgres in `apps/web/.pgdata`, no Docker; script in `apps/web/scripts/dev-db.ts`), copy `.env.example` → `apps/web/.env.local`, run `bun run db:migrate` then `bun run dev`, open `http://localhost:3000/signup`, create the first account. Expected: redirected to `/app` (404 until Task 11 — that's fine).
+
+- [x] **Step 6: Commit**
+
+```bash
+git add apps/web/src/app apps/web/src/components/auth
+git commit -m "feat(web): login/signup pages and invitation acceptance"
+```
+
+---
+
+### Task 11: App shell, team creation, team switcher
+
+**Files:**
+
+- Create: `apps/web/src/app/app/layout.tsx`, `apps/web/src/app/app/page.tsx`, `apps/web/src/app/(onboarding)/teams/new/page.tsx`, `apps/web/src/app/(onboarding)/teams/new/CreateTeamForm.tsx`, `apps/web/src/components/app/AppShell.tsx`, `apps/web/src/components/app/TeamSwitcher.tsx`, `apps/web/src/components/app/UserMenu.tsx`
+
+- [x] **Step 1: Team creation page (needed before the shell can render for a user with no team)**
+
+`apps/web/src/app/(onboarding)/teams/new/page.tsx` (outside `/app` so the team-requiring layout doesn't apply):
+
+```tsx
+import { requireSession } from "@/lib/session";
+import { CreateTeamForm } from "./CreateTeamForm";
+
+export const metadata = { title: "Create team" };
+
+export default async function NewTeamPage() {
+  await requireSession();
+  return (
+    <main className="grid-hairlines flex min-h-dvh items-center justify-center p-6">
+      <div className="glass-strong w-full max-w-sm p-8">
+        <p className="num-stamp">New team</p>
+        <CreateTeamForm />
+      </div>
+    </main>
+  );
+}
+```
+
+`apps/web/src/app/(onboarding)/teams/new/CreateTeamForm.tsx`:
+
+```tsx
+"use client";
+import { useState, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
+import { authClient } from "@/lib/auth-client";
+import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
+import { Label } from "@/components/ui/Label";
+
+const slugify = (s: string) =>
+  s
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 48);
+
+const suffix = () => Math.random().toString(36).slice(2, 6);
+
+// createOrganization throws ORGANIZATION_ALREADY_EXISTS on a slug clash;
+// ORGANIZATION_SLUG_ALREADY_TAKEN comes from check-slug/updateOrganization.
+const SLUG_TAKEN = new Set([
+  "ORGANIZATION_ALREADY_EXISTS",
+  "ORGANIZATION_SLUG_ALREADY_TAKEN",
+]);
+
+export function CreateTeamForm() {
+  const router = useRouter();
+  const [name, setName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  async function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const slug = slugify(name) || `team-${Date.now()}`;
+      let res = await authClient.organization.create({ name, slug });
+      // Slug collision with another team: retry once with a random suffix.
+      if (SLUG_TAKEN.has(res.error?.code ?? "")) {
+        res = await authClient.organization.create({
+          name,
+          slug: `${slug}-${suffix()}`,
+        });
+      }
+      if (res.error) {
+        setError(res.error.message ?? "Could not create team");
+        return;
+      }
+      await authClient.organization.setActive({ organizationId: res.data.id });
+      router.push("/app");
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <form onSubmit={onSubmit} className="mt-4 flex flex-col gap-3">
+      <div>
+        <Label htmlFor="name">Team name</Label>
+        <Input
+          id="name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          required
+          minLength={2}
+        />
+      </div>
+      {error && (
+        <p role="alert" className="text-sm text-red-300">
+          {error}
+        </p>
+      )}
+      <Button type="submit" disabled={busy}>
+        {busy ? "…" : "Create team"}
+      </Button>
+    </form>
+  );
+}
+```
+
+- [x] **Step 2: Shell components**
+
+`apps/web/src/components/app/TeamSwitcher.tsx`:
+
+```tsx
+"use client";
+import { useRouter } from "next/navigation";
+import { authClient } from "@/lib/auth-client";
+
+export function TeamSwitcher({ activeId }: { activeId: string }) {
+  const router = useRouter();
+  const { data: orgs } = authClient.useListOrganizations();
+  async function change(id: string) {
+    if (id === "__new") return router.push("/teams/new");
+    try {
+      const res = await authClient.organization.setActive({
+        organizationId: id,
+      });
+      if (res.error) {
+        console.error("setActive failed", res.error);
+        return;
+      }
+      router.refresh();
+    } catch (err) {
+      console.error("setActive failed", err);
+    }
+  }
+  return (
+    <select
+      aria-label="Team"
+      value={activeId}
+      onChange={(e) => change(e.target.value)}
+      className="w-full rounded-md border border-white/15 bg-shadow px-3 py-2 text-sm"
+    >
+      {orgs == null ? (
+        <option value={activeId} disabled>
+          Loading…
+        </option>
+      ) : (
+        orgs.map((o) => (
+          <option key={o.id} value={o.id}>
+            {o.name}
+          </option>
+        ))
+      )}
+      <option value="__new">+ New team…</option>
+    </select>
+  );
+}
+```
+
+`apps/web/src/components/app/UserMenu.tsx`:
+
+```tsx
+"use client";
+import { useRouter } from "next/navigation";
+import { authClient } from "@/lib/auth-client";
+import { Button } from "@/components/ui/Button";
+
+export function UserMenu({ email }: { email: string }) {
+  const router = useRouter();
+  return (
+    <div className="flex items-center gap-3">
+      <span className="hidden text-sm text-white/60 sm:inline">{email}</span>
+      <Button
+        size="sm"
+        variant="ghost"
+        onClick={async () => {
+          await authClient.signOut();
+          router.push("/login");
+          router.refresh();
+        }}
+      >
+        Sign out
+      </Button>
+    </div>
+  );
+}
+```
+
+`apps/web/src/components/app/NavLink.tsx` (active-route highlight):
+
+```tsx
+"use client";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { cn } from "@/lib/cn";
+
+export function NavLink({ href, label }: { href: string; label: string }) {
+  const pathname = usePathname();
+  const active =
+    pathname === href || (href !== "/app" && pathname.startsWith(href));
+  return (
+    <Link
+      href={href}
+      aria-current={active ? "page" : undefined}
+      className={cn(
+        "rounded-md px-3 py-2 text-sm transition-colors",
+        active
+          ? "bg-white/8 text-white"
+          : "text-white/75 hover:bg-white/6 hover:text-white",
+      )}
+    >
+      {label}
+    </Link>
+  );
+}
+```
+
+`apps/web/src/components/app/AppShell.tsx`:
+
+```tsx
+import Link from "next/link";
+import type { ReactNode } from "react";
+import { Badge } from "@/components/ui/Badge";
+import type { InstanceSettings } from "@/services/instance-settings";
+import { NavLink } from "./NavLink";
+import { TeamSwitcher } from "./TeamSwitcher";
+import { UserMenu } from "./UserMenu";
+
+const NAV = [
+  { href: "/app", label: "Overview" },
+  { href: "/app/emails", label: "Emails" },
+  { href: "/app/domains", label: "Domains" },
+  { href: "/app/api-keys", label: "API keys" },
+  { href: "/app/webhooks", label: "Webhooks" },
+  { href: "/app/templates", label: "Templates" },
+  { href: "/app/contacts", label: "Contacts" },
+  { href: "/app/campaigns", label: "Campaigns" },
+  { href: "/app/settings", label: "Settings" },
+];
+
+export function AppShell(p: {
+  teamId: string;
+  teamName: string;
+  email: string;
+  sesStatus: InstanceSettings["sesAccountStatus"];
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex min-h-dvh">
+      <aside className="hidden w-60 shrink-0 flex-col gap-6 border-r border-white/10 p-4 md:flex">
+        <Link href="/app" className="num-stamp">
+          Sendsprite
+        </Link>
+        <TeamSwitcher activeId={p.teamId} />
+        <nav className="flex flex-col gap-1">
+          {NAV.map((n) => (
+            <NavLink key={n.href} href={n.href} label={n.label} />
+          ))}
+        </nav>
+        <div className="mt-auto">
+          {p.sesStatus === "production" ? (
+            <Badge variant="success">SES production</Badge>
+          ) : p.sesStatus === "requested" ? (
+            <Badge variant="warning">SES review pending</Badge>
+          ) : p.sesStatus === "sandbox" ? (
+            <Badge variant="warning">SES sandbox</Badge>
+          ) : (
+            <Badge variant="muted">AWS not connected</Badge>
+          )}
+        </div>
+      </aside>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex h-14 items-center justify-between border-b border-white/10 px-4">
+          <span className="text-sm text-white/60">{p.teamName}</span>
+          <div className="flex items-center gap-3">
+            <Link
+              href="/docs"
+              className="text-sm text-white/60 hover:text-white"
+            >
+              Docs
+            </Link>
+            <UserMenu email={p.email} />
+          </div>
+        </header>
+        <main className="flex-1 p-6">{p.children}</main>
+      </div>
+    </div>
+  );
+}
+```
+
+- [x] **Step 3: /app layout and overview page**
+
+`apps/web/src/app/app/layout.tsx`:
+
+```tsx
+import type { ReactNode } from "react";
+import { requireTeam } from "@/lib/session";
+import { getInstanceSettings } from "@/services/instance-settings";
+import { AppShell } from "@/components/app/AppShell";
+
+export default async function AppLayout({ children }: { children: ReactNode }) {
+  const ctx = await requireTeam();
+  const settings = await getInstanceSettings();
+  return (
+    <AppShell
+      teamId={ctx.team.id}
+      teamName={ctx.team.name}
+      email={ctx.session.user.email}
+      sesStatus={settings.sesAccountStatus}
+    >
+      {children}
+    </AppShell>
+  );
+}
+```
+
+`apps/web/src/app/app/page.tsx`:
+
+```tsx
+import { Card, CardHeader, CardTitle, CardBody } from "@/components/ui/Card";
+import { StatusDot } from "@/components/ui/StatusDot";
+import { requireTeam } from "@/lib/session";
+import { getInstanceSettings } from "@/services/instance-settings";
+
+export default async function OverviewPage() {
+  const ctx = await requireTeam();
+  const s = await getInstanceSettings();
+  const steps = [
+    { label: "Connect AWS", done: s.awsMode !== "none" },
+    {
+      label: "Connect Cloudflare (optional)",
+      done: Boolean(s.cloudflareTokenEnc),
+    },
+    { label: "Add a sending domain", done: false },
+    { label: "Create an API key", done: false },
+    { label: "Send your first email", done: false },
+  ];
+  return (
+    <div className="grid gap-6 md:grid-cols-2">
+      <Card>
+        <CardHeader>
+          <CardTitle>Setup checklist</CardTitle>
+        </CardHeader>
+        <CardBody className="flex flex-col gap-2">
+          {steps.map((st) => (
+            <StatusDot
+              key={st.label}
+              status={st.done ? "ok" : "off"}
+              label={st.label}
+            />
+          ))}
+        </CardBody>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>Team</CardTitle>
+        </CardHeader>
+        <CardBody>
+          <p className="text-sm text-white/70">
+            {ctx.team.name} · you are <strong>{ctx.role}</strong>
+          </p>
+        </CardBody>
+      </Card>
+    </div>
+  );
+}
+```
+
+- [x] **Step 4: Instance settings service (needed by the layout)**
+
+`apps/web/src/services/instance-settings.ts`:
+
+```ts
+import { cache } from "react";
+import { eq } from "drizzle-orm";
+import { db } from "@/db";
+import { instanceSettings } from "@/db/schema";
+import { getCipher } from "@/lib/crypto";
+
+export type InstanceSettings = typeof instanceSettings.$inferSelect;
+
+async function selectSingleton() {
+  const [row] = await db()
+    .select()
+    .from(instanceSettings)
+    .where(eq(instanceSettings.id, 1))
+    .limit(1);
+  return row;
+}
+
+/**
+ * Creates the singleton row on first read. Request-scoped (`React.cache`)
+ * so layout + page share one query; outside a request it is a plain call.
+ */
+export const getInstanceSettings = cache(
+  async (): Promise<InstanceSettings> => {
+    const existing = await selectSingleton();
+    if (existing) return existing;
+    await db().insert(instanceSettings).values({ id: 1 }).onConflictDoNothing();
+    const row = await selectSingleton();
+    if (!row) throw new Error("instance_settings singleton missing");
+    return row;
+  },
+);
+
+/** Plain columns only: encrypted columns are written via `Secrets`. */
+type Plain = Partial<
+  Omit<
+    InstanceSettings,
+    | "id"
+    | "createdAt"
+    | "updatedAt"
+    | "awsAccessKeyEnc"
+    | "awsSecretEnc"
+    | "cloudflareTokenEnc"
+  >
+>;
+type Secrets = {
+  awsAccessKey?: string | null;
+  awsSecret?: string | null;
+  cloudflareToken?: string | null;
+};
+
+/**
+ * Update plain columns; secret inputs are encrypted before writing.
+ * Upsert, so it works on a fresh instance without a prior read.
+ */
+export async function updateInstanceSettings(
+  patch: Plain & Secrets,
+): Promise<InstanceSettings> {
+  const { awsAccessKey, awsSecret, cloudflareToken, ...plain } = patch;
+  const c = getCipher();
+  const enc = {
+    ...(awsAccessKey !== undefined && {
+      awsAccessKeyEnc: awsAccessKey ? c.encrypt(awsAccessKey) : null,
+    }),
+    ...(awsSecret !== undefined && {
+      awsSecretEnc: awsSecret ? c.encrypt(awsSecret) : null,
+    }),
+    ...(cloudflareToken !== undefined && {
+      cloudflareTokenEnc: cloudflareToken ? c.encrypt(cloudflareToken) : null,
+    }),
+  };
+  const set = { ...plain, ...enc, updatedAt: new Date() };
+  const [row] = await db()
+    .insert(instanceSettings)
+    .values({ id: 1, ...set })
+    .onConflictDoUpdate({ target: instanceSettings.id, set })
+    .returning();
+  if (!row) throw new Error("instance_settings upsert returned no row");
+  return row;
+}
+
+export async function getDecryptedSecrets() {
+  const s = await getInstanceSettings();
+  const c = getCipher();
+  return {
+    awsAccessKey: s.awsAccessKeyEnc ? c.decrypt(s.awsAccessKeyEnc) : null,
+    awsSecret: s.awsSecretEnc ? c.decrypt(s.awsSecretEnc) : null,
+    cloudflareToken: s.cloudflareTokenEnc
+      ? c.decrypt(s.cloudflareTokenEnc)
+      : null,
+  };
+}
+```
+
+- [x] **Step 5: Integration test for the service**
+
+`apps/web/tests/integration/instance-settings.test.ts`:
+
+```ts
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { startPg } from "./_pg";
+
+let pg: Awaited<ReturnType<typeof startPg>>;
+beforeAll(async () => {
+  pg = await startPg();
+  process.env.APP_SECRET = "x".repeat(40);
+});
+afterAll(async () => {
+  await pg.stop();
+});
+
+describe("instance settings", () => {
+  it("creates the singleton lazily", async () => {
+    const { getInstanceSettings } =
+      await import("@/services/instance-settings");
+    const s = await getInstanceSettings();
+    expect(s.id).toBe(1);
+    expect(s.awsMode).toBe("none");
+  });
+  it("encrypts secrets at rest and decrypts on read", async () => {
+    const { updateInstanceSettings, getDecryptedSecrets } =
+      await import("@/services/instance-settings");
+    const s = await updateInstanceSettings({
+      awsMode: "keys",
+      awsAccessKey: "AKIAEXAMPLE",
+      awsSecret: "s3cr3t",
+    });
+    expect(s.awsAccessKeyEnc).toMatch(/^v1\./);
+    expect(s.awsAccessKeyEnc).not.toContain("AKIA");
+    expect(await getDecryptedSecrets()).toMatchObject({
+      awsAccessKey: "AKIAEXAMPLE",
+      awsSecret: "s3cr3t",
+      cloudflareToken: null,
+    });
+  });
+  it("clears a secret when given null", async () => {
+    const { updateInstanceSettings, getDecryptedSecrets } =
+      await import("@/services/instance-settings");
+    const s = await updateInstanceSettings({ awsSecret: null });
+    expect(s.awsSecretEnc).toBeNull();
+    expect(s.awsAccessKeyEnc).toMatch(/^v1\./);
+    expect((await getDecryptedSecrets()).awsSecret).toBeNull();
+  });
+  it("leaves secrets untouched on a plain patch", async () => {
+    const { updateInstanceSettings, getDecryptedSecrets } =
+      await import("@/services/instance-settings");
+    const before = await updateInstanceSettings({ cloudflareToken: "cf-tok" });
+    const after = await updateInstanceSettings({ awsRegion: "eu-west-1" });
+    expect(after.awsRegion).toBe("eu-west-1");
+    expect(after.awsAccessKeyEnc).toBe(before.awsAccessKeyEnc);
+    expect(after.cloudflareTokenEnc).toBe(before.cloudflareTokenEnc);
+    expect((await getDecryptedSecrets()).cloudflareToken).toBe("cf-tok");
+  });
+});
+```
+
+Run: `cd apps/web && bun run test:integration`
+Expected: PASS.
+
+- [x] **Step 6: Manual check**
+
+`bun run dev` → sign in → `/app` shows the shell with the checklist and "AWS not connected" badge; team switcher lists your team.
+
+- [x] **Step 7: Commit**
+
+```bash
+git add apps/web/src
+git add apps/web/tests/integration/instance-settings.test.ts
+git commit -m "feat(web): app shell, team creation/switching, instance settings service"
+```
+
+---
+
+### Task 12: Team settings — rename, members, invites, roles (server actions)
+
+> Note: mobile navigation for the app shell (sidebar is hidden below `md`) is deferred from Task 11 review to this task.
+
+**Files:**
+
+- Create: `apps/web/src/services/team.ts`, `apps/web/src/app/app/settings/page.tsx`, `apps/web/src/app/app/settings/actions.ts`, `apps/web/src/app/app/settings/MembersPanel.tsx`, `apps/web/src/app/app/settings/InvitePanel.tsx`, `apps/web/src/app/app/settings/RenameForm.tsx`, `apps/web/src/components/app/MobileNav.tsx`, `apps/web/tests/integration/team-actions.test.ts`
+- Modify: `apps/web/src/components/app/AppShell.tsx`, `apps/web/package.json` (`typecheck` runs `next typegen` first: the global `PageProps` types live in `.next/types`, so `tsc` alone fails on a clean checkout)
+
+- [x] **Step 1: Team service (authorize with `can()`, audit every mutation) + thin server actions**
+
+The mutations live in a service that takes a `TeamActor` + request `Headers` and returns a `Result`, with no `next/*` imports, so they are integration-testable without a request context. Server actions only resolve the actor via `requireTeam()`, delegate, and revalidate. better-auth `APIError`s become `Result` errors; `cancelInvitation` scopes the invitation to the actor's team before calling better-auth (which authorizes against the invitation's own org); invite emails are trimmed + lowercased to match the signup-policy lookup.
+
+`apps/web/src/services/team.ts`:
+
+```ts
+import { z } from "zod";
+import { eq } from "drizzle-orm";
+import { APIError } from "better-auth/api";
+import { can, type Action, type TeamRole } from "@sendsprite/shared";
+import { auth } from "@/lib/auth";
+import { db } from "@/db";
+import { invitation } from "@/db/schema";
+import { computeDiff, recordAudit } from "@/lib/audit";
+// Not `@/env`: that module is `server-only` and throws under vitest.
+import { loadEnv } from "@/env.schema";
+
+export type Result<T = undefined> =
+  { ok: true; data: T } | { ok: false; error: string };
+
+/** The slice of `TeamContext` the team mutations need. No `next/*` here. */
+export interface TeamActor {
+  userId: string;
+  teamId: string;
+  teamName: string;
+  role: TeamRole;
+}
+
+const DENIED: Result<never> = {
+  ok: false,
+  error: "You don't have permission to do that.",
+};
+
+/**
+ * Runs `fn` when the actor holds `action`; better-auth's own permission
+ * errors (APIError) surface as a Result instead of throwing.
+ */
+async function authorized<T>(
+  actor: TeamActor,
+  action: Action,
+  fn: () => Promise<Result<T>>,
+): Promise<Result<T>> {
+  if (!can(actor.role, action)) return DENIED;
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof APIError)
+      return { ok: false, error: err.message || "Request failed." };
+    throw err;
+  }
+}
+
+export function renameTeam(
+  actor: TeamActor,
+  headers: Headers,
+  rawName: unknown,
+): Promise<Result> {
+  return authorized(actor, "team.rename", async () => {
+    const name = z.string().trim().min(2).max(64).safeParse(rawName);
+    if (!name.success)
+      return { ok: false, error: "Name must be 2–64 characters." };
+    await auth.api.updateOrganization({
+      headers,
+      body: { organizationId: actor.teamId, data: { name: name.data } },
+    });
+    await recordAudit({
+      teamId: actor.teamId,
+      actorUserId: actor.userId,
+      action: "team.rename",
+      targetType: "team",
+      targetId: actor.teamId,
+      diff: computeDiff({ name: actor.teamName }, { name: name.data }),
+    });
+    return { ok: true, data: undefined };
+  });
+}
+
+// Invitation lookup on signup matches by lowercased email (lib/auth.ts).
+const inviteSchema = z.object({
+  email: z.string().trim().toLowerCase().pipe(z.email()),
+  role: z.enum(["admin", "member"]),
+});
+
+export function inviteMember(
+  actor: TeamActor,
+  headers: Headers,
+  email: unknown,
+  role: unknown,
+): Promise<Result<{ link: string }>> {
+  return authorized(actor, "members.invite", async () => {
+    const parsed = inviteSchema.safeParse({ email, role });
+    if (!parsed.success)
+      return { ok: false, error: "Enter a valid email and role." };
+    const inv = await auth.api.createInvitation({
+      headers,
+      body: {
+        organizationId: actor.teamId,
+        email: parsed.data.email,
+        role: parsed.data.role,
+      },
+    });
+    await recordAudit({
+      teamId: actor.teamId,
+      actorUserId: actor.userId,
+      action: "members.invite",
+      targetType: "invitation",
+      targetId: inv.id,
+      diff: {
+        email: { to: parsed.data.email },
+        role: { to: parsed.data.role },
+      },
+    });
+    return {
+      ok: true,
+      data: { link: `${loadEnv().APP_URL}/invite/${inv.id}` },
+    };
+  });
+}
+
+export function cancelInvitation(
+  actor: TeamActor,
+  headers: Headers,
+  invitationId: string,
+): Promise<Result> {
+  return authorized(actor, "members.invite", async () => {
+    // better-auth authorizes against the invitation's own org, so an admin
+    // of another team could cancel by id. Scope to the actor's team first.
+    const [inv] = await db()
+      .select({ organizationId: invitation.organizationId })
+      .from(invitation)
+      .where(eq(invitation.id, invitationId))
+      .limit(1);
+    if (!inv || inv.organizationId !== actor.teamId)
+      return { ok: false, error: "Invitation not found." };
+    await auth.api.cancelInvitation({ headers, body: { invitationId } });
+    await recordAudit({
+      teamId: actor.teamId,
+      actorUserId: actor.userId,
+      action: "members.invite.cancel",
+      targetType: "invitation",
+      targetId: invitationId,
+    });
+    return { ok: true, data: undefined };
+  });
+}
+
+export function removeMember(
+  actor: TeamActor,
+  headers: Headers,
+  memberIdOrEmail: string,
+): Promise<Result> {
+  return authorized(actor, "members.remove", async () => {
+    await auth.api.removeMember({
+      headers,
+      body: { organizationId: actor.teamId, memberIdOrEmail },
+    });
+    await recordAudit({
+      teamId: actor.teamId,
+      actorUserId: actor.userId,
+      action: "members.remove",
+      targetType: "member",
+      targetId: memberIdOrEmail,
+    });
+    return { ok: true, data: undefined };
+  });
+}
+
+export function changeRole(
+  actor: TeamActor,
+  headers: Headers,
+  memberId: string,
+  role: TeamRole,
+): Promise<Result> {
+  return authorized(actor, "members.changeRole", async () => {
+    if (role === "owner" && actor.role !== "owner")
+      return { ok: false, error: "Only an owner can promote to owner." };
+    await auth.api.updateMemberRole({
+      headers,
+      body: { organizationId: actor.teamId, memberId, role },
+    });
+    await recordAudit({
+      teamId: actor.teamId,
+      actorUserId: actor.userId,
+      action: "members.changeRole",
+      targetType: "member",
+      targetId: memberId,
+      diff: { role: { to: role } },
+    });
+    return { ok: true, data: undefined };
+  });
+}
+```
+
+`apps/web/src/app/app/settings/actions.ts`:
+
+```ts
+"use server";
+import { revalidatePath } from "next/cache";
+import { headers } from "next/headers";
+import { TEAM_ROLES, type TeamRole } from "@sendsprite/shared";
+import { requireTeam } from "@/lib/session";
+import * as team from "@/services/team";
+
+export type { Result } from "@/services/team";
+
+/** Server actions are thin: resolve the actor, delegate, revalidate. */
+async function actor() {
+  const ctx = await requireTeam();
+  return {
+    actor: {
+      userId: ctx.userId,
+      teamId: ctx.team.id,
+      teamName: ctx.team.name,
+      role: ctx.role,
+    },
+    headers: await headers(),
+  };
+}
+
+export async function renameTeam(formData: FormData) {
+  const { actor: a, headers: h } = await actor();
+  const res = await team.renameTeam(a, h, formData.get("name"));
+  if (res.ok) revalidatePath("/app", "layout");
+  return res;
+}
+
+export async function inviteMember(formData: FormData) {
+  const { actor: a, headers: h } = await actor();
+  const res = await team.inviteMember(
+    a,
+    h,
+    formData.get("email"),
+    formData.get("role"),
+  );
+  if (res.ok) revalidatePath("/app/settings");
+  return res;
+}
+
+export async function cancelInvitation(invitationId: string) {
+  const { actor: a, headers: h } = await actor();
+  const res = await team.cancelInvitation(a, h, invitationId);
+  if (res.ok) revalidatePath("/app/settings");
+  return res;
+}
+
+export async function removeMember(memberId: string) {
+  const { actor: a, headers: h } = await actor();
+  const res = await team.removeMember(a, h, memberId);
+  if (res.ok) revalidatePath("/app/settings");
+  return res;
+}
+
+export async function changeRole(memberId: string, role: string) {
+  // Arguments arrive from the client untyped: narrow before delegating.
+  if (!TEAM_ROLES.includes(role as TeamRole))
+    return { ok: false as const, error: "Unknown role." };
+  const { actor: a, headers: h } = await actor();
+  const res = await team.changeRole(a, h, memberId, role as TeamRole);
+  if (res.ok) revalidatePath("/app/settings");
+  return res;
+}
+```
+
+- [x] **Step 2: Settings page (server) + panels (client)**
+
+Pending invitations are additionally filtered by `expiresAt > now`, and `expiresAt` is formatted on the server so SSR and hydration agree. `RenameForm` is keyed on the team name so a successful rename resets its `defaultValue`. Owner rows are read-only for non-owners; `Remove` asks for confirmation.
+
+`apps/web/src/app/app/settings/page.tsx`:
+
+```tsx
+import { and, eq, gt } from "drizzle-orm";
+import { can } from "@sendsprite/shared";
+import { db } from "@/db";
+import { invitation, member, user } from "@/db/schema";
+import { requireTeam } from "@/lib/session";
+import { Card, CardHeader, CardTitle, CardBody } from "@/components/ui/Card";
+import { RenameForm } from "./RenameForm";
+import { MembersPanel } from "./MembersPanel";
+import { InvitePanel } from "./InvitePanel";
+
+export const metadata = { title: "Settings" };
+
+// Server-side formatting: a locale/timezone-dependent toLocaleDateString in a
+// client component would hydrate differently from the SSR markup.
+const formatDate = (d: Date) =>
+  new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  }).format(d);
+
+export default async function SettingsPage() {
+  const ctx = await requireTeam();
+  const members = await db()
+    .select({
+      id: member.id,
+      userId: member.userId,
+      role: member.role,
+      email: user.email,
+      name: user.name,
+    })
+    .from(member)
+    .innerJoin(user, eq(member.userId, user.id))
+    .where(eq(member.organizationId, ctx.team.id))
+    .orderBy(member.createdAt);
+  const invites = (
+    await db()
+      .select({
+        id: invitation.id,
+        email: invitation.email,
+        role: invitation.role,
+        expiresAt: invitation.expiresAt,
+      })
+      .from(invitation)
+      .where(
+        and(
+          eq(invitation.organizationId, ctx.team.id),
+          eq(invitation.status, "pending"),
+          gt(invitation.expiresAt, new Date()),
+        ),
+      )
+      .orderBy(invitation.expiresAt)
+  ).map(({ expiresAt, ...i }) => ({ ...i, expires: formatDate(expiresAt) }));
+  return (
+    <div className="flex max-w-3xl flex-col gap-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>Team</CardTitle>
+        </CardHeader>
+        <CardBody>
+          {/* Keyed on the name so a successful rename resets the field's defaultValue. */}
+          <RenameForm
+            key={ctx.team.name}
+            name={ctx.team.name}
+            disabled={!can(ctx.role, "team.rename")}
+          />
+        </CardBody>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>Members</CardTitle>
+        </CardHeader>
+        <CardBody>
+          <MembersPanel members={members} me={ctx.userId} myRole={ctx.role} />
+        </CardBody>
+      </Card>
+      {can(ctx.role, "members.invite") && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Invitations</CardTitle>
+          </CardHeader>
+          <CardBody>
+            <InvitePanel invites={invites} />
+          </CardBody>
+        </Card>
+      )}
+    </div>
+  );
+}
+```
+
+`apps/web/src/app/app/settings/RenameForm.tsx`:
+
+```tsx
+"use client";
+import { useActionState } from "react";
+import { renameTeam } from "./actions";
+import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
+import { Label } from "@/components/ui/Label";
+
+export function RenameForm({
+  name,
+  disabled,
+}: {
+  name: string;
+  disabled: boolean;
+}) {
+  const [state, action, pending] = useActionState(
+    async (_prev: unknown, fd: FormData) => renameTeam(fd),
+    null,
+  );
+  return (
+    <form action={action} className="flex flex-col gap-3">
+      <div className="flex items-end gap-3">
+        <div className="flex-1">
+          <Label htmlFor="team-name">Team name</Label>
+          <Input
+            id="team-name"
+            name="name"
+            defaultValue={name}
+            disabled={disabled}
+            required
+            minLength={2}
+            maxLength={64}
+          />
+        </div>
+        <Button type="submit" disabled={disabled || pending}>
+          {pending ? "Saving…" : "Save"}
+        </Button>
+      </div>
+      {state && !state.ok && (
+        <p role="alert" className="text-sm text-red-300">
+          {state.error}
+        </p>
+      )}
+    </form>
+  );
+}
+```
+
+`apps/web/src/app/app/settings/MembersPanel.tsx`:
+
+```tsx
+"use client";
+import { useState, useTransition } from "react";
+import { can, TEAM_ROLES, type TeamRole } from "@sendsprite/shared";
+import { changeRole, removeMember, type Result } from "./actions";
+import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
+import { Select } from "@/components/ui/Select";
+
+type Member = {
+  id: string;
+  userId: string;
+  role: string;
+  email: string;
+  name: string | null;
+};
+
+export function MembersPanel({
+  members,
+  me,
+  myRole,
+}: {
+  members: Member[];
+  me: string;
+  myRole: TeamRole;
+}) {
+  const [pending, start] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const canEdit = can(myRole, "members.changeRole");
+  const canRemove = can(myRole, "members.remove");
+  const run = (fn: () => Promise<Result>) =>
+    start(async () => {
+      setError(null);
+      try {
+        const res = await fn();
+        if (!res.ok) setError(res.error);
+      } catch {
+        setError("Something went wrong. Please try again.");
+      }
+    });
+  return (
+    <div className="flex flex-col gap-3">
+      <ul className="divide-y divide-white/10">
+        {members.map((m) => {
+          const self = m.userId === me;
+          // Only owners may touch owner rows; nobody edits their own row here.
+          const editable = !self && (m.role !== "owner" || myRole === "owner");
+          return (
+            <li
+              key={m.id}
+              className="flex items-center justify-between gap-3 py-3"
+            >
+              <div className="min-w-0">
+                <p className="truncate text-sm">
+                  {m.name || m.email}
+                  {self && <span className="text-white/50"> (you)</span>}
+                </p>
+                <p className="truncate text-xs text-white/50">{m.email}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                {canEdit && editable ? (
+                  <Select
+                    aria-label={`Role for ${m.email}`}
+                    className="h-8 w-auto text-xs"
+                    value={m.role}
+                    disabled={pending}
+                    onChange={(e) =>
+                      run(() => changeRole(m.id, e.target.value))
+                    }
+                  >
+                    {TEAM_ROLES.map((r) => (
+                      <option
+                        key={r}
+                        value={r}
+                        disabled={r === "owner" && myRole !== "owner"}
+                      >
+                        {r}
+                      </option>
+                    ))}
+                  </Select>
+                ) : (
+                  <Badge variant={m.role === "owner" ? "indigo" : "muted"}>
+                    {m.role}
+                  </Badge>
+                )}
+                {canRemove && editable && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={pending}
+                    onClick={() => {
+                      if (window.confirm(`Remove ${m.email} from the team?`))
+                        run(() => removeMember(m.id));
+                    }}
+                  >
+                    Remove
+                  </Button>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+      {error && (
+        <p role="alert" className="text-sm text-red-300">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+```
+
+`apps/web/src/app/app/settings/InvitePanel.tsx`:
+
+```tsx
+"use client";
+import { useActionState, useState, useTransition } from "react";
+import { cancelInvitation, inviteMember } from "./actions";
+import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
+import { Label } from "@/components/ui/Label";
+import { Select } from "@/components/ui/Select";
+
+type Invite = {
+  id: string;
+  email: string;
+  role: string | null;
+  /** Pre-formatted on the server so SSR and hydration agree. */
+  expires: string;
+};
+
+export function InvitePanel({ invites }: { invites: Invite[] }) {
+  const [state, action, pending] = useActionState(
+    async (_prev: unknown, fd: FormData) => inviteMember(fd),
+    null,
+  );
+  const [cancelling, start] = useTransition();
+  const [cancelError, setCancelError] = useState<string | null>(null);
+  return (
+    <div className="flex flex-col gap-4">
+      <form action={action} className="flex items-end gap-3">
+        <div className="flex-1">
+          <Label htmlFor="invite-email">Email</Label>
+          <Input id="invite-email" name="email" type="email" required />
+        </div>
+        <div>
+          <Label htmlFor="invite-role">Role</Label>
+          <Select id="invite-role" name="role" defaultValue="member">
+            <option value="member">member</option>
+            <option value="admin">admin</option>
+          </Select>
+        </div>
+        <Button type="submit" disabled={pending}>
+          {pending ? "Inviting…" : "Invite"}
+        </Button>
+      </form>
+      {state && !state.ok && (
+        <p role="alert" className="text-sm text-red-300">
+          {state.error}
+        </p>
+      )}
+      {state && state.ok && (
+        <p className="text-sm text-white/70">
+          Invitation created. Share this link:{" "}
+          <code className="rounded bg-white/8 px-1.5 py-0.5 text-xs select-all">
+            {state.data.link}
+          </code>
+        </p>
+      )}
+      {invites.length > 0 && (
+        <ul className="divide-y divide-white/10">
+          {invites.map((i) => (
+            <li
+              key={i.id}
+              className="flex items-center justify-between gap-3 py-2 text-sm"
+            >
+              <span className="min-w-0 truncate">
+                {i.email}{" "}
+                <span className="text-white/50">
+                  · {i.role ?? "member"} · expires {i.expires}
+                </span>
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={cancelling}
+                onClick={() =>
+                  start(async () => {
+                    setCancelError(null);
+                    try {
+                      const res = await cancelInvitation(i.id);
+                      if (!res.ok) setCancelError(res.error);
+                    } catch {
+                      setCancelError("Something went wrong. Please try again.");
+                    }
+                  })
+                }
+              >
+                Cancel
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {cancelError && (
+        <p role="alert" className="text-sm text-red-300">
+          {cancelError}
+        </p>
+      )}
+    </div>
+  );
+}
+```
+
+- [x] **Step 3: Mobile navigation (deferred from Task 11)**
+
+A small client component in the header, visible below `md`, that closes on route change, Escape, or a link click. `AppShell` renders it before the team name with the same `TeamSwitcher` + `NavLink` list as the sidebar.
+
+`apps/web/src/components/app/MobileNav.tsx`:
+
+```tsx
+"use client";
+import { useEffect, useState, type ReactNode } from "react";
+import { usePathname } from "next/navigation";
+
+/** Header menu below `md`. Closes on navigation, Escape, or link click. */
+export function MobileNav({ children }: { children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const pathname = usePathname();
+  useEffect(() => setOpen(false), [pathname]);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+  return (
+    <div className="md:hidden">
+      <button
+        type="button"
+        aria-label="Menu"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        className="cursor-pointer rounded-md px-2 py-1 text-sm text-white/75 hover:bg-white/6 hover:text-white"
+      >
+        ☰
+      </button>
+      {open && (
+        <div
+          className="absolute top-14 left-0 z-20 flex w-64 flex-col gap-4 border-r border-b border-white/10 bg-shadow p-4"
+          onClick={(e) => {
+            if ((e.target as HTMLElement).closest("a")) setOpen(false);
+          }}
+        >
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+- [x] **Step 4: Integration test**
+
+`apps/web/tests/integration/team-actions.test.ts` — signs up an owner + a member through `auth.api.signUpEmail` (`returnHeaders` → cookie headers), creates the org via `auth.api.createOrganization`, and asserts: member cannot invite; invalid email leaves no invitation/audit; owner invite → pending row + `members.invite` audit + `APP_URL/invite/<id>` link; mixed-case email stored/audited lowercase; cancel → `canceled` + audit; another org's invitation cannot be cancelled; a forged actor role is still rejected by better-auth's session check; admin cannot promote to owner; last owner cannot demote self or be removed; role change, rename (diff `{ name: { from, to } }`) and removal each write an audit row.
+
+Run: `cd apps/web && bun run test:integration`
+Expected: PASS.
+
+- [x] **Step 5: Typecheck**
+
+Run: `cd apps/web && rm -rf .next && bun run typecheck`
+Expected: clean. If `auth.api.updateOrganization` / `createInvitation` / `removeMember` / `updateMemberRole` / `cancelInvitation` body shapes differ in the installed better-auth version, open `node_modules/better-auth/dist/plugins/organization/routes/*.d.mts` and adjust the body fields — do not cast to `any`. (better-auth 1.7.1: all five match the calls above.)
+
+- [x] **Step 6: Manual check**
+
+`bun run dev` → `/app/settings`: rename works and persists; invite creates a link; open the link in a private window → sign up (allowed despite invite mode because a pending invite exists) → accept → new user lands in `/app` with the team; owner sees them in Members, can change role, remove.
+
+- [x] **Step 7: Commit**
+
+```bash
+git add apps/web/src/services/team.ts apps/web/src/app/app/settings apps/web/src/components/app apps/web/tests/integration/team-actions.test.ts apps/web/package.json
+git commit -m "feat(web): team settings — rename, members, roles, link-based invitations"
+```
+
+---
+
+### Task 13: Health endpoint (TDD on the pure part)
+
+**Files:**
+
+- Create: `apps/web/src/lib/health.ts`, `apps/web/src/app/api/health/route.ts`, `apps/web/tests/unit/health.test.ts`
+
+- [x] **Step 1: Failing test**
+
+`apps/web/tests/unit/health.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { summarize } from "@/lib/health";
+
+describe("health summarize", () => {
+  it("is ok only when db is ok; worker state is informational", () => {
+    expect(summarize({ db: "ok", worker: "running", queueLag: 0 }).status).toBe(
+      "ok",
+    );
+    expect(
+      summarize({ db: "ok", worker: "disabled", queueLag: 0 }).status,
+    ).toBe("ok");
+    expect(
+      summarize({ db: "error", worker: "running", queueLag: 0 }).status,
+    ).toBe("error");
+  });
+  it("degrades when queue lag exceeds 60s", () => {
+    expect(
+      summarize({ db: "ok", worker: "running", queueLag: 61 }).status,
+    ).toBe("degraded");
+  });
+});
+```
+
+- [x] **Step 2: Run to verify failure**
+
+Run: `cd apps/web && bun run test`
+Expected: FAIL — cannot find `@/lib/health`.
+
+- [x] **Step 3: Implement**
+
+`apps/web/src/lib/health.ts`:
+
+```ts
+import { sql } from "drizzle-orm";
+import { db } from "@/db";
+import { getWorkerState } from "@/jobs/boss";
+
+export interface Checks {
+  db: "ok" | "error";
+  worker: "running" | "disabled" | "stopped";
+  /** Seconds the oldest runnable job has been waiting; -1 if unmeasurable. */
+  queueLag: number;
+}
+export interface Health extends Checks {
+  status: "ok" | "degraded" | "error";
+  version: string;
+}
+
+export function summarize(c: Checks): Health {
+  const status =
+    c.db === "error" ? "error" : c.queueLag > 60 ? "degraded" : "ok";
+  return { ...c, status, version: process.env.APP_VERSION ?? "dev" };
+}
+
+// Postgres SQLSTATEs: undefined_table / invalid_schema_name. pg-boss creates
+// its schema on first start, so neither exists while the worker is disabled.
+const MISSING_RELATION = new Set(["42P01", "3F000"]);
+
+function sqlState(err: unknown): string | undefined {
+  const e = err as { code?: unknown; cause?: { code?: unknown } } | undefined;
+  const code = e?.code ?? e?.cause?.code;
+  return typeof code === "string" ? code : undefined;
+}
+
+/** Age in seconds of the oldest job that is due but not yet picked up. */
+async function queueLag(): Promise<number> {
+  try {
+    const rows = await db().execute(
+      sql`select coalesce(extract(epoch from (now() - min(start_after))), 0)::int as lag
+          from pgboss.job
+          where state in ('created', 'retry') and start_after <= now()`,
+    );
+    return Number((rows[0] as { lag?: number } | undefined)?.lag ?? 0);
+  } catch (err) {
+    if (MISSING_RELATION.has(sqlState(err) ?? "")) return 0;
+    console.error("[health] queue lag query failed", err);
+    return -1;
+  }
+}
+
+export async function collect(): Promise<Health> {
+  let dbState: Checks["db"] = "ok";
+  let lag = 0;
+  try {
+    await db().execute(sql`select 1`);
+    lag = await queueLag();
+  } catch {
+    dbState = "error";
+  }
+  return summarize({ db: dbState, worker: getWorkerState(), queueLag: lag });
+}
+```
+
+`apps/web/src/app/api/health/route.ts`:
+
+```ts
+import { NextResponse } from "next/server";
+import { collect } from "@/lib/health";
+
+export const dynamic = "force-dynamic";
+
+export async function GET() {
+  const h = await collect();
+  return NextResponse.json(h, { status: h.status === "error" ? 503 : 200 });
+}
+```
+
+(`getWorkerState` comes from Task 14; create it there. For now add a temporary `apps/web/src/jobs/boss.ts` exporting `export function getWorkerState(): "running" | "disabled" | "stopped" { return "disabled"; }` — Task 14 replaces it.)
+
+- [x] **Step 4: Run tests**
+
+Run: `cd apps/web && bun run test`
+Expected: PASS.
+
+- [x] **Step 5: Commit**
+
+```bash
+git add apps/web/src/lib/health.ts apps/web/src/app/api/health apps/web/src/jobs/boss.ts apps/web/tests/unit/health.test.ts
+git commit -m "feat(web): /api/health with db + queue lag checks"
+```
+
+---
+
+### Task 14: pg-boss runtime and boot instrumentation
+
+**Files:**
+
+- Create: `apps/web/src/jobs/queues.ts`, `apps/web/src/jobs/handlers/{index,heartbeat}.ts`, `apps/web/src/jobs/shutdown.ts`, `apps/web/src/instrumentation.ts`, `apps/web/src/worker.ts`, `apps/web/tests/integration/worker.test.ts`
+- Modify: `apps/web/src/jobs/boss.ts`, `apps/web/src/db/migrate.ts` (advisory lock), `apps/web/package.json` (add `"worker": "bun run src/worker.ts"`)
+
+- [x] **Step 1: Queue names and a heartbeat handler**
+
+`apps/web/src/jobs/queues.ts`:
+
+```ts
+export const Q = {
+  heartbeat: "system.heartbeat",
+  // Phase 2+: "domain.provision", "domain.verify", "email.send", "webhook.deliver", "retention.purge"
+} as const;
+export type QueueName = (typeof Q)[keyof typeof Q];
+```
+
+`apps/web/src/jobs/handlers/heartbeat.ts`:
+
+```ts
+import { registerQueue } from "../boss";
+import { Q } from "../queues";
+
+export async function heartbeat() {
+  // Proves the worker loop is alive; visible in logs and used by e2e.
+  console.info(`[worker] heartbeat ${new Date().toISOString()}`);
+}
+
+registerQueue(Q.heartbeat, () => heartbeat(), { cron: "*/5 * * * *" });
+```
+
+`apps/web/src/jobs/handlers/index.ts` (explicit handler module list; `startWorker()` imports it):
+
+```ts
+// Every handler module registers its queue(s) on import. `startWorker()`
+// imports this file so the registry is populated before queues are created.
+import "./heartbeat";
+```
+
+- [x] **Step 2: pg-boss singleton**
+
+`apps/web/src/jobs/boss.ts` (replace the stub):
+
+```ts
+import { PgBoss, type Job } from "pg-boss";
+
+type WorkerState = "running" | "disabled" | "stopped";
+export type JobHandler<T extends object = object> = (
+  jobs: Job<T>[],
+) => Promise<unknown>;
+
+interface Registration {
+  name: string;
+  handler: JobHandler<never>;
+  cron?: string;
+}
+
+interface Shared {
+  state: WorkerState;
+  boss?: PgBoss;
+  starting?: Promise<void>;
+  registry: Map<string, Registration>;
+}
+
+// Shared across bundles: Next evaluates this module once for the
+// instrumentation hook and again for route handlers, and dev HMR
+// re-evaluates it on reload. A plain module variable would report
+// "disabled" from /api/health while the worker is running.
+//
+// HMR caveat: handlers are attached to pg-boss once at start. Editing a
+// handler in dev updates the module but not the running worker — restart
+// `next dev` to pick the change up.
+const g = globalThis as { __sendspriteBoss?: Shared };
+const shared: Shared = (g.__sendspriteBoss ??= {
+  state: "disabled",
+  registry: new Map(),
+});
+
+export function getWorkerState(): WorkerState {
+  return shared.state;
+}
+
+async function attach(b: PgBoss, { name, handler, cron }: Registration) {
+  await b.createQueue(name);
+  if (cron) await b.schedule(name, cron);
+  await b.work(name, handler as JobHandler);
+}
+
+/**
+ * Register a queue and its handler. Before `startWorker()` the entry is
+ * queued up; while running, the queue is created and attached right away.
+ * Registering the same name again replaces the earlier entry.
+ */
+export function registerQueue<T extends object>(
+  name: string,
+  handler: JobHandler<T>,
+  opts: { cron?: string } = {},
+) {
+  const reg: Registration = { name, handler, cron: opts.cron };
+  shared.registry.set(name, reg);
+  if (shared.state === "running" && shared.boss) {
+    void attach(shared.boss, reg).catch((err) =>
+      console.error(`[worker] failed to attach queue ${name}`, err),
+    );
+  }
+}
+
+export async function getBoss(): Promise<PgBoss> {
+  if (shared.boss) return shared.boss;
+  const url = process.env.DATABASE_URL;
+  if (!url) throw new Error("DATABASE_URL is not set");
+  const boss = new PgBoss({ connectionString: url, schema: "pgboss" });
+  boss.on("error", (e) => console.error("[pg-boss]", e));
+  await boss.start();
+  shared.boss = boss;
+  return boss;
+}
+
+/**
+ * Create every registered queue, attach handlers and begin polling.
+ * Idempotent and re-entrant: concurrent callers await the same start.
+ */
+export async function startWorker(): Promise<void> {
+  if (shared.state === "running") return;
+  if (shared.starting) return shared.starting;
+  shared.starting = (async () => {
+    await import("./handlers");
+    const b = await getBoss();
+    for (const reg of shared.registry.values()) await attach(b, reg);
+    shared.state = "running";
+    console.info(
+      `[worker] started (${[...shared.registry.keys()].join(", ")})`,
+    );
+  })().finally(() => {
+    shared.starting = undefined;
+  });
+  return shared.starting;
+}
+
+/** Stop polling and close the pool. State stays "disabled" if never started. */
+export async function stopWorker() {
+  if (shared.starting) await shared.starting.catch(() => undefined);
+  const b = shared.boss;
+  if (!b) return;
+  await b.stop({ graceful: true, timeout: 10_000 });
+  shared.boss = undefined;
+  shared.state = "stopped";
+}
+```
+
+- [x] **Step 3: Boot hook**
+
+`apps/web/src/instrumentation.ts`:
+
+```ts
+/**
+ * Runs once per Next.js server process (nodejs runtime only).
+ * 1. Apply DB migrations (safe/idempotent, advisory-locked).
+ * 2. Start the in-process job worker unless WORKER_MODE says otherwise.
+ * 3. With NEXT_MANUAL_SIG_HANDLE=true (set in the Docker image), stop the
+ *    worker gracefully on SIGTERM/SIGINT before exiting.
+ */
+export async function register() {
+  if (process.env.NEXT_RUNTIME !== "nodejs") return;
+  const { loadEnv } = await import("@/env.schema");
+  const { runMigrations } = await import("@/db/migrate");
+  const env = loadEnv();
+  await runMigrations(env.DATABASE_URL);
+  console.info("[boot] migrations applied");
+  if (env.WORKER_MODE !== "inline") return;
+
+  const { startWorker } = await import("@/jobs/boss");
+  await startWorker();
+
+  if (process.env.NEXT_MANUAL_SIG_HANDLE === "true") {
+    const { installShutdownHandlers } = await import("@/jobs/shutdown");
+    installShutdownHandlers();
+  }
+}
+```
+
+`apps/web/src/jobs/shutdown.ts` (shared SIGTERM/SIGINT handling; kept out of `instrumentation.ts`, which Next also compiles for the Edge runtime):
+
+```ts
+import { stopWorker } from "./boss";
+
+/**
+ * Stop the worker gracefully on SIGTERM/SIGINT, then exit. A second signal
+ * while stopping exits immediately. Kept out of instrumentation.ts because
+ * Next also compiles that file for the Edge runtime and flags `process.on`.
+ */
+export function installShutdownHandlers() {
+  let stopping = false;
+  for (const sig of ["SIGTERM", "SIGINT"] as const) {
+    process.on(sig, async () => {
+      if (stopping) process.exit(1);
+      stopping = true;
+      try {
+        await stopWorker();
+      } finally {
+        process.exit(0);
+      }
+    });
+  }
+}
+```
+
+`apps/web/src/worker.ts` (standalone worker process for `WORKER_MODE=separate`):
+
+```ts
+// Standalone worker process for WORKER_MODE=separate (`bun run worker`).
+import { loadEnv } from "@/env.schema";
+import { runMigrations } from "@/db/migrate";
+import { startWorker } from "@/jobs/boss";
+import { installShutdownHandlers } from "@/jobs/shutdown";
+
+const env = loadEnv();
+await runMigrations(env.DATABASE_URL);
+await startWorker();
+installShutdownHandlers();
+```
+
+Add to `apps/web/package.json` scripts: `"worker": "bun run src/worker.ts"`.
+
+- [x] **Step 4: Verify**
+
+Run: `cd apps/web && bun run dev`
+Expected console: `[boot] migrations applied`, `[worker] started`, and within 5 minutes a `[worker] heartbeat …` line. `curl localhost:3000/api/health` → `{"status":"ok","db":"ok","worker":"running",...}`.
+
+Run: `WORKER_MODE=none bun run dev` (PowerShell: `$env:WORKER_MODE="none"; bun run dev`) → health reports `"worker":"disabled"`.
+
+- [x] **Step 5: Commit**
+
+```bash
+git add apps/web/src/instrumentation.ts apps/web/src/jobs apps/web/src/worker.ts apps/web/package.json
+git commit -m "feat(web): pg-boss worker with boot-time migrations via instrumentation hook"
+```
+
+---
+
+### Task 15: Docker image, compose, installer
+
+**Files:**
+
+- Create: `Dockerfile`, `docker-compose.yml`, `install.sh`
+
+- [x] **Step 1: Dockerfile (multistage Bun, standalone output)**
+
+```dockerfile
+# syntax=docker/dockerfile:1
+FROM oven/bun:1.3.14 AS base
+# /app must be the same absolute root in `build` and `runner`: the traced
+# node_modules symlinks in the standalone output may be absolute.
+WORKDIR /app
+
+# Dependencies only: workspace manifests + lockfile so this layer is cached
+# until a package.json changes. Bun's isolated linker puts the real packages
+# in /app/node_modules/.bun and symlinks them per workspace.
+FROM base AS deps
+COPY package.json bun.lock bunfig.toml ./
+COPY apps/web/package.json apps/web/
+COPY packages/shared/package.json packages/shared/
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install --frozen-lockfile
+
+# Build on top of deps so every workspace's node_modules (and their symlinks
+# into .bun) come along. .dockerignore keeps host node_modules/.next out of
+# the context, so COPY . . only adds sources. packages/shared is a source
+# package consumed via workspace:*, so it must be present here.
+FROM deps AS build
+ENV NEXT_TELEMETRY_DISABLED=1
+COPY . .
+RUN --mount=type=cache,target=/app/apps/web/.next/cache \
+    cd apps/web && bun run build
+
+FROM base AS runner
+ARG APP_VERSION=dev
+ENV NODE_ENV=production HOSTNAME=0.0.0.0 PORT=3000 NEXT_TELEMETRY_DISABLED=1
+# APP_VERSION is reported by /api/health. NEXT_MANUAL_SIG_HANDLE hands
+# SIGTERM to instrumentation.ts, which stops pg-boss before exiting.
+ENV APP_VERSION=$APP_VERSION NEXT_MANUAL_SIG_HANDLE=true
+# `output: "standalone"` in a monorepo emits:
+#   .next/standalone/apps/web/server.js       entry (reads PORT/HOSTNAME)
+#   .next/standalone/apps/web/.next/          server chunks
+#   .next/standalone/apps/web/drizzle/        via outputFileTracingIncludes
+#   .next/standalone/node_modules/.bun/       traced runtime packages
+# It deliberately omits .next/static and public/, so those are copied
+# alongside; leaving either out serves pages without CSS or fonts.
+COPY --from=build --chown=bun:bun /app/apps/web/.next/standalone ./
+COPY --from=build --chown=bun:bun /app/apps/web/.next/static ./apps/web/.next/static
+COPY --from=build --chown=bun:bun /app/apps/web/public ./apps/web/public
+USER bun
+WORKDIR /app/apps/web
+# SMTP relay (587) arrives in Phase 3.
+EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+  CMD bun -e "fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+CMD ["bun", "server.js"]
+```
+
+- [x] **Step 2: docker-compose.yml**
+
+```yaml
+services:
+  app:
+    image: ghcr.io/defy-works/sendsprite:latest
+    build: .
+    ports:
+      - "${APP_PORT:-3000}:3000"
+      # SMTP relay (587) arrives in Phase 3.
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://sendsprite:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/sendsprite
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sendsprite
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: sendsprite
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sendsprite -d sendsprite"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # Optional: `docker compose --profile worker up -d` runs jobs in a second
+  # container. Set WORKER_MODE=separate in .env so `app` stops running them.
+  # The worker is the same image with the worker forced on; it only listens
+  # on the internal network (no ports published).
+  worker:
+    profiles: ["worker"]
+    image: ghcr.io/defy-works/sendsprite:latest
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://sendsprite:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/sendsprite
+      WORKER_MODE: inline
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+```
+
+Note: when the `worker` profile is used, set `WORKER_MODE=separate` in `.env` so the `app` container stops running jobs. The worker container runs the same standalone `server.js` with `WORKER_MODE=inline` rather than `bun run worker`: the standalone image has no `src/` or full `node_modules`, so `src/worker.ts` cannot run there.
+
+- [x] **Step 3: install.sh**
+
+```bash
+#!/usr/bin/env sh
+# Sendsprite one-line installer: curl -fsSL https://sendsprite.dev/install.sh | sh
+set -eu
+
+DIR="${SENDSPRITE_DIR:-$HOME/sendsprite}"
+REPO_RAW="https://raw.githubusercontent.com/defy-works/sendsprite/main"
+
+command -v docker >/dev/null 2>&1 || { echo "Docker is required: https://docs.docker.com/get-docker/"; exit 1; }
+docker compose version >/dev/null 2>&1 || { echo "Docker Compose v2 is required."; exit 1; }
+
+mkdir -p "$DIR" && cd "$DIR"
+[ -f docker-compose.yml ] || curl -fsSL "$REPO_RAW/docker-compose.yml" -o docker-compose.yml
+
+if [ ! -f .env ]; then
+  printf "Public URL of this instance (e.g. https://mail.example.com) [http://localhost:3000]: "
+  read -r APP_URL </dev/tty || APP_URL=""
+  APP_URL="${APP_URL:-http://localhost:3000}"
+  APP_URL="${APP_URL%/}"
+  case "$APP_URL" in
+    http://*|https://*) ;;
+    *) echo "APP_URL must start with http:// or https:// (got: $APP_URL)"; exit 1 ;;
+  esac
+  gen() { head -c 48 /dev/urandom | base64 | tr -d '/+=\n' | cut -c1-"$1"; }
+  # .env holds APP_SECRET and the DB password: owner-only from the first byte.
+  umask 077
+  cat > .env <<EOF
+APP_URL=$APP_URL
+APP_SECRET=$(gen 48)
+POSTGRES_PASSWORD=$(gen 32)
+EMAIL_PASSWORD_ENABLED=true
+SIGNUP_MODE=auto
+LANDING_ENABLED=true
+SMTP_ENABLED=true
+WORKER_MODE=inline
+EMAIL_RETENTION_DAYS=90
+EOF
+  chmod 600 .env
+  echo "Wrote $DIR/.env (keep APP_SECRET safe — it encrypts your AWS/Cloudflare credentials)."
+fi
+
+# A failed pull is fine when the image is already present locally.
+docker compose pull || docker image inspect ghcr.io/defy-works/sendsprite:latest >/dev/null 2>&1 || { echo "Image not available yet"; exit 1; }
+docker compose up -d
+echo
+echo "Sendsprite is starting. Open $(grep '^APP_URL=' .env | cut -d= -f2-)/signup to create the first account."
+echo "Add Google/GitHub sign-in later by setting GOOGLE_CLIENT_ID/SECRET or GITHUB_CLIENT_ID/SECRET in $DIR/.env and running: docker compose up -d"
+```
+
+Run `chmod +x install.sh` (on Windows, `git update-index --chmod=+x install.sh` after adding).
+
+- [ ] **Step 4: Build and run the image locally** — verified in CI (Task 16) — no Docker locally (WSL2 virtualisation disabled). Validated statically against the observed `bun run build` standalone tree.
+
+Run (repo root): `docker compose build && POSTGRES_PASSWORD=devpass docker compose up -d` with a `.env` copied from `.env.example` (`APP_SECRET` ≥ 32 chars).
+Expected: `docker compose ps` shows `db` healthy and `app` healthy; `curl localhost:3000/api/health` → `"status":"ok"`; `/signup` renders.
+
+- [x] **Step 5: Commit**
+
+```bash
+git add Dockerfile docker-compose.yml install.sh
+git update-index --chmod=+x install.sh
+git commit -m "feat: Docker image, compose stack, one-line installer"
+```
+
+---
+
+### Task 16: E2E smoke test and CI
+
+**Files:**
+
+- Create: `apps/web/playwright.config.ts`, `apps/web/tests/e2e/smoke.spec.ts`, `.github/workflows/ci.yml`
+
+- [x] **Step 1: Playwright config**
+
+CI uses one Postgres service for everything; `TEST_DATABASE_URL` makes `_pg.ts` create and drop a `test_<hex>` database per test file so parallel integration files stay isolated from each other and from the e2e app database.
+
+`apps/web/playwright.config.ts`:
+
+```ts
+import { defineConfig } from "@playwright/test";
+
+// Port 3000 is often taken on dev machines; CI sets E2E_PORT=3000.
+const PORT = process.env.E2E_PORT ?? "3001";
+const baseURL = process.env.E2E_BASE_URL ?? `http://localhost:${PORT}`;
+
+export default defineConfig({
+  testDir: "tests/e2e",
+  timeout: 60_000,
+  reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : "list",
+  use: {
+    baseURL,
+    trace: "retain-on-failure",
+  },
+  // With E2E_BASE_URL set we target an already-running server (e.g. the
+  // Docker image); otherwise `next dev` is started on PORT. DATABASE_URL and
+  // APP_SECRET come from .env.local locally (Next loads it) and from the job
+  // env in CI; APP_URL is overridden so it matches the port in use.
+  webServer: process.env.E2E_BASE_URL
+    ? undefined
+    : {
+        command: `bun run dev -- -p ${PORT}`,
+        url: `${baseURL}/api/health`,
+        reuseExistingServer: !process.env.CI,
+        timeout: 120_000,
+        stdout: "pipe",
+        stderr: "pipe",
+        env: {
+          ...(process.env.DATABASE_URL && {
+            DATABASE_URL: process.env.DATABASE_URL,
+          }),
+          ...(process.env.APP_SECRET && { APP_SECRET: process.env.APP_SECRET }),
+          APP_URL: `http://localhost:${PORT}`,
+          EMAIL_PASSWORD_ENABLED: "true",
+          SIGNUP_MODE: "open",
+          WORKER_MODE: "none",
+        },
+      },
+});
+```
+
+- [x] **Step 2: Smoke spec**
+
+`apps/web/tests/e2e/smoke.spec.ts`:
+
+```ts
+import { expect, test } from "@playwright/test";
+
+test("signup → create team → shell renders → settings rename", async ({
+  page,
+}) => {
+  // Unique per run: the dev database persists between runs.
+  const email = `e2e-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.com`;
+  await page.goto("/signup");
+  await page.fill("#name", "E2E");
+  await page.fill("#email", email);
+  await page.fill("#password", "correct-horse-battery");
+  await page.click("button[type=submit]");
+
+  // Signup pushes to /app; a user without a team is then server-redirected to
+  // /teams/new. The URL passes through /app transiently, so wait for content
+  // rather than the URL: either the create-team form or the app shell.
+  const createTeam = page.getByRole("button", { name: "Create team" });
+  const checklist = page.getByText("Setup checklist");
+  await expect(createTeam.or(checklist)).toBeVisible({ timeout: 30_000 });
+  await expect(page).toHaveURL(/\/(teams\/new|app)$/);
+  if (await createTeam.isVisible()) {
+    await page.fill("#name", "Acme");
+    await createTeam.click();
+    await page.waitForURL("**/app");
+  }
+  await expect(checklist).toBeVisible();
+
+  await page.goto("/app/settings");
+  await page.fill("#team-name", "Acme Renamed");
+  await page.getByRole("button", { name: "Save" }).click();
+  // No error alert from the server action (scoped to the form: Next's dev
+  // overlay keeps an empty role=alert live region on every page), and the
+  // revalidated shell shows the new name.
+  const renameForm = page.locator("form", { has: page.locator("#team-name") });
+  await expect(renameForm.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByRole("banner")).toContainText("Acme Renamed");
+
+  const health = await page.request.get("/api/health");
+  expect(health.ok()).toBeTruthy();
+});
+```
+
+- [x] **Step 3: CI workflow**
+
+`.github/workflows/ci.yml`:
+
+```yaml
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: sendsprite
+          POSTGRES_PASSWORD: sendsprite
+          POSTGRES_DB: sendsprite
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sendsprite"
+          --health-interval 5s
+          --health-retries 20
+    env:
+      APP_URL: http://localhost:3000
+      APP_SECRET: ci-secret-ci-secret-ci-secret-ci-secret
+      DATABASE_URL: postgres://sendsprite:sendsprite@localhost:5432/sendsprite
+      # Integration tests use the service container instead of downloading
+      # embedded-postgres binaries.
+      TEST_DATABASE_URL: postgres://sendsprite:sendsprite@localhost:5432/sendsprite
+      E2E_PORT: "3000"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run lint
+      - run: bun run format:check
+      - run: bun run test
+      - run: bun run test:integration
+      - run: bunx playwright install --with-deps chromium
+        working-directory: apps/web
+      - run: bun run db:migrate
+        working-directory: apps/web
+      - run: bun run test:e2e
+        working-directory: apps/web
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+          retention-days: 7
+
+  # Deliberately no `needs: test`: the image build is independent of the test
+  # suite, so both jobs run in parallel and a red test job still shows whether
+  # the Docker image builds and boots.
+  docker:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: sendsprite
+          POSTGRES_PASSWORD: sendsprite
+          POSTGRES_DB: sendsprite
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sendsprite"
+          --health-interval 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: sendsprite:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # Boots the standalone image against the service Postgres: proves the
+      # traced node_modules/.bun symlinks, boot migrations and /api/health work.
+      - name: Smoke-test image
+        run: |
+          docker run -d --name ss --network host \
+            -e APP_URL=http://localhost:3000 \
+            -e APP_SECRET=ci-secret-ci-secret-ci-secret-ci-secret \
+            -e DATABASE_URL=postgres://sendsprite:sendsprite@localhost:5432/sendsprite \
+            -e EMAIL_PASSWORD_ENABLED=true \
+            sendsprite:ci
+          for i in $(seq 1 30); do
+            if curl -fsS localhost:3000/api/health; then
+              echo; echo "healthy after ${i} tries"; exit 0
+            fi
+            sleep 2
+          done
+          echo "image did not become healthy"; exit 1
+      - name: Container logs
+        if: failure()
+        run: docker logs ss || true
+      # GHCR push (docker/login-action + push: true, tags ghcr.io/...) goes
+      # here once releases are cut; not part of Phase 1.
+```
+
+- [x] **Step 4: Run e2e locally**
+
+Run: `cd apps/web && bunx playwright install chromium && bun run test:e2e` (local Postgres running via `bun run db:dev`, `.env.local` present; server starts on `E2E_PORT`, default 3001)
+Expected: 1 passed.
+
+- [x] **Step 5: Commit**
+
+```bash
+git add apps/web/playwright.config.ts apps/web/tests/e2e .github
+git commit -m "test: e2e smoke (signup → team → settings) and CI workflow"
+```
+
+---
+
+### Task 17: README
+
+**Files:**
+
+- Create: `README.md`
+
+- [x] **Step 1: Write README** (aws-cost-dashboard "why it works this way" tone)
+
+````markdown
+# Sendsprite
+
+Self-hosted email API and marketing platform on Amazon SES. A Resend / useSend
+alternative that sets up SES and Cloudflare DNS for you, ships an npm SDK with
+first-class React support, and runs from a single `docker compose up`.
+
+Bun · Next.js 16 · Postgres · Drizzle · pg-boss · BetterAuth · MIT
+
+## Install (self-host)
+
+```bash
+curl -fsSL https://sendsprite.dev/install.sh | sh
+```
+
+That writes `~/sendsprite/.env` with generated secrets, starts the app and
+Postgres, and prints the signup URL. The first account becomes the instance
+owner; after that, sign-ups are invite-only unless you change `SIGNUP_MODE`.
+
+Manual alternative: copy `.env.example` to `.env`, set `APP_URL`, `APP_SECRET`
+(≥ 32 random chars) and `POSTGRES_PASSWORD`, then `docker compose up -d`.
+
+## Why it works the way it does
+
+**One container, one database.** Everything — web, REST API, background jobs,
+SMTP relay — runs in the Next.js process. Jobs use pg-boss on the same Postgres,
+so there is no Redis and no second service to operate. Set `WORKER_MODE=separate`
+and run the `worker` compose profile when you outgrow one box.
+
+**Secrets never live in env.** AWS keys and the Cloudflare token are entered in
+the browser and stored encrypted (AES-256-GCM, key derived from `APP_SECRET`).
+Losing `APP_SECRET` means re-connecting AWS/Cloudflare, not losing data.
+
+**Auth providers are switched on by presence.** Set `GOOGLE_CLIENT_ID` +
+`GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID` + `GITHUB_CLIENT_SECRET`, and/or
+`EMAIL_PASSWORD_ENABLED=true`. Nothing else to configure.
+
+**Migrations run on boot.** The image applies pending migrations before it
+serves traffic, so upgrading is `docker compose pull && docker compose up -d`.
+
+## Development
+
+```bash
+bun install
+bun run --filter @sendsprite/web db:dev   # embedded Postgres 16 in apps/web/.pgdata (no Docker needed); or point DATABASE_URL at your own
+cp .env.example apps/web/.env.local
+bun run db:migrate
+bun dev                      # http://localhost:3000
+```
+
+```bash
+bun run typecheck            # next typegen + tsc, every workspace
+bun run lint · format · format:check
+bun run test                 # unit (vitest)
+bun run test:integration     # vitest against an embedded Postgres (or TEST_DATABASE_URL)
+bun run test:e2e             # Playwright
+bun run db:generate          # new migration from schema changes
+```
+
+CI builds the image (see `.github/workflows/ci.yml`); `docker compose build`
+does the same locally.
+
+## Environment reference
+
+| Variable                                             | Default  | Notes                                                                    |
+| ---------------------------------------------------- | -------- | ------------------------------------------------------------------------ |
+| `APP_URL`                                            | —        | Public URL, with protocol                                                |
+| `APP_SECRET`                                         | —        | ≥ 32 chars; encrypts stored credentials                                  |
+| `DATABASE_URL`                                       | —        | Postgres connection string                                               |
+| `POSTGRES_PASSWORD`                                  | —        | Compose only; alphanumeric recommended (interpolated unencoded into URL) |
+| `SIGNUP_MODE`                                        | `auto`   | `auto` → open until first user, then invite; or `open`/`invite`/`closed` |
+| `EMAIL_PASSWORD_ENABLED`                             | `false`  | Email + password sign-in                                                 |
+| `GOOGLE_CLIENT_ID/SECRET`, `GITHUB_CLIENT_ID/SECRET` | —        | OAuth providers                                                          |
+| `WORKER_MODE`                                        | `inline` | `inline` / `separate` / `none`                                           |
+| `SMTP_ENABLED`                                       | `true`   | SMTP relay on 587 (Phase 3)                                              |
+| `LANDING_ENABLED`                                    | `true`   | `false` sends `/` to `/app`                                              |
+| `EMAIL_RETENTION_DAYS`                               | `90`     | Body/attachment purge window                                             |
+
+## Roadmap
+
+Phase 1 (this): foundation. Phase 2: AWS one-click connect, Cloudflare, domains.
+Phase 3: sending API, events, webhooks, SMTP. Phase 4: SDK, CLI, MCP, docs,
+landing. Phase 5: templates, preview, contacts, campaigns, audit UI.
+Design: `docs/superpowers/specs/2026-08-24-sendsprite-design.md`.
+
+## License
+
+MIT
+````
+
+That writes `~/sendsprite/.env` with generated secrets, starts the app and
+Postgres, and prints the signup URL. The first account becomes the instance
+owner; after that, sign-ups are invite-only unless you change `SIGNUP_MODE`.
+
+Manual alternative: copy `.env.example` to `.env`, set `APP_URL`, `APP_SECRET`
+(≥ 32 random chars) and `POSTGRES_PASSWORD`, then `docker compose up -d`.
+
+## Why it works the way it does
+
+**One container, one database.** Everything — web, REST API, background jobs,
+SMTP relay — runs in the Next.js process. Jobs use pg-boss on the same Postgres,
+so there is no Redis and no second service to operate. Set `WORKER_MODE=separate`
+and run the `worker` compose profile when you outgrow one box.
+
+**Secrets never live in env.** AWS keys and the Cloudflare token are entered in
+the browser and stored encrypted (AES-256-GCM, key derived from `APP_SECRET`).
+Losing `APP_SECRET` means re-connecting AWS/Cloudflare, not losing data.
+
+**Auth providers are switched on by presence.** Set `GOOGLE_CLIENT_ID` +
+`GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID` + `GITHUB_CLIENT_SECRET`, and/or
+`EMAIL_PASSWORD_ENABLED=true`. Nothing else to configure.
+
+**Migrations run on boot.** The image applies pending migrations before it
+serves traffic, so upgrading is `docker compose pull && docker compose up -d`.
+
+## Development
+
+```bash
+bun install
+bun run --filter @sendsprite/web db:dev   # embedded Postgres 16 in apps/web/.pgdata (no Docker needed); or point DATABASE_URL at your own
+cp .env.example apps/web/.env.local
+bun run db:migrate
+bun dev                      # http://localhost:3000
+```
+
+```bash
+bun run typecheck · lint · format
+bun run test                 # unit (vitest)
+bun run test:integration     # embedded Postgres (or TEST_DATABASE_URL)
+bun run test:e2e             # Playwright
+bun run db:generate          # new migration from schema changes
+```
+
+## Environment reference
+
+| Variable                                             | Default  | Notes                                                                    |
+| ---------------------------------------------------- | -------- | ------------------------------------------------------------------------ |
+| `APP_URL`                                            | —        | Public URL, with protocol                                                |
+| `APP_SECRET`                                         | —        | ≥ 32 chars; encrypts stored credentials                                  |
+| `DATABASE_URL`                                       | —        | Postgres connection string                                               |
+| `SIGNUP_MODE`                                        | `auto`   | `auto` → open until first user, then invite; or `open`/`invite`/`closed` |
+| `EMAIL_PASSWORD_ENABLED`                             | `false`  | Email + password sign-in                                                 |
+| `GOOGLE_CLIENT_ID/SECRET`, `GITHUB_CLIENT_ID/SECRET` | —        | OAuth providers                                                          |
+| `WORKER_MODE`                                        | `inline` | `inline` / `separate` / `none`                                           |
+| `SMTP_ENABLED`                                       | `true`   | SMTP relay on 587 (Phase 3)                                              |
+| `LANDING_ENABLED`                                    | `true`   | `false` sends `/` to `/app`                                              |
+| `EMAIL_RETENTION_DAYS`                               | `90`     | Body/attachment purge window                                             |
+
+## Roadmap
+
+Phase 1 (this): foundation. Phase 2: AWS one-click connect, Cloudflare, domains.
+Phase 3: sending API, events, webhooks, SMTP. Phase 4: SDK, CLI, MCP, docs,
+landing. Phase 5: templates, preview, contacts, campaigns, audit UI.
+Design: `docs/superpowers/specs/2026-08-24-sendsprite-design.md`.
+
+## License
+
+MIT
+
+````
+
+- [x] **Step 2: Commit**
+
+```bash
+git add README.md
+git commit -m "docs: README with install, rationale, env reference"
+````
+
+---
+
+## Self-review
+
+**Spec coverage (Phase 1 items from §14):** monorepo (T1), theme + UI primitives (T3, T8), BetterAuth with Google/GitHub/email-password by env (T4, T7, T10), teams/invites (T7, T11, T12), schema + migrations (T6, T7), compose + Dockerfile + installer (T15), app shell (T11), health endpoint (T13). Also covered though listed under later phases in the spec but required by Phase 1's runtime: instance settings + encryption (T5, T11), pg-boss worker + `WORKER_MODE` (T14), audit recorder (T9). CI (T16) satisfies §13's CI line.
+
+**Placeholder scan:** none remaining. The one "generated" artifact (`schema/auth.ts`) is produced by a documented command with an explicit expected-output check (Task 7 Step 6).
+
+**Type consistency:** `TeamRole` from `@sendsprite/shared` used in `session.ts`, `MembersPanel.tsx`, `actions.ts`; `getWorkerState()` defined in T13 stub, re-implemented with the same signature in T14; `getInstanceSettings()` used in T11 layout/page and defined in T11 Step 4 (same task, ordered so the file exists before typecheck); `requireTeam()` redirects to `/teams/new`, which lives at `apps/web/src/app/(onboarding)/teams/new/` (outside the `/app` layout).

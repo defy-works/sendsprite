@@ -1,0 +1,212 @@
+export const metadata = {
+  title: "Unsubscribe",
+  description:
+    "How Sendsprite unsubscribe links work: stateless HMAC tokens, the GET/POST split, RFC 8058 one-click, and List-Unsubscribe for your own pages.",
+};
+
+# Unsubscribe
+
+Every [campaign](/docs/campaigns) message carries an unsubscribe link in its
+body and the RFC 8058 header pair that puts a native **Unsubscribe** button in
+Gmail and Outlook. You do not add them, and you cannot remove them.
+
+Both are per recipient, both carry the same token, and they are deliberately
+two different URLs:
+
+```
+Body footer:      https://mail.acme.com/unsubscribe/<token>
+List-Unsubscribe: <https://mail.acme.com/api/unsubscribe/<token>>
+List-Unsubscribe-Post: List-Unsubscribe=One-Click
+```
+
+## The token
+
+A token is `base64url("<contactId>.<campaignId>.<sig>")`, where `sig` is
+`HMAC-SHA256("<contactId>.<campaignId>")` keyed by your instance's
+`APP_SECRET`. About 140 characters, and nothing is stored anywhere.
+
+Stateless on purpose. A stored token means one row per recipient per campaign
+— 50 000 rows for a 50 000-recipient send, plus a retention story — bought in
+exchange for being able to revoke a link whose only power is to *remove*
+consent. That is never the dangerous direction.
+
+What the token authorises is exactly one thing: turning one contact's
+subscription off. Nothing resubscribes, nothing writes a suppression, and
+nothing reads anything back — so a forged request achieves precisely what the
+recipient could achieve by pressing the button themselves.
+
+**Rotating `APP_SECRET` invalidates every outstanding unsubscribe link.** Mail
+already in inboxes keeps a token the new secret will not verify, and those
+recipients land on "this link didn't work" instead of unsubscribing. This is
+the same blast radius rotation already has for every stored AWS and Cloudflare
+credential ([Self-hosting](/docs/self-hosting)), and it is a reason to treat
+`APP_SECRET` as permanent rather than a reason to avoid rotating a compromised
+one. If you must rotate, expect a window as long as people keep old campaign
+mail.
+
+The token **is** the credential, so nothing on this surface logs it: not the
+routes, not the service, not an error message, and not a response body. Every
+answer is `cache-control: no-store, private`, `x-robots-tag: noindex, nofollow`
+and `referrer-policy: no-referrer` — a shared cache, a search index or someone
+else's `Referer` log holding a copy would each be a working unsubscribe link
+for that recipient.
+
+## The GET/POST split, and why it exists
+
+**A GET never unsubscribes anybody.** This is the single most important
+property on the page.
+
+Corporate mail security products — Defender, Proofpoint, Mimecast — fetch every
+link in an incoming message before a person sees it. If a GET unsubscribed, a
+scanner would silently unsubscribe recipients who never touched the message,
+and the first symptom would be a customer asking why their list is evaporating
+— by which time it has happened to everyone whose employer runs a scanner.
+This is not hypothetical; it is the standard failure of one-click unsubscribe
+implementations.
+
+So:
+
+| Request                          | Does                                                          |
+| -------------------------------- | --------------------------------------------------------------- |
+| `GET /unsubscribe/<token>`       | Renders a page with a button. **Reads only.**                   |
+| `POST` from that page's button   | Unsubscribes, then redirects back to the page.                  |
+| `POST /api/unsubscribe/<token>`  | RFC 8058 one-click. Unsubscribes. Always `200`.                 |
+| `GET /api/unsubscribe/<token>`   | `302` to the page. **Mutates nothing** — this is the one a scanner following the header will hit. |
+
+### Why the two URLs differ
+
+The body link points at `/unsubscribe/:token` because it is for humans: a page
+with an explicit button, safe for anything to fetch.
+
+`List-Unsubscribe` names `/api/unsubscribe/:token` because RFC 8058 requires
+the URI in that header to accept a POST, and a Next.js App Router segment
+holding a page cannot also export a `POST` handler. Pointing the header at the
+page would make Gmail's and Outlook's native button answer `405` — a silently
+broken one-click, which is the expensive kind of broken.
+
+`List-Unsubscribe-Post` is never emitted without `List-Unsubscribe`. On its own
+it is a header no client acts on, and its *absence* beside a `List-Unsubscribe`
+is what makes the native button disappear and leaves the spam button as the
+recipient's only way out.
+
+### The page
+
+Three states, all `200`:
+
+- **Still subscribed** — the address, who it is from, and a button. It says
+  "Nothing has changed yet", which is the visible half of the split: whoever
+  opened the link, person or scanner, has unsubscribed nobody.
+- **Already unsubscribed** — the same confirmation someone gets a second after
+  pressing the button. The page renders from current consent rather than from
+  what the last POST returned, so it is idempotent by construction.
+- **The link does not work** — one generic message. A forged signature and a
+  deleted contact are deliberately indistinguishable, or the page becomes a way
+  to ask which contact ids exist.
+
+It never answers `404`. That would tell scanners and crawlers the sender's
+links are broken and tell the reader nothing the words do not.
+
+### The one-click endpoint
+
+`POST /api/unsubscribe/:token` is **unauthenticated and deliberately not
+CSRF-protected**. That is a considered exception, not an oversight, and it must
+not be "fixed": RFC 8058 requires an unauthenticated cross-origin POST issued
+by a mail client. There is no session to bind a token to, and no origin anyone
+could predict — Gmail, Outlook and every other client post from infrastructure
+nobody has seen. The HMAC in the path *is* the authorisation, and the blast
+radius above is what makes that safe.
+
+It answers **`200` to everything**, including a forged token, a rotated secret
+and a deleted contact, with a fixed body identical for every outcome. A mail
+client shown an error teaches the recipient to press the spam button instead,
+and a complaint costs a sender orders of magnitude more reputation than an
+unsubscribe does.
+
+The one exception is the rate limiter, which answers **`429` with
+`Retry-After`**. That is a statement about load rather than about the token,
+and it is the one refusal a conforming client should retry. Answering `200`
+while dropping the write would leave someone still subscribed after being told
+they were not.
+
+The limit is 20 requests per IP with a burst of 20, refilling continuously. It
+is not brute-force protection — nobody guesses a 256-bit HMAC — it is there for
+the mundane case: one broken mail client or one scanner retrying the one-click
+POST in a loop, where each call is a write, an audit row and a webhook fan-out.
+
+It is held in memory, per process, so a two-instance deployment allows twice
+the rate. **A request with no client IP is not limited at all**: behind a proxy
+that sets `x-forwarded-for` every request has an identity, and without one no
+request does — funnelling them all into a single shared bucket would let one
+looping client deny everyone else's unsubscribe. Run this behind a proxy that
+sets the header.
+
+## What unsubscribing actually does
+
+It sets `subscribed = false` on that contact **in every contact book of the
+team**, not only the campaign's, with the reason recorded as
+`campaign:<campaignId>`. The person said stop, not "stop for book A".
+
+**It writes no suppression.** Leaving a newsletter must not stop that person's
+password resets, and for a receipt that is a legal problem rather than a
+support one. Consent and deliverability are two different lists and Sendsprite
+keeps them apart everywhere — see [Contacts](/docs/contacts). If you want mail
+to an address to stop entirely, that is `POST /api/v1/suppressions`.
+
+It fires a `contact.unsubscribed` [webhook](/docs/webhooks) per affected row,
+carrying `data.contact`, and writes a `contacts.unsubscribe` audit row naming
+the campaign that prompted it. Unsubscribing someone who is already
+unsubscribed changes nothing and fires nothing.
+
+The unsubscribe link is never wrapped in click tracking, so leaving a campaign
+is not counted as engagement with it and the link has no extra redirect hop.
+
+## Running your own unsubscribe page
+
+If you would rather host the page yourself — your own branding, your own
+preference centre — you need two things.
+
+**1. Set `List-Unsubscribe` yourself on your own sends.** It is one of very few
+headers Sendsprite deliberately allows you to set (see
+[Sending](/docs/sending)); the rest are refused because Sendsprite or SES set
+them. Point it at your own URL, and add `List-Unsubscribe-Post:
+List-Unsubscribe=One-Click` beside it if your endpoint accepts a POST — both
+headers or neither.
+
+```json
+{
+  "from": "Acme <hello@mail.acme.com>",
+  "to": ["ada@example.com"],
+  "subject": "This month at Acme",
+  "html": "<p>…</p>",
+  "headers": {
+    "List-Unsubscribe": "<https://acme.com/unsubscribe?u=abc123>",
+    "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"
+  }
+}
+```
+
+**2. Call `POST /api/v1/contacts/unsubscribe` from your handler**, with a
+`full` key:
+
+```bash
+curl -X POST "$APP_URL/api/v1/contacts/unsubscribe" \
+  -H "Authorization: Bearer ss_live_..." \
+  -H "Content-Type: application/json" \
+  -d '{ "email": "ada@example.com", "reason": "footer link" }'
+# → 200 {"unsubscribed": 2}   (every book of the team; add "bookId" to narrow)
+```
+
+It is idempotent: an address already out, or in no book at all, answers
+`{"unsubscribed": 0}` with a `200`.
+
+Two things to carry across from the built-in surface, because they are the
+parts people get wrong:
+
+- **Make your own page's GET read-only too.** Scanners will fetch your link
+  exactly as they fetch ours.
+- **Answer `200` to a mail client whatever happens.** Save the honest error for
+  the human-facing page, where somebody can act on it.
+
+A campaign's own footer link cannot be repointed at your page — it is appended
+by the renderer, not authored — so this route applies to mail you send through
+`POST /api/v1/emails` rather than to campaigns.

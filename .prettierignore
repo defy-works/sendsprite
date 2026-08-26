@@ -1,0 +1,5 @@
+apps/web/next-env.d.ts
+**/.next/
+**/node_modules/
+**/.pgdata/
+**/dist/

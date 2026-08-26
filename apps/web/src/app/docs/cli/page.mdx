@@ -1,0 +1,141 @@
+export const metadata = {
+  title: "CLI",
+  description:
+    "npx sendsprite — login, whoami, domains list, emails send, emails tail and templates pull/push.",
+};
+
+# CLI
+
+> **Not yet published to npm.** The CLI is built and working — it ships
+> inside the `sendsprite` package as its `bin` — but that package has not
+> been released, so `npx sendsprite` will not resolve yet. Until it does,
+> build the package from the repository and run `node packages/sdk/dist/cli.js`
+> wherever this page says `npx sendsprite`. Everything below is the shipped
+> behaviour.
+
+`npx sendsprite` is the `sendsprite` npm package's binary — no separate
+install, and the same client underneath.
+
+## login
+
+```bash
+npx sendsprite login \
+  --url https://mail.example.com \
+  --api-key ss_live_...
+```
+
+```
+Logged in to Acme as ci (ss_live_ab…)
+```
+
+Missing values are prompted for on an interactive terminal and are an error
+otherwise. The credentials are verified with a `/me` call before anything is
+written, then saved to `config.json` with mode `600`. The directory is the
+first of `$SENDSPRITE_CONFIG_DIR`, `$XDG_CONFIG_HOME/sendsprite`,
+`%APPDATA%\sendsprite` (Windows only) and `~/.config/sendsprite` that
+applies.
+
+`SENDSPRITE_URL` and `SENDSPRITE_API_KEY` work instead of logging in — handy
+in CI. Any command other than `login` fails with a message pointing at
+`sendsprite login` when neither is available.
+
+## whoami
+
+```bash
+npx sendsprite whoami
+```
+
+```
+Team  Acme (vhMxwjVEBfgEozUN…)
+Key   ci (ss_live_ab…) · full
+```
+
+## domains list
+
+```bash
+npx sendsprite domains list
+```
+
+```
+NAME               STATUS    MODE    REGION     ID
+mail.example.com   verified  auto    us-east-1  dom_7q2…
+other.example.com  pending   manual  us-east-1  dom_9k4…
+```
+
+`MODE` is the domain's `dnsMode`: `auto` (records managed in a connected
+Cloudflare zone) or `manual`. `--json` prints the raw array instead of the
+table.
+
+## emails send
+
+```bash
+npx sendsprite emails send \
+  --from "Acme <hello@mail.example.com>" \
+  --to ada@example.com \
+  --to grace@example.com \
+  --subject "Hello" \
+  --text "It works." \
+  --tag env=ci
+```
+
+```
+Queued em_4f9…
+```
+
+| Flag                                     | Notes                                               |
+| ---------------------------------------- | --------------------------------------------------- |
+| `--from`                                 | Required.                                           |
+| `--to`, `--cc`, `--bcc`, `--reply-to`    | Repeatable.                                         |
+| `--subject`                              | Required.                                           |
+| `--text`, `--html`, `--html-file <path>` | At least one body.                                  |
+| `--tag k=v`                              | Repeatable.                                         |
+| `--schedule <iso>`                       | Maps to `scheduledAt`.                              |
+| `--idempotency-key`                      | Makes the send safely retryable.                    |
+| `--json`                                 | Print the API response instead of the summary line. |
+
+## emails tail
+
+```bash
+npx sendsprite emails tail
+```
+
+```
+em_4f9…  delivered  ada@example.com   Hello
+em_5a1…  bounced    grace@example.com Hello
+```
+
+Subscribes to the instance's change stream and prints each email as it moves.
+Needs a `full` key. `--json` prints the raw objects; Ctrl-C closes the
+stream.
+
+## templates pull / push
+
+```bash
+npx sendsprite templates pull ./emails    # write every template to ./emails
+npx sendsprite templates push ./emails    # create what is missing, update the rest
+```
+
+Templates as files in your repository: three files per template, named by the
+slug — `<slug>.json` (`name`, `subject`, `variablesSchema`), `<slug>.html`, and
+`<slug>.txt` when there is a text body. Needs a `full` key.
+
+| Flag        | Meaning                                                    |
+| ----------- | ---------------------------------------------------------- |
+| `--dry-run` | Report what would change and write (or send) nothing.      |
+
+Both directions are conservative about what they will not do:
+
+- **`push` never deletes.** A template on the instance with no file in the
+  directory is reported and left alone.
+- **A missing `<slug>.txt` means "no opinion", not "clear the text body".** An
+  absent file is ambiguous, so `push` reports the difference and leaves the
+  stored text body as it is.
+- **`pull` refuses a slug it did not expect.** A file name comes from the
+  server, so it is checked against the slug rule before anything is written.
+- **`pull` leaves local-only templates alone** and tells you `push` would
+  create them.
+
+Put `* text=auto eol=lf` in a `.gitattributes` beside the files: on Windows with
+`core.autocrlf=true` a checked-out body becomes CRLF, and `push` will correctly
+— but confusingly — see that as a change to every template. Full reference:
+[Templates](/docs/templates).

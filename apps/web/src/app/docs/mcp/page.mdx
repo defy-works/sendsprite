@@ -1,0 +1,105 @@
+export const metadata = {
+  title: "MCP server",
+  description:
+    "@sendsprite/mcp — send email, render templates, check delivery and read stats from an AI agent over the Model Context Protocol.",
+};
+
+# MCP server
+
+> **Not yet published to npm.** The server is built and working — it ships
+> in the repository as `packages/mcp` — but the package has not been
+> released, so `npx @sendsprite/mcp` will not resolve yet. Until it does,
+> build it from the repository (`bun run --filter @sendsprite/mcp build`) and
+> run `node packages/mcp/dist/bin.js` wherever this page says
+> `npx @sendsprite/mcp`. Everything below is the shipped behaviour.
+
+`@sendsprite/mcp` exposes your instance to an MCP client — Claude Desktop,
+Claude Code, or anything else that speaks the Model Context Protocol — so an
+agent can send a test email, look up why a message bounced, or read your
+delivery stats. It talks to the same REST API with the same API key, so an
+agent can never do more than the key you gave it.
+
+Point it at a `sending_only` key unless the agent genuinely needs to manage
+domains and webhooks, or to use the template and contact tools — those need a
+`full` key (see [Tools](#tools)).
+
+## Claude Desktop / Claude Code (stdio)
+
+```json
+{
+  "mcpServers": {
+    "sendsprite": {
+      "command": "npx",
+      "args": ["-y", "@sendsprite/mcp"],
+      "env": {
+        "SENDSPRITE_URL": "https://mail.example.com",
+        "SENDSPRITE_API_KEY": "ss_live_..."
+      }
+    }
+  }
+}
+```
+
+Both environment variables are required; the process exits 1 naming whichever
+is missing. The server logs to stderr only — it holds the real stdout handle
+privately and points `process.stdout.write` at stderr — so a dependency that
+prints a banner cannot corrupt the stdio protocol stream.
+
+## HTTP mode
+
+```bash
+SENDSPRITE_URL=https://mail.example.com \
+SENDSPRITE_API_KEY=ss_live_... \
+npx @sendsprite/mcp --http 8787
+```
+
+Serves the streamable HTTP transport at `POST /mcp`, stateless — a new
+server and transport per request, so it scales behind a load balancer and
+leaks no abandoned sessions. `--http`, `--http 8787` and `--http=8787` are all
+accepted (default port 3333); anything else — an unknown flag, `--http=abc` —
+prints the usage to stderr and exits 2. `--help`/`-h` prints it and exits 0.
+Any path other than `/mcp` is a JSON-RPC 404 and any method other than POST a 405.
+
+The process holds an API key and does not authenticate its callers, so it
+binds `127.0.0.1` and refuses `Host` headers that do not name the loopback
+address (DNS rebinding protection). To expose it, set `SENDSPRITE_MCP_HOST`
+and put your own authentication in front of it — the server warns at startup
+when you do. Request bodies are capped at 20 MB.
+
+## Tools
+
+| Tool               | What it does                                                                                         |
+| ------------------ | ---------------------------------------------------------------------------------------------------- |
+| `send_email`       | Send a transactional email; `from` must be on a verified domain. Returns the email id.               |
+| `get_email_status` | Status, recipients, subject and the most recent timeline events for one email id.                    |
+| `list_emails`      | Recent emails, newest first, with `limit`, `cursor` and `status`.                                    |
+| `search_emails`    | The same list filtered by `to`, `status`, `tag` or `domainId`, with `limit` and `cursor`.            |
+| `list_domains`     | Sending domains and their verification status.                                                       |
+| `get_send_stats`   | Sends today / 7 days / 30 days, delivery, bounce and complaint rates, and any account-health alerts. |
+| `list_templates`   | Every template, with the `slug` to pass as `template` and the `{{ variable }}` placeholders it expects. |
+| `render_template`  | Render a template with a set of variables. Nothing is sent or stored; the variables are not echoed back. |
+| `add_contact`      | Add one person to one contact book. `bookId` is required and never guessed; an address already there is a conflict. |
+
+Input is validated against the same schemas the REST API uses, so a bad
+argument comes back as a tool error rather than a failed send. API failures
+are returned as tool errors carrying the API error `code`, `message` and
+HTTP status — the agent sees `domain_not_verified` rather than a stack
+trace.
+
+`get_email_status` returns the ten most recent events for an email; the list
+tools return the same `{ data, nextCursor }` envelope as the REST API.
+Structured output schemas are open, so a field added to the REST API reaches
+the client rather than failing its validation.
+
+`list_templates`, `render_template` and `add_contact` need a **`full`** key —
+the first two return template content, and the third writes to a contact list.
+The six email and domain tools work with a `sending_only` key.
+
+`add_contact` is the only tool here that writes into a customer's list, and it
+is deliberately narrow. There is no default book and no "the only book"
+fallback, so a model cannot decide whose list a person lands on. An address
+already in the book is a `conflict` and is left untouched — including someone
+who unsubscribed, who is never put back on a list by any tool here. There is no
+`subscribed` argument: consent is asserted by the operator calling the tool,
+not reasoned about by the model. Adding a contact sends nothing and does not
+affect transactional email.

@@ -1,0 +1,400 @@
+export const metadata = {
+  title: "Self-hosting",
+  description:
+    "Install Sendsprite with Docker Compose, connect AWS and Cloudflare, and keep it upgraded.",
+};
+
+# Self-hosting
+
+Sendsprite ships as one container plus Postgres. The web tier serves the
+dashboard, the REST API, the SMTP relay and — unless you split it out — the
+background worker.
+
+## Install
+
+```bash
+curl -fsSL https://sendsprite.com/install.sh | sh
+```
+
+The script needs `docker` and Docker Compose v2. It creates
+`~/sendsprite` (override with `SENDSPRITE_DIR`), downloads
+`docker-compose.yml` from `SENDSPRITE_BASE_URL` (default
+`https://sendsprite.com`, itself a Sendsprite instance — point it at your own
+instance or a raw GitHub URL to install a fork), prompts for the public URL
+of the instance, and writes
+a `.env` with mode `600` containing a generated `APP_SECRET` and
+`POSTGRES_PASSWORD`. Then it runs `docker compose pull && docker compose up -d`
+and prints the `/signup` URL for the first account.
+
+Every Sendsprite instance serves both files itself, at `/install.sh` and
+`/docker-compose.yml`. So a fork or a private mirror only needs
+`SENDSPRITE_BASE_URL` pointed at it:
+
+```bash
+curl -fsSL https://mail.example.com/install.sh | SENDSPRITE_BASE_URL=https://mail.example.com sh
+```
+
+`APP_SECRET` encrypts your stored AWS and Cloudflare credentials. Back it up
+with the database; losing it means reconnecting both.
+
+## docker-compose.yml
+
+Two services by default:
+
+| Service | Image                                  | Notes                                                                                   |
+| ------- | -------------------------------------- | --------------------------------------------------------------------------------------- |
+| `app`   | `ghcr.io/defy-works/sendsprite:latest` | Publishes `${APP_PORT:-3000}:3000` and `${SMTP_PORT:-587}:2587` for the relay. Reads `.env`. |
+| `db`    | `postgres:16-alpine`                   | User/database `sendsprite`, data in the `pgdata` volume, `pg_isready` healthcheck.      |
+
+`SMTP_PORT` is the port on the **host**: inside the container the relay always
+listens on 2587, because the image runs as a non-root user and Linux only lets
+root bind below 1024. Set `SMTP_PORT` in `.env` to publish it somewhere other
+than 587.
+
+`DATABASE_URL` is set by Compose to
+`postgres://sendsprite:${POSTGRES_PASSWORD}@db:5432/sendsprite`; you only
+need to set it yourself if you point the app at an external Postgres.
+Migrations run at boot from the app's `instrumentation.ts` — there is no
+separate migrate step.
+
+## Coolify
+
+[Coolify](https://coolify.io) deploys straight from this repository: **New
+Resource → Docker Compose**, point it at the repo and set the compose path to
+`docker-compose.coolify.yml`. That file is written for Coolify rather than for a
+plain `docker compose up` — it publishes no HTTP port, because Coolify's proxy
+handles routing and TLS.
+
+Coolify fills three values itself, using its magic `SERVICE_*` variables:
+
+| Variable                    | What Coolify does                                            |
+| --------------------------- | ------------------------------------------------------------ |
+| `SERVICE_FQDN_APP_3000`     | Assigns a domain and routes it to the container's port 3000. |
+| `SERVICE_URL_APP_3000`      | The public URL, which becomes `APP_URL`.                     |
+| `SERVICE_HEX_64_APPSECRET`  | Generates `APP_SECRET` once and stores it.                   |
+| `SERVICE_PASSWORD_POSTGRES` | Generates the Postgres password, shared by both services.    |
+
+Everything else — `SIGNUP_MODE`, the OAuth pairs, `AWS_DEFAULT_REGION` — appears
+as an editable field in Coolify's environment tab, prefilled with the default.
+
+Two things to know before you deploy:
+
+- **The domain must be https.** Coolify issues a certificate automatically for a
+  real domain, and `APP_URL` follows it. On a plain-http domain the one-click AWS
+  setup refuses to start, because the redirect to https would drop the callback
+  `POST` body.
+- **`APP_SECRET` is generated once and must then stay put.** Every AWS and
+  Cloudflare credential in the database is encrypted with a key derived from it,
+  so changing it later makes those unreadable.
+
+The SMTP relay is off in that file. It speaks raw TCP, which cannot go through
+an HTTP proxy, so turning it on means setting `SMTP_ENABLED=true` _and_
+uncommenting the `ports:` block, which publishes the container's 2587 as `587`
+on the host — check nothing else on the server already holds it.
+
+## Environment
+
+Everything is parsed and validated at boot (`src/env.schema.ts`); a bad value
+stops the container with a message naming the variable.
+
+| Variable                                    | Default              | Meaning                                                                                                                                                           |
+| ------------------------------------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `APP_URL`                                   | — (required)         | Full public URL incl. protocol. SNS subscriptions and the CloudFormation callback both require `https://`.                                                        |
+| `APP_SECRET`                                | — (required)         | ≥ 32 characters, not starting with `change-me`. Encrypts stored credentials and signs tracking links.                                                             |
+| `DATABASE_URL`                              | — (required)         | Postgres connection string.                                                                                                                                       |
+| `WORKER_MODE`                               | `inline`             | `inline` runs jobs in the web process, `separate` leaves them to the worker container, `none` disables them.                                                      |
+| `SMTP_ENABLED`                              | `true`               | Whether the submission relay listens.                                                                                                                             |
+| `SMTP_PORT`                                 | `587`                | Relay port. The image pins it to 2587 (unprivileged) and Compose publishes it on the host as `SMTP_PORT`.                                                         |
+| `SMTP_ALLOW_INSECURE_AUTH`                  | `false`              | Accept `AUTH` before STARTTLS. Development only — the API key travels in clear.                                                                                   |
+| `SMTP_TLS_CERT` / `SMTP_TLS_KEY`            | unset                | PEM paths, both or neither. Without them a self-signed pair is generated.                                                                                         |
+| `SMTP_MAX_SIZE`                             | `10485760`           | Largest message the relay accepts.                                                                                                                                |
+| `LANDING_ENABLED`                           | `true`               | Serve the marketing page at `/`; when off, `/` redirects to `/app`.                                                                                               |
+| `SIGNUP_MODE`                               | `auto`               | `auto`, `open`, `invite` or `closed`. `auto` opens signup only until the first user exists, then switches to invite-only (a dashboard override wins over `auto`). |
+| `EMAIL_PASSWORD_ENABLED`                    | `false`              | Email + password sign-in.                                                                                                                                         |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | unset                | Enables Google sign-in when both are set.                                                                                                                         |
+| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | unset                | Enables GitHub sign-in when both are set.                                                                                                                         |
+| `AWS_DEFAULT_REGION`                        | `us-east-1`          | Region pre-selected in the connect flow (must be an SES region).                                                                                                  |
+| `CFN_TEMPLATE_URL`                          | the published S3 URL | CloudFormation template behind the one-click connect. Must be an S3 URL.                                                                                          |
+| `SOURCE_URL`                                | this repository      | Where this instance offers its source (AGPL §13). Shown in the dashboard footer and `/api/health`. Point it at your own source if you modify the server.          |
+| `BILLING_ENABLED` | `false` | Hosted-service billing. Off: no Billing page, no checkout, no `/api/billing/webhook`, no billing job, no plan-derived limit. See **Turning billing on**. |
+| `POLAR_ACCESS_TOKEN` | unset | Polar organization access token. Required when billing is on. |
+| `POLAR_WEBHOOK_SECRET` | unset | Polar webhook signing secret. Required when billing is on; boot refuses the combination without it. |
+| `POLAR_SERVER` | `production` | `sandbox` while developing against Polar's sandbox organization. |
+| `POLAR_METER_ID` | unset | Optional, display only: shows Polar's own meter balance beside ours on the billing page. |
+
+Enable at least one sign-in method or nobody can reach the dashboard; the
+installer turns on `EMAIL_PASSWORD_ENABLED`.
+
+## Connect AWS
+
+Sendsprite never holds your account — it holds one least-privilege IAM user
+(or an instance role). Three paths, all converging on the same state:
+
+**One-click (CloudFormation).** The setup wizard builds a quick-create link
+prefilled with the template URL, a `CallbackUrl` of
+`<APP_URL>/api/setup/aws/callback` and a single-use `CallbackToken` that
+expires in 15 minutes. You review the resources and click _Create stack_. The
+stack creates an IAM user `sendsprite-<stack name>` with SES identity,
+configuration-set and `SendEmail` permissions plus SNS rights scoped to
+`arn:aws:sns:*:<account>:sendsprite-*`, then a Lambda mints an access key
+**inside the stack** and POSTs it once to your instance. The secret never
+enters CloudFormation parameters, state or events. `APP_URL` must be
+`https://` — the template rejects anything else, because an HTTP→HTTPS
+redirect would drop the POST body.
+
+**Manual keys.** Paste an access key, secret and SES region. Same checks, no
+stack.
+
+**Instance role.** On EC2/ECS with a role attached, Sendsprite picks the
+credentials up from the default provider chain.
+
+Whichever path you take, Sendsprite then creates the configuration set
+`sendsprite`, the SNS topic `sendsprite-events`, and an event destination
+covering send, reject, bounce, complaint, delivery, open, click, rendering
+failure, delivery delay and subscription events — and subscribes
+`<APP_URL>/api/webhooks/ses` to the topic. SNS only accepts https endpoints,
+so on a plain-http instance no subscription is made and SES events never
+arrive.
+
+To revoke: delete the stack (its Lambda removes the access keys on the way
+out), or use **Disconnect** in Settings → Instance.
+
+If you would rather not trust a template served from our bucket, copy
+`infra/aws/sendsprite-connect.yaml` to your own S3 bucket and point
+`CFN_TEMPLATE_URL` at it.
+
+## Leave the SES sandbox
+
+A fresh SES account is in the sandbox: you can only send to verified
+addresses, and the daily quota is small. Request production access from the
+SES console for the same region you connected. Sendsprite reads your account
+status, review status, daily quota and max send rate and shows them in
+Settings → Instance; the send pipeline paces itself against `MaxSendRate`
+with a token bucket, so raising the limit in AWS is picked up here.
+
+## Cloudflare (optional)
+
+Paste a Cloudflare API token in Settings → Instance and domains whose zone
+the token can see are provisioned in `auto` mode: DKIM, MAIL FROM and DMARC
+records are written for you. The token needs **Zone:Read** on the zones you
+want plus DNS edit rights on them; a token that lists no zones is accepted
+but warns. Without Cloudflare every domain falls back to `manual` and you copy
+the records over by hand.
+
+## Separate worker
+
+Jobs (sending, domain verification, webhook delivery, sweeps) run in the web
+process by default. To move them out:
+
+```bash
+# .env
+WORKER_MODE=separate
+```
+
+```bash
+docker compose --profile worker up -d
+```
+
+The `worker` service is the same image with `WORKER_MODE=inline` forced on
+and `SMTP_ENABLED=false`, and publishes no ports — the relay belongs to the
+web tier.
+
+## When the relay does not start
+
+The relay is optional, so it cannot take the instance down: if the port is
+busy, or privileged and the container may not bind it, the boot log gets a
+`[smtp]` error naming the port and the likely cause, and the dashboard, the
+REST API and the worker carry on. `GET /api/health` then reports
+`"smtp": { "status": "failed", "port": …, "code": "EADDRINUSE" }` and an
+overall `"status": "degraded"` for as long as the process runs, so it stays
+visible after the log has scrolled away. Fix `SMTP_PORT` (or the host-side
+mapping) and restart, or set `SMTP_ENABLED=false` if you do not want a relay.
+
+## Turning billing on
+
+`BILLING_ENABLED` is `false` by default and most self-hosted instances should
+leave it that way — it exists for the hosted service. If you are running
+Sendsprite for other people and want to charge them, this is the runbook. Read
+it before you set the flag: **flipping it on an instance that already has teams
+caps every one of them retroactively.**
+
+### What the flip does
+
+With billing on, a team that has no `team_billing` row resolves to the **Free**
+entitlement: a hard cap at the Free plan's included volume (3,000 emails),
+measured over the **current UTC calendar month**, counting the sends that team
+has already made this month. Nobody is grandfathered by default.
+
+So on an instance where a team has sent 40,000 emails since the 1st, the first
+API call after the restart answers `429 monthly_quota_exceeded` — before that
+team has had any chance to reach a checkout. That is the failure this runbook
+exists to prevent.
+
+### 1. Set up the provider side
+
+In Polar (or your provider of choice, behind the same `BillingProvider` seam):
+
+- One product per tier, each carrying `plan`, `included_emails` and
+  `overage_per_1k_cents` in its **metadata**. Product ids are never compiled in;
+  the app finds products by listing the catalogue and matching `metadata.plan`.
+- A usage meter that aggregates **`sum` over `metadata.count`** on the event
+  name in `BILLING_EVENT_NAME` (default `email.sent`). A meter that counts
+  _events_ instead reports 24 units a day per team at any volume.
+- A metered price on each tier that should bill overage, with a `cap_amount` if
+  you want a ceiling on the overage charge. A tier with no metered price becomes
+  a hard cap at its included volume — which is how fixed-tier billing works
+  before metered pricing is switched on at all.
+- A webhook endpoint pointing at `https://your-instance/api/billing/webhook`,
+  subscribed to the subscription lifecycle events and `order.paid`. Keep its
+  signing secret for `POLAR_WEBHOOK_SECRET`. The endpoint has to be reachable
+  from the internet: the provider cannot deliver to a laptop.
+
+### 2. Grandfather the teams you already have — before the flag
+
+Do this while `BILLING_ENABLED` is still `false`. Two ways; the first is the one
+to reach for.
+
+**A. Give every existing team an explicit monthly limit.** `team_settings` wins
+over the plan, per team and per column, on a hosted instance as well as a
+self-hosted one — it is the operator's escape hatch and it survives everything
+billing does afterwards:
+
+```sql
+INSERT INTO team_settings (team_id, monthly_limit)
+SELECT id, 1000000 FROM organization
+ON CONFLICT (team_id) DO UPDATE
+  SET monthly_limit = COALESCE(team_settings.monthly_limit, excluded.monthly_limit),
+      updated_at = now();
+```
+
+Pick a number that is generous for your instance. `COALESCE` leaves a limit you
+had already set alone. A team's limit stays in force until you clear it
+(`monthly_limit = NULL`), which is what you do when that team subscribes.
+
+Note that a `team_settings.monthly_limit` is measured over the **UTC calendar
+month**, not over a billing period — it is not a plan, it is a cap.
+
+**B. Seed an entitlement row instead.** Closer to how a subscribed team looks,
+and it moves the window to the flip rather than to the 1st:
+
+```sql
+INSERT INTO team_billing (
+  team_id, plan, status, included_emails, overage_per_1k_cents,
+  overage_enabled, period_start, period_end, provider_modified_at
+)
+SELECT id, 'free', 'active', 1000000, 0, false,
+       now(), now() + interval '10 years', timestamptz 'epoch'
+FROM organization
+ON CONFLICT (team_id) DO NOTHING;
+```
+
+Three details make this safe rather than clever:
+
+- `status` must be an entitling one (`active`, `trialing`, `past_due`). A row
+  with a `NULL` status resolves to Free caps and grandfathers nothing.
+- `provider_modified_at` is `epoch` on purpose: entitlement writes are ordered
+  by it, so the first real webhook for that team supersedes the seeded row
+  instead of being dropped as stale.
+- `provider_customer_id` is left `NULL`, so the hourly meter sweep skips these
+  teams entirely — nothing is reported to the provider for a team that never
+  bought anything.
+
+Its one cost: a seeded row makes the team look _managed_, so the billing page
+offers **Manage billing**, and that button fails until there is a real customer
+behind it. Option A has no such edge.
+
+### 3. Verify before flipping
+
+The query the caps will run, run by hand — every team, this calendar month,
+counting exactly the statuses a cap counts:
+
+```sql
+SELECT o.id, o.name, count(*) AS used_this_month
+FROM organization o
+JOIN emails e ON e.team_id = o.id
+WHERE e.created_at >= date_trunc('month', now() AT TIME ZONE 'UTC')
+  AND e.status IN ('queued','scheduled','sending','sent','delivered','bounced','complained')
+GROUP BY o.id, o.name
+ORDER BY used_this_month DESC;
+```
+
+Every team in that list must be under the limit you gave it in step 2. Anything
+above 3,000 with no `team_settings.monthly_limit` and no `team_billing` row will
+start being refused the moment you restart.
+
+### 4. Flip it
+
+```bash
+# .env
+BILLING_ENABLED=true
+POLAR_ACCESS_TOKEN=polar_oat_...
+POLAR_WEBHOOK_SECRET=whsec_...
+POLAR_SERVER=production
+```
+
+Boot refuses the combination if the token or the signing secret is missing, so a
+half-configured instance fails loudly at start rather than at the first
+checkout. Restart, then check that `/app/settings/billing` renders, that the
+plan catalogue loads (an unreachable provider says so in a banner, visible to
+instance owners only), and that a send still returns 201 with a sane
+`x-ratelimit-limit`.
+
+The webhook endpoint stops being a 404 the moment the flag is on. Send a test
+delivery from the provider dashboard and confirm a row appears:
+
+```sql
+SELECT id, type, applied_at, skipped_reason FROM billing_events ORDER BY created_at DESC LIMIT 10;
+```
+
+### 5. Afterwards
+
+- When a team subscribes for real, clear the escape hatch you set in step 2
+  (`UPDATE team_settings SET monthly_limit = NULL WHERE team_id = '…'`), or its
+  cap will keep overriding the plan they are paying for.
+- Turning the flag back off is safe and immediate: the plan branch is simply not
+  taken, and a `team_billing` row left behind — by a rollback, or by a restore
+  from a hosted backup — caps nothing.
+
+## Upgrades and backups
+
+```bash
+cd ~/sendsprite
+docker compose pull
+docker compose up -d
+```
+
+Migrations run automatically on the new container's first boot.
+
+Back up the Postgres volume (`pgdata`) and the `.env` file. `pg_dump` against
+the `db` service is enough for the data; without `APP_SECRET` from `.env` the
+encrypted AWS and Cloudflare credentials in that dump cannot be read.
+
+## Licensing
+
+The server you are hosting is **AGPL-3.0-only**; the `sendsprite` and
+`@sendsprite/mcp` npm packages are **MIT**, so the code you compile into your
+own application carries no obligations.
+
+Running Sendsprite for yourself, your company or your customers obliges you to
+nothing. Not if you patch it, not if you never publish a line — internal use is
+unencumbered, and there is no clause waiting for you.
+
+One case does have a condition: if you **modify** the server **and** let other
+people use it over a network, those users must be offered your modified source.
+That is what `SOURCE_URL` is for. Set it to wherever your source lives — a Git
+repository, a mirror, a tarball — and the dashboard footer and `/api/health`
+make the offer for you, next to the running version so it is clear which code
+the link is the source of:
+
+```bash
+# .env
+SOURCE_URL=https://git.example.com/us/sendsprite
+```
+
+Left at its default it points at the upstream repository, which is the correct
+answer for an unmodified instance and wrong for every other kind.
+
+The name and the logo are trademarks and are not covered by either licence: fork
+freely, but run a public service under your own name (`TRADEMARK.md`). If your
+organisation cannot deploy AGPL software, the server is also available under
+commercial terms — [hello@defy.works](mailto:hello@defy.works).

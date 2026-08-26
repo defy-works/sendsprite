@@ -1,0 +1,323 @@
+export const metadata = {
+  title: "SDK",
+  description:
+    "The sendsprite npm package: typed client for emails, templates, contacts and campaigns, React email templates, Next.js webhook handler and the live change stream.",
+};
+
+# SDK
+
+`sendsprite` is the official TypeScript client. One package, four entry
+points: the client, `sendsprite/react`, `sendsprite/next` and the
+`npx sendsprite` [CLI](/docs/cli).
+
+```bash
+npm install sendsprite
+```
+
+ESM and CJS builds ship side by side, Node 20+.
+
+## Construct
+
+```ts
+import { Sendsprite } from "sendsprite";
+
+const sendsprite = new Sendsprite({
+  baseUrl: "https://mail.acme.com",
+  apiKey: process.env.SENDSPRITE_API_KEY,
+});
+```
+
+| Option       | Default              | Meaning                                              |
+| ------------ | -------------------- | ---------------------------------------------------- |
+| `apiKey`     | `SENDSPRITE_API_KEY` | The `ss_live_…` secret.                              |
+| `baseUrl`    | `SENDSPRITE_URL`     | Your instance origin; `/api/v1` is appended for you. |
+| `maxRetries` | `2`                  | Retries on 429, 5xx and network errors.              |
+| `timeoutMs`  | `30000`              | Per-request timeout.                                 |
+| `fetch`      | `globalThis.fetch`   | Custom fetch implementation.                         |
+
+Both credentials fall back to the environment, so `new Sendsprite()` is
+usually enough. A missing one throws immediately rather than at the first
+call.
+
+## emails
+
+```ts
+const { id } = await sendsprite.emails.send({
+  from: "Acme <hello@mail.acme.com>",
+  to: "ada@example.com",
+  subject: "Welcome",
+  html: "<p>Hi Ada</p>",
+  idempotencyKey: "welcome-ada-1",
+});
+
+await sendsprite.emails.batch([input1, input2]);
+const email = await sendsprite.emails.get(id); // includes `events`
+const page = await sendsprite.emails.list({ status: "delivered", limit: 50 });
+await sendsprite.emails.cancel(id);
+await sendsprite.emails.reschedule(id, { scheduledAt: "2026-09-01T09:00:00Z" });
+```
+
+`list` filters on `status`, `to`, `domainId` and `tag` and pages with
+`limit`/`cursor`.
+
+## domains, apiKeys, webhooks, suppressions
+
+```ts
+await sendsprite.domains.create({ name: "mail.acme.com" });
+await sendsprite.domains.list();
+await sendsprite.domains.get("dom_...");
+await sendsprite.domains.verify("dom_..."); // re-check DNS now
+await sendsprite.domains.delete("dom_..."); // → { leftoverDnsRecords } or void
+
+const key = await sendsprite.apiKeys.create({ name: "ci" }); // key.secret, once
+await sendsprite.apiKeys.list();
+await sendsprite.apiKeys.revoke("key_...");
+
+const hook = await sendsprite.webhooks.create({
+  url: "https://acme.com/hooks",
+  events: ["email.delivered"],
+}); // hook.secret, once
+await sendsprite.webhooks.update("wh_...", { enabled: false });
+await sendsprite.webhooks.test("wh_...");
+await sendsprite.webhooks.delete("wh_...");
+
+await sendsprite.suppressions.add({ email: "bounce@example.com" });
+await sendsprite.suppressions.list();
+await sendsprite.suppressions.remove("bounce@example.com");
+```
+
+## templates
+
+```ts
+await sendsprite.templates.create({
+  slug: "welcome",
+  name: "Welcome",
+  subject: "Hi {{ name }}",
+  bodyHtml: "<p>Hello {{ name }}</p>",
+  bodyText: "Hello {{ name }}",
+  variablesSchema: { variables: [{ name: "name", default: "there" }] },
+});
+await sendsprite.templates.list();
+await sendsprite.templates.get("welcome"); // + its recent versions
+await sendsprite.templates.update("welcome", { subject: "Hey {{ name }}" });
+await sendsprite.templates.render("welcome", { name: "Ada" }); // no send
+await sendsprite.templates.remove("welcome");
+
+// Sending with one:
+await sendsprite.emails.send({
+  from: "Acme <hello@mail.acme.com>",
+  to: "ada@example.com",
+  template: "welcome",
+  variables: { name: "Ada" },
+});
+```
+
+`render` is byte-identical to what a send would store, so it is a safe preview.
+`get` takes a slug or a `tpl_…` id. `slug` is immutable, so `update` does not
+accept it. See [Templates](/docs/templates).
+
+## contactBooks, contacts
+
+```ts
+const book = await sendsprite.contactBooks.create({ name: "Newsletter" });
+await sendsprite.contactBooks.list();
+await sendsprite.contactBooks.import(book.id, { csv });
+// → { imported, updated, skipped, duplicates, errors }
+
+await sendsprite.contacts.create(book.id, {
+  email: "ada@example.com",
+  firstName: "Ada",
+  properties: { plan: "pro" },
+});
+await sendsprite.contacts.list(book.id, { q: "ada", subscribed: true });
+await sendsprite.contacts.update(book.id, "ct_...", { subscribed: false });
+await sendsprite.contacts.remove(book.id, "ct_...");
+
+// By address, across every book of the team unless `bookId` narrows it.
+await sendsprite.contacts.unsubscribe({ email: "ada@example.com" });
+```
+
+Unsubscribing a contact is **consent**, not deliverability: it never writes a
+suppression, so the address still receives transactional mail. See
+[Contacts](/docs/contacts).
+
+## campaigns
+
+```ts
+const campaign = await sendsprite.campaigns.create({
+  name: "August newsletter",
+  bookId: book.id,
+  domainId: "dom_...",
+  from: "Acme <hello@mail.acme.com>",
+  subject: "What we shipped in August",
+  blocks: [
+    { kind: "heading", level: 1, text: "What we shipped" },
+    { kind: "text", html: "Three things, and <strong>one</strong> is fast." },
+    { kind: "button", label: "Read the notes", url: "https://acme.com/log" },
+  ],
+});
+
+const { eligible } = await sendsprite.campaigns.audience(campaign.id);
+
+await sendsprite.campaigns.schedule(campaign.id, new Date("2026-09-01T09:00Z"));
+await sendsprite.campaigns.sendNow(campaign.id); // no time argument, by design
+await sendsprite.campaigns.cancel(campaign.id);
+
+await sendsprite.campaigns.list({ status: "sent" });
+await sendsprite.campaigns.get(campaign.id);
+await sendsprite.campaigns.update(campaign.id, { subject: "…" });
+await sendsprite.campaigns.remove(campaign.id);
+```
+
+Every campaigns method needs a **`full`** key; a `sending_only` key gets a
+`403` on all eight, reads included.
+
+`schedule(id, at)` requires the time and `sendNow(id)` takes none. They are two
+methods rather than one with an optional argument on purpose: a method that
+mails everyone on a contact book when you forget its second argument is the
+wrong shape for an irreversible action. `schedule(id)` does not compile.
+
+`cancel()` stops the fan-out that has not happened yet; it never recalls mail
+already handed to the provider. `create()` and `update()` send nothing. See
+[Campaigns](/docs/campaigns).
+
+Plus two top-level calls: `sendsprite.stats()` for send counts and 30-day
+rates, and `sendsprite.me()` for the team and key behind the current
+credentials.
+
+`request(method, path, { body, query, retry, signal })` is the escape hatch
+for anything without a helper; `path` is relative to `/api/v1`.
+
+## Pagination
+
+Every `list()` returns `{ data, nextCursor }` and takes `{ limit, cursor }`.
+`emails`, `templates`, `contacts` and `campaigns` have an iterator that walks
+every page for you:
+
+```ts
+for await (const email of sendsprite.emails.iterate({ status: "bounced" })) {
+  console.log(email.id, email.to);
+}
+for await (const contact of sendsprite.contacts.iterate(bookId)) {
+  console.log(contact.email, contact.subscribed);
+}
+```
+
+`domains`, `apiKeys`, `webhooks`, `suppressions` and `contactBooks` have no
+iterator; loop on `nextCursor` yourself:
+
+```ts
+let cursor: string | undefined;
+do {
+  const page = await sendsprite.domains.list({ cursor });
+  for (const d of page.data) console.log(d.name, d.status);
+  cursor = page.nextCursor ?? undefined;
+} while (cursor);
+```
+
+## Live changes
+
+```ts
+const stream = sendsprite.stream({
+  onChange: ({ type, id }) => console.log(type, id), // "email" | "webhook"
+  onError: (err) => console.warn("reconnecting after", err.code),
+});
+
+await stream.ready; // the server has the subscription
+await sendsprite.emails.send(welcome); // its changes are guaranteed to arrive
+
+// later
+stream.close();
+await stream.done;
+```
+
+`stream()` opens `GET /api/v1/stream` (server-sent events) and needs a `full`
+key. Dropped connections are re-established with exponential backoff up to 30
+seconds unless you pass `reconnect: false`; pass a `signal` to close it from
+an `AbortController`. `done` resolves on a clean close and rejects on a
+non-retryable error (401/403) or on anything your `onChange` throws.
+
+Calling `stream()` only starts the connection, so anything you trigger before
+the server has the subscription can be missed — `ready` resolves once the
+server has confirmed it (and stays resolved across reconnects). It rejects
+rather than hangs if the stream ends before it ever opened, or if the connect
+takes longer than `timeoutMs`.
+
+The events carry only `{ type, id }` — fetch the object itself when you need
+its contents.
+
+## React email
+
+`sendsprite/react` re-exports the React Email primitives and adds
+`renderEmail`. `@react-email/components` and `@react-email/render` are
+optional peers — install them if you use this entry point.
+
+```tsx
+import { Sendsprite } from "sendsprite";
+import { Body, Button, Html, Text } from "sendsprite/react";
+
+function Welcome({ name }: { name: string }) {
+  return (
+    <Html>
+      <Body>
+        <Text>Welcome aboard, {name}.</Text>
+        <Button href="https://acme.com/start">Get started</Button>
+      </Body>
+    </Html>
+  );
+}
+
+await sendsprite.emails.send({
+  from: "Acme <hello@mail.acme.com>",
+  to: "ada@example.com",
+  subject: "Welcome",
+  react: <Welcome name="Ada" />,
+});
+```
+
+`react` is rendered to `html` and `text` before the request goes out, and an
+explicit `html` or `text` on the same call wins. Render it yourself with
+`renderEmail(element)` → `{ html, text }` if you want to inspect or cache the
+output. This is server-side rendering with no hooks: call it from a route
+handler, a server action or a job.
+
+## Next.js webhooks
+
+`sendsprite/next` exports `createWebhookHandler` and `verifyWebhook` — see
+[Webhooks](/docs/webhooks) for the full example.
+
+## Errors
+
+Every failed call throws a `SendspriteError`:
+
+| Property    | Meaning                                                          |
+| ----------- | ---------------------------------------------------------------- |
+| `code`      | The API error code, or `network_error` when no response arrived. |
+| `message`   | Human-readable message from the error envelope.                  |
+| `status`    | HTTP status, or `null` for a network error.                      |
+| `details`   | Extra context — validation issues, the failing batch index.      |
+| `requestId` | The response's `x-request-id`, for support.                      |
+| `retryable` | True for network errors, 429 and 5xx (except 501 and 505).       |
+
+```ts
+import { SendspriteError } from "sendsprite";
+
+try {
+  await sendsprite.emails.send(input);
+} catch (err) {
+  if (err instanceof SendspriteError && err.code === "suppressed_recipient") {
+    // err.details lists the suppressed addresses
+  }
+}
+```
+
+## Retries
+
+Failed requests are retried with exponential backoff (500 ms · 2ⁿ ± 20 %,
+capped at 8 s) and honour `retry-after` (seconds or HTTP-date, capped at 60
+s).
+
+`POST` is **not** retried by default, because a repeat could send twice. The
+resource helpers opt in where it is safe: `cancel`, `verify` and `test`
+always, and `emails.send`/`emails.batch` only when every item carries an
+`idempotencyKey`. Pass `retry: true` to `request()` for your own safe POSTs.

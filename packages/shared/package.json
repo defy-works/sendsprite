@@ -1,0 +1,28 @@
+{
+  "name": "@sendsprite/shared",
+  "version": "0.0.1",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./node": "./src/node.ts",
+    "./openapi": "./src/openapi.ts",
+    "./webhooks": "./src/api/webhooks.ts",
+    "./webhook-signature": "./src/api/webhook-signature.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "echo 'source package, nothing to build'"
+  },
+  "dependencies": {
+    "ulid": "^3.0.2",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.0",
+    "bun-types": "^1.2.0"
+  }
+}

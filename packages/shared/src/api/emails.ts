@@ -1,0 +1,276 @@
+import { z } from "zod";
+import { NO_CONTROL_CHARS } from "../template";
+import { TemplateVariablesPayload } from "./templates";
+
+/**
+ * Request/response contracts for `/api/v1/emails` (spec §7). Shared with the
+ * SDK, so this file must stay free of server-only imports.
+ */
+
+// "Name <a@b>" or "a@b". Shape check only; display names and normalisation
+// are handled server-side (`@/lib/email-address`).
+const ADDR_SPEC = '[^\\s@<>"]+@[^\\s@<>"]+\\.[^\\s@<>"]+';
+const ADDR_RE = new RegExp(`^(?:[^<>]*<${ADDR_SPEC}>|${ADDR_SPEC})$`);
+// The renderer's rule, imported rather than restated: a rendered subject is
+// checked by `renderTemplate` and an authored one here, and if the two rules
+// drift the header-injection guard has a hole in whichever direction is looser.
+// It covers every C0 control and DEL, not just CR/LF — ESC leads RFC 2047
+// charset switching, NUL truncates the value downstream.
+const noCrlf = (s: z.ZodString) =>
+  s.regex(NO_CONTROL_CHARS, {
+    message: "must not contain line breaks or control characters",
+  });
+/**
+ * One address, `"Name <a@b>"` or bare. Exported because every path that puts a
+ * from-address on the wire has to agree on its shape: `api/campaigns.ts`
+ * imports this rather than restating the regex, for the same reason
+ * `NO_CONTROL_CHARS` is imported rather than restated — two copies of a shape
+ * check drift, and the looser one becomes the hole.
+ */
+export const EmailAddressField = noCrlf(
+  z.string().trim().min(3).max(320),
+).regex(ADDR_RE, { message: "invalid email address" });
+const addr = EmailAddressField;
+const list = z
+  .union([addr, z.array(addr)])
+  .default([])
+  .transform((v) => (Array.isArray(v) ? v : [v]));
+
+// Headers Sendsprite/SES set themselves; user-supplied values are rejected.
+// `list-unsubscribe` is deliberately allowed.
+const RESERVED = new Set([
+  "to",
+  "cc",
+  "bcc",
+  "from",
+  "subject",
+  "reply-to",
+  "content-type",
+  "mime-version",
+  "date",
+  "message-id",
+  "return-path",
+  "sender",
+  "dkim-signature",
+  "received",
+  "content-transfer-encoding",
+  "authentication-results",
+]);
+const HEADER_NAME = /^[A-Za-z0-9-]{1,80}$/;
+const TAG_KEY = /^[A-Za-z0-9_-]+$/;
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
+export const MAX_TAGS = 20;
+
+export const AttachmentInput = z.object({
+  filename: noCrlf(z.string().min(1).max(255)).refine((f) => !/[\\/]/.test(f), {
+    message: "filename must not contain path separators",
+  }),
+  content: z
+    .string()
+    .min(1)
+    .transform((s) => s.replace(/\s+/g, ""))
+    .refine((s) => s.length > 0 && BASE64.test(s), {
+      message: "content must be base64",
+    }),
+  contentType: noCrlf(z.string().max(255)).optional(),
+});
+export type AttachmentInput = z.infer<typeof AttachmentInput>;
+
+export const MAX_RECIPIENTS = 50;
+export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+
+export const SendEmailInput = z
+  .object({
+    from: addr,
+    to: z
+      .union([addr, z.array(addr).min(1)])
+      .transform((v) => (Array.isArray(v) ? v : [v])),
+    cc: list,
+    bcc: list,
+    replyTo: list,
+    /**
+     * Optional only because a template carries its own; the refines below
+     * require one of the two. A request-level subject wins over the
+     * template's, so a single template can serve several subject lines.
+     */
+    subject: noCrlf(z.string().min(1).max(998)).optional(),
+    html: z.string().max(5_000_000).optional(),
+    text: z.string().max(5_000_000).optional(),
+    template: z.string().min(1).max(64).optional(),
+    /**
+     * Bounded by the same three caps a `POST /templates/:slug/render` payload
+     * gets: the renderer only checks its output size *after* building it, so
+     * an unbounded value repeated across a body's placeholders would allocate
+     * far past that limit before the refusal.
+     */
+    variables: TemplateVariablesPayload.optional(),
+    headers: z
+      .record(
+        z.string().regex(HEADER_NAME, { message: "invalid header name" }),
+        noCrlf(z.string().max(1000)),
+      )
+      .default({})
+      .refine(
+        (h) => !Object.keys(h).some((k) => RESERVED.has(k.toLowerCase())),
+        { message: "headers contains a reserved header" },
+      ),
+    attachments: z
+      .array(AttachmentInput)
+      .max(20)
+      .default([])
+      .refine(
+        (a) =>
+          a.reduce((n, x) => n + Math.floor((x.content.length * 3) / 4), 0) <=
+          MAX_ATTACHMENT_BYTES,
+        { message: "attachments exceed 10 MB" },
+      ),
+    scheduledAt: z.iso.datetime({ offset: true }).optional(),
+    tags: z
+      .record(
+        z
+          .string()
+          .min(1)
+          .max(64)
+          .regex(TAG_KEY, { message: "invalid tag key" }),
+        noCrlf(z.string().max(256)),
+      )
+      .default({})
+      .refine((t) => Object.keys(t).length <= MAX_TAGS, {
+        message: `at most ${MAX_TAGS} tags`,
+      }),
+    idempotencyKey: z.string().min(1).max(256).optional(),
+    trackOpens: z.boolean().optional(),
+    trackClicks: z.boolean().optional(),
+    overrideSuppression: z.boolean().optional(),
+  })
+  .refine((v) => v.html || v.text || v.template, {
+    message: "one of html, text or template is required",
+  })
+  // "Exactly one content source" (spec §7). Accepting both and preferring one
+  // would make the other silently invisible.
+  .refine((v) => !(v.template && (v.html || v.text)), {
+    message: "template cannot be combined with html or text",
+  })
+  .refine((v) => !(v.variables && !v.template), {
+    message: "variables requires template",
+  })
+  .refine((v) => Boolean(v.subject || v.template), {
+    message: "subject is required unless a template supplies one",
+  })
+  .refine((v) => v.to.length + v.cc.length + v.bcc.length <= MAX_RECIPIENTS, {
+    message: `at most ${MAX_RECIPIENTS} recipients`,
+  });
+export type SendEmailInput = z.infer<typeof SendEmailInput>;
+
+export const BatchSendInput = z.array(SendEmailInput).min(1).max(100);
+export type BatchSendInput = z.infer<typeof BatchSendInput>;
+
+export const EMAIL_STATUS = [
+  "queued",
+  "scheduled",
+  "sending",
+  "sent",
+  "delivered",
+  "bounced",
+  "complained",
+  "failed",
+  "cancelled",
+] as const;
+export type EmailStatus = (typeof EMAIL_STATUS)[number];
+
+/**
+ * Statuses that consumed a send.
+ *
+ * The caps count these and the meter bills these, and the two sets must be the
+ * same one: a set the meter has and the caps do not bills a customer for a send
+ * a cap refused, and the reverse lets them send past an allowance nobody
+ * charged for. The two services used to hold hand-copied tuples with a comment
+ * saying they must match and nothing that made them, which is a silent
+ * mis-bill one status away.
+ *
+ * `failed` and `cancelled` are the only exclusions, and they are excluded by
+ * being left out rather than by filtering `EMAIL_STATUS`: a status added later
+ * should have to be considered, not silently billed. `satisfies` keeps every
+ * entry a real status.
+ */
+export const SEND_CONSUMING_STATUS = [
+  "queued",
+  "scheduled",
+  "sending",
+  "sent",
+  "delivered",
+  "bounced",
+  "complained",
+] as const satisfies readonly EmailStatus[];
+export type SendConsumingStatus = (typeof SEND_CONSUMING_STATUS)[number];
+
+export const EmailObject = z.object({
+  id: z.string(),
+  from: z.string(),
+  to: z.array(z.string()),
+  cc: z.array(z.string()),
+  bcc: z.array(z.string()),
+  replyTo: z.array(z.string()),
+  subject: z.string(),
+  status: z.enum(EMAIL_STATUS),
+  scheduledAt: z.iso.datetime().nullable(),
+  sentAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+  tags: z.record(z.string(), z.string()),
+  lastError: z.string().nullable(),
+});
+export type EmailObject = z.infer<typeof EmailObject>;
+
+/** Every `type` the server writes to `email_events` (mirrors the DB enum). */
+export const EMAIL_EVENT_TYPES = [
+  "queued",
+  "sent",
+  "delivered",
+  "delivery_delayed",
+  "bounced",
+  "complained",
+  "rejected",
+  "opened",
+  "clicked",
+  "failed",
+  "cancelled",
+] as const;
+export type EmailEventType = (typeof EMAIL_EVENT_TYPES)[number];
+
+export const EmailEventObject = z.object({
+  id: z.string(),
+  type: z.enum(EMAIL_EVENT_TYPES),
+  occurredAt: z.iso.datetime(),
+  payload: z.record(z.string(), z.unknown()),
+});
+export type EmailEventObject = z.infer<typeof EmailEventObject>;
+
+/** `GET /emails/:id`: the email plus its timeline, oldest first. */
+export const EmailDetail = EmailObject.extend({
+  events: z.array(EmailEventObject),
+});
+export type EmailDetail = z.infer<typeof EmailDetail>;
+
+/** `PATCH /emails/:id`: move a `scheduled` email (the server requires a future time). */
+export const PatchEmailInput = z.object({
+  scheduledAt: z.iso.datetime({ offset: true }),
+});
+export type PatchEmailInput = z.infer<typeof PatchEmailInput>;
+
+export const PageQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+  cursor: z.string().optional(),
+});
+export type PageQuery = z.infer<typeof PageQuery>;
+
+/** `{ data, nextCursor }` envelope of every list endpoint. */
+export const pageOf = <T extends z.ZodTypeAny>(item: T) =>
+  z.object({ data: z.array(item), nextCursor: z.string().nullable() });
+
+export const ListQuery = PageQuery.extend({
+  status: z.enum(EMAIL_STATUS).optional(),
+  to: z.string().optional(),
+  domainId: z.string().optional(),
+  tag: z.string().optional(),
+});
+export type ListQuery = z.infer<typeof ListQuery>;
