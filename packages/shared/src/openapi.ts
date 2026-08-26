@@ -24,6 +24,15 @@ import {
   WebhookTestAccepted,
 } from "./api/webhook-objects";
 import { AddSuppressionInput, SuppressionObject } from "./api/suppressions";
+import {
+  CreateTemplateInput,
+  RenderTemplateInput,
+  RenderedTemplateObject,
+  TemplateDetail,
+  TemplateObject,
+  TemplateVersionObject,
+  UpdateTemplateInput,
+} from "./api/templates";
 import { SendStatsObject } from "./api/stats";
 import { MeObject } from "./api/me";
 import { StreamChange } from "./api/stream";
@@ -100,6 +109,9 @@ const inputSchemas = {
   CreateWebhookInput,
   UpdateWebhookInput,
   AddSuppressionInput,
+  CreateTemplateInput,
+  UpdateTemplateInput,
+  RenderTemplateInput,
 };
 /** Response bodies: emitted with `io: "output"`. */
 const outputSchemas = {
@@ -120,6 +132,11 @@ const outputSchemas = {
   WebhookPage: pageOf(WebhookObject),
   SuppressionObject,
   SuppressionPage: pageOf(SuppressionObject),
+  TemplateObject,
+  TemplateVersionObject,
+  TemplateDetail,
+  TemplatePage: pageOf(TemplateObject),
+  RenderedTemplateObject,
   SendStatsObject,
   MeObject,
   // Registered only so `/stream`'s description can name it; no operation refers to it.
@@ -522,6 +539,78 @@ export function buildOpenApiDocument(opts: OpenApiOptions) {
         },
       }),
     },
+    "/templates": {
+      get: op("Templates", "listTemplates", "List templates", {
+        description:
+          "Newest first. Full keys only, like every templates route.",
+        parameters: pageParams,
+        responses: {
+          "200": json(ref("TemplatePage"), "Page of templates"),
+          ...errors(...common, "validation_error"),
+        },
+      }),
+      post: op("Templates", "createTemplate", "Create a template", {
+        description:
+          "`slug` is the name `POST /emails` uses in `template`, and is unique per team. Bodies use `{{ variable }}` placeholders; values are HTML-escaped into `bodyHtml` and left raw in `bodyText`. A placeholder with no value and no declared `default` is a refusal at render time, not an empty string.",
+        requestBody: body("CreateTemplateInput"),
+        responses: {
+          "201": json(ref("TemplateObject"), "Template, at version 1"),
+          ...errors(...common, "validation_error", "conflict"),
+        },
+      }),
+    },
+    "/templates/{slug}": {
+      get: op("Templates", "getTemplate", "Get a template and its versions", {
+        description: "The path segment accepts the slug or the `tpl_…` id.",
+        parameters: [idParam("slug", "Template slug, or its id.")],
+        responses: {
+          "200": json(
+            ref("TemplateDetail"),
+            "Template with its version history",
+          ),
+          ...errors(...common, "not_found"),
+        },
+      }),
+      patch: op("Templates", "updateTemplate", "Update a template", {
+        description:
+          "A content change bumps `version` and appends a snapshot; an update that changes nothing does neither. `slug` cannot be changed — a live send names a template by slug, so a rename is a create plus a delete.",
+        parameters: [idParam("slug", "Template slug, or its id.")],
+        requestBody: body("UpdateTemplateInput"),
+        responses: {
+          "200": json(ref("TemplateObject"), "Updated template"),
+          ...errors(...common, "validation_error", "not_found"),
+        },
+      }),
+      delete: op("Templates", "deleteTemplate", "Delete a template", {
+        description:
+          "Emails already sent from it keep their stored bodies; their `templateId` becomes null.",
+        parameters: [idParam("slug", "Template slug, or its id.")],
+        responses: {
+          "204": { description: "Deleted" },
+          ...errors(...common, "not_found"),
+        },
+      }),
+    },
+    "/templates/{slug}/render": {
+      post: op("Templates", "renderTemplate", "Render a template", {
+        description:
+          "A dry run: nothing is sent or stored, and the output is byte-identical to what `POST /emails` would store for the same variables. A missing or non-scalar variable is a `400` listing it in `details.missing` / `details.invalid`. This route carries its own 256 KB body cap, since a `variables` payload is capped at 64 KB serialised.",
+        parameters: [idParam("slug", "Template slug, or its id.")],
+        requestBody: body("RenderTemplateInput"),
+        responses: {
+          "200": json(
+            ref("RenderedTemplateObject"),
+            "Rendered subject and bodies",
+          ),
+          ...errors(
+            ...common,
+            "validation_error",
+            "not_found",
+            "payload_too_large",
+          ),
+        },
+      }),
+    },
     "/stats": {
       get: op("Account", "getSendStats", "Sending stats", {
         description: "Send counts, 30-day rates and SES account-health alerts.",
@@ -579,6 +668,7 @@ export function buildOpenApiDocument(opts: OpenApiOptions) {
       { name: "API keys" },
       { name: "Webhooks" },
       { name: "Suppressions" },
+      { name: "Templates" },
       { name: "Account" },
     ],
     components: {

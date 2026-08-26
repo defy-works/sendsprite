@@ -346,6 +346,15 @@ export const TemplateVersionObject = z.object({
 });
 export type TemplateVersionObject = z.infer<typeof TemplateVersionObject>;
 
+/**
+ * `GET /templates/:slug`: the template plus its recent versions, newest
+ * first — the same shape `GET /emails/:id` uses for its event timeline.
+ */
+export const TemplateDetail = TemplateObject.extend({
+  versions: z.array(TemplateVersionObject),
+});
+export type TemplateDetail = z.infer<typeof TemplateDetail>;
+
 /** `POST /templates/:slug/render` — a dry run, nothing is sent or stored. */
 export const RenderTemplateInput = z.object({
   variables: TemplateVariablesPayload.default({}),
