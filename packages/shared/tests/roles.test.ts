@@ -26,6 +26,12 @@ describe("roles", () => {
   it("owner can do every action", () => {
     expect(ACTIONS.every((a) => can("owner", a))).toBe(true);
   });
+  it("grants nothing to a role the table has no entry for", () => {
+    // The role reaches `can` from a `text` column, so an unrecognised value is
+    // a refusal rather than a `TypeError` thrown out of a service.
+    const unknown = "viewer" as TeamRole;
+    expect(ACTIONS.some((a) => can(unknown, a))).toBe(false);
+  });
   it("permissions are a strict hierarchy: member ⊆ admin ⊆ owner", () => {
     for (const a of ACTIONS) {
       if (can("member", a)) expect(can("admin", a)).toBe(true);
