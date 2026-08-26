@@ -83,6 +83,21 @@ during a test. While iterating on a spec, `bun run test:e2e:dev` skips the build
 and uses `next dev` instead — faster to start, and the only place a wait can
 fail because a route was still compiling.
 
+**Run the e2e against an empty database before trusting a green run.** It uses
+`DATABASE_URL` from `.env.local`, which on a machine you have been developing
+on is not a fresh instance — and several specs branch on that. `setup.spec.ts`
+runs the whole wizard only when it finds one, and takes a much shorter path
+when it does not, so a change to onboarding can pass twenty-four out of
+twenty-four locally and fail every spec in CI, which always starts empty. This
+has happened.
+
+```bash
+# from apps/web, with your usual Postgres running
+createdb sendsprite_e2e            # once
+DATABASE_URL=postgres://…/sendsprite_e2e bun run db:migrate
+DATABASE_URL=postgres://…/sendsprite_e2e bun run test:e2e
+```
+
 Also:
 
 - **Add a test at the level the change lives at.** A pure function gets a unit

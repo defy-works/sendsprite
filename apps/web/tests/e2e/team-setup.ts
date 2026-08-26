@@ -44,11 +44,12 @@ export async function completeTeamSetup(page: Page): Promise<void> {
   const skipProduction = page.getByRole("button", { name: "Skip for now" });
   if (await skipProduction.isVisible()) {
     await skipProduction.click();
-    await expect(page).toHaveURL(/step=cloudflare/);
+    // The Cloudflare step exists only where an OAuth client for it does.
+    // Without one — the default, and CI — the wizard does not have that step
+    // and production leads straight to the last one.
+    await expect(page).toHaveURL(/step=(cloudflare|done)/);
   }
 
-  // With a Cloudflare OAuth client configured the step offers Connect/Skip;
-  // without one (the default, and CI) it is informational with a Continue.
   const skip = page.getByRole("button", { name: "Skip", exact: true });
   const carryOn = page.getByRole("link", { name: "Continue", exact: true });
   const finish = page.getByRole("button", { name: "Go to dashboard" });
