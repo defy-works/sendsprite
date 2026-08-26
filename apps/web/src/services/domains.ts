@@ -23,7 +23,7 @@ import { checkRecords, publicResolver, type Resolver } from "@/lib/dns/check";
 import { detectCloudflareZone } from "@/lib/dns/cloudflare-zone";
 import { recordAudit } from "@/lib/audit";
 import type { Result } from "@/lib/result";
-import { getInstanceSettings } from "./instance-settings";
+import { getTeamAws } from "./team-aws";
 import { cloudflareClient, listZones } from "./cloudflare-connect";
 import { fanOutEvent } from "./webhooks";
 import type { TeamActor } from "./team";
@@ -150,12 +150,12 @@ export async function createDomain(
   if (!parsed.success)
     return { ok: false, error: "Enter a valid domain like mail.example.com." };
   const name = parsed.data.name;
-  const settings = await getInstanceSettings();
-  if (settings.awsMode === "none" || !settings.awsRegion)
+  const aws = await getTeamAws(actor.teamId);
+  if (!aws)
     return {
       ok: false,
       code: "not_configured",
-      error: "Connect AWS first (Settings → Instance).",
+      error: "Connect AWS first (Settings → Sending).",
     };
   const [dupe] = await db()
     .select({ id: domains.id })
@@ -163,7 +163,7 @@ export async function createDomain(
     .where(eq(domains.name, name))
     .limit(1);
   if (dupe) return DUPLICATE;
-  const zone = matchZone(name, await listZones(deps.fetch));
+  const zone = matchZone(name, await listZones(actor.teamId, deps.fetch));
   const id = newId("dom");
   let row: Domain | undefined;
   try {
@@ -173,7 +173,7 @@ export async function createDomain(
         id,
         teamId: actor.teamId,
         name,
-        region: settings.awsRegion,
+        region: aws.region,
         cloudflareZoneId: zone?.id ?? null,
         dnsMode: zone ? "auto" : "manual",
         mailFromDomain: `bounce.${name}`,
@@ -281,13 +281,13 @@ export async function provisionDomain(
   const d = await loadById(domainId);
   if (!d) return;
   try {
-    const ses = makeSes(await resolveAwsContext());
-    const settings = await getInstanceSettings();
+    const ses = makeSes(await resolveAwsContext(d.teamId));
+    const aws = await getTeamAws(d.teamId);
     const identity = await ses
       .send(
         new CreateEmailIdentityCommand({
           EmailIdentity: d.name,
-          ConfigurationSetName: settings.sesConfigSet ?? undefined,
+          ConfigurationSetName: aws?.configSet ?? undefined,
           DkimSigningAttributes: { NextSigningKeyLength: "RSA_2048_BIT" },
         }),
       )
@@ -326,7 +326,7 @@ export async function provisionDomain(
     let lastError: string | null = null;
     if (d.dnsMode === "auto" && d.cloudflareZoneId) {
       const zoneId = d.cloudflareZoneId;
-      const cf = await cloudflareClient(deps.fetch);
+      const cf = await cloudflareClient(d.teamId, deps.fetch);
       if (cf) {
         for (const r of recs) {
           const { id } = await cf.upsertRecord(zoneId, {
@@ -404,7 +404,7 @@ export async function verifyDomain(
   if (!d || (d.status === "verified" && !force)) return;
   let ses;
   try {
-    ses = makeSes(await resolveAwsContext());
+    ses = makeSes(await resolveAwsContext(d.teamId));
   } catch (e) {
     await setError(d.id, errMsg(e));
     return;
@@ -619,10 +619,10 @@ export async function deleteDomain(
   if (!can(actor.role, "domains.manage")) return DENIED;
   const d = await getDomain(actor.teamId, id);
   if (!d) return NOT_FOUND;
-  const connected = (await getInstanceSettings()).awsMode !== "none";
+  const connected = (await getTeamAws(actor.teamId)) !== null;
   if (connected) {
     try {
-      const ses = makeSes(await resolveAwsContext());
+      const ses = makeSes(await resolveAwsContext(actor.teamId));
       await ses
         .send(new DeleteEmailIdentityCommand({ EmailIdentity: d.name }))
         .catch((e: unknown) => {
@@ -641,7 +641,7 @@ export async function deleteDomain(
     leftoverDnsRecords = d.expectedRecords.filter((r) => r.cloudflareId).length;
   } else if (d.dnsMode === "auto" && d.cloudflareZoneId) {
     const zoneId = d.cloudflareZoneId;
-    const cf = await cloudflareClient(deps.fetch);
+    const cf = await cloudflareClient(actor.teamId, deps.fetch);
     for (const r of d.expectedRecords) {
       if (!r.cloudflareId) continue;
       if (!cf) {

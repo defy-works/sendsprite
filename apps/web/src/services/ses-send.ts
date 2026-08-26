@@ -10,7 +10,7 @@ import { makeSes } from "@/lib/aws/clients";
 import { resolveAwsContext } from "@/lib/aws/credentials";
 import { formatAddress, parseAddress } from "@/lib/email-address";
 import { Q } from "@/jobs/queues";
-import { getInstanceSettings } from "./instance-settings";
+import { getTeamAws } from "./team-aws";
 import { takeSesToken } from "./send-limits";
 import { RECONCILED_FAILED_PREFIX, recordEvent } from "./email-events";
 import { publicEmail } from "./ingest";
@@ -143,7 +143,7 @@ export async function sendQueuedEmail(
     return { outcome: "deferred", retryInMs };
   }
 
-  const token = await takeSesToken(now);
+  const token = await takeSesToken(pre.teamId, now);
   if (!token.ok) {
     await touch(emailId);
     await deps.enqueue(
@@ -175,8 +175,8 @@ export async function sendQueuedEmail(
   }
 
   try {
-    const ctx = await resolveAwsContext();
-    const settings = await getInstanceSettings();
+    const ctx = await resolveAwsContext(e.teamId);
+    const aws = await getTeamAws(e.teamId);
     const atts = e.attachmentsMeta.length
       ? await db()
           .select()
@@ -198,7 +198,7 @@ export async function sendQueuedEmail(
           ...(e.bcc.length > 0 && { BccAddresses: e.bcc }),
         },
         ...(e.replyTo.length > 0 && { ReplyToAddresses: e.replyTo }),
-        ConfigurationSetName: settings.sesConfigSet ?? undefined,
+        ConfigurationSetName: aws?.configSet ?? undefined,
         // Opens/clicks are tracked by our own endpoints; SES's would double count.
         ConfigurationOverrides: {
           Tracking: {
@@ -296,8 +296,8 @@ export async function sendQueuedEmail(
  * `(team_id, email)` and `isSuppressed` takes the whole recipient set as one
  * `in (...)`, so a send costs one index probe however many recipients it has.
  * That sits behind `takeSesToken` — a transaction that takes a row lock
- * `for update` on a single global row and therefore serialises every worker in
- * the instance — and beside `resolveAwsContext`, `getInstanceSettings` and
+ * `for update` on the team's bucket row and therefore serialises every worker
+ * sending for that team — and beside `resolveAwsContext`, `getTeamAws` and
  * the claim, all of which are already per-send round trips. It is noise on
  * this path. If it ever stops being noise, the alternative is not to drop it
  * but to fold it into the claim (a `not exists` sub-select on the conditional
