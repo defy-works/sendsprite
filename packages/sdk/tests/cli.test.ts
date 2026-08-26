@@ -5,6 +5,7 @@
  * built `dist/cli.js` binary itself.
  */
 import {
+  existsSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -23,8 +24,23 @@ import {
 import { SendspriteError } from "../src/errors";
 import { buildProgram } from "../src/cli/index";
 import { table } from "../src/cli/output";
+import type { TemplateObject } from "../src/types";
 
 const dir = () => mkdtempSync(join(tmpdir(), "ss-cli-"));
+
+const TEMPLATE: TemplateObject = {
+  id: "tpl_1",
+  slug: "welcome",
+  name: "Welcome",
+  subject: "Hi {{name}}",
+  bodyHtml: "<p>Hi {{name}}</p>",
+  bodyText: "Hi {{name}}",
+  variablesSchema: { variables: [] },
+  version: 1,
+  updatedBy: null,
+  createdAt: "2026-08-26T00:00:00.000Z",
+  updatedAt: "2026-08-26T00:00:00.000Z",
+};
 
 const fakeClient = () => ({
   me: vi.fn().mockResolvedValue({
@@ -63,6 +79,11 @@ const fakeClient = () => ({
       to: ["c@d.io"],
       subject: "s",
     }),
+  },
+  templates: {
+    list: vi.fn().mockResolvedValue({ data: [], nextCursor: null }),
+    create: vi.fn().mockResolvedValue(TEMPLATE),
+    update: vi.fn().mockResolvedValue(TEMPLATE),
   },
   stream: vi.fn(),
 });
@@ -684,5 +705,316 @@ describe("cli", () => {
     await run(["emails", "tail"], client, loggedIn());
     expect(close).toHaveBeenCalled();
     expect(process.listenerCount("SIGINT")).toBe(before);
+  });
+});
+
+describe("cli templates pull/push", () => {
+  /** A client whose team holds exactly `rows`, in one page. */
+  const withRemote = (rows: TemplateObject[]) => {
+    const client = fakeClient();
+    client.templates.list.mockResolvedValue({ data: rows, nextCursor: null });
+    return client;
+  };
+
+  const files = (
+    d: string,
+    slug: string,
+    manifest: unknown,
+    html: string,
+    text?: string,
+  ) => {
+    writeFileSync(join(d, `${slug}.json`), JSON.stringify(manifest, null, 2));
+    writeFileSync(join(d, `${slug}.html`), html);
+    if (text !== undefined) writeFileSync(join(d, `${slug}.txt`), text);
+  };
+
+  it("pull writes a manifest, the HTML and the text body", async () => {
+    const out = join(dir(), "nested");
+    const { out: text } = await run(
+      ["templates", "pull", out],
+      withRemote([TEMPLATE]),
+      loggedIn(),
+    );
+    expect(readFileSync(join(out, "welcome.html"), "utf8")).toBe(
+      "<p>Hi {{name}}</p>",
+    );
+    expect(readFileSync(join(out, "welcome.txt"), "utf8")).toBe("Hi {{name}}");
+    expect(JSON.parse(readFileSync(join(out, "welcome.json"), "utf8"))).toEqual(
+      {
+        name: "Welcome",
+        subject: "Hi {{name}}",
+        variablesSchema: { variables: [] },
+      },
+    );
+    expect(text).toMatch(/wrote welcome/);
+    expect(text).toMatch(/1 template, 1 changed/);
+  });
+
+  it("pull leaves no .txt behind for a template with no text body", async () => {
+    const out = dir();
+    // A stale file would otherwise be pushed straight back as a text body.
+    writeFileSync(join(out, "welcome.txt"), "stale");
+    await run(
+      ["templates", "pull", out],
+      withRemote([{ ...TEMPLATE, bodyText: null }]),
+      loggedIn(),
+    );
+    expect(existsSync(join(out, "welcome.txt"))).toBe(false);
+  });
+
+  it("pull walks every page", async () => {
+    const out = dir();
+    const client = fakeClient();
+    client.templates.list
+      .mockResolvedValueOnce({ data: [TEMPLATE], nextCursor: "cur" })
+      .mockResolvedValueOnce({
+        data: [{ ...TEMPLATE, slug: "second" }],
+        nextCursor: null,
+      });
+    await run(["templates", "pull", out], client, loggedIn());
+    expect(client.templates.list).toHaveBeenNthCalledWith(2, {
+      limit: 100,
+      cursor: "cur",
+    });
+    expect(existsSync(join(out, "second.html"))).toBe(true);
+  });
+
+  it("pull --dry-run writes nothing", async () => {
+    const out = dir();
+    const { out: text } = await run(
+      ["templates", "pull", out, "--dry-run"],
+      withRemote([TEMPLATE]),
+      loggedIn(),
+    );
+    expect(readdirSync(out)).toEqual([]);
+    expect(text).toMatch(/would write welcome/);
+    expect(text).toMatch(/1 template, 1 would change/);
+  });
+
+  it("pull refuses a slug that would escape the directory", async () => {
+    await expect(
+      run(
+        ["templates", "pull", dir()],
+        withRemote([{ ...TEMPLATE, slug: "../../etc/passwd" }]),
+        loggedIn(),
+      ),
+    ).rejects.toThrow(/unexpected slug/);
+  });
+
+  it("pull reports a local template the instance does not have", async () => {
+    const out = dir();
+    files(out, "draft", { name: "D", subject: "s" }, "<p>d</p>");
+    const { err } = await run(
+      ["templates", "pull", out],
+      withRemote([TEMPLATE]),
+      loggedIn(),
+    );
+    expect(err).toMatch(/draft/);
+    // Reported, never removed: it is unpushed work, not drift.
+    expect(existsSync(join(out, "draft.json"))).toBe(true);
+  });
+
+  it("pull then push is a no-op", async () => {
+    const out = dir();
+    await run(["templates", "pull", out], withRemote([TEMPLATE]), loggedIn());
+    const again = await run(
+      ["templates", "pull", out],
+      withRemote([TEMPLATE]),
+      loggedIn(),
+    );
+    expect(again.out).toMatch(/unchanged welcome/);
+    expect(again.out).toMatch(/1 template, 0 changed/);
+    const client = withRemote([TEMPLATE]);
+    const pushed = await run(["templates", "push", out], client, loggedIn());
+    // A spurious PATCH here is a spurious version row on a live account.
+    expect(client.templates.create).not.toHaveBeenCalled();
+    expect(client.templates.update).not.toHaveBeenCalled();
+    expect(pushed.out).toMatch(/unchanged welcome/);
+    expect(pushed.out).toMatch(/1 template, 0 changed/);
+  });
+
+  it("push creates what is missing and patches only what changed", async () => {
+    const out = dir();
+    files(
+      out,
+      "welcome",
+      {
+        name: "Welcome",
+        subject: "Hi {{name}}",
+        variablesSchema: { variables: [] },
+      },
+      "<p>edited</p>",
+      "Hi {{name}}",
+    );
+    files(out, "second", { name: "Second", subject: "Yo" }, "<p>Yo</p>");
+    const client = withRemote([TEMPLATE]);
+    const { out: text } = await run(
+      ["templates", "push", out],
+      client,
+      loggedIn(),
+    );
+    expect(client.templates.create).toHaveBeenCalledWith({
+      slug: "second",
+      name: "Second",
+      subject: "Yo",
+      bodyHtml: "<p>Yo</p>",
+    });
+    // Only the field that moved: the audit diff names it, and nothing else is
+    // re-sent to be compared.
+    expect(client.templates.update).toHaveBeenCalledWith("welcome", {
+      bodyHtml: "<p>edited</p>",
+    });
+    expect(text).toMatch(/created second/);
+    expect(text).toMatch(/updated welcome \(bodyHtml\)/);
+    expect(text).toMatch(/2 templates, 2 changed/);
+  });
+
+  it("push sends the variables schema and the text body it finds", async () => {
+    const out = dir();
+    files(
+      out,
+      "welcome",
+      {
+        name: "Welcome",
+        subject: "Hi {{name}}",
+        variablesSchema: { variables: [{ name: "name", type: "string" }] },
+      },
+      "<p>Hi {{name}}</p>",
+      "Hi you",
+    );
+    const client = withRemote([TEMPLATE]);
+    await run(["templates", "push", out], client, loggedIn());
+    expect(client.templates.update).toHaveBeenCalledWith("welcome", {
+      bodyText: "Hi you",
+      variablesSchema: { variables: [{ name: "name", type: "string" }] },
+    });
+  });
+
+  it("push never removes a text body it cannot see, and says so", async () => {
+    const out = dir();
+    files(
+      out,
+      "welcome",
+      {
+        name: "Welcome",
+        subject: "Hi {{name}}",
+        variablesSchema: { variables: [] },
+      },
+      "<p>Hi {{name}}</p>",
+    );
+    const client = withRemote([TEMPLATE]);
+    const { out: text, err } = await run(
+      ["templates", "push", out],
+      client,
+      loggedIn(),
+    );
+    expect(client.templates.update).not.toHaveBeenCalled();
+    expect(text).toMatch(/unchanged welcome/);
+    expect(err).toMatch(/welcome\.txt/);
+  });
+
+  it("push leaves a template with no local file alone and reports it", async () => {
+    const out = dir();
+    files(out, "welcome", { name: "Welcome", subject: "Hi" }, "<p>Hi</p>");
+    const client = withRemote([TEMPLATE, { ...TEMPLATE, slug: "orphaned" }]);
+    const { err } = await run(["templates", "push", out], client, loggedIn());
+    expect(err).toMatch(/orphaned/);
+    expect(err).toMatch(/never deletes/);
+  });
+
+  it("push --dry-run reports the same plan and sends nothing", async () => {
+    const out = dir();
+    files(out, "a", { name: "A", subject: "s" }, "<p>a</p>");
+    files(
+      out,
+      "welcome",
+      {
+        name: "Welcome",
+        subject: "Hi {{name}}",
+        variablesSchema: { variables: [] },
+      },
+      "<p>edited</p>",
+      "Hi {{name}}",
+    );
+    const client = withRemote([TEMPLATE]);
+    const { out: text } = await run(
+      ["templates", "push", out, "--dry-run"],
+      client,
+      loggedIn(),
+    );
+    expect(client.templates.create).not.toHaveBeenCalled();
+    expect(client.templates.update).not.toHaveBeenCalled();
+    expect(text).toMatch(/would create a/);
+    expect(text).toMatch(/would update welcome \(bodyHtml\)/);
+    expect(text).toMatch(/2 templates, 2 would change/);
+  });
+
+  it("push names the file and the problem for anything malformed", async () => {
+    const client = () => withRemote([]);
+    const orphan = dir();
+    writeFileSync(join(orphan, "orphan.json"), '{"name":"O","subject":"s"}');
+    await expect(
+      run(["templates", "push", orphan], client(), loggedIn()),
+    ).rejects.toThrow(/orphan\.html/);
+
+    const bad = dir();
+    writeFileSync(join(bad, "Not A Slug.json"), "{}");
+    await expect(
+      run(["templates", "push", bad], client(), loggedIn()),
+    ).rejects.toThrow(/Not A Slug\.json.*slug/s);
+
+    const broken = dir();
+    writeFileSync(join(broken, "b.json"), "{ not json");
+    writeFileSync(join(broken, "b.html"), "<p>b</p>");
+    await expect(
+      run(["templates", "push", broken], client(), loggedIn()),
+    ).rejects.toThrow(/b\.json: not valid JSON/);
+
+    const bare = dir();
+    files(bare, "a", { subject: "s" }, "<p>a</p>");
+    await expect(
+      run(["templates", "push", bare], client(), loggedIn()),
+    ).rejects.toThrow(/a\.json: "name"/);
+
+    const stray = dir();
+    files(
+      stray,
+      "a",
+      { name: "A", subject: "s", bodyHtml: "<p>a</p>" },
+      "<p>a</p>",
+    );
+    await expect(
+      run(["templates", "push", stray], client(), loggedIn()),
+    ).rejects.toThrow(/a\.json.*bodyHtml.*a\.html/s);
+
+    await expect(
+      run(["templates", "push", join(dir(), "absent")], client(), loggedIn()),
+    ).rejects.toThrow(/Cannot read/);
+  });
+
+  it("push validates the whole directory before it sends anything", async () => {
+    const out = dir();
+    files(out, "a", { name: "A", subject: "s" }, "<p>a</p>");
+    writeFileSync(join(out, "b.json"), "{ not json");
+    writeFileSync(join(out, "b.html"), "<p>b</p>");
+    const client = withRemote([]);
+    await expect(
+      run(["templates", "push", out], client, loggedIn()),
+    ).rejects.toThrow(/b\.json/);
+    // Half a directory pushed is worse than none of it.
+    expect(client.templates.create).not.toHaveBeenCalled();
+    expect(client.templates.list).not.toHaveBeenCalled();
+  });
+
+  it("push ignores an .html with no manifest but says it did", async () => {
+    const out = dir();
+    files(out, "a", { name: "A", subject: "s" }, "<p>a</p>");
+    writeFileSync(join(out, "stray.html"), "<p>stray</p>");
+    const { err } = await run(
+      ["templates", "push", out],
+      withRemote([]),
+      loggedIn(),
+    );
+    expect(err).toMatch(/stray\.html/);
   });
 });

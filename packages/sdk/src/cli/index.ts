@@ -12,6 +12,7 @@ import type { Sendsprite } from "../index";
 import { registerDomains } from "./commands/domains";
 import { registerEmails } from "./commands/emails";
 import { registerLogin } from "./commands/login";
+import { registerTemplates } from "./commands/templates";
 import { registerWhoami } from "./commands/whoami";
 import { loadConfig, normalizeInstanceUrl, type CliConfig } from "./config";
 
@@ -50,15 +51,13 @@ export interface CommandContext {
   ) => (...args: A) => Promise<void>;
 }
 
-/**
- * The command registry. Phase 5's `templates pull|push` slots in as one more
- * `registerTemplates` entry — no other file needs to change.
- */
+/** The command registry. A new command is one entry here and one file. */
 const COMMANDS: readonly ((ctx: CommandContext) => void)[] = [
   registerLogin,
   registerWhoami,
   registerDomains,
   registerEmails,
+  registerTemplates,
 ];
 
 /** Where the credentials in play came from, for error messages. */

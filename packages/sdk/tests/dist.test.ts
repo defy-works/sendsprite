@@ -94,7 +94,13 @@ describe("dist", () => {
     const help = run(["--help"]);
     expect(help.status).toBe(0);
     expect(help.stdout).toContain("Usage: sendsprite");
-    for (const command of ["login", "whoami", "domains", "emails"]) {
+    for (const command of [
+      "login",
+      "whoami",
+      "domains",
+      "emails",
+      "templates",
+    ]) {
       expect(help.stdout).toContain(command);
     }
 
