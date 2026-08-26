@@ -564,11 +564,32 @@ export interface UnsubscribeResult {
 export type CampaignStatus =
   "draft" | "scheduled" | "sending" | "sent" | "cancelled";
 
+/** Horizontal placement of a block's contents. */
+export type BlockAlign = "left" | "center" | "right";
+
+/**
+ * `#rrggbb`, upper or lower case.
+ *
+ * Typed as `string` because TypeScript cannot express the pattern, but the API
+ * checks it: `red`, `rgb(0,0,0)` and `var(--brand)` are all valid CSS and all
+ * `validation_error` here. These values are interpolated into an email's
+ * `style` attributes, where a colour is the only thing that can be safe.
+ */
+export type HexColor = string;
+
+/** Corner rounding, as a preset rather than a radius. */
+export type CornerStyle = "sharp" | "soft" | "pill";
+
+/** Image width as a percentage of its container. Quarters only. */
+export type ImageWidth = 25 | 50 | 75 | 100;
+
 /** One of three sizes; the renderer maps each level to a fixed style. */
 export interface HeadingBlock {
   kind: "heading";
   level: 1 | 2 | 3;
   text: string;
+  align?: BlockAlign;
+  color?: HexColor;
 }
 
 /**
@@ -580,6 +601,8 @@ export interface HeadingBlock {
 export interface TextBlock {
   kind: "text";
   html: string;
+  align?: BlockAlign;
+  color?: HexColor;
 }
 
 /** A call to action, rendered as a button that survives Outlook. */
@@ -588,6 +611,14 @@ export interface ButtonBlock {
   label: string;
   /** Absolute `http(s)`/`mailto`. A URL carrying credentials is refused. */
   url: string;
+  align?: BlockAlign;
+  /** The button itself. */
+  color?: HexColor;
+  /** The label on it. */
+  textColor?: HexColor;
+  corners?: CornerStyle;
+  /** Stretches to the container width — useful inside a narrow column. */
+  fullWidth?: boolean;
 }
 
 export interface ImageBlock {
@@ -597,11 +628,16 @@ export interface ImageBlock {
   alt: string;
   /** Wraps the image in a link. */
   href?: string;
+  align?: BlockAlign;
+  /** Percentage of the container. Defaults to the full width. */
+  width?: ImageWidth;
+  corners?: CornerStyle;
 }
 
-/** A horizontal rule. Carries nothing. */
+/** A horizontal rule. */
 export interface DividerBlock {
   kind: "divider";
+  color?: HexColor;
 }
 
 /** Vertical whitespace, 4–96 pixels. */
@@ -610,14 +646,79 @@ export interface SpacerBlock {
   size: number;
 }
 
-/** One block of a campaign body, discriminated on `kind`. */
-export type CampaignBlock =
+/**
+ * A block that can sit inside a column: everything except a row of columns.
+ *
+ * The recursion stops at one level deliberately. Nested column tables are
+ * where email layout stops being portable — the Word engine behind Outlook on
+ * Windows measures an inner table against the wrong containing block — so the
+ * API refuses the shape rather than shipping a body that renders differently
+ * for a third of recipients.
+ */
+export type LeafBlock =
   | HeadingBlock
   | TextBlock
   | ButtonBlock
   | ImageBlock
   | DividerBlock
   | SpacerBlock;
+
+/**
+ * Column ratios, as presets. The name is the ratio, so `"2-1"` is a wide
+ * column then a narrow one. `columns.length` must match: `"1-1-1"` with two
+ * columns is a `validation_error`, not a row with an empty cell.
+ */
+export type ColumnLayout = "1-1" | "1-1-1" | "2-1" | "1-2";
+
+/** A row of two or three columns. At most 20 blocks per column. */
+export interface ColumnsBlock {
+  kind: "columns";
+  layout: ColumnLayout;
+  /** Fills the row behind every column. */
+  background?: HexColor;
+  columns: LeafBlock[][];
+}
+
+/** One block of a campaign body, discriminated on `kind`. */
+export type CampaignBlock = LeafBlock | ColumnsBlock;
+
+/**
+ * The card width in pixels, as three presets.
+ *
+ * 600 is what fits an Outlook reading pane at 96 dpi; 480 and 720 are the
+ * narrow and wide departures from it.
+ */
+export type ContentWidth = 480 | 600 | 720;
+
+/**
+ * A font *family*, not a font. A webfont is one most clients will not load, so
+ * the only honest choice is which system stack to fall back to.
+ */
+export type FontFamily = "sans" | "serif" | "mono";
+
+/**
+ * What the whole body looks like, as opposed to one block in it.
+ *
+ * Every field is optional and every one has a renderer default, so an absent
+ * theme renders exactly what a body rendered before themes existed. A client
+ * that never sends one is not opting out of anything.
+ */
+export interface CampaignTheme {
+  /** Behind the card. Defaults to a light grey. */
+  pageBackground?: HexColor;
+  /** The card itself. Defaults to white. */
+  cardBackground?: HexColor;
+  contentWidth?: ContentWidth;
+  font?: FontFamily;
+  /** Body and heading text. Defaults to near-black. */
+  textColor?: HexColor;
+  /**
+   * Links inside `text` blocks. Applied through a `<style>` rule, which Gmail,
+   * Apple Mail and Outlook.com honour; Outlook on Windows keeps its own blue.
+   */
+  linkColor?: HexColor;
+  cardCorners?: CornerStyle;
+}
 
 /** `POST /campaigns`: a draft. Nothing here schedules or sends. */
 export interface CreateCampaignInput {
@@ -631,6 +732,8 @@ export interface CreateCampaignInput {
   subject: string;
   /** 1–100 blocks, in the order they are rendered. */
   blocks: CampaignBlock[];
+  /** Absent means the renderer's defaults. */
+  theme?: CampaignTheme;
 }
 
 /**
@@ -646,6 +749,8 @@ export interface UpdateCampaignInput {
   replyTo?: string | null;
   subject?: string;
   blocks?: CampaignBlock[];
+  /** `null` resets to the defaults; omitting it leaves the theme alone. */
+  theme?: CampaignTheme | null;
 }
 
 /**
@@ -683,6 +788,8 @@ export interface CampaignObject {
   replyTo: string | null;
   subject: string;
   blocks: CampaignBlock[];
+  /** `null` when the campaign renders with the defaults. */
+  theme: CampaignTheme | null;
   status: CampaignStatus;
   scheduledAt: string | null;
   /** When the fan-out finished, not when it started. */

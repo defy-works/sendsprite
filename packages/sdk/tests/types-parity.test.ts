@@ -126,7 +126,13 @@ type Checks = [
   Mutual<sdk.ImageBlock, In<typeof shared.ImageBlock>>,
   Mutual<sdk.DividerBlock, In<typeof shared.DividerBlock>>,
   Mutual<sdk.SpacerBlock, In<typeof shared.SpacerBlock>>,
+  Mutual<sdk.LeafBlock, In<typeof shared.LeafBlock>>,
+  // A row of columns carries a `superRefine`, so it is not an object schema —
+  // `z.input` still resolves, and the column-count rule it adds is a run-time
+  // check with no type to mirror.
+  Mutual<sdk.ColumnsBlock, In<typeof shared.ColumnsBlock>>,
   Mutual<sdk.CampaignBlock, In<typeof shared.CampaignBlock>>,
+  Mutual<sdk.CampaignTheme, In<typeof shared.CampaignTheme>>,
   Mutual<sdk.CreateCampaignInput, In<typeof shared.CreateCampaignInput>>,
   Mutual<sdk.UpdateCampaignInput, In<typeof shared.UpdateCampaignInput>>,
   Mutual<sdk.ScheduleCampaignInput, In<typeof shared.ScheduleCampaignInput>>,
@@ -135,6 +141,9 @@ type Checks = [
   Mutual<sdk.AudiencePreview, Out<typeof shared.AudiencePreview>>,
 ];
 const allTrue: Checks = [
+  true,
+  true,
+  true,
   true,
   true,
   true,
@@ -305,6 +314,57 @@ describe("SDK types mirror @sendsprite/shared", () => {
     };
     expect(Object.keys(campaignStatuses).sort()).toEqual(
       [...shared.CAMPAIGN_STATUSES].sort(),
+    );
+    const blockAlignments: Record<sdk.BlockAlign, true> = {
+      left: true,
+      center: true,
+      right: true,
+    };
+    expect(Object.keys(blockAlignments).sort()).toEqual(
+      [...shared.BLOCK_ALIGNMENTS].sort(),
+    );
+    const cornerStyles: Record<sdk.CornerStyle, true> = {
+      sharp: true,
+      soft: true,
+      pill: true,
+    };
+    expect(Object.keys(cornerStyles).sort()).toEqual(
+      [...shared.CORNER_STYLES].sort(),
+    );
+    const columnLayouts: Record<sdk.ColumnLayout, true> = {
+      "1-1": true,
+      "1-1-1": true,
+      "2-1": true,
+      "1-2": true,
+    };
+    expect(Object.keys(columnLayouts).sort()).toEqual(
+      [...shared.COLUMN_LAYOUTS].sort(),
+    );
+    const fontFamilies: Record<sdk.FontFamily, true> = {
+      sans: true,
+      serif: true,
+      mono: true,
+    };
+    expect(Object.keys(fontFamilies).sort()).toEqual(
+      [...shared.FONT_FAMILIES].sort(),
+    );
+    // Numeric unions, so `Record<union, true>` keys come back as strings.
+    const imageWidths: Record<sdk.ImageWidth, true> = {
+      25: true,
+      50: true,
+      75: true,
+      100: true,
+    };
+    expect(Object.keys(imageWidths).map(Number).sort()).toEqual(
+      [...shared.IMAGE_WIDTHS].sort(),
+    );
+    const contentWidths: Record<sdk.ContentWidth, true> = {
+      480: true,
+      600: true,
+      720: true,
+    };
+    expect(Object.keys(contentWidths).map(Number).sort()).toEqual(
+      [...shared.CONTENT_WIDTHS].sort(),
     );
     const variableTypes: Record<sdk.TemplateVariableType, true> = {
       string: true,
