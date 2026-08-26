@@ -9,7 +9,6 @@ import { Alert, Notice } from "./shared";
 type StatusBody = {
   connected: boolean;
   pendingToken: boolean;
-  expiresAt: string | null;
   lastFailure?: { at: string; reason: string } | null;
 };
 type StatusFetch =
@@ -20,6 +19,18 @@ type StatusFetch =
 const POLL_MS = 3000;
 /** Consecutive failed polls before giving up (~1 min at POLL_MS). */
 const MAX_FAILURES = 20;
+
+/**
+ * Shown when the token is gone before the callback landed. It deliberately
+ * does not say "open a new one" on its own: if the stack is still creating,
+ * its callback will be refused, and the template treats a non-2xx as FAILED —
+ * so the stack rolls itself back and deletes the IAM user. Starting a second
+ * stack on top of that one collides on the stack name.
+ */
+const EXPIRED =
+  "The one-click link expired before AWS called back. If the stack is still " +
+  "creating, let it finish — it will roll back and clean itself up — then " +
+  "open a new link.";
 
 /**
  * One-click flow. The popup is opened synchronously on click (before the
@@ -79,12 +90,12 @@ export function QuickCreate({
         setPolling(false);
         router.refresh();
       } else if (!body.pendingToken) {
-        stop(
-          body.lastFailure?.reason ??
-            "The one-click link expired; open a new one.",
-        );
-      } else if (body.expiresAt && Date.parse(body.expiresAt) <= Date.now()) {
-        stop("The one-click link expired; open a new one.");
+        // Whether the token is still live is the server's call: /status only
+        // reports one that is unconsumed AND unexpired per the database clock.
+        // Re-checking `expiresAt` against Date.now() here compared a server
+        // timestamp to the browser's clock, so any machine running ahead was
+        // told the link had expired while CloudFormation was still running.
+        stop(body.lastFailure?.reason ?? EXPIRED);
       }
     };
     const id = setInterval(() => void tick(), POLL_MS);

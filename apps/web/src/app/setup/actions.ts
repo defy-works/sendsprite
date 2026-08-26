@@ -61,7 +61,11 @@ export async function startQuickCreate(
     purpose: "aws_callback",
     issuedBy: a.userId,
     region: r,
-    ttlMs: 15 * 60_000,
+    // Covers the whole flow, not just the click: the owner reads the review
+    // page, ticks the IAM checkbox, and then waits out the stack build. At 15
+    // minutes a slow read plus a slow build ran out mid-deploy, and an expired
+    // token makes the callback 403, which rolls the finished stack back.
+    ttlMs: 60 * 60_000,
   });
   return {
     ok: true,
