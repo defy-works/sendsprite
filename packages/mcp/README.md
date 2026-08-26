@@ -72,18 +72,22 @@ to resume and none to end. `SIGTERM`/`SIGINT` close the listener and drain.
 
 ## Tools
 
-| Tool               | Input                                                | Returns                                                                       |
-| ------------------ | ---------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `send_email`       | the full `POST /emails` body                         | `{ id }`                                                                      |
-| `get_email_status` | `{ id }`                                             | status, recipients, subject, `sentAt`, `lastError`, the 10 most recent events |
-| `list_emails`      | `{ limit?, cursor?, status? }`                       | `{ data, nextCursor }`                                                        |
-| `search_emails`    | `{ to?, status?, tag?, domainId?, limit?, cursor? }` | `{ data, nextCursor }`                                                        |
-| `list_domains`     | —                                                    | `{ data, nextCursor }` with each domain's verification status and DNS records |
-| `get_send_stats`   | —                                                    | sends today / 7 d / 30 d, 30-day rates, account-health alerts                 |
+| Tool               | Input                                                   | Returns                                                                       |
+| ------------------ | ------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `send_email`       | the full `POST /emails` body                            | `{ id }`                                                                      |
+| `get_email_status` | `{ id }`                                                | status, recipients, subject, `sentAt`, `lastError`, the 10 most recent events |
+| `list_emails`      | `{ limit?, cursor?, status? }`                          | `{ data, nextCursor }`                                                        |
+| `search_emails`    | `{ to?, status?, tag?, domainId?, limit?, cursor? }`    | `{ data, nextCursor }`                                                        |
+| `list_domains`     | —                                                       | `{ data, nextCursor }` with each domain's verification status and DNS records |
+| `list_templates`   | —                                                       | `{ data, nextCursor }` with each template's `slug`, subject and variables     |
+| `render_template`  | `{ slug, variables? }`                                  | `{ subject, html, text }` — a dry run; the variables are not echoed back      |
+| `get_send_stats`   | —                                                       | sends today / 7 d / 30 d, 30-day rates, account-health alerts                 |
+| `add_contact`      | `{ bookId, email, firstName?, lastName?, properties? }` | `{ id, bookId, email, subscribed }`                                           |
 
-`send_email` is validated against the same zod contract the REST API uses —
-including "one of `html`, `text` or `template` is required" and the recipient
-cap — so a malformed call costs no round trip.
+`send_email` and `add_contact` are validated against the same zod contracts the
+REST API uses — including "one of `html`, `text` or `template` is required",
+the recipient cap and the contact address rule — so a malformed call costs no
+round trip.
 
 API failures come back as **tool errors**, not protocol errors: the agent
 reads `{ error: { code, message, status } }` and can react to
@@ -93,7 +97,12 @@ Every tool advertises an output schema. The read tools' schemas are
 deliberately open (`additionalProperties`), so a new field on the REST API
 never becomes a validation error inside your MCP client.
 
-Template and contact tools are planned for a later release.
+`add_contact` is the only tool that writes to your contact list. It names the
+book explicitly — there is no default book — and an address already in that
+book comes back as `conflict` and is left untouched. That is on purpose: a
+contact who unsubscribed is still a row in the book, so a create-then-update
+fallback would put someone who asked to be left alone back on the list. No
+tool here can resubscribe an address, and none of them writes a suppression.
 
 ## As a library
 

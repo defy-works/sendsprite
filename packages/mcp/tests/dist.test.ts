@@ -131,7 +131,7 @@ describe("dist", () => {
     try {
       const names = (await client.listTools()).tools.map((t) => t.name);
       expect(names).toContain("send_email");
-      expect(names).toHaveLength(6);
+      expect(names).toHaveLength(9);
     } finally {
       await client.close();
     }
@@ -155,7 +155,7 @@ describe("dist", () => {
     try {
       // Well after the fixture's deferred writes have fired.
       await new Promise((r) => setTimeout(r, 200));
-      expect((await client.listTools()).tools).toHaveLength(6);
+      expect((await client.listTools()).tools).toHaveLength(9);
     } finally {
       await client.close();
     }

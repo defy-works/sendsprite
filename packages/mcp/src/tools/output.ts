@@ -39,3 +39,26 @@ export const statsOutput = z.looseObject({
   }),
   alerts: z.array(z.looseObject({ kind: z.string(), level: z.string() })),
 });
+
+/**
+ * `POST /templates/:slug/render`. The rendered fields only — the variables
+ * that produced them are not part of the shape, and the tool does not put
+ * them back either (see `tools/render-template.ts`).
+ */
+export const renderedTemplateOutput = z.looseObject({
+  subject: z.string(),
+  html: z.string(),
+  text: z.string().nullable(),
+});
+
+/**
+ * The receipt for one added contact: which row, in which book, and the
+ * consent state it was stored with. Deliberately not the whole contact — see
+ * `tools/add-contact.ts` for why the stored row is not echoed back.
+ */
+export const contactOutput = z.looseObject({
+  id: z.string(),
+  bookId: z.string(),
+  email: z.string(),
+  subscribed: z.boolean(),
+});
