@@ -79,9 +79,11 @@ describe("campaigns schema", () => {
     );
     expect(rows.map((r) => `${r.table_name}.${r.column_name}`)).toEqual([
       "campaign_recipients.created_at",
+      "campaigns.completed_at",
       "campaigns.created_at",
       "campaigns.scheduled_at",
       "campaigns.sent_at",
+      "campaigns.sent_notified_at",
       "campaigns.started_at",
       "campaigns.updated_at",
     ]);

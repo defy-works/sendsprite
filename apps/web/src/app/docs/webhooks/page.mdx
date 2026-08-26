@@ -51,7 +51,8 @@ Subscribe to any non-empty subset of:
 | `domain.verified`                                                                    | A domain became verified.                                                                                                                                             |
 | `domain.failed`                                                                      | A verified domain was demoted, or verification failed for good.                                                                                                       |
 | `contact.created`, `contact.updated`, `contact.unsubscribed`, `contact.resubscribed` | A contact was added, changed, unsubscribed or resubscribed. CSV import fires none of these — see [Contacts](/docs/contacts).                                          |
-| `campaign.sent`, `campaign.completed`                                                | Reserved for campaigns; nothing fires them yet.                                                                                                                       |
+| `campaign.sent`                                                                      | Every recipient of a campaign has been **queued** — not delivered. Fires once, when the fan-out materialises the last recipient.                                      |
+| `campaign.completed`                                                                 | Every message a campaign queued has reached a terminal state. Fires once; wait on this one before reading a campaign's stats.                                         |
 
 ## Payload
 
@@ -77,8 +78,27 @@ Subscribe to any non-empty subset of:
 `data.email` is the same public email object the REST API returns;
 `data.event` carries the timeline entry and whatever SES reported with it
 (bounce type, complaint feedback type, recipients, the clicked url, and so
-on). Domain events carry `data.domain` instead, and contact events carry
-`data.contact` — every event names its object.
+on). Domain events carry `data.domain`, contact events carry `data.contact`
+and campaign events carry `data.campaign` — every event names its object.
+
+### `campaign.sent` means queued, not delivered
+
+This is the one worth reading twice. `campaign.sent` fires when the last
+recipient has been **queued** — every message exists and is on its way to
+SES, and precisely nobody has necessarily received anything yet. Treating it
+as "delivered" builds something that is wrong by the entire delivery window,
+and whose first symptom is your own users telling you so.
+
+`campaign.completed` is the one to wait on: it fires when every message the
+campaign queued has reached a terminal state — delivered, bounced or failed —
+and its `data.campaign.counts` is the campaign's final tally. Both fire
+exactly once. A cancelled campaign fires neither, because it never finished
+queueing.
+
+A campaign's `counts` are derived from the mail log rather than tallied as
+events arrive, so they can never disagree with it. `opened` and `clicked`
+count **recipients, not events**: someone who opens the same message six
+times is one opener.
 
 ## Headers
 

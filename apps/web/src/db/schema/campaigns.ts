@@ -103,6 +103,38 @@ export const campaigns = pgTable(
     }),
     startedAt: timestamp("started_at", { withTimezone: true, precision: 3 }),
     sentAt: timestamp("sent_at", { withTimezone: true, precision: 3 }),
+    /*
+     * The two `campaign.*` webhooks are fired exactly once each, and these
+     * are what makes "exactly once" a property of the database rather than of
+     * whichever worker happened to notice first.
+     *
+     * Both events are conditions somebody observes, not moments somebody
+     * causes: the fan-out sweep, the ingest path and the settle pass can all
+     * see "this campaign has finished queueing" or "every recipient is
+     * terminal" at the same instant, and every one of them would fan out a
+     * duplicate. So each emission is a conditional UPDATE that stamps its
+     * marker (`... and sent_notified_at is null`, `... and completed_at is
+     * null`) and fans out only if it got a row back — the same guarded-write
+     * shape `recordEvent` and `markSendFailed` already use. A second observer
+     * updates nothing and stays quiet.
+     */
+    /** When `campaign.sent` was emitted. Never read as data; see above. */
+    sentNotifiedAt: timestamp("sent_notified_at", {
+      withTimezone: true,
+      precision: 3,
+    }),
+    /**
+     * When every materialised recipient had reached a terminal state — and,
+     * by construction, when `campaign.completed` was emitted.
+     *
+     * A real fact as well as a marker, which is why it is a timestamp and not
+     * a boolean: it is the end of the send, where `sent_at` is only the end
+     * of the queueing.
+     */
+    completedAt: timestamp("completed_at", {
+      withTimezone: true,
+      precision: 3,
+    }),
     /**
      * Keyset cursor into the book, so each sweep tick resumes in O(chunk)
      * rather than re-scanning what it already materialised. It is an

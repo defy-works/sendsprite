@@ -6,7 +6,23 @@ import { parseSesEvent } from "@/lib/ses-events";
 import { recordEvent } from "./email-events";
 import { suppressFromEvent } from "./suppressions";
 import { fanOutEvent } from "./webhooks";
+import { settleCampaign } from "./campaigns/stats";
 import type { Enqueue } from "./domains";
+
+/**
+ * Event types after which a campaign message is owed nothing further.
+ *
+ * The only events worth asking "did that finish the campaign?" about. `sent`
+ * and `delivery_delayed` both leave the recipient outstanding, so a campaign
+ * cannot have completed on one of them and the check is skipped outright.
+ */
+const TERMINAL_FOR_CAMPAIGN: ReadonlySet<EmailEventType> = new Set([
+  "delivered",
+  "bounced",
+  "complained",
+  "rejected",
+  "failed",
+]);
 
 /** Timeline types that fan out to webhooks; the rest are timeline-only. */
 const WEBHOOK_TYPE: Partial<Record<EmailEventType, WebhookEventType>> = {
@@ -79,7 +95,35 @@ export async function ingestSesEvent(
       },
       { ...deps, createdAt: row.occurredAt },
     );
+  if (e.campaignId && TERMINAL_FOR_CAMPAIGN.has(ev.type))
+    await nudgeCampaign(e.teamId, e.campaignId, deps);
   return { ok: true, recorded: true };
+}
+
+/**
+ * Ask whether that event was the one that finished the campaign.
+ *
+ * **Nothing here increments a counter** (Decision 8). The campaign's numbers
+ * stay derived; this only notices a condition, and `settleCampaign` stages the
+ * work so that noticing costs two indexed lookups — the aggregate runs once
+ * per campaign, not once per event. A campaign that has already completed
+ * costs one read and stops.
+ *
+ * Best-effort, and it never fails an ingest: the event is already recorded and
+ * the SNS delivery already acknowledged by the time this runs, so a throw here
+ * would make SES redeliver an event we have — and the settle pass would notice
+ * the same condition a minute later regardless.
+ */
+async function nudgeCampaign(
+  teamId: string,
+  campaignId: string,
+  deps: { enqueue: Enqueue },
+): Promise<void> {
+  try {
+    await settleCampaign(teamId, campaignId, deps);
+  } catch (e) {
+    console.error("[ingest] campaign settle failed:", (e as Error).message);
+  }
 }
 
 /** Columns `publicEmail` reads; callers may select just these. */
