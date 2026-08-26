@@ -22,13 +22,18 @@ const NAV = [
   { href: "/app/settings", label: "Settings" },
 ];
 
+/** Appended only for instance admins; everyone else never sees the route. */
+const ADMIN_NAV = { href: "/app/admin", label: "Admin" };
+
 export function AppShell(p: {
   teamId: string;
   teamName: string;
   email: string;
   sesStatus: InstanceSettings["sesAccountStatus"];
+  isInstanceAdmin?: boolean;
   children: ReactNode;
 }) {
+  const nav = p.isInstanceAdmin ? [...NAV, ADMIN_NAV] : NAV;
   return (
     <div className="flex min-h-dvh">
       <aside className="hidden w-60 shrink-0 flex-col gap-6 border-r border-white/10 p-4 md:flex">
@@ -37,7 +42,7 @@ export function AppShell(p: {
         </Link>
         <TeamSwitcher activeId={p.teamId} />
         <nav className="flex flex-col gap-1">
-          {NAV.map((n) => (
+          {nav.map((n) => (
             <NavLink key={n.href} href={n.href} label={n.label} />
           ))}
         </nav>
@@ -59,7 +64,7 @@ export function AppShell(p: {
             <MobileNav>
               <TeamSwitcher activeId={p.teamId} />
               <nav className="flex flex-col gap-1">
-                {NAV.map((n) => (
+                {nav.map((n) => (
                   <NavLink key={n.href} href={n.href} label={n.label} />
                 ))}
               </nav>

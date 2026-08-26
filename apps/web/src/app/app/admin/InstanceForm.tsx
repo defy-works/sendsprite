@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Label } from "@/components/ui/Label";
 import { Select } from "@/components/ui/Select";
-import { updateInstanceAction } from "@/app/setup/actions";
+import { updateInstanceAction } from "./actions";
 import { Alert, Notice } from "@/app/setup/steps/shared";
 
 export function InstanceForm({
@@ -50,7 +50,7 @@ export function InstanceForm({
         Landing page (falls back to LANDING_ENABLED env when unset)
       </label>
       <div>
-        <Label htmlFor="retentionDays">Retention days</Label>
+        <Label htmlFor="retentionDays">Maximum retention (days)</Label>
         <Input
           id="retentionDays"
           name="retentionDays"
@@ -63,8 +63,10 @@ export function InstanceForm({
           className="max-w-40"
         />
         <p className="mt-1 text-xs text-white/50">
-          How long email logs are kept (1–3650). Bodies and attachments are
-          purged nightly after this; metadata and events stay.
+          The longest window any team may keep email logs for (1–3650). A team
+          can choose a shorter one in its own settings; nothing may exceed
+          this. Bodies and attachments are purged nightly; metadata and events
+          stay.
         </p>
       </div>
       <div className="flex items-center gap-3">

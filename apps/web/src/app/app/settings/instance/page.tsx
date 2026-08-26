@@ -1,4 +1,4 @@
-import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/Card";
+import { Card, CardBody } from "@/components/ui/Card";
 import { env } from "@/env";
 import { SES_REGIONS } from "@/lib/aws/regions";
 import { requireOwner } from "@/lib/session";
@@ -8,7 +8,6 @@ import { AwsStep } from "@/app/setup/steps/AwsStep";
 import { ProductionStep } from "@/app/setup/steps/ProductionStep";
 import { CloudflareStep } from "@/app/setup/steps/CloudflareStep";
 import type { WizardProps, WizardSettings } from "@/app/setup/types";
-import { InstanceForm } from "./InstanceForm";
 
 export const metadata = { title: "Instance settings" };
 
@@ -53,19 +52,6 @@ export default async function InstanceSettingsPage() {
       <Card>
         <CardBody>
           <CloudflareStep {...props} />
-        </CardBody>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>Instance</CardTitle>
-        </CardHeader>
-        <CardBody>
-          <InstanceForm
-            signupMode={s.signupMode ?? "auto"}
-            landingEnabled={s.landingEnabled ?? true}
-            retentionDays={s.retentionDays}
-            envSignupMode={env.SIGNUP_MODE}
-          />
         </CardBody>
       </Card>
     </div>

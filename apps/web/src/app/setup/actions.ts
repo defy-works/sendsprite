@@ -1,7 +1,6 @@
 "use server";
 import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
-import { z } from "zod";
 import { loadEnv } from "@/env.schema";
 import { requireOwner } from "@/lib/session";
 import { requestMeta } from "@/lib/audit";
@@ -140,43 +139,6 @@ export async function disconnectCloudflareAction() {
   const res = await cf.disconnectCloudflare(a);
   revalidate();
   return res;
-}
-
-const SIGNUP_MODES = ["open", "invite", "closed"] as const;
-const instanceForm = z.object({
-  signupMode: z.enum([...SIGNUP_MODES, "auto"]),
-  landingEnabled: z.enum(["on", "off"]),
-  retentionDays: z.coerce
-    .number({ error: "Retention days must be a number." })
-    .int("Retention days must be a whole number.")
-    .min(1, "Retention days must be at least 1.")
-    .max(3650, "Retention days must be at most 3650."),
-});
-
-/** Instance tab: signup mode (`auto` clears the DB override), landing page, retention. */
-export async function updateInstanceAction(fd: FormData): Promise<Result> {
-  const a = await actor();
-  const parsed = instanceForm.safeParse({
-    signupMode: fd.get("signupMode"),
-    landingEnabled: fd.get("landingEnabled") ?? "off",
-    retentionDays: fd.get("retentionDays"),
-  });
-  if (!parsed.success)
-    return {
-      ok: false,
-      error: parsed.error.issues[0]?.message ?? "Check the form.",
-    };
-  const { signupMode, landingEnabled, retentionDays } = parsed.data;
-  await updateInstanceSettings(
-    {
-      signupMode: signupMode === "auto" ? null : signupMode,
-      landingEnabled: landingEnabled === "on",
-      retentionDays,
-    },
-    a,
-  );
-  revalidatePath("/app/settings/instance");
-  return { ok: true, data: undefined };
 }
 
 export async function finishSetup(): Promise<Result> {
