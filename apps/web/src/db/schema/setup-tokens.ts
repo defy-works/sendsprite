@@ -12,12 +12,12 @@ export const setupTokens = pgTable("setup_tokens", {
   /**
    * Which team the CloudFormation stack is connecting. Read off the token by
    * the callback, so a stack created for one team can never connect into
-   * another even with a valid token. Nullable until migration 0022 backfills
-   * it; 0023 makes it NOT NULL.
+   * another even with a valid token. Added nullable in 0021, backfilled by
+   * 0022, made NOT NULL in 0023.
    */
-  teamId: text("team_id").references(() => organization.id, {
-    onDelete: "cascade",
-  }),
+  teamId: text("team_id")
+    .notNull()
+    .references(() => organization.id, { onDelete: "cascade" }),
   region: text("region").notNull(),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   consumedAt: timestamp("consumed_at", { withTimezone: true }),

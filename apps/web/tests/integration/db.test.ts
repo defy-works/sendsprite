@@ -80,7 +80,9 @@ describe("migrations", () => {
       "suppressions",
       "webhooks",
       "webhook_deliveries",
-      "send_rate_state",
+      "team_send_rate",
+      "team_aws",
+      "team_cloudflare",
       "worker_heartbeats",
     ])
       expect(names).toContain(t);
@@ -127,14 +129,17 @@ describe("migrations", () => {
       sql`select domain_id from emails where team_id = 'org_db'`,
     );
     expect(after.map((r) => r.domain_id)).toEqual([null, null]);
-    // Singleton check on send_rate_state (drizzle wraps the PG error, so
-    // assert the constraint exists and that a second row is rejected).
-    const chk = await pg.db.execute(
-      sql`select conname from pg_constraint where conname = 'send_rate_state_singleton'`,
+    // The send-rate bucket is keyed by team now, and 0023 dropped the old
+    // singleton table outright.
+    const gone = await pg.db.execute(
+      sql`select to_regclass('public.send_rate_state') as t`,
     );
-    expect(chk).toHaveLength(1);
+    expect(gone[0]?.t).toBeNull();
+    // Its team key is a real FK, so a bucket cannot outlive its team.
     await expect(
-      pg.db.execute(sql`insert into send_rate_state (id) values (2)`),
+      pg.db.execute(
+        sql`insert into team_send_rate (team_id) values ('org_missing')`,
+      ),
     ).rejects.toThrow();
   });
   it("are idempotent", async () => {

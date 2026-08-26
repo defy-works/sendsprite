@@ -58,6 +58,10 @@ const load = async (id: string) => {
 beforeAll(async () => {
   pg = await startPg();
   process.env.APP_SECRET = "x".repeat(40);
+  // Starting the worker imports every job handler, and `billing-meter.ts`
+  // reads the env at module scope. This file used to pass only when another
+  // test in the same worker process had already set APP_URL.
+  process.env.APP_URL ??= "http://localhost:3000";
   await pg.db.execute(
     `insert into "organization"(id,name,slug,created_at) values ('org_1','Acme','acme',now())`,
   );
