@@ -2,7 +2,7 @@
 
 > OpenWolf's learning memory. Updated automatically as the AI learns from interactions.
 > Do not edit manually unless correcting an error.
-> Last updated: 2026-08-26
+> Last updated: 2026-08-27
 
 ## User Preferences
 
@@ -34,6 +34,15 @@
     already the same weight; leave them.
   - Don't offer half-broken sparse/dashed treatments — they read as crop marks
     and collapse at small sizes.
+
+- **Reports arrive as a flat list and expect the list to be worked, not
+  triaged.** (2026-08-27) Fifteen bullets ranging from a one-line bug to
+  "rework the email editor to be like Squarespace", ending with "and many more
+  issues like these. Find them and fix them." The expectation is that every
+  listed item lands _and_ that the sweep turns up its neighbours - replacing
+  `window.confirm` because "some browser native components" was on the list
+  means also replacing the file input and the checkbox nobody mentioned.
+  Report what was deliberately left native, and why.
 
 - **"Don't do things the lazy way — do the things the right way."** Said while
   approving the org-level connections design (2026-08-26). Concretely, for this
@@ -90,6 +99,35 @@
   requested name now, as SNS does.
 
 ## Key Learnings
+
+### UI (added 2026-08-27)
+
+- **A dialog inside a `.glass` card cannot use `position: fixed`.** `glass`
+  sets `backdrop-filter`, and a filtered ancestor becomes the containing block
+  for `fixed` descendants — so an overlay covers the card, not the viewport.
+  `components/ui/Modal.tsx` portals to `document.body` for this reason.
+- **`color-scheme: dark` inherits into a `srcdoc` iframe.** A document that
+  does not paint its own **root** element then gets a near-black canvas below
+  its content. Email HTML must paint `<html>`, not only `<body>`, and declare
+  `color-scheme: light` — this is a send bug as much as a preview bug, because
+  Gmail and Apple Mail render in the reader’s dark mode.
+- **The accessible name of a `<button>` with content is its content; `title`
+  is ignored.** A palette tile reading “Button” announced “Button, button”.
+  Anything whose visible text is a noun but whose action is a verb needs an
+  explicit `aria-label`.
+- **An option’s accessible name includes its hint.** `getByRole("option", {
+name: "Full", exact: true })` fails once the option has a second line. The
+  Select emits `data-label` for plain-string labels; `tests/e2e/_ui.ts` uses
+  it.
+- **Email columns must be fixed pixel widths that total the content width
+  exactly, with gutters as spacer cells.** Outlook on Windows resolves
+  percentages against a containing block nobody else uses, and it honours cell
+  padding by _adding_ it to the width — so padding gutters push the last
+  column onto its own line.
+- **Playwright’s `page.selectOption` and `page.once("dialog")` are the two
+  places a spec is coupled to browser chrome.** Replacing a `<select>` or a
+  `window.confirm` breaks every spec that used them; keep the replacements in
+  one helper file.
 
 - **Brand assets are generated, not hand-authored.** `scripts/gen-brand.mjs` rasterises
   every mark on an integer grid and emits both `apps/web/public/brand/*.svg` and
@@ -161,9 +199,77 @@ scripts/gen-brand.mjs`; never hand-edit Logo.tsx or the SVGs. `apps/web/public/f
 <!-- Mistakes made and corrected. Each entry prevents the same mistake recurring. -->
 <!-- Format: [YYYY-MM-DD] Description of what went wrong and what to do instead. -->
 
+- **[2026-08-27] The Bash tool wraps commands in `bash -c '…'`, so a heredoc
+  whose content contains an apostrophe fails with “unexpected EOF while
+  looking for matching `’`”.** Cost two failed attempts at writing a large
+  TSX file. Write the file with the Write tool, or put the script in a
+  scratchpad `.py` and run it by path.
+- **[2026-08-27] Python’s default text mode writes CRLF on Windows.** Every
+  file rewritten by a patch script came out CRLF in a repo that is LF, which
+  `prettier --check` would fail. Always pass `newline="\n"` to
+  `io.open(..., "w")`.
+- **[2026-08-27] `zod` v4 `.refine(check, fn)` does not take a function for
+  the params.** A message that has to interpolate the value needs
+  `.superRefine((v, ctx) => ctx.addIssue({ code: "custom", … }))`.
+- **[2026-08-27] Interpolating an array into a drizzle `sql` template binds it
+  as one parameter,** so `status in ${ARRAY}` becomes `status in $1` and
+  Postgres rejects it. Use `sql.join(ARRAY.map((v) => sql\`${v}\`), sql\`, \`)`.
+- **[2026-08-27] Compile derived content _before_ the contract parses it.**
+  `createTemplate` parsed `CreateTemplateInput` first and then overwrote
+  `bodyHtml` from the design, so a design-authored template had to invent a
+  fake body to get past `min(1)` — and the contract validated a body nobody
+  sent. Substituting first also removes the last way the two can disagree.
+- **[2026-08-27] A one-time token that is burnt before the slow work it
+  authorises cannot be polled as “pending or expired”.** There is a third
+  state — consumed and in progress — and omitting it made every successful
+  AWS connect report as expired. If a revocation path marks tokens consumed,
+  it forges that state; delete them instead.
+- **[2026-08-27] A redirect target carrying a fragment cannot have a query
+  appended by string concatenation.** `/app/settings#sending` + `?error=x`
+  puts the query inside the fragment, where no server and no
+  `useSearchParams` will ever see it. Build it with `URL` and
+  `searchParams.set`.
+
 ## Decision Log
 
 <!-- Significant technical decisions with rationale. Why X was chosen over Y. -->
+
+- **[2026-08-27] Templates get the campaign editor as an _authoring_ mode, not
+  a new storage format.** `body_html` stays the only thing that sends; the
+  block tree is stored beside it in `templates.design` and stripped from the
+  public version response.
+  - Chosen over storing blocks as the template body: the REST contract, the
+    SDK types, the OpenAPI document and `templates pull/push` all deal in
+    HTML, and a template created through the API has no design and never will.
+  - Chosen over no round trip at all (compile and forget): reopening a
+    template built visually would have shown the HTML it compiled to.
+  - The **service** compiles, not the caller — an action that rendered the
+    blocks itself and posted both would let the two drift, and the result is a
+    template that shows one thing and mails another.
+- **[2026-08-27] Column nesting is bounded at one level, in the schema.**
+  Nested column tables are where email layout stops being portable (the Word
+  engine behind Outlook measures an inner table against a different containing
+  block). Refusing it in `ColumnsBlock` means the renderer never needs an
+  opinion about depth.
+- **[2026-08-27] Block presentation is a closed enum or `#rrggbb`, never a CSS
+  string.** A colour is the one author-supplied value that would otherwise be
+  interpolated into a `style` attribute, where escaping does nothing — the
+  same argument `SafeUrl` makes about `href`.
+- **[2026-08-27] `setup_completed` means “the wizard has been seen”, not “AWS
+  is connected”.** That is what lets the wizard have an exit. The dashboard
+  reads `team_aws` for the banner, so nothing pretends a team can send when it
+  cannot.
+- **[2026-08-27] Suspension is enforced in `checkTeamCaps`.** Five entry
+  points already run it — REST, SMTP, campaign fan-out, dashboard, batch — so
+  enforcing it anywhere else would be enforcing it with a hole in it.
+- **[2026-08-27] `/admin` is a separate area with its own shell, not a sidebar
+  row.** Instance administration and team settings answer to different people
+  and have different blast radii; two clicks apart in one list is how somebody
+  changes the signup mode for a whole deployment by accident.
+- **[2026-08-27] The `datetime-local` input stays native.** Every other
+  browser control was replaced, but a hand-rolled date-time picker is a large
+  build that is usually worse for keyboard and screen-reader users than the
+  platform one. Recorded so it reads as a decision rather than an oversight.
 
 - **[2026-08-26] Cloudflare: OAuth, gated on env config, with a
   credential-free deep-link default.** The user first asked to replace token
