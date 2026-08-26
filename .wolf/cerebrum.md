@@ -124,6 +124,23 @@ name: "Full", exact: true })` fails once the option has a second line. The
   percentages against a containing block nobody else uses, and it honours cell
   padding by _adding_ it to the width — so padding gutters push the last
   column onto its own line.
+- **Twice now: a button whose visible text is a noun needs an `aria-label`
+  saying the verb.** A palette tile announced “Button, button”; a layout row
+  announced its name _and_ its description as one string. Any control whose
+  label names the thing it inserts rather than the action needs an explicit
+  accessible name — and an e2e `getByRole` failure is usually reporting this
+  rather than a selector problem.
+- **A `<style>` rule is the only way to reach links in a campaign body.**
+  `text.html` may not carry a `style` attribute, which is precisely what makes
+  it safe to emit unescaped, so a themed link colour has to arrive through the
+  head stylesheet — honoured by Gmail, Apple Mail and Outlook.com, ignored by
+  Outlook on Windows. Pair it with an `a[x-apple-data-detectors]` reset or
+  Apple’s auto-detected dates and addresses keep their own colour.
+- **User-uploaded bytes served from the app’s own origin are active-content
+  risk.** Decide the type from the file header (never the filename or the
+  browser’s `Content-Type`), refuse SVG outright, and send `nosniff` plus a
+  `sandbox` CSP. An unguessable path segment must be its own random column: a
+  ULID is time-ordered and enumerable from a known neighbour.
 - **Playwright’s `page.selectOption` and `page.once("dialog")` are the two
   places a spec is coupled to browser chrome.** Replacing a `<select>` or a
   `window.confirm` breaks every spec that used them; keep the replacements in
@@ -266,10 +283,32 @@ scripts/gen-brand.mjs`; never hand-edit Logo.tsx or the SVGs. `apps/web/public/f
   row.** Instance administration and team settings answer to different people
   and have different blast radii; two clicks apart in one list is how somebody
   changes the signup mode for a whole deployment by accident.
-- **[2026-08-27] The `datetime-local` input stays native.** Every other
-  browser control was replaced, but a hand-rolled date-time picker is a large
-  build that is usually worse for keyboard and screen-reader users than the
-  platform one. Recorded so it reads as a decision rather than an oversight.
+- **[2026-08-27] The `datetime-local` input was replaced after all.** The
+  earlier entry said keeping it was the safer call, and that was right about
+  the risk and wrong about the remedy: a date picker is only worse than the
+  platform’s if it is a `div` of buttons. `components/ui/DateTimePicker.tsx`
+  is a `role="grid"` calendar with one tab stop and the full arrow /
+  PageUp / Home / Enter / Escape set, and it keeps a real `<input type="time">`
+  — that control renders as a segmented text field, styles cleanly on this
+  surface, and gives typed entry and the locale’s own 12/24-hour convention
+  for free. The date _popup_ was the only part worth replacing.
+- **[2026-08-27] Uploaded images are stored in Postgres.**
+  - Chosen over S3 in the tenant’s account: it would widen the CloudFormation
+    IAM user from “send mail” to “create and write a public bucket” — a much
+    bigger permission to ask for than the feature is worth — and would leave
+    self-hosters with no AWS connection unable to use images at all.
+  - Chosen over the local filesystem: the Compose file already runs more than
+    one container.
+  - Bounded rather than unbounded: 2 MB, four raster formats, deduped by
+    sha256 per team. The self-hosting docs say what that costs.
+- **[2026-08-27] Layouts are not templates.** A template is sendable, carries a
+  slug the API addresses it by, and is versioned; a layout is a fragment of
+  blocks. Conflating them would put every reusable footer in the namespace
+  `POST /emails` sends from.
+- **[2026-08-27] A layout offers its theme rather than applying it.** Dropping
+  in a footer should not repaint the whole email, and a confirm that always
+  answers the same way is a confirm people stop reading — so the ask only
+  happens when the layout carries a theme _and_ it differs from the body’s.
 
 - **[2026-08-26] Cloudflare: OAuth, gated on env config, with a
   credential-free deep-link default.** The user first asked to replace token

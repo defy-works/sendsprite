@@ -53,6 +53,31 @@ backdrop), bug-007 (palette a11y), bug-008 (design compile order).
 green except the known `webhooks.test.ts` retry-schedule failure, **20/20
 e2e**.
 
+### Editor round two (2026-08-27) — the four items the pass above deferred
+
+Migration 0026 (`team_assets`, `team_layouts`, `campaigns.theme`,
+`templates.theme`).
+
+- **Image upload.** `POST /api/assets` → bytes in Postgres → served
+  unauthenticated from `/a/<token>` with a year of cache headers, because a
+  mail client has no cookie. Type sniffed from the file header, **SVG
+  refused**, `nosniff` + `sandbox` CSP on the way out, 24 random bytes in the
+  URL rather than the ULID. Deduped by sha256 per team.
+- **`DateTimePicker`.** The last browser-drawn control. A `role="grid"`
+  calendar with one tab stop and the full key set, keeping a real
+  `<input type="time">` — the date _popup_ was the only part worth replacing.
+- **Layouts.** Six presets as values plus per-team saved ones
+  (`services/layouts.ts`). Blocks are contract-validated on write, because a
+  layout is inserted without further checking.
+- **Body theme.** Page/card colour, width, font stack, text and link colour,
+  card corners — in the contract, the renderer, both editors, the fan-out and
+  the test send. An absent theme renders byte-identically to before, which is
+  asserted and is what made it safe with no backfill.
+
+**Verified:** typecheck and lint clean, 305 shared + 435 web unit, 582
+integration (the one known `webhooks.test.ts` failure), **24/24 e2e**, build
+clean.
+
 ### Org-level AWS + Cloudflare, instance admin (2026-08-26) — phases 8 & 9
 
 Branch `feat/org-level-connections`, 25 commits. **Every team now connects its
@@ -153,14 +178,16 @@ SDK surface. OAuth swaps the credential, not the capability.
 - `jobs/handlers/billing-meter.ts` reads env at **module scope**, which makes
   any test that starts the worker depend on APP_URL being set by someone else.
   Move it inside the handler.
-- **Editor, next round:** image upload (every image is a pasted URL today),
-  saved/starter layouts, and a body-level theme (page background, content
-  width, link colour) — the block set covers a body, not yet a brand.
-- **`datetime-local` is still native** in `SendCard`. It is the one browser
-  control left on purpose: a hand-rolled date-time picker is a large build
-  that is usually worse for keyboard and screen-reader users. Revisit only
-  with a real reason.
-- Deliverability/analytics surfaces are unchanged by this pass.
+- **Asset growth has no ceiling and no reporting.** Images are 2 MB each,
+  deduped per team, and nothing purges them — correctly, since delivered mail
+  keeps fetching them. Worth a per-team total on `/admin/organizations/[id]`
+  before it is a surprise, and an operator-side cap if this is ever hosted.
+- **Layouts and the theme are dashboard-only.** Neither is in the REST
+  contract; `theme` is (on campaigns), layouts are not, and that asymmetry is
+  deliberate but undocumented in the OpenAPI description.
+- The editor now covers a body and a brand. What it still cannot do: a
+  reusable _header_ that updates everywhere (a layout is copied in, not
+  linked), and per-recipient content beyond the unsubscribe footer.
 
 ---
 
@@ -189,8 +216,12 @@ SDK surface. OAuth swaps the credential, not the capability.
     is a claim, not a guarantee.
   - UI: `components/ui/*` is the design system, `components/editor/*` the
     visual email editor (shared by campaigns and templates),
-    `components/app/*` the shell. No native `select`, `confirm`, `alert`,
-    `prompt` or file input anywhere.
+    `components/app/*` the shell. **No browser-drawn control anywhere** — no
+    native `select`, `confirm`, `alert`, `prompt`, file input or
+    `datetime-local`. (`<input type="time">` inside `DateTimePicker` is the
+    one deliberate keep; it is a segmented text field, not a popup.)
+  - Uploaded images are `bytea` in `team_assets`, served from `/a/<token>`
+    with no auth — see the self-hosting docs for why that trade was made.
 
 ---
 

@@ -121,5 +121,17 @@
     "related_bugs": [],
     "occurrences": 1,
     "last_seen": "2026-08-27T00:00:00Z"
+  },
+  {
+    "id": "bug-009",
+    "timestamp": "2026-08-27T07:20:00Z",
+    "error_message": "e2e: locator.click timed out waiting for getByRole('button', { name: 'Footer', exact: true })",
+    "file": "apps/web/src/components/editor/LayoutPicker.tsx",
+    "root_cause": "The layout row renders a name and a description inside one button, so its accessible name is both lines concatenated: 'Footer A rule, your address, and the line the law wants'. A screen reader announces that as one run-on string, naming the thing and burying the verb. Same class as bug-007 (the palette tile) - the e2e failure was the symptom, not the bug.",
+    "fix": "aria-label={`Insert the ${name} layout`} on the row. Second occurrence of this pattern, so it is now a cerebrum learning rather than only a bug entry.",
+    "tags": ["a11y", "editor", "layouts", "e2e", "accessible-name"],
+    "related_bugs": ["bug-007"],
+    "occurrences": 1,
+    "last_seen": "2026-08-27T07:20:00Z"
   }
 ]

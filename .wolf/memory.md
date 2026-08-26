@@ -44,10 +44,13 @@
 
 ## Session: 2026-08-26 23:36
 
-| Time  | Action                                                                                                                                       | File(s)                   | Outcome                            | ~Tokens |
-| ----- | -------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- | ---------------------------------- | ------- |
-| 23:40 | design system: icons, Modal/Confirm/Toast/Menu/Select/Toggle/Tabs/Field/PageHeader; all 16 native dialogs replaced; Button variants          | 20 new + 24 edited        | typecheck clean, 420 unit pass     | ~140k   |
-| 00:05 | setup exit + banner, settings merge, /admin area (org overrides, suspension, users), team delete, account page                               | migration 0024, ~25 files | typecheck+lint clean, build clean  | ~150k   |
-| 00:35 | editor: columns + block styling in the contract and renderer, palette/canvas/inspector, tree.ts + 21 tests, test sends, preview backdrop fix | shared + 12 files         | 288 shared, 435 web unit pass      | ~180k   |
-| 00:55 | templates use the same designer (migration 0025, `templates.design`), service compiles the body                                              | 10 files                  | 22 template integration tests pass | ~90k    |
-| 01:20 | e2e rewritten for the new controls (`tests/e2e/_ui.ts`); found + fixed a palette a11y bug and the design compile order                       | 7 specs                   | **20/20 e2e pass**                 | ~70k    |
+| Time  | Action                                                                                                                                       | File(s)                   | Outcome                                                | ~Tokens |
+| ----- | -------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- | ------------------------------------------------------ | ------- |
+| 23:40 | design system: icons, Modal/Confirm/Toast/Menu/Select/Toggle/Tabs/Field/PageHeader; all 16 native dialogs replaced; Button variants          | 20 new + 24 edited        | typecheck clean, 420 unit pass                         | ~140k   |
+| 00:05 | setup exit + banner, settings merge, /admin area (org overrides, suspension, users), team delete, account page                               | migration 0024, ~25 files | typecheck+lint clean, build clean                      | ~150k   |
+| 00:35 | editor: columns + block styling in the contract and renderer, palette/canvas/inspector, tree.ts + 21 tests, test sends, preview backdrop fix | shared + 12 files         | 288 shared, 435 web unit pass                          | ~180k   |
+| 00:55 | templates use the same designer (migration 0025, `templates.design`), service compiles the body                                              | 10 files                  | 22 template integration tests pass                     | ~90k    |
+| 01:20 | e2e rewritten for the new controls (`tests/e2e/_ui.ts`); found + fixed a palette a11y bug and the design compile order                       | 7 specs                   | **20/20 e2e pass**                                     | ~70k    |
+| 07:00 | body theme in the contract + renderer (widths, fonts, colours, corners), 17 tests                                                            | packages/shared           | 305 shared pass; absent theme renders byte-identically | ~70k    |
+| 07:15 | image upload: team_assets, sniffing, /a/<token>, picker; layouts + presets; DateTimePicker                                                   | migration 0026, 14 files  | 22 new integration tests pass                          | ~160k   |
+| 07:30 | theme threaded through both editors, the fan-out and the test send; docs; 4 new e2e                                                          | ~20 files                 | **24/24 e2e**, 582 integration (1 known failure)       | ~90k    |
