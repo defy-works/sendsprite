@@ -40,22 +40,21 @@ jobs:
       # finish so a single run shows both results.
       fail-fast: false
       matrix:
-        include:
-          - arch: amd64
-            platform: linux/amd64
-            runner: ubuntu-latest
-          - arch: arm64
-            platform: linux/arm64
-            runner: ubuntu-24.04-arm
+        # GitHub-hosted arm64 runners are free on public repositories but need
+        # a Team or Enterprise plan on private ones, where `ubuntu-24.04-arm`
+        # never gets picked up and the leg would queue until it timed out. So
+        # while this repository is private the run publishes an amd64-only
+        # manifest, and it starts building both the first run after the
+        # repository goes public, with no edit here.
+        #
+        # The architecture list is what varies rather than a job-level `if:`,
+        # because a job's condition is evaluated before the matrix expands and
+        # so cannot read the `matrix` context at all.
+        include: >-
+          ${{ github.event.repository.visibility == 'public'
+          && fromJSON('[{"arch":"amd64","platform":"linux/amd64","runner":"ubuntu-latest"},{"arch":"arm64","platform":"linux/arm64","runner":"ubuntu-24.04-arm"}]')
+          || fromJSON('[{"arch":"amd64","platform":"linux/amd64","runner":"ubuntu-latest"}]') }}
     runs-on: ${{ matrix.runner }}
-    # GitHub-hosted arm64 runners are free on public repositories but need a
-    # Team or Enterprise plan on private ones, where `ubuntu-24.04-arm` simply
-    # never gets picked up and the leg queues until it times out. While this
-    # repository is private and the org is on the free plan, the arm64 leg
-    # skips and the run publishes an amd64-only manifest; it starts building
-    # both the first time the workflow runs after the repository goes public,
-    # with no edit here. A skipped leg does not block `merge`.
-    if: matrix.arch != 'arm64' || github.event.repository.visibility == 'public'
     steps:
       - uses: actions/checkout@v4
 
@@ -159,7 +158,7 @@ jobs:
           retention-days: 1
 
   merge:
-    # Both legs must have built and booted before any tag moves.
+    # Every leg must have built and booted before any tag moves.
     needs: build
     runs-on: ubuntu-latest
     steps:
