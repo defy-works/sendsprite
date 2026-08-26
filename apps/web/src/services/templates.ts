@@ -219,6 +219,37 @@ function compileDesign(
 export type DesignPatch = CampaignBlock[] | null | undefined;
 
 /**
+ * Substitutes the compiled body into the input **before** it is parsed.
+ *
+ * The order matters. Compiling after the parse would mean the contract had
+ * validated a body nobody sends — a design-authored template has no HTML of
+ * its own to submit, and the editor would have to invent a plausible one just
+ * to get past `bodyHtml.min(1)`. Compiling first means the contract checks the
+ * markup that is actually stored: its length, its placeholder count, all of
+ * it. It also removes the last way `body_html` and `design` could disagree —
+ * whatever the caller sent for `bodyHtml` is replaced, not merely overridden
+ * afterwards.
+ */
+function withCompiledBody(
+  raw: unknown,
+  compiled: { bodyHtml: string; bodyText: string | null },
+  /** `omit` for a create, where `bodyText` is optional and null is refused. */
+  emptyText: "null" | "omit",
+): unknown {
+  if (typeof raw !== "object" || raw === null) return raw;
+  const rest = { ...raw, bodyHtml: compiled.bodyHtml };
+  if (compiled.bodyText !== null)
+    return { ...rest, bodyText: compiled.bodyText };
+  // A design that renders to nothing has no text part. A create expresses
+  // that by omission and an update by `null` — the two schemas disagree, and
+  // sending the wrong one is a validation error rather than a silent no-op.
+  if (emptyText === "null") return { ...rest, bodyText: null };
+  const withoutText: Record<string, unknown> = { ...rest };
+  delete withoutText.bodyText;
+  return withoutText;
+}
+
+/**
  * The snapshot fields whose **value** differs.
  *
  * Structural, not `Object.is`: `variablesSchema` is a jsonb object, and the
@@ -248,19 +279,21 @@ export async function createTemplate(
   design?: DesignPatch,
 ): Promise<Result<Template>> {
   if (!can(actor.role, "templates.manage")) return DENIED;
-  const p = CreateTemplateInput.safeParse(raw);
-  if (!p.success)
-    return { ok: false, error: p.error.issues[0]?.message ?? "Invalid input." };
   const compiled = design ? compileDesign(design) : null;
   if (compiled && !compiled.ok) return compiled;
+  const p = CreateTemplateInput.safeParse(
+    compiled ? withCompiledBody(raw, compiled.data, "omit") : raw,
+  );
+  if (!p.success)
+    return { ok: false, error: p.error.issues[0]?.message ?? "Invalid input." };
   const values = {
     id: newId("tpl"),
     teamId: actor.teamId,
     slug: p.data.slug,
     name: p.data.name,
     subject: p.data.subject,
-    bodyHtml: compiled ? compiled.data.bodyHtml : p.data.bodyHtml,
-    bodyText: compiled ? compiled.data.bodyText : (p.data.bodyText ?? null),
+    bodyHtml: p.data.bodyHtml,
+    bodyText: p.data.bodyText ?? null,
     variablesSchema: p.data.variablesSchema,
     design: design ?? null,
     version: 1,
@@ -317,24 +350,21 @@ export async function updateTemplate(
   design?: DesignPatch,
 ): Promise<Result<Template>> {
   if (!can(actor.role, "templates.manage")) return DENIED;
-  const p = UpdateTemplateInput.safeParse(raw);
+  const compiled = design ? compileDesign(design) : null;
+  if (compiled && !compiled.ok) return compiled;
+  const p = UpdateTemplateInput.safeParse(
+    compiled ? withCompiledBody(raw, compiled.data, "null") : raw,
+  );
   if (!p.success)
     return { ok: false, error: p.error.issues[0]?.message ?? "Invalid input." };
   const current = await getTemplate(actor.teamId, key);
   if (!current) return NOT_FOUND;
-  const compiled = design ? compileDesign(design) : null;
-  if (compiled && !compiled.ok) return compiled;
   const next: TemplateSnapshot = {
     name: p.data.name ?? current.name,
     subject: p.data.subject ?? current.subject,
-    bodyHtml: compiled
-      ? compiled.data.bodyHtml
-      : (p.data.bodyHtml ?? current.bodyHtml),
-    bodyText: compiled
-      ? compiled.data.bodyText
-      : p.data.bodyText === undefined
-        ? current.bodyText
-        : p.data.bodyText,
+    bodyHtml: p.data.bodyHtml ?? current.bodyHtml,
+    bodyText:
+      p.data.bodyText === undefined ? current.bodyText : p.data.bodyText,
     variablesSchema: p.data.variablesSchema ?? current.variablesSchema,
     design: design === undefined ? (current.design ?? null) : design,
   };

@@ -2,7 +2,6 @@ import { notFound } from "next/navigation";
 import { can } from "@sendsprite/shared";
 import { Badge } from "@/components/ui/Badge";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/Card";
-import { Link } from "@/components/ui/Link";
 import { formatWhen } from "@/lib/format";
 import { prepareDetail } from "@/lib/email-detail";
 import { requireTeam } from "@/lib/session";
@@ -15,6 +14,7 @@ import { EmailActions } from "../EmailActions";
 import { EmailDetail, type EventView } from "../EmailDetail";
 import { EmailStatusDot } from "../EmailsTable";
 import { LiveRefresh } from "../LiveRefresh";
+import { PageHeader } from "@/components/ui/PageHeader";
 
 const LABEL: Record<EmailEvent["type"], string> = {
   queued: "Queued",
@@ -143,15 +143,15 @@ export default async function EmailPage({
     <div className="flex max-w-5xl flex-col gap-6">
       <LiveRefresh />
       <div className="flex flex-col gap-2">
-        <Link href="/app/emails" className="num-stamp no-underline">
-          ← Emails
-        </Link>
-        <div className="flex flex-wrap items-center gap-4">
-          <h1 className="break-words text-lg font-medium">
-            {e.subject || "(no subject)"}
-          </h1>
-          <EmailStatusDot status={e.status} />
-        </div>
+        <PageHeader
+          back={{ href: "/app/emails", label: "Emails" }}
+          title={
+            <span className="flex flex-wrap items-center gap-3 break-words">
+              {e.subject || "(no subject)"}
+              <EmailStatusDot status={e.status} />
+            </span>
+          }
+        />
         <p className="text-sm text-white/70">
           <span className="text-white/50">From</span> {e.from}
         </p>

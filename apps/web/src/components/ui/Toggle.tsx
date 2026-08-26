@@ -1,5 +1,5 @@
 "use client";
-import { useId, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { cn } from "@/lib/cn";
 import { IconCheck } from "./icons";
 
@@ -79,9 +79,18 @@ export function Switch({
   );
 }
 
-/** Same construction as {@link Switch}, drawn as a box. */
+/**
+ * Same construction as {@link Switch}, drawn as a box.
+ *
+ * Works controlled or not: several forms post a set of checkboxes straight to
+ * a server action and never read them in React, and making those hold state
+ * purely so a box can be painted would be ceremony for nothing. `checked`
+ * drives it when given; otherwise `defaultChecked` seeds it and it manages
+ * itself.
+ */
 export function Checkbox({
-  checked,
+  checked: controlled,
+  defaultChecked = false,
   onChange,
   name,
   value,
@@ -90,7 +99,8 @@ export function Checkbox({
   hint,
   id,
 }: {
-  checked: boolean;
+  checked?: boolean;
+  defaultChecked?: boolean;
   onChange?: (next: boolean) => void;
   name?: string;
   value?: string;
@@ -101,6 +111,8 @@ export function Checkbox({
 }) {
   const auto = useId();
   const inputId = id ?? auto;
+  const [uncontrolled, setUncontrolled] = useState(defaultChecked);
+  const checked = controlled ?? uncontrolled;
   return (
     <div className="flex items-start gap-3">
       <span className="relative inline-flex shrink-0 pt-0.5">
@@ -111,7 +123,10 @@ export function Checkbox({
           value={value}
           checked={checked}
           disabled={disabled}
-          onChange={(e) => onChange?.(e.target.checked)}
+          onChange={(e) => {
+            if (controlled === undefined) setUncontrolled(e.target.checked);
+            onChange?.(e.target.checked);
+          }}
           className="peer absolute inset-0 h-full w-full cursor-pointer opacity-0 disabled:cursor-not-allowed"
         />
         <span

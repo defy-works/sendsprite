@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { completeTeamSetup } from "./team-setup";
+import { acceptConfirm, acceptTypedConfirm } from "./_ui";
 
 // Runs after setup.spec.ts (project `app`), so the dashboard is open. Nothing
 // here needs AWS or the worker: a template is created, previewed, versioned,
@@ -37,6 +38,18 @@ test("create a template, preview it, version it, restore it and delete it", asyn
   await expect(page.getByText("No templates yet")).toBeVisible();
 
   await page.getByRole("link", { name: "New template" }).first().click();
+
+  // A new template opens in the visual editor — the same one campaigns use.
+  // This spec is about placeholders, versions and restores, so it switches to
+  // HTML, which is the mode those are easiest to assert in. The designer is
+  // covered by its own test below.
+  await expect(page.getByRole("radio", { name: "Design" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  await page.getByRole("radio", { name: "HTML" }).click();
+  await acceptConfirm(page, "Switch to HTML");
+
   await page.fill("#tpl-name", "Welcome mail");
   await page.fill("#tpl-subject", "Hi {{name}}");
   await page.fill("#tpl-html", "<p>Hi {{name}}, welcome.</p>");
@@ -64,21 +77,79 @@ test("create a template, preview it, version it, restore it and delete it", asyn
   await page.fill("#tpl-subject", "Hello {{name}}");
   await expect(page.getByText("Unsaved changes")).toBeVisible();
   await page.getByRole("button", { name: "Save" }).click();
-  await expect(page.getByText("Saved.")).toBeVisible();
+  await expect(page.getByText("Template saved")).toBeVisible();
   await expect(page.getByText("Version history")).toBeVisible();
   await expect(page.getByText("v2", { exact: true }).first()).toBeVisible();
 
   // Restoring v1 puts the old subject back and appends v3 — history is
   // append-only, so the restore is itself undoable.
-  page.once("dialog", (d) => d.accept());
   await page.getByRole("button", { name: "Restore" }).last().click();
+  await acceptConfirm(page, "Restore v1");
   await expect(page.locator("#tpl-subject")).toHaveValue("Hi {{name}}");
   await expect(page.getByText("v3", { exact: true }).first()).toBeVisible();
 
   await page.goto("/app/templates");
   await expect(page.getByRole("cell", { name: "Welcome mail" })).toBeVisible();
 
-  page.once("dialog", (d) => d.accept());
   await page.getByRole("button", { name: "Delete" }).click();
+  // Gated on typing the slug: a live `POST /emails` names a template by slug,
+  // so deleting one breaks those sends rather than degrading them.
+  await acceptTypedConfirm(page, "Delete template", "welcome-mail");
   await expect(page.getByText("No templates yet")).toBeVisible();
+});
+
+test("a template built in the visual editor compiles to its body", async ({
+  page,
+}) => {
+  await signUpOwner(page, "designer");
+  await page.goto("/app/templates/new");
+
+  await page.fill("#tpl-name", "Designed");
+  await page.fill("#tpl-subject", "Hi {{name}}");
+
+  // The starter is a heading and a paragraph; a button is added from the
+  // palette, which is what makes this the campaign editor rather than a
+  // textarea with a different label.
+  await page
+    .locator("li")
+    .filter({ has: page.getByText("Heading", { exact: true }) })
+    .getByLabel("Text", { exact: true })
+    .fill("Welcome, {{name}}");
+  await page.getByRole("button", { name: "Add Button", exact: true }).click();
+  const button = page
+    .locator("li")
+    .filter({ has: page.getByText("Button", { exact: true }) });
+  await button.getByLabel("Label").fill("Get started");
+  await button
+    .getByLabel("Links to", { exact: true })
+    .fill("https://example.com/start");
+
+  // The preview is the compiled blocks, and it carries the placeholder
+  // through — a heading is escaped, and `{{name}}` has nothing to escape.
+  const preview = page.frameLocator('iframe[title="Template preview"]');
+  await expect(preview.getByRole("heading")).toContainText("Welcome");
+  await expect(
+    preview.getByRole("link", { name: "Get started" }),
+  ).toHaveAttribute("href", "https://example.com/start");
+
+  // A template carries no unsubscribe footer, whichever way it was written:
+  // it is the body of a transactional send, not bulk mail to a list.
+  await expect(preview.getByText("Unsubscribe")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Create" }).click();
+  await page.waitForURL("**/app/templates/designed");
+
+  // Reopening shows the blocks, not the HTML they compiled to. That is the
+  // whole reason the design is stored beside the body.
+  await page.reload();
+  await expect(page.getByRole("radio", { name: "Design" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  await expect(
+    page
+      .locator("li")
+      .filter({ has: page.getByText("Button", { exact: true }) })
+      .getByLabel("Label"),
+  ).toHaveValue("Get started");
 });

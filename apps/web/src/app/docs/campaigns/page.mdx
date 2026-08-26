@@ -54,17 +54,63 @@ array of typed blocks, and the renderer escapes every value it interpolates —
 so there is no path from the editor to a `<script>`, and no HTML sanitiser to
 be wrong about.
 
-| Block     | Fields                                             | Renders to                                                                                |
-| --------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `heading` | `level` (1, 2 or 3), `text`                        | `<h1>`/`<h2>`/`<h3>` at 28 / 22 / 18 px, escaped.                                          |
-| `text`    | `html`                                             | A `<p>` at 16 px. The one field emitted as markup — see below.                             |
-| `button`  | `label`, `url`                                     | A "bulletproof" table-wrapped anchor: Outlook ignores padding on inline elements, so the cell provides the hit area. |
-| `image`   | `url`, `alt`, optional `href`                      | A full-width `<img>` capped at 552 px, optionally wrapped in a link.                       |
-| `divider` | —                                                  | An `<hr>`.                                                                                 |
-| `spacer`  | `size` (4–96)                                      | A fixed-height cell.                                                                       |
+| Block     | Fields                                                           | Renders to                                                                                                           |
+| --------- | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `heading` | `level` (1, 2 or 3), `text`                                      | `<h1>`/`<h2>`/`<h3>` at 28 / 22 / 18 px, escaped.                                                                    |
+| `text`    | `html`                                                           | A `<p>` at 16 px. The one field emitted as markup — see below.                                                       |
+| `button`  | `label`, `url`, `corners`, `textColor`, `fullWidth`              | A "bulletproof" table-wrapped anchor: Outlook ignores padding on inline elements, so the cell provides the hit area. |
+| `image`   | `url`, `alt`, optional `href`, `width` (25/50/75/100), `corners` | An `<img>` sized against its container, optionally wrapped in a link.                                                |
+| `divider` | —                                                                | An `<hr>`.                                                                                                           |
+| `spacer`  | `size` (4–96)                                                    | A fixed-height cell.                                                                                                 |
+| `columns` | `layout` (`1-1`, `1-1-1`, `2-1`, `1-2`), `columns`, `background` | A row of fixed-width cells that stack on a phone. See below.                                                         |
+
+`heading`, `text`, `button` and `image` also take `align` (`left`, `center`,
+`right`); `heading`, `text`, `divider` and `button` take a `color`. Every one
+of those is an enum or a `#rrggbb` hex value, never a CSS string: a colour is
+the one author-supplied value that would otherwise be interpolated into a
+`style` attribute, where escaping does nothing.
 
 An unknown `kind` is a refusal naming the field, not a block that is quietly
 dropped on its way to thousands of inboxes.
+
+### Columns
+
+A `columns` block holds two or three columns of ordinary blocks:
+
+```json
+{
+  "kind": "columns",
+  "layout": "2-1",
+  "background": "#f3f4f6",
+  "columns": [
+    [{ "kind": "text", "html": "The wide side." }],
+    [{ "kind": "image", "url": "https://cdn.example.com/a.png", "alt": "A" }]
+  ]
+}
+```
+
+`columns.length` must match the layout — a `1-1-1` row with two columns is
+refused rather than rendered with an orphaned cell.
+
+**A column may not contain another `columns` block.** That bound is
+deliberate: nested column tables are where email layout stops being portable,
+because the Word engine behind Outlook on Windows measures an inner table
+against a different containing block from every other client. One level is
+what can be rendered the same everywhere.
+
+Columns are laid out with **fixed pixel widths** that total the content width
+exactly, and the gutters are their own spacer cells rather than padding —
+Outlook honours cell padding by _adding_ it to the width, which would push the
+last column onto its own line. A `@media` rule stacks them below 620 px in
+Gmail, Apple Mail, iOS Mail and Outlook.com; Outlook on Windows ignores it and
+keeps them side by side, which is the readable fallback rather than a 552 px
+table squeezed into a 320 px screen.
+
+In the plain-text alternative the columns are flattened into reading order,
+left to right — the same order a screen reader takes them in.
+
+A column holds at most **20 blocks**, and the campaign as a whole still holds
+at most 100.
 
 `alt` is **required** on an image, not optional. An image with no alt text is
 invisible to a screen reader and to every client that blocks images by default
@@ -96,7 +142,7 @@ that helps. Three more shapes are refused for reasons that are not obvious:
   `evil.test` and reads as `example.com`. The scheme really is `https:`, so no
   scheme check catches it.
 - **Spaces, quotes, backticks, angle brackets and backslashes**, unencoded.
-  `https://x.test/" onmouseover="alert(1)` is a *valid* URL as far as a parser
+  `https://x.test/" onmouseover="alert(1)` is a _valid_ URL as far as a parser
   is concerned; it closes the attribute the moment it is written out.
 - **Protocol-relative `//host/path`**, which inherits whatever scheme the
   reader's client used.
@@ -133,11 +179,11 @@ them and you cannot remove them. See [Unsubscribe](/docs/unsubscribe).
 Both, never either. This is the one question customers get wrong most often,
 because the two lists sound like the same list and are not:
 
-|            | `subscribed` on the contact                  | The suppression list                                              |
-| ---------- | -------------------------------------------- | ------------------------------------------------------------------- |
-| Question   | "Does this person want this kind of mail?"   | "Can this address receive mail at all?"                             |
-| Scope      | One contact book                             | The whole team                                                      |
-| Written by | The unsubscribe link, the dashboard, CSV import | SES bounces and complaints, and `POST /suppressions`              |
+|            | `subscribed` on the contact                     | The suppression list                                 |
+| ---------- | ----------------------------------------------- | ---------------------------------------------------- |
+| Question   | "Does this person want this kind of mail?"      | "Can this address receive mail at all?"              |
+| Scope      | One contact book                                | The whole team                                       |
+| Written by | The unsubscribe link, the dashboard, CSV import | SES bounces and complaints, and `POST /suppressions` |
 
 They are kept apart on purpose ([Contacts](/docs/contacts) has the full
 argument): leaving a newsletter must not stop a password reset, and a hard
@@ -160,7 +206,7 @@ counts four numbers over the book:
 These are **four views of one population, not four buckets that sum to it**.
 `subscribed` and `suppressed` overlap; `eligible` is a subset of `subscribed`.
 The number you can safely present as "excluded" is `contacts - eligible`,
-which counts a contact who is both unsubscribed *and* suppressed exactly once.
+which counts a contact who is both unsubscribed _and_ suppressed exactly once.
 What always holds is `eligible <= subscribed <= contacts` and
 `suppressed <= contacts`.
 
@@ -239,10 +285,10 @@ may send right now.
 
 `POST /api/v1/campaigns/{id}/cancel` does one of two different things:
 
-| From        | To          | Meaning                                                       |
-| ----------- | ----------- | ------------------------------------------------------------- |
+| From        | To          | Meaning                                                                   |
+| ----------- | ----------- | ------------------------------------------------------------------------- |
 | `scheduled` | `draft`     | Un-armed. Nothing was sent; the time is cleared and it is editable again. |
-| `sending`   | `cancelled` | Stopped part-way. Terminal and immutable.                     |
+| `sending`   | `cancelled` | Stopped part-way. Terminal and immutable.                                 |
 
 Anything else is a `409`. A `draft` has nothing to cancel; `sent` and
 `cancelled` are already at the end.
@@ -326,7 +372,7 @@ Three consequences:
   that bound on purpose: a message that failed before SES accepted it never
   left.
 - **`unsubscribed` is attributed by time, not by link.** It counts recipients
-  whose consent was withdrawn *after* this campaign mailed them. Two campaigns
+  whose consent was withdrawn _after_ this campaign mailed them. Two campaigns
   sent the same afternoon will both claim the same unsubscribe. There is no
   column recording which message an unsubscribe came from, and inventing one
   attribution rule that is wrong in a different way would not be an
@@ -353,7 +399,7 @@ recipient it stopped at and mails nobody twice.
   24-hour quota, would be breached by the next chunk. The campaign resumes on
   its own when the allowance renews — or the moment you upgrade the plan or an
   operator raises the limit. Cancelling instead would be actively harmful:
-  `cancelled` cannot be restarted, so the only route left would be a *new*
+  `cancelled` cannot be restarted, so the only route left would be a _new_
   campaign over the same book, and everyone who already received the first
   half would receive it again.
 
@@ -414,7 +460,7 @@ there.
 ### The audience is not frozen
 
 Selection walks the book by contact id rather than materialising the whole
-audience up front. A book edited mid-send is therefore read as it is *now*: a
+audience up front. A book edited mid-send is therefore read as it is _now_: a
 contact added during a send is included if their id sorts after the cursor and
 missed if it sorts before it, and an unsubscribe mid-send takes effect for the
 chunks not yet walked but not for the ones already materialised.
@@ -427,16 +473,16 @@ over it is sending.
 
 Every route needs a `full` key.
 
-| Method   | Path                          | Does                                                              |
-| -------- | ----------------------------- | ------------------------------------------------------------------ |
-| `GET`    | `/campaigns`                  | Page, newest first. `?status=` filters; an unknown value is a `validation_error`, not an empty page. |
-| `POST`   | `/campaigns`                  | `201` with a `draft`. Sends nothing.                               |
-| `GET`    | `/campaigns/{id}`             | One campaign.                                                      |
-| `PATCH`  | `/campaigns/{id}`             | Partial update. `409` unless `draft` or `scheduled`.               |
-| `DELETE` | `/campaigns/{id}`             | `204`. `409` while `sending`.                                      |
-| `POST`   | `/campaigns/{id}/schedule`    | `{ "scheduledAt": … }`, or no body for now. `409` unless `draft` or `scheduled`. |
-| `POST`   | `/campaigns/{id}/cancel`      | `scheduled` → `draft`, `sending` → `cancelled`. `409` otherwise.   |
-| `GET`    | `/campaigns/{id}/audience`    | The four numbers. A campaign whose book is gone answers four zeros, not a `404`. |
+| Method   | Path                       | Does                                                                                                 |
+| -------- | -------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `GET`    | `/campaigns`               | Page, newest first. `?status=` filters; an unknown value is a `validation_error`, not an empty page. |
+| `POST`   | `/campaigns`               | `201` with a `draft`. Sends nothing.                                                                 |
+| `GET`    | `/campaigns/{id}`          | One campaign.                                                                                        |
+| `PATCH`  | `/campaigns/{id}`          | Partial update. `409` unless `draft` or `scheduled`.                                                 |
+| `DELETE` | `/campaigns/{id}`          | `204`. `409` while `sending`.                                                                        |
+| `POST`   | `/campaigns/{id}/schedule` | `{ "scheduledAt": … }`, or no body for now. `409` unless `draft` or `scheduled`.                     |
+| `POST`   | `/campaigns/{id}/cancel`   | `scheduled` → `draft`, `sending` → `cancelled`. `409` otherwise.                                     |
+| `GET`    | `/campaigns/{id}/audience` | The four numbers. A campaign whose book is gone answers four zeros, not a `404`.                     |
 
 A `bookId` or `domainId` that is unknown, belongs to another team, or names an
 unverified domain is refused with the field named. Those columns carry no

@@ -91,8 +91,8 @@ export function BooksPanel({
                   placeholder="Acme <hello@mail.acme.com>"
                 />
               </div>
-              <Button type="submit" disabled={pending}>
-                {pending ? "Creating…" : "Create"}
+              <Button type="submit" loading={pending}>
+                Create
               </Button>
             </form>
             {state && !state.ok && <Alert>{state.error}</Alert>}

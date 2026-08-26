@@ -116,7 +116,7 @@ export function SetupWizard(props: WizardProps) {
           onClick={() => void leave()}
           className="text-white/50 hover:text-white"
         >
-          Skip for now
+          Exit setup
           <IconArrowRight className="text-xs" />
         </Button>
       </div>

@@ -31,12 +31,12 @@ hold the same person twice under different capitalisation.
 
 These are two different things and Sendsprite keeps them apart on purpose:
 
-|           | Suppression list                                     | Contact subscription                                      |
-| --------- | ---------------------------------------------------- | --------------------------------------------------------- |
-| Question  | "Can this address receive mail at all?"              | "Does this person want this kind of mail?"                |
-| Scope     | The whole team                                       | One contact book                                          |
+|           | Suppression list                                     | Contact subscription                                                                                        |
+| --------- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Question  | "Can this address receive mail at all?"              | "Does this person want this kind of mail?"                                                                  |
+| Scope     | The whole team                                       | One contact book                                                                                            |
 | Filled by | SES bounces and complaints, and `POST /suppressions` | A campaign's [unsubscribe link](/docs/unsubscribe), `POST /contacts/unsubscribe`, the dashboard, CSV import |
-| Effect    | **Blocks every send**, transactional included        | Excludes the contact from campaigns. Blocks nothing else. |
+| Effect    | **Blocks every send**, transactional included        | Excludes the contact from campaigns. Blocks nothing else.                                                   |
 
 Unsubscribing a contact never writes a suppression, and suppressing an address
 never unsubscribes a contact. If it did, someone who left your newsletter would
@@ -68,15 +68,15 @@ prefetched by a mail client, is not an error.
 The file needs an `email` column. A small set of headers is read as contact
 **fields**, and **every other column becomes a property**:
 
-| Header                                       | Read as                                                     |
-| -------------------------------------------- | ------------------------------------------------------------ |
-| `email`, `email_address`, `e-mail`           | The address. Required.                                      |
-| `first_name`, `firstname`, `first`           | `firstName`                                                 |
-| `last_name`, `lastname`, `last`              | `lastName`                                                  |
-| `subscribed`                                 | Consent — see below.                                        |
-| `unsubscribe_reason`, `unsubscribereason`    | The reason stored beside an unsubscribed row (≤ 200 chars). |
-| `created_at`, `createdat`                    | Recognised and **ignored** — when a row was created is ours to assign. |
-| anything else                                | A property, named by the header.                            |
+| Header                                    | Read as                                                                |
+| ----------------------------------------- | ---------------------------------------------------------------------- |
+| `email`, `email_address`, `e-mail`        | The address. Required.                                                 |
+| `first_name`, `firstname`, `first`        | `firstName`                                                            |
+| `last_name`, `lastname`, `last`           | `lastName`                                                             |
+| `subscribed`                              | Consent — see below.                                                   |
+| `unsubscribe_reason`, `unsubscribereason` | The reason stored beside an unsubscribed row (≤ 200 chars).            |
+| `created_at`, `createdat`                 | Recognised and **ignored** — when a row was created is ours to assign. |
+| anything else                             | A property, named by the header.                                       |
 
 Header matching is case-insensitive. That reserved list is load-bearing rather
 than incidental: without it, re-importing this product's own export would turn

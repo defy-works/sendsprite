@@ -32,7 +32,7 @@ export function RenameForm({
           />
         </div>
         <Button type="submit" disabled={disabled || pending}>
-          {pending ? "Saving…" : "Save"}
+          Save
         </Button>
       </div>
       {state && !state.ok && (

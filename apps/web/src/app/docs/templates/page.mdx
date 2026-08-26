@@ -56,11 +56,11 @@ A single field may use at most **500 placeholder occurrences**.
 
 Escaping is decided by the field, not by you:
 
-| Field      | Rule                                                                                                                                                  |
-| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `bodyHtml` | Every substituted value is HTML-escaped: `&`, `<`, `>`, `"`, `'`, and also `` ` `` and `=`.                                                            |
-| `bodyText` | No escaping — it is not markup.                                                                                                                       |
-| `subject`  | No HTML escaping, but the **rendered** subject is trimmed and then refused if it is empty, longer than 998 characters, or holds a control character.   |
+| Field      | Rule                                                                                                                                                 |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bodyHtml` | Every substituted value is HTML-escaped: `&`, `<`, `>`, `"`, `'`, and also `` ` `` and `=`.                                                          |
+| `bodyText` | No escaping — it is not markup.                                                                                                                      |
+| `subject`  | No HTML escaping, but the **rendered** subject is trimmed and then refused if it is empty, longer than 998 characters, or holds a control character. |
 
 The backtick and `=` are escaped because unquoted attributes are ordinary in
 hand-written email HTML: in `<a href={{u}}>`, a value of
@@ -104,7 +104,11 @@ Declare a variable with a `default` to make it genuinely optional:
   "variablesSchema": {
     "variables": [
       { "name": "name", "type": "string", "default": "there" },
-      { "name": "credits", "type": "number", "description": "Shown in the header" }
+      {
+        "name": "credits",
+        "type": "number",
+        "description": "Shown in the header"
+      }
     ]
   }
 }
@@ -141,6 +145,50 @@ delete the old.
 Deleting a template leaves the emails it produced alone: their stored bodies
 stay exactly as they were sent, and the link back to the template becomes
 `null`.
+
+## Writing one: blocks or HTML
+
+The dashboard offers two ways to author a body, and a template remembers which
+one it was written with.
+
+**Design** is the same visual editor campaigns use — a palette of blocks,
+drag-and-drop, columns, and a style panel for the selection. It is what a new
+template opens in. Placeholders work exactly as they do anywhere else: type
+`{{ name }}` into a heading or a paragraph.
+
+**HTML** is a textarea. It is what you want for markup you already have, for
+anything the block set does not cover, and for a template that a designer
+hands you as a file.
+
+Switching **Design to HTML** keeps the markup the blocks currently produce and
+turns the visual editor off for that template — a design that no longer
+produces the stored HTML would overwrite your next hand edit, so it is
+discarded rather than kept. Switching **HTML to Design** cannot parse arbitrary
+markup back into blocks, so it starts a new body; the editor says so before it
+does anything.
+
+None of this changes the API. `body_html` is what is stored and what is sent,
+`POST /templates` still takes HTML, `templates pull` still writes an
+`.html` file, and a template created through the API simply has no design and
+opens in HTML mode. The block tree is the dashboard editor's own source and is
+not part of the REST contract.
+
+One difference worth knowing: a template body carries **no unsubscribe
+footer**, whichever way it was written. Campaigns are bulk mail to a list and
+always append one; a template is the body of a transactional send, and a
+password reset with an unsubscribe link under it is not a thing anyone wants.
+
+## Sending yourself a test
+
+**Send a test** on a saved template mails one copy through the ordinary send
+path, rendered from the stored row with each variable's declared default. It
+is a real send: it counts against the team's limits, appears in the mail log
+tagged `sendsprite_test`, and — in the SES sandbox — only arrives if the
+recipient address is verified in AWS. Its subject is prefixed with `[Test]` so
+it cannot be mistaken for the real thing in an inbox.
+
+The button is disabled while there are unsaved changes, because the test
+renders the template the server holds, not the one on your screen.
 
 ## Previewing
 

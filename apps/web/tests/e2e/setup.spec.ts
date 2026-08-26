@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { saveApiKey } from "./credentials";
+import { acceptTypedConfirm, chooseOption } from "./_ui";
 
 // The server runs with AWS_E2E_MOCK=1: SES/SNS/STS answer from
 // src/lib/aws/fake-client.ts (account 111111111111, DKIM tokens e1..e3,
@@ -25,7 +26,7 @@ async function reloadUntilVisible(
 /** Manual-keys path of the AWS step; same ids on /setup and Settings → Sending. */
 async function connectAwsWithKeys(page: Page) {
   await page.getByRole("button", { name: "Paste keys manually" }).click();
-  await page.selectOption("#region", "us-east-1");
+  await chooseOption(page, "region", "us-east-1");
   await page.fill("#accessKeyId", "AKIAE2EEXAMPLE0001");
   await page.fill("#secretAccessKey", "e2e-secret-e2e-secret");
   await page.getByRole("button", { name: "Connect", exact: true }).click();
@@ -87,7 +88,7 @@ test("owner completes setup via manual keys, adds a domain, sees records", async
     // step lives on the Sending tab, without the wizard's Continue/Skip. If a
     // previous run (or the developer) already connected AWS, keep that
     // connection — the fake answers regardless of the stored keys.
-    await page.goto("/app/settings/sending");
+    await page.goto("/app/settings#sending");
     const manual = page.getByRole("button", { name: "Paste keys manually" });
     const connected = page.getByText("AWS is connected");
     await expect(manual.or(connected)).toBeVisible();
@@ -122,8 +123,11 @@ test("owner completes setup via manual keys, adds a domain, sees records", async
 
   // Clean up through the UI (fake DeleteEmailIdentity); the name is unique
   // across the instance, so leaving it would only clutter the dev database.
-  page.once("dialog", (d) => d.accept());
+  // The confirmation is the dashboard's own modal, gated on typing the domain
+  // name: deleting one removes an SES identity and the DNS records that point
+  // at it, and a reflexive click is the risk the gate exists for.
   await page.getByRole("button", { name: "Delete" }).click();
+  await acceptTypedConfirm(page, "Delete domain", domain);
   await expect(page).toHaveURL(/\/app\/domains$/);
   await expect(page.getByText(domain)).toHaveCount(0);
 
@@ -132,7 +136,7 @@ test("owner completes setup via manual keys, adds a domain, sees records", async
   // over in a file (see ./credentials) — env vars do not cross workers.
   await page.goto("/app/api-keys");
   await page.fill("#key-name", `e2e-sdk-${suffix}`);
-  await page.selectOption("#key-permission", "full");
+  await chooseOption(page, "key-permission", "Full");
   await page.getByRole("button", { name: "Create key" }).click();
   // The keys table also shows the prefix in a <code>; the CopyField's is the
   // `select-all` one (same locator as send.spec.ts).
@@ -185,6 +189,6 @@ test("a second team must connect its own AWS account", async ({ page }) => {
   ).toBeVisible();
 
   // And its Sending tab shows no connection of its own.
-  await page.goto("/app/settings/sending");
+  await page.goto("/app/settings#sending");
   await expect(page.getByText("AWS is connected")).toHaveCount(0);
 });

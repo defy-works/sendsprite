@@ -167,9 +167,23 @@ async function reloadUntilVisible(page: Page, locator: Locator, ms: number) {
 const rowFor = (page: Page, text: string) =>
   page.locator("tr").filter({ hasText: text });
 
-/** One block card in the editor, addressed the way the editor numbers them. */
-const blockCard = (page: Page, position: number, kind: string) =>
-  page.locator("li").filter({ hasText: `${position}. ${kind}` });
+/**
+ * One block card on the canvas, by its kind.
+ *
+ * The cards are no longer numbered: a body is a tree now, and "block 3" stops
+ * being a position anyone can point at once two of them are side by side in a
+ * row. Each card is labelled with its kind, and `nth` disambiguates when a
+ * body holds two of the same.
+ */
+const blockCard = (page: Page, kind: string, nth = 0) =>
+  page
+    .locator("li")
+    .filter({ has: page.getByText(kind, { exact: true }) })
+    .nth(nth);
+
+/** Adds a block by clicking its palette tile, which appends it to the body. */
+const addBlock = (page: Page, kind: string) =>
+  page.getByRole("button", { name: `Add ${kind}`, exact: true }).click();
 
 /** The token out of either unsubscribe URL. They must be the same one. */
 function tokenOf(url: string): string {
@@ -279,12 +293,14 @@ test("a campaign reaches one eligible contact, and unsubscribing needs a POST", 
   await page.fill("#cmp-name", campaignName);
   await page.fill("#cmp-subject", subject);
   // The book and the domain are each the team's only one, so the form already
-  // names them; asserting that is cheaper than re-selecting them.
-  await expect(page.locator("#cmp-book")).toHaveValue(/^cb_/);
+  // names them; asserting that is cheaper than re-selecting them. The book
+  // control is a listbox rather than a `<select>`, so what it holds is the
+  // label it shows rather than a value attribute.
+  await expect(page.locator("#cmp-book")).toContainText("Newsletter");
   await expect(page.locator("#cmp-from")).toHaveValue(`hello@${domain}`);
 
   // The starter body is a heading and a text block; the other two are added.
-  await blockCard(page, 1, "Heading")
+  await blockCard(page, "Heading")
     .getByLabel("Text", { exact: true })
     .fill("What we shipped in August");
 
@@ -308,8 +324,11 @@ test("a campaign reaches one eligible contact, and unsubscribing needs a POST", 
   // which is the half that `preventDefault` cannot cover. Bold is toggled on
   // and straight back off, so the body is left as it was found.
   const caretStayedInTheDocument = await page.evaluate(() => {
+    // By `aria-label`: the toolbar is icons now, so there is no text content
+    // to match on — and the accessible name is the thing that has to be right
+    // anyway.
     const button = [...document.querySelectorAll("button")].find(
-      (b) => b.textContent?.trim() === "Bold",
+      (b) => b.getAttribute("aria-label") === "Bold",
     );
     const editor = document.querySelector('[aria-label="Campaign text block"]');
     if (!button || !editor) return "the toolbar or the editor is not there";
@@ -340,20 +359,25 @@ test("a campaign reaches one eligible contact, and unsubscribing needs a POST", 
   await bold.click();
   await page.keyboard.type(", or visit the blog");
   await expect(bold).toHaveAttribute("aria-pressed", "false");
-  // Select "the blog" and link it. The editor asks for the URL with a
-  // `window.prompt`, so the URL arrives the way a person would give it.
+  // Select "the blog" and link it. The URL is asked for in the app's own
+  // dialog rather than a `window.prompt`, which could not keep the value when
+  // the contract rejected it — the old prompt closed, printed the error under
+  // the toolbar, and made the author retype the URL from memory.
   for (let i = 0; i < "the blog".length; i++)
     await page.keyboard.press("Shift+ArrowLeft");
-  page.once("dialog", (d) => void d.accept(blogUrl));
   await page.getByRole("button", { name: "Link", exact: true }).click();
+  const linkDialog = page.getByRole("dialog");
+  await linkDialog.locator("#inline-link").fill(blogUrl);
+  await linkDialog.getByRole("button", { name: "Apply" }).click();
+  await expect(linkDialog).toHaveCount(0);
 
-  await page.getByRole("button", { name: "+ Button" }).click();
-  const buttonBlock = blockCard(page, 3, "Button");
+  await addBlock(page, "Button");
+  const buttonBlock = blockCard(page, "Button");
   await buttonBlock.getByLabel("Label").fill("Read the notes");
   await buttonBlock.getByLabel("Links to", { exact: true }).fill(buttonUrl);
 
-  await page.getByRole("button", { name: "+ Image" }).click();
-  const imageBlock = blockCard(page, 4, "Image");
+  await addBlock(page, "Image");
+  const imageBlock = blockCard(page, "Image");
   await imageBlock.getByLabel("Image URL").fill(imageUrl);
   await imageBlock.getByLabel("Alt text").fill(imageAlt);
 

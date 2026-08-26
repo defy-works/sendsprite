@@ -2,7 +2,6 @@ import { notFound } from "next/navigation";
 import { can } from "@sendsprite/shared";
 import { Badge } from "@/components/ui/Badge";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/Card";
-import { Link } from "@/components/ui/Link";
 import { StatusDot, type Status } from "@/components/ui/StatusDot";
 import { cloudflareDnsUrl } from "@/lib/dns/cloudflare-zone";
 import { formatWhen } from "@/lib/format";
@@ -11,6 +10,7 @@ import { getDomain, type Domain } from "@/services/domains";
 import { Alert } from "@/app/setup/steps/shared";
 import { DomainActions } from "../DomainActions";
 import { RecordsTable } from "../RecordsTable";
+import { PageHeader } from "@/components/ui/PageHeader";
 
 const DOT: Record<Domain["status"], Status> = {
   pending: "pending",
@@ -29,21 +29,19 @@ export default async function DomainPage({
   if (!d) notFound();
   return (
     <div className="flex max-w-4xl flex-col gap-6">
-      <div className="flex flex-col gap-2">
-        <Link href="/app/domains" className="num-stamp no-underline">
-          ← Domains
-        </Link>
-        <div className="flex flex-wrap items-center gap-4">
-          <h1 className="text-lg font-medium">{d.name}</h1>
-          <StatusDot status={DOT[d.status]} label={d.status} />
-          <Badge variant={d.dnsMode === "auto" ? "indigo" : "muted"}>
-            {d.dnsMode === "auto" ? "Cloudflare auto" : "manual DNS"}
-          </Badge>
-          <span className="text-sm text-white/50">
-            {d.region} · last checked {formatWhen(d.lastCheckedAt)}
+      <PageHeader
+        back={{ href: "/app/domains", label: "Domains" }}
+        title={
+          <span className="flex flex-wrap items-center gap-3">
+            {d.name}
+            <StatusDot status={DOT[d.status]} label={d.status} />
+            <Badge variant={d.dnsMode === "auto" ? "indigo" : "muted"}>
+              {d.dnsMode === "auto" ? "Cloudflare auto" : "manual DNS"}
+            </Badge>
           </span>
-        </div>
-      </div>
+        }
+        description={`${d.region} · last checked ${formatWhen(d.lastCheckedAt)}`}
+      />
       {d.lastError && <Alert>{d.lastError}</Alert>}
       <Card>
         <CardHeader>

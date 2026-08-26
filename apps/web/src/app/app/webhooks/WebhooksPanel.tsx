@@ -10,6 +10,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
 import { Label } from "@/components/ui/Label";
 import { Link } from "@/components/ui/Link";
+import { Checkbox } from "@/components/ui/Toggle";
 
 /** Dates are pre-formatted on the server so SSR and hydration agree. */
 export type WebhookRow = {
@@ -107,24 +108,18 @@ export function WebhooksPanel({
                   <legend className="mb-2 text-sm font-medium">Events</legend>
                   <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                     {WEBHOOK_EVENT_TYPES.map((t) => (
-                      <label
+                      <Checkbox
                         key={t}
-                        className="flex items-center gap-2 text-sm"
-                      >
-                        <input
-                          type="checkbox"
-                          name="events"
-                          value={t}
-                          className="accent-indigo-400"
-                        />
-                        <code className="text-xs">{t}</code>
-                      </label>
+                        name="events"
+                        value={t}
+                        label={<code className="text-xs">{t}</code>}
+                      />
                     ))}
                   </div>
                 </fieldset>
                 <div>
-                  <Button type="submit" disabled={pending}>
-                    {pending ? "Adding…" : "Add endpoint"}
+                  <Button type="submit" loading={pending}>
+                    Add endpoint
                   </Button>
                 </div>
               </form>

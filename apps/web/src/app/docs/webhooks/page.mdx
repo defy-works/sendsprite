@@ -51,8 +51,8 @@ Subscribe to any non-empty subset of:
 | `domain.verified`                                                                    | A domain became verified.                                                                                                                                             |
 | `domain.failed`                                                                      | A verified domain was demoted, or verification failed for good.                                                                                                       |
 | `contact.created`, `contact.updated`, `contact.unsubscribed`, `contact.resubscribed` | A contact was added, changed, unsubscribed or resubscribed. CSV import fires none of these — see [Contacts](/docs/contacts).                                          |
-| `campaign.sent`                                                                      | Every recipient of a campaign has been **queued** — not delivered. Fires once, when the fan-out finds no recipient left to materialise.                                      |
-| `campaign.completed`                                                                 | Every message a campaign queued has reached a terminal state. Fires once; wait on this one before reading a campaign's stats. See [Campaigns](/docs/campaigns).                                       |
+| `campaign.sent`                                                                      | Every recipient of a campaign has been **queued** — not delivered. Fires once, when the fan-out finds no recipient left to materialise.                               |
+| `campaign.completed`                                                                 | Every message a campaign queued has reached a terminal state. Fires once; wait on this one before reading a campaign's stats. See [Campaigns](/docs/campaigns).       |
 
 ## Payload
 

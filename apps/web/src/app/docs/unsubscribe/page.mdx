@@ -27,7 +27,7 @@ A token is `base64url("<contactId>.<campaignId>.<sig>")`, where `sig` is
 
 Stateless on purpose. A stored token means one row per recipient per campaign
 — 50 000 rows for a 50 000-recipient send, plus a retention story — bought in
-exchange for being able to revoke a link whose only power is to *remove*
+exchange for being able to revoke a link whose only power is to _remove_
 consent. That is never the dangerous direction.
 
 What the token authorises is exactly one thing: turning one contact's
@@ -66,12 +66,12 @@ implementations.
 
 So:
 
-| Request                          | Does                                                          |
-| -------------------------------- | --------------------------------------------------------------- |
-| `GET /unsubscribe/<token>`       | Renders a page with a button. **Reads only.**                   |
-| `POST` from that page's button   | Unsubscribes, then redirects back to the page.                  |
-| `POST /api/unsubscribe/<token>`  | RFC 8058 one-click. Unsubscribes. Always `200`.                 |
-| `GET /api/unsubscribe/<token>`   | `302` to the page. **Mutates nothing** — this is the one a scanner following the header will hit. |
+| Request                         | Does                                                                                              |
+| ------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `GET /unsubscribe/<token>`      | Renders a page with a button. **Reads only.**                                                     |
+| `POST` from that page's button  | Unsubscribes, then redirects back to the page.                                                    |
+| `POST /api/unsubscribe/<token>` | RFC 8058 one-click. Unsubscribes. Always `200`.                                                   |
+| `GET /api/unsubscribe/<token>`  | `302` to the page. **Mutates nothing** — this is the one a scanner following the header will hit. |
 
 ### Why the two URLs differ
 
@@ -85,7 +85,7 @@ page would make Gmail's and Outlook's native button answer `405` — a silently
 broken one-click, which is the expensive kind of broken.
 
 `List-Unsubscribe-Post` is never emitted without `List-Unsubscribe`. On its own
-it is a header no client acts on, and its *absence* beside a `List-Unsubscribe`
+it is a header no client acts on, and its _absence_ beside a `List-Unsubscribe`
 is what makes the native button disappear and leaves the spam button as the
 recipient's only way out.
 
@@ -113,7 +113,7 @@ CSRF-protected**. That is a considered exception, not an oversight, and it must
 not be "fixed": RFC 8058 requires an unauthenticated cross-origin POST issued
 by a mail client. There is no session to bind a token to, and no origin anyone
 could predict — Gmail, Outlook and every other client post from infrastructure
-nobody has seen. The HMAC in the path *is* the authorisation, and the blast
+nobody has seen. The HMAC in the path _is_ the authorisation, and the blast
 radius above is what makes that safe.
 
 It answers **`200` to everything**, including a forged token, a rotated secret

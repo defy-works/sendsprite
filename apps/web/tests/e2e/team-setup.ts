@@ -1,4 +1,5 @@
 import { expect, type Page } from "@playwright/test";
+import { chooseOption } from "./_ui";
 
 /**
  * Walk the connect wizard for whichever team is currently active.
@@ -23,7 +24,7 @@ export async function completeTeamSetup(page: Page): Promise<void> {
 
   if (await manual.isVisible()) {
     await manual.click();
-    await page.selectOption("#region", "us-east-1");
+    await chooseOption(page, "region", "us-east-1");
     await page.fill("#accessKeyId", "AKIAE2EEXAMPLE0001");
     await page.fill("#secretAccessKey", "e2e-secret-e2e-secret");
     await page.getByRole("button", { name: "Connect", exact: true }).click();

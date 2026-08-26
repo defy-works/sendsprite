@@ -41,10 +41,10 @@ with the database; losing it means reconnecting both.
 
 Two services by default:
 
-| Service | Image                                  | Notes                                                                                   |
-| ------- | -------------------------------------- | --------------------------------------------------------------------------------------- |
+| Service | Image                                  | Notes                                                                                        |
+| ------- | -------------------------------------- | -------------------------------------------------------------------------------------------- |
 | `app`   | `ghcr.io/defy-works/sendsprite:latest` | Publishes `${APP_PORT:-3000}:3000` and `${SMTP_PORT:-587}:2587` for the relay. Reads `.env`. |
-| `db`    | `postgres:16-alpine`                   | User/database `sendsprite`, data in the `pgdata` volume, `pg_isready` healthcheck.      |
+| `db`    | `postgres:16-alpine`                   | User/database `sendsprite`, data in the `pgdata` volume, `pg_isready` healthcheck.           |
 
 `SMTP_PORT` is the port on the **host**: inside the container the relay always
 listens on 2587, because the image runs as a non-root user and Linux only lets
@@ -97,40 +97,42 @@ on the host — check nothing else on the server already holds it.
 Everything is parsed and validated at boot (`src/env.schema.ts`); a bad value
 stops the container with a message naming the variable.
 
-| Variable                                    | Default              | Meaning                                                                                                                                                           |
-| ------------------------------------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `APP_URL`                                   | — (required)         | Full public URL incl. protocol. SNS subscriptions and the CloudFormation callback both require `https://`.                                                        |
-| `APP_SECRET`                                | — (required)         | ≥ 32 characters, not starting with `change-me`. Encrypts stored credentials and signs tracking links.                                                             |
-| `DATABASE_URL`                              | — (required)         | Postgres connection string.                                                                                                                                       |
-| `WORKER_MODE`                               | `inline`             | `inline` runs jobs in the web process, `separate` leaves them to the worker container, `none` disables them.                                                      |
-| `SMTP_ENABLED`                              | `true`               | Whether the submission relay listens.                                                                                                                             |
-| `SMTP_PORT`                                 | `587`                | Relay port. The image pins it to 2587 (unprivileged) and Compose publishes it on the host as `SMTP_PORT`.                                                         |
-| `SMTP_ALLOW_INSECURE_AUTH`                  | `false`              | Accept `AUTH` before STARTTLS. Development only — the API key travels in clear.                                                                                   |
-| `SMTP_TLS_CERT` / `SMTP_TLS_KEY`            | unset                | PEM paths, both or neither. Without them a self-signed pair is generated.                                                                                         |
-| `SMTP_MAX_SIZE`                             | `10485760`           | Largest message the relay accepts.                                                                                                                                |
-| `LANDING_ENABLED`                           | `true`               | Serve the marketing page at `/`; when off, `/` redirects to `/app`.                                                                                               |
-| `SIGNUP_MODE`                               | `auto`               | `auto`, `open`, `invite` or `closed`. `auto` opens signup only until the first user exists, then switches to invite-only (a dashboard override wins over `auto`). |
+| Variable                                    | Default              | Meaning                                                                                                                                                                                                           |
+| ------------------------------------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `APP_URL`                                   | — (required)         | Full public URL incl. protocol. SNS subscriptions and the CloudFormation callback both require `https://`.                                                                                                        |
+| `APP_SECRET`                                | — (required)         | ≥ 32 characters, not starting with `change-me`. Encrypts stored credentials and signs tracking links.                                                                                                             |
+| `DATABASE_URL`                              | — (required)         | Postgres connection string.                                                                                                                                                                                       |
+| `WORKER_MODE`                               | `inline`             | `inline` runs jobs in the web process, `separate` leaves them to the worker container, `none` disables them.                                                                                                      |
+| `SMTP_ENABLED`                              | `true`               | Whether the submission relay listens.                                                                                                                                                                             |
+| `SMTP_PORT`                                 | `587`                | Relay port. The image pins it to 2587 (unprivileged) and Compose publishes it on the host as `SMTP_PORT`.                                                                                                         |
+| `SMTP_ALLOW_INSECURE_AUTH`                  | `false`              | Accept `AUTH` before STARTTLS. Development only — the API key travels in clear.                                                                                                                                   |
+| `SMTP_TLS_CERT` / `SMTP_TLS_KEY`            | unset                | PEM paths, both or neither. Without them a self-signed pair is generated.                                                                                                                                         |
+| `SMTP_MAX_SIZE`                             | `10485760`           | Largest message the relay accepts.                                                                                                                                                                                |
+| `LANDING_ENABLED`                           | `true`               | Serve the marketing page at `/`; when off, `/` redirects to `/app`.                                                                                                                                               |
+| `SIGNUP_MODE`                               | `auto`               | `auto`, `open`, `invite` or `closed`. `auto` opens signup only until the first user exists, then switches to invite-only (a dashboard override wins over `auto`).                                                 |
 | `INSTANCE_ADMIN_EMAILS`                     | unset                | Comma-separated emails that always have instance-admin access. Leave unset and the first account created on the instance is flagged instead. This is the lockout escape hatch — it cannot be revoked from the UI. |
-| `EMAIL_PASSWORD_ENABLED`                    | `false`              | Email + password sign-in.                                                                                                                                         |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | unset                | Enables Google sign-in when both are set.                                                                                                                         |
-| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | unset                | Enables GitHub sign-in when both are set.                                                                                                                         |
-| `AWS_DEFAULT_REGION`                        | `us-east-1`          | Region pre-selected in the connect flow (must be an SES region).                                                                                                  |
-| `CFN_TEMPLATE_URL`                          | the published S3 URL | CloudFormation template behind the one-click connect. Must be an S3 URL.                                                                                          |
-| `SOURCE_URL`                                | this repository      | Where this instance offers its source (AGPL §13). Shown in the dashboard footer and `/api/health`. Point it at your own source if you modify the server.          |
-| `BILLING_ENABLED` | `false` | Hosted-service billing. Off: no Billing page, no checkout, no `/api/billing/webhook`, no billing job, no plan-derived limit. See **Turning billing on**. |
-| `POLAR_ACCESS_TOKEN` | unset | Polar organization access token. Required when billing is on. |
-| `POLAR_WEBHOOK_SECRET` | unset | Polar webhook signing secret. Required when billing is on; boot refuses the combination without it. |
-| `POLAR_SERVER` | `production` | `sandbox` while developing against Polar's sandbox organization. |
-| `POLAR_METER_ID` | unset | Optional, display only: shows Polar's own meter balance beside ours on the billing page. |
+| `EMAIL_PASSWORD_ENABLED`                    | `false`              | Email + password sign-in.                                                                                                                                                                                         |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | unset                | Enables Google sign-in when both are set.                                                                                                                                                                         |
+| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | unset                | Enables GitHub sign-in when both are set.                                                                                                                                                                         |
+| `AWS_DEFAULT_REGION`                        | `us-east-1`          | Region pre-selected in the connect flow (must be an SES region).                                                                                                                                                  |
+| `CFN_TEMPLATE_URL`                          | the published S3 URL | CloudFormation template behind the one-click connect. Must be an S3 URL.                                                                                                                                          |
+| `SOURCE_URL`                                | this repository      | Where this instance offers its source (AGPL §13). Shown in the dashboard footer and `/api/health`. Point it at your own source if you modify the server.                                                          |
+| `BILLING_ENABLED`                           | `false`              | Hosted-service billing. Off: no Billing page, no checkout, no `/api/billing/webhook`, no billing job, no plan-derived limit. See **Turning billing on**.                                                          |
+| `POLAR_ACCESS_TOKEN`                        | unset                | Polar organization access token. Required when billing is on.                                                                                                                                                     |
+| `POLAR_WEBHOOK_SECRET`                      | unset                | Polar webhook signing secret. Required when billing is on; boot refuses the combination without it.                                                                                                               |
+| `POLAR_SERVER`                              | `production`         | `sandbox` while developing against Polar's sandbox organization.                                                                                                                                                  |
+| `POLAR_METER_ID`                            | unset                | Optional, display only: shows Polar's own meter balance beside ours on the billing page.                                                                                                                          |
 
 Enable at least one sign-in method or nobody can reach the dashboard; the
 installer turns on `EMAIL_PASSWORD_ENABLED`.
 
 ## Instance admin
 
-Signup mode, the landing-page toggle and the **retention ceiling** are
-operator settings, not team settings. They live at `/app/admin`, which only
-instance admins can open — owning a team grants no access to it.
+Operator settings live at **`/admin`** — a separate area from the team
+dashboard, with its own shell, reached from the account menu. It is not a row
+in the team sidebar, deliberately: "change the signup mode for every account
+on this deployment" and "rename my team" answer to different people and have
+very different blast radii.
 
 Two ways to be an instance admin, and either is enough:
 
@@ -140,9 +142,39 @@ Two ways to be an instance admin, and either is enough:
 - **The `instance_admin` flag on the user row.** When `INSTANCE_ADMIN_EMAILS`
   is unset, the first account created on a fresh instance is flagged
   automatically, so a new deployment always has someone who can reach the
-  page.
+  page. **Users → Make admin** grants it to anyone else; the last flagged
+  admin cannot be removed, and nobody can remove their own flag.
 
-Retention is per team, bounded by the operator. `/app/admin` sets the longest
+### What is there
+
+**Instance** — signup mode, the landing-page toggle, the retention ceiling,
+and the Cloudflare OAuth client's status with the steps to register one. Those
+steps used to sit on the customer-facing setup wizard, where they told people
+with no shell on this box to set an environment variable and restart it.
+
+**Organizations** — every team, with its members, domains, 30-day volume,
+plan and connection status. Opening one gives you:
+
+- **Daily and monthly limit overrides.** These already beat the billing plan
+  in `resolveTeamCaps`, column by column — lifting a monthly cap does not
+  touch the daily one. Until now there was no way to set them short of
+  `psql`. Empty means "no override"; `0` is a real cap of zero.
+- **A retention override**, clamped to the instance ceiling.
+- **Suspension.** Stops a team sending without touching anything it owns:
+  every send path runs `checkTeamCaps`, and that is where the check lives, so
+  it covers REST, SMTP, the dashboard, the batch endpoint and any campaign
+  already mid-schedule at once. The reason you type is shown to the team
+  verbatim in every refused send, and on their dashboard — a team that cannot
+  send and is not told why files a support ticket, which is the outcome
+  suspending them was supposed to avoid.
+
+**Users** — every account, and who may reach these pages.
+
+Every write here is audited with the acting user, the team and the diff: an
+instance admin reaching across a tenant boundary is the most sensitive thing
+this product allows.
+
+Retention is per team, bounded by the operator. `/admin` sets the longest
 window any team may keep email bodies and attachments for; each team then
 picks its own window, up to that maximum, in **Settings → Retention**. A team
 that has chosen nothing inherits the ceiling, and lowering the ceiling
@@ -159,7 +191,8 @@ the same state, and both storing one least-privilege IAM user per team:
 **One-click (CloudFormation).** The setup wizard builds a quick-create link
 prefilled with the template URL, a `CallbackUrl` of
 `<APP_URL>/api/setup/aws/callback` and a single-use `CallbackToken` that
-expires in 15 minutes. You review the resources and click _Create stack_. The
+expires in an hour — it has to cover the whole flow, not just the click: a
+read of the review page, the IAM checkbox, and then the stack build. You review the resources and click _Create stack_. The
 stack creates an IAM user `sendsprite-<stack name>` with SES identity,
 configuration-set and `SendEmail` permissions plus SNS rights scoped to
 `arn:aws:sns:*:<account>:sendsprite-*`, then a Lambda mints an access key

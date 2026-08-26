@@ -270,6 +270,12 @@ export function Select<T extends string = string>({
                   aria-selected={o.value === value}
                   aria-disabled={o.disabled || undefined}
                   data-active={i === active}
+                  // The label, when it is plain text, as an attribute. The
+                  // accessible name of an option includes its hint — which is
+                  // right for a screen reader and useless for a test that
+                  // wants to click "Full" rather than "Full Every endpoint
+                  // this team can reach".
+                  data-label={typeof o.label === "string" ? o.label : undefined}
                   onMouseEnter={() => !o.disabled && setActive(i)}
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={() => commit(i)}

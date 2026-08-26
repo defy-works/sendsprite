@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { completeTeamSetup } from "./team-setup";
 import nodemailer from "nodemailer";
+import { acceptTypedConfirm } from "./_ui";
 
 // Runs after setup.spec.ts (project `app`), so the instance is set up and
 // AWS is "connected" to the fake. The server has AWS_E2E_VERIFY=1 (fake SES
@@ -217,8 +218,8 @@ test("owner verifies a domain, sends via REST and SMTP, sees the log", async ({
   // Clean up the domain (fake DeleteEmailIdentity); the mail log keeps its
   // rows with domain_id = null.
   await page.goto(domainUrl);
-  page.once("dialog", (d) => d.accept());
   await page.getByRole("button", { name: "Delete" }).click();
+  await acceptTypedConfirm(page, "Delete domain", domain);
   // deleteDomain (server action) then `router.push("/app/domains")`: the URL
   // only changes once the action has returned and the list has rendered.
   await expect(page).toHaveURL(/\/app\/domains$/);

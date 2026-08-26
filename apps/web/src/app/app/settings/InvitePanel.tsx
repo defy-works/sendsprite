@@ -41,8 +41,8 @@ export function InvitePanel({ invites }: { invites: Invite[] }) {
             ]}
           />
         </div>
-        <Button type="submit" disabled={pending}>
-          {pending ? "Inviting…" : "Invite"}
+        <Button type="submit" loading={pending}>
+          Invite
         </Button>
       </form>
       {state && !state.ok && (

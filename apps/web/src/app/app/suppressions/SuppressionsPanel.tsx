@@ -108,8 +108,8 @@ export function SuppressionsPanel({
                   maxLength={500}
                 />
               </div>
-              <Button type="submit" disabled={pending}>
-                {pending ? "Adding…" : "Suppress"}
+              <Button type="submit" loading={pending}>
+                Suppress
               </Button>
             </form>
             {state && !state.ok && (

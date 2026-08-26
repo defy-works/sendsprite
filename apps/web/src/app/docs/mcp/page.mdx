@@ -68,16 +68,16 @@ when you do. Request bodies are capped at 20 MB.
 
 ## Tools
 
-| Tool               | What it does                                                                                         |
-| ------------------ | ---------------------------------------------------------------------------------------------------- |
-| `send_email`       | Send a transactional email; `from` must be on a verified domain. Returns the email id.               |
-| `get_email_status` | Status, recipients, subject and the most recent timeline events for one email id.                    |
-| `list_emails`      | Recent emails, newest first, with `limit`, `cursor` and `status`.                                    |
-| `search_emails`    | The same list filtered by `to`, `status`, `tag` or `domainId`, with `limit` and `cursor`.            |
-| `list_domains`     | Sending domains and their verification status.                                                       |
-| `get_send_stats`   | Sends today / 7 days / 30 days, delivery, bounce and complaint rates, and any account-health alerts. |
-| `list_templates`   | Every template, with the `slug` to pass as `template` and the `{{ variable }}` placeholders it expects. |
-| `render_template`  | Render a template with a set of variables. Nothing is sent or stored; the variables are not echoed back. |
+| Tool               | What it does                                                                                                        |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `send_email`       | Send a transactional email; `from` must be on a verified domain. Returns the email id.                              |
+| `get_email_status` | Status, recipients, subject and the most recent timeline events for one email id.                                   |
+| `list_emails`      | Recent emails, newest first, with `limit`, `cursor` and `status`.                                                   |
+| `search_emails`    | The same list filtered by `to`, `status`, `tag` or `domainId`, with `limit` and `cursor`.                           |
+| `list_domains`     | Sending domains and their verification status.                                                                      |
+| `get_send_stats`   | Sends today / 7 days / 30 days, delivery, bounce and complaint rates, and any account-health alerts.                |
+| `list_templates`   | Every template, with the `slug` to pass as `template` and the `{{ variable }}` placeholders it expects.             |
+| `render_template`  | Render a template with a set of variables. Nothing is sent or stored; the variables are not echoed back.            |
 | `add_contact`      | Add one person to one contact book. `bookId` is required and never guessed; an address already there is a conflict. |
 
 Input is validated against the same schemas the REST API uses, so a bad

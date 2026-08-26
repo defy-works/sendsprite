@@ -12,23 +12,23 @@ job is queued, and the timeline fills in as SES reports back.
 
 ## Fields
 
-| Field                       | Type                 | Notes                                                                                |
-| --------------------------- | -------------------- | ------------------------------------------------------------------------------------ |
-| `from`                      | string               | Required. `a@b.com` or `Name <a@b.com>`. Must be on a verified domain of this team.  |
-| `to`                        | string or string[]   | Required, at least one address.                                                      |
-| `cc`, `bcc`, `replyTo`      | string or string[]   | Optional; a bare string is accepted and wrapped.                                     |
-| `subject`                   | string               | 1–998 characters, no control characters. Required unless `template` supplies one.    |
-| `html`                      | string               | Up to 5 MB.                                                                          |
-| `text`                      | string               | Up to 5 MB.                                                                          |
-| `template`                  | string               | Slug of a stored template, rendered server-side. Not combinable with `html`/`text`.  |
-| `variables`                 | object               | Values for the template's `{{placeholders}}`; only valid with `template`.            |
-| `headers`                   | object               | Custom headers, `[A-Za-z0-9-]{1,80}` names, values ≤ 1000 chars, no control chars.   |
-| `attachments`               | object[]             | Up to 20; see below.                                                                 |
-| `tags`                      | object               | Up to 20 key/value pairs.                                                            |
-| `scheduledAt`               | ISO 8601 with offset | Send later.                                                                          |
-| `idempotencyKey`            | string               | 1–256 characters.                                                                    |
-| `trackOpens`, `trackClicks` | boolean              | Override the team defaults for this message.                                         |
-| `overrideSuppression`       | boolean              | Ignore _manual_ suppression entries.                                                 |
+| Field                       | Type                 | Notes                                                                               |
+| --------------------------- | -------------------- | ----------------------------------------------------------------------------------- |
+| `from`                      | string               | Required. `a@b.com` or `Name <a@b.com>`. Must be on a verified domain of this team. |
+| `to`                        | string or string[]   | Required, at least one address.                                                     |
+| `cc`, `bcc`, `replyTo`      | string or string[]   | Optional; a bare string is accepted and wrapped.                                    |
+| `subject`                   | string               | 1–998 characters, no control characters. Required unless `template` supplies one.   |
+| `html`                      | string               | Up to 5 MB.                                                                         |
+| `text`                      | string               | Up to 5 MB.                                                                         |
+| `template`                  | string               | Slug of a stored template, rendered server-side. Not combinable with `html`/`text`. |
+| `variables`                 | object               | Values for the template's `{{placeholders}}`; only valid with `template`.           |
+| `headers`                   | object               | Custom headers, `[A-Za-z0-9-]{1,80}` names, values ≤ 1000 chars, no control chars.  |
+| `attachments`               | object[]             | Up to 20; see below.                                                                |
+| `tags`                      | object               | Up to 20 key/value pairs.                                                           |
+| `scheduledAt`               | ISO 8601 with offset | Send later.                                                                         |
+| `idempotencyKey`            | string               | 1–256 characters.                                                                   |
+| `trackOpens`, `trackClicks` | boolean              | Override the team defaults for this message.                                        |
+| `overrideSuppression`       | boolean              | Ignore _manual_ suppression entries.                                                |
 
 One content source must be present: `html`, `text` (or both), **or** a
 `template`. A `template` together with `html` or `text` is refused rather

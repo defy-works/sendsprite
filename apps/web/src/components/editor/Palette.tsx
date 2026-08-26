@@ -144,6 +144,11 @@ function Tile({
       disabled={disabled}
       onClick={onClick}
       title={`Add ${label}`}
+      // The accessible name has to say what the click *does*. Without this it
+      // is the tile's own text — a screen reader reading the palette would
+      // announce "Button, button" and "Image, button", which names the block
+      // and hides the verb.
+      aria-label={`Add ${label}`}
       className={cn(
         "flex cursor-grab flex-col items-center gap-1.5 rounded-md border border-white/10 bg-white/4 px-2 py-3",
         "text-[11px] text-white/70 transition-colors duration-[var(--duration-fast)]",

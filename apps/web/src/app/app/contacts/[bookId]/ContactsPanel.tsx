@@ -17,6 +17,7 @@ import {
   type Result,
 } from "../actions";
 import { useConfirm } from "@/components/ui/confirm";
+import { FileDrop } from "@/components/ui/FileDrop";
 import { resubscribeConfirmation } from "../resubscribe";
 
 /** Dates are pre-formatted on the server so SSR and hydration agree. */
@@ -195,8 +196,8 @@ export function ContactsPanel({
                   <Label htmlFor="c-last">Last name</Label>
                   <Input id="c-last" name="lastName" />
                 </div>
-                <Button type="submit" disabled={pending}>
-                  {pending ? "Adding…" : "Add"}
+                <Button type="submit" loading={pending}>
+                  Add
                 </Button>
               </form>
               {state && !state.ok && <Alert>{state.error}</Alert>}
@@ -208,17 +209,11 @@ export function ContactsPanel({
               <CardTitle>Import CSV</CardTitle>
             </CardHeader>
             <CardBody className="flex flex-col gap-3">
-              <input
-                ref={fileRef}
-                type="file"
+              <FileDrop
                 accept=".csv,text/csv"
-                aria-label="CSV file"
-                className="text-sm text-white/70"
                 disabled={busy}
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) void onFile(f);
-                }}
+                label="Drop a CSV here, or click to choose one"
+                onFile={(f) => void onFile(f)}
               />
               <p className="text-xs text-white/50">
                 Needs an <code>email</code> column; <code>first_name</code> and{" "}

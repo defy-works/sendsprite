@@ -18,6 +18,128 @@ const draft = {
   bodyText: "Hello {{name}}",
 };
 
+/**
+ * The visual editor stores its block tree on the template, and compiles it to
+ * `body_html` **in the service**. Both halves of that matter and neither is
+ * visible from the editor: the compile has to happen server-side or the stored
+ * HTML and the stored design can disagree, and the design has to survive a
+ * version restore or restoring an old body would leave today's blocks on top
+ * of it.
+ */
+describe("templates authored as a design", () => {
+  const blocks = [
+    { kind: "heading" as const, level: 2 as const, text: "Hi {{name}}" },
+    { kind: "text" as const, html: "Welcome aboard." },
+  ];
+
+  it("compiles the blocks into the body rather than trusting the caller", async () => {
+    const svc = await import("@/services/templates");
+    const { actor } = await seedTeamWithKey();
+    const created = await svc.createTemplate(
+      actor,
+      // Deliberately a lie: the caller says one thing and the design says
+      // another. The design wins, or the editor and the inbox disagree.
+      { ...draft, slug: "designed", bodyHtml: "<p>ignored</p>" },
+      blocks,
+    );
+    if (!created.ok) throw new Error(created.error);
+    expect(created.data.bodyHtml).not.toContain("ignored");
+    expect(created.data.bodyHtml).toContain("Hi {{name}}");
+    expect(created.data.design).toEqual(blocks);
+  });
+
+  it("leaves no unsubscribe marker in a template body", async () => {
+    const svc = await import("@/services/templates");
+    const { actor } = await seedTeamWithKey();
+    const created = await svc.createTemplate(
+      actor,
+      { ...draft, slug: "no-footer" },
+      blocks,
+    );
+    if (!created.ok) throw new Error(created.error);
+    // A campaign always carries the footer and a template never does; the
+    // marker is a control character the fan-out substitutes per recipient, and
+    // a template has no fan-out to substitute it.
+    expect(created.data.bodyHtml).not.toContain("\u0001");
+    expect(created.data.bodyText ?? "").not.toContain("\u0001");
+  });
+
+  it("refuses a design the block contract rejects", async () => {
+    const svc = await import("@/services/templates");
+    const { actor } = await seedTeamWithKey();
+    const bad = await svc.createTemplate(
+      actor,
+      { ...draft, slug: "bad-design" },
+      // `javascript:` is refused by `SafeUrl`, and escaping an href does
+      // nothing — the scheme allow-list is the only defence there is.
+      [
+        {
+          kind: "button",
+          label: "Click",
+          url: "javascript:alert(1)",
+        },
+      ] as never,
+    );
+    expect(bad.ok).toBe(false);
+  });
+
+  it("clears the design when the body is edited as HTML", async () => {
+    const svc = await import("@/services/templates");
+    const { actor } = await seedTeamWithKey();
+    await svc.createTemplate(actor, { ...draft, slug: "switched" }, blocks);
+    const html = await svc.updateTemplate(
+      actor,
+      "switched",
+      { bodyHtml: "<p>By hand</p>" },
+      // `null`, not `undefined`: undefined means "leave it alone", which
+      // would keep compiling from blocks nobody can see any more.
+      null,
+    );
+    if (!html.ok) throw new Error(html.error);
+    expect(html.data.design).toBeNull();
+    expect(html.data.bodyHtml).toBe("<p>By hand</p>");
+  });
+
+  it("brings the design back with a restore", async () => {
+    const svc = await import("@/services/templates");
+    const { actor } = await seedTeamWithKey();
+    const created = await svc.createTemplate(
+      actor,
+      { ...draft, slug: "restored" },
+      blocks,
+    );
+    if (!created.ok) throw new Error(created.error);
+    await svc.updateTemplate(
+      actor,
+      "restored",
+      { bodyHtml: "<p>By hand</p>" },
+      null,
+    );
+    const versions = await svc.listTemplateVersions(actor.teamId, "restored");
+    const v1 = versions.find((v) => v.version === 1);
+    expect(v1?.snapshot.design).toEqual(blocks);
+    const back = await svc.updateTemplate(
+      actor,
+      "restored",
+      v1!.snapshot,
+      v1!.snapshot.design ?? null,
+    );
+    if (!back.ok) throw new Error(back.error);
+    expect(back.data.design).toEqual(blocks);
+    expect(back.data.bodyHtml).toContain("Hi {{name}}");
+  });
+
+  it("keeps the design out of the public version response", async () => {
+    const svc = await import("@/services/templates");
+    const { actor } = await seedTeamWithKey();
+    await svc.createTemplate(actor, { ...draft, slug: "public" }, blocks);
+    const [v] = await svc.listTemplateVersions(actor.teamId, "public");
+    // The REST surface deals in HTML; shipping the block tree there would add
+    // an undocumented field to a documented response and make it a contract.
+    expect("design" in svc.publicTemplateVersion(v!).snapshot).toBe(false);
+  });
+});
+
 describe("templates service", () => {
   it("creates at version 1 and records the first version snapshot", async () => {
     const svc = await import("@/services/templates");
@@ -38,6 +160,9 @@ describe("templates service", () => {
       bodyHtml: "<p>Hello {{name}}</p>",
       bodyText: "Hello {{name}}",
       variablesSchema: { variables: [] },
+      // Null, not absent: this template was written as HTML, and a snapshot
+      // has to say so or a restore cannot tell "no design" from "unchanged".
+      design: null,
     });
   });
 
@@ -85,6 +210,7 @@ describe("templates service", () => {
       bodyHtml: changed.data.bodyHtml,
       bodyText: changed.data.bodyText,
       variablesSchema: changed.data.variablesSchema,
+      design: null,
     });
   });
 

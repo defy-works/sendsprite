@@ -57,7 +57,7 @@ export function DoneStep({ settings }: WizardProps) {
       )}
       <div>
         <Button
-          disabled={pending}
+          loading={pending}
           onClick={() =>
             start(async () => {
               setError(null);
@@ -67,7 +67,7 @@ export function DoneStep({ settings }: WizardProps) {
             })
           }
         >
-          {pending ? "Opening…" : "Go to dashboard"}
+          Go to dashboard
         </Button>
       </div>
       {error && <Alert>{error}</Alert>}

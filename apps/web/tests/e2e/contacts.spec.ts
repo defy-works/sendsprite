@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
 import { completeTeamSetup } from "./team-setup";
+import { acceptConfirm, acceptTypedConfirm } from "./_ui";
 
 // Runs after setup.spec.ts (project `app`), so the dashboard is open. Nothing
 // here needs AWS or the worker: a book, its contacts, an import and an export
@@ -83,21 +84,22 @@ test("create a book, manage its contacts, import a CSV and export it safely", as
   await page.getByRole("button", { name: "Unsubscribe" }).click();
   await expect(page.getByText("manual", { exact: true })).toBeVisible();
 
-  const dialog = new Promise<string>((resolve) =>
-    page.once("dialog", (d) => {
-      resolve(d.message());
-      void d.dismiss();
-    }),
-  );
   await page.getByRole("button", { name: "Resubscribe" }).click();
-  const message = await dialog;
-  expect(message).toContain("hopper@example.com");
-  expect(message).toContain("Only do this if they asked to come back");
-  // Dismissed: the speed bump has to actually stop the change.
+  const speedBump = page.getByRole("dialog");
+  await expect(speedBump).toBeVisible();
+  // The two facts the operator needs to decide: who, and what the record says
+  // about why they left. Asserted on the dialog rather than on a `prompt`
+  // message, because the wording is the whole feature.
+  await expect(speedBump).toContainText("hopper@example.com");
+  await expect(speedBump).toContainText(
+    "Only do this if they asked to come back",
+  );
+  await speedBump.getByRole("button", { name: "Cancel" }).click();
+  // Cancelled: the speed bump has to actually stop the change.
   await expect(page.getByText("manual", { exact: true })).toBeVisible();
 
-  page.once("dialog", (d) => void d.accept());
   await page.getByRole("button", { name: "Resubscribe" }).click();
+  await acceptConfirm(page, "Resubscribe");
   await expect(page.getByText("subscribed", { exact: true })).toBeVisible();
 
   // The import reports what it did, per row.
@@ -139,7 +141,9 @@ test("create a book, manage its contacts, import a CSV and export it safely", as
   // Deleting the book is the one action here that needs settings.manage; this
   // owner has it.
   await page.goto("/app/contacts");
-  page.once("dialog", (d) => void d.accept());
   await page.getByRole("button", { name: "Delete" }).click();
+  // Gated on typing the book name: its contacts go with it and there is no
+  // history to restore them from.
+  await acceptTypedConfirm(page, "Delete book", "Newsletter");
   await expect(page.getByText("No contact books")).toBeVisible();
 });

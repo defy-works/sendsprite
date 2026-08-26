@@ -42,8 +42,8 @@ export function DomainForm({ hasCloudflare }: { hasCloudflare: boolean }) {
           : "Cloudflare is not connected: you will add the DNS records at your provider by hand. We link straight to the right zone if the domain is already on Cloudflare."}
       </p>
       <div>
-        <Button type="submit" disabled={pending}>
-          {pending ? "Adding…" : "Add domain"}
+        <Button type="submit" loading={pending}>
+          Add domain
         </Button>
       </div>
       {state && !state.ok && <Alert>{state.error}</Alert>}

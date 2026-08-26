@@ -43,8 +43,8 @@ export function RetentionForm({
       </div>
       {canManage && (
         <div className="flex items-center gap-3">
-          <Button type="submit" disabled={pending}>
-            {pending ? "Saving…" : "Save"}
+          <Button type="submit" loading={pending}>
+            Save
           </Button>
           {state?.ok && <span className="text-sm text-white/65">Saved.</span>}
         </div>

@@ -136,8 +136,8 @@ export function ApiKeysPanel({
                     ]}
                   />
                 </div>
-                <Button type="submit" disabled={pending}>
-                  {pending ? "Creating…" : "Create key"}
+                <Button type="submit" loading={pending}>
+                  Create key
                 </Button>
               </form>
             )}
