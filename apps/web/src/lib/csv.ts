@@ -35,8 +35,16 @@
  */
 export const MAX_CSV_BYTES = 2 * 1024 * 1024;
 export const MAX_CSV_ROWS = 10_000;
-/** `email`, `first_name`, `last_name` plus the 20 properties a contact may hold. */
-export const MAX_CSV_COLUMNS = 24;
+/**
+ * Wide enough for anything this product writes, with headroom. The export
+ * (`/app/contacts/[id]/export`) emits six fixed columns — `email`,
+ * `first_name`, `last_name`, `subscribed`, `unsubscribe_reason`, `created_at`
+ * — plus one per property key, and a contact may hold 20 properties: 26. A cap
+ * below that would make an export this product cannot re-import, and only for
+ * the customers with the most data. The cap exists to bound work, and 32
+ * bounds it just as well as 24 did.
+ */
+export const MAX_CSV_COLUMNS = 32;
 /** Matches the per-property bound in `CreateContactInput`. */
 export const MAX_CSV_CELL_CHARS = 500;
 
