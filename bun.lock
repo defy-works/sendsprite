@@ -7,6 +7,7 @@
       "devDependencies": {
         "@changesets/cli": "^3.0.1",
         "@eslint/js": "^9.30.0",
+        "@iconify-json/lucide": "^1.2.126",
         "@next/eslint-plugin-next": "^16.3.2",
         "eslint": "^9.30.0",
         "prettier": "^3.6.0",
@@ -77,7 +78,7 @@
     },
     "packages/mcp": {
       "name": "@sendsprite/mcp",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "bin": {
         "sendsprite-mcp": "./dist/bin.js",
       },
@@ -96,7 +97,7 @@
     },
     "packages/sdk": {
       "name": "sendsprite",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "bin": {
         "sendsprite": "./dist/cli.js",
       },
@@ -395,6 +396,10 @@
     "@humanwhocodes/module-importer": ["@humanwhocodes/module-importer@1.0.1", "", {}, "sha512-bxveV4V8v5Yb4ncFTT3rPSgZBOpCkjfK0y4oVVVJwIuDVBRMDXrPyXRL988i5ap9m9bnyEEjWfm5WkBmtffLfA=="],
 
     "@humanwhocodes/retry": ["@humanwhocodes/retry@0.4.3", "", {}, "sha512-bV0Tgo9K4hfPCek+aMAn81RppFKv2ySDQeMoSZuvTASywNTnVJCArCZE2FWqpvIatKu7VMRLWlR1EazvVhDyhQ=="],
+
+    "@iconify-json/lucide": ["@iconify-json/lucide@1.2.126", "", { "dependencies": { "@iconify/types": "*" } }, "sha512-Fl3OfR71yeWLrlTLp6C4W5W3rJJDWH9/e70mjtq9VAldYDxvHh149JMNPz7foTeLLTE2Paynnp2aYKVL9rgF5Q=="],
+
+    "@iconify/types": ["@iconify/types@2.0.0", "", {}, "sha512-+wluvCrRhXrhyOmRDJ3q8mux9JkKy5SJ/v8ol2tu4FVjyYvtEzkc/3pK15ET6RKg4b4w4BmTk1+gsCUhf21Ykg=="],
 
     "@img/colour": ["@img/colour@1.1.0", "", {}, "sha512-Td76q7j57o/tLVdgS746cYARfSyxk8iEfRxewL9h4OMzYhbW4TAcppl0mT4eyqXddh6L/jwoM75mo7ixa/pCeQ=="],
 

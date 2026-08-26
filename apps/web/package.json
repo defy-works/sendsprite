@@ -18,7 +18,8 @@
     "db:dev": "bun run scripts/dev-db.ts",
     "worker": "bun run src/worker.ts",
     "db:studio": "drizzle-kit studio",
-    "auth:generate": "bunx auth@1.7.1 generate --config src/lib/auth.ts --output src/db/schema/auth.ts -y"
+    "auth:generate": "bunx auth@1.7.1 generate --config src/lib/auth.ts --output src/db/schema/auth.ts -y",
+    "icons": "bun run scripts/build-icons.ts"
   },
   "dependencies": {
     "@aws-sdk/client-sesv2": "^3.1117.0",
