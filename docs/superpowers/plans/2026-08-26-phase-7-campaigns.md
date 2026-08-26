@@ -121,7 +121,7 @@ Confirmed by reading the repo at `c6b39b4`:
 
 **`packages/shared`** (contracts and pure logic; published, so no `node:` imports outside `node.ts`)
 
-- `src/api/campaigns.ts` — `CampaignBlock` union, `CreateCampaignInput`, `UpdateCampaignInput`, `PublicCampaign`, `CampaignStatus`, audience/schedule inputs.
+- `src/api/campaigns.ts` — `CampaignBlock` union, `CreateCampaignInput`, `UpdateCampaignInput`, `CampaignObject`, `CampaignStatus`, audience/schedule inputs.
 - `src/campaign-render.ts` — `renderBlocks(blocks) → { html, text }`, `safeUrl(raw)`. Pure, no crypto, no DOM.
 - `src/api/unsubscribe-token.ts` — `signUnsubscribeToken` / `verifyUnsubscribeToken`. Uses `node:crypto`, so it is exported from `node.ts` only.
 
@@ -477,7 +477,7 @@ export const CampaignCounts = z.object({
 });
 export type CampaignCounts = z.infer<typeof CampaignCounts>;
 
-export const PublicCampaign = z.object({
+export const CampaignObject = z.object({
   id: z.string(),
   name: z.string(),
   bookId: z.string(),
@@ -493,7 +493,7 @@ export const PublicCampaign = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
 });
-export type PublicCampaign = z.infer<typeof PublicCampaign>;
+export type CampaignObject = z.infer<typeof CampaignObject>;
 
 /** What the audience card shows before anyone commits to sending. */
 export const AudiencePreview = z.object({
@@ -1223,7 +1223,7 @@ export interface CampaignActor {
 export async function listCampaignsPage(
   teamId: string,
   query: { limit?: number; cursor?: string; status?: CampaignStatus },
-): Promise<Result<{ data: PublicCampaign[]; nextCursor: string | null }>>;
+): Promise<Result<{ data: CampaignObject[]; nextCursor: string | null }>>;
 
 export async function getCampaign(
   teamId: string,
@@ -1233,13 +1233,13 @@ export async function getCampaign(
 export async function createCampaign(
   actor: CampaignActor,
   raw: unknown,
-): Promise<Result<PublicCampaign>>;
+): Promise<Result<CampaignObject>>;
 
 export async function updateCampaign(
   actor: CampaignActor,
   id: string,
   raw: unknown,
-): Promise<Result<PublicCampaign>>;
+): Promise<Result<CampaignObject>>;
 
 export async function deleteCampaign(
   actor: CampaignActor,
@@ -1247,7 +1247,7 @@ export async function deleteCampaign(
 ): Promise<Result<void>>;
 ```
 
-**Amendment after Task 4 shipped as `08224bc`.** `campaigns.book_id` and `domain_id` carry **no foreign key** — this schema has no `restrict` FK anywhere (26 cascade, 4 set null), and `deleteBook`/`deleteDomain` delete unconditionally without catching a violation, so `restrict` would have surfaced as an unhandled 500 on a Phase 6 screen. `set null` is unavailable because `PublicCampaign` types both ids as non-nullable. **Consequence you must honour: list and detail queries have to LEFT JOIN book and domain and render the missing side, and create/update must check both exist and belong to the caller's team.** A campaign whose book was deleted must not crash the list.
+**Amendment after Task 4 shipped as `08224bc`.** `campaigns.book_id` and `domain_id` carry **no foreign key** — this schema has no `restrict` FK anywhere (26 cascade, 4 set null), and `deleteBook`/`deleteDomain` delete unconditionally without catching a violation, so `restrict` would have surfaced as an unhandled 500 on a Phase 6 screen. `set null` is unavailable because `CampaignObject` types both ids as non-nullable. **Consequence you must honour: list and detail queries have to LEFT JOIN book and domain and render the missing side, and create/update must check both exist and belong to the caller's team.** A campaign whose book was deleted must not crash the list.
 
 **The domain check matters.** A campaign names a `domainId`; sending from an unverified domain fails at SES for every recipient. Check verification at create/update _and_ again when sending starts (a domain can be deleted or fail re-verification in between) — the same two-times-for-two-moments reasoning as the suppression check.
 

@@ -19,7 +19,7 @@ import { organization } from "./auth";
  * A fresh campaign's counts. `counts` is a cache rebuilt from
  * `emails`/`email_events` (Decision 8), never an incremented tally, so the
  * stored value starts as the honest all-zero answer rather than `{}` — the
- * REST layer returns it verbatim as `PublicCampaign.counts`, which the shared
+ * REST layer returns it verbatim as `CampaignObject.counts`, which the shared
  * contract types as nine required numbers.
  */
 export const ZERO_CAMPAIGN_COUNTS: CampaignCounts = {
@@ -58,7 +58,7 @@ export const ZERO_CAMPAIGN_COUNTS: CampaignCounts = {
  *   the moment someone tidies up an old audience. Deleting a list is not
  *   asking to forget having mailed it.
  * - `set null` is what `emails.domain_id` and `emails.template_id` do for
- *   exactly this tension, and it is unavailable here: `PublicCampaign` types
+ *   exactly this tension, and it is unavailable here: `CampaignObject` types
  *   `bookId` and `domainId` as non-nullable strings, so the columns cannot go
  *   nullable without changing the shared contract.
  *

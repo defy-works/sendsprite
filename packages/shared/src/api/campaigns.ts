@@ -374,7 +374,7 @@ export const CampaignCounts = z.object({
 export type CampaignCounts = z.infer<typeof CampaignCounts>;
 
 /** A campaign as the API returns it. */
-export const PublicCampaign = z.object({
+export const CampaignObject = z.object({
   id: z.string(),
   name: z.string(),
   bookId: z.string(),
@@ -391,7 +391,7 @@ export const PublicCampaign = z.object({
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });
-export type PublicCampaign = z.infer<typeof PublicCampaign>;
+export type CampaignObject = z.infer<typeof CampaignObject>;
 
 /**
  * What the audience card shows before anyone commits to sending.
