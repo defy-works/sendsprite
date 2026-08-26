@@ -26,7 +26,7 @@ import { injectPixel, wrapLinks } from "@/lib/tracking";
 import { Q } from "@/jobs/queues";
 import type { Enqueue } from "../domains";
 import { resolveSendingDomain } from "../emails";
-import { checkInstanceQuota, checkTeamCaps } from "../send-limits";
+import { checkAccountQuota, checkTeamCaps } from "../send-limits";
 import { unsubscribeLinks } from "../unsubscribe";
 import { selectEligible, type EligibleContact } from "./audience";
 
@@ -828,7 +828,7 @@ async function domainRefusal(
  *
  * **Neither check consumes anything.** Both are pure reads: `checkTeamCaps`
  * counts `emails` rows in `SEND_CONSUMING_STATUS` created inside the window
- * and compares `count + adding` against the cap; `checkInstanceQuota` counts
+ * and compares `count + adding` against the cap; `checkAccountQuota` counts
  * rows SES accepted (`sent_at`) in the trailing 24 h. Nothing is reserved and
  * nothing is decremented, so calling this per chunk and then failing to
  * materialise leaks no quota — a chunk that rolls back is simply not counted
@@ -859,7 +859,7 @@ async function capRefusal(
   if (adding <= 0) return null;
   const caps = await checkTeamCaps(teamId, adding, now);
   if (!caps.ok) return { code: caps.code, message: caps.message };
-  const quota = await checkInstanceQuota(adding, now);
+  const quota = await checkAccountQuota(teamId, adding, now);
   if (!quota.ok) return { code: quota.code, message: quota.message };
   return null;
 }

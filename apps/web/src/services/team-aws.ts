@@ -110,7 +110,7 @@ export async function updateTeamAws(
       );
     [row] = await db()
       .insert(teamAws)
-      .values({ teamId, ...(set as typeof teamAws.$inferInsert) })
+      .values({ ...(set as typeof teamAws.$inferInsert), teamId })
       .returning();
   }
   if (!row) throw new Error("team_aws write returned no row");

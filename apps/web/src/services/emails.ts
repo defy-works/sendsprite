@@ -24,7 +24,7 @@ import { Q } from "@/jobs/queues";
 import { recordEvent } from "./email-events";
 import { isSuppressed } from "./suppressions";
 import { getTemplate, renderTemplateRow } from "./templates";
-import { checkInstanceQuota, checkTeamCaps } from "./send-limits";
+import { checkAccountQuota, checkTeamCaps } from "./send-limits";
 import type { Domain, Enqueue } from "./domains";
 
 export interface SendContext {
@@ -269,7 +269,7 @@ export async function createEmail(
     );
   const caps = await checkTeamCaps(ctx.teamId, 1, now);
   if (!caps.ok) return fail(caps.code, caps.message);
-  const quota = await checkInstanceQuota(1, now);
+  const quota = await checkAccountQuota(ctx.teamId, 1, now);
   if (!quota.ok) return fail(quota.code, quota.message);
 
   const [ts] = await db()

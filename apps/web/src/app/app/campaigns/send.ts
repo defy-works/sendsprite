@@ -145,12 +145,12 @@ export interface TeamAllowance {
   monthlyUsed: number;
   /** Exclusive end of the monthly window: when the allowance renews. */
   monthlyUntil: Date;
-  instanceQuota: number | null;
-  instanceUsed: number;
+  accountQuota: number | null;
+  accountUsed: number;
 }
 
 export interface Allowance {
-  kind: "daily" | "monthly" | "instance";
+  kind: "daily" | "monthly" | "account";
   /** How the dialog names it, mid-sentence. */
   label: string;
   limit: number;
@@ -180,15 +180,6 @@ export interface CapPreflight {
  * announcement into two, hours or weeks apart, for reasons the recipients
  * cannot see. So the comparison is made here, before anything leaves, and it
  * is made against the same three limits `capRefusal` uses.
- *
- * ## Why the instance quota is sometimes not measured
- *
- * `usageSnapshot` skips the instance-wide scan whenever the team has a cap of
- * its own, and reports `instanceUsed: 0` in that case. Believing that would
- * print "SES 24-hour quota: 0 of 50 000 used" on a busy instance — a confident
- * false number, which is worse than no number. So the instance allowance is
- * included **only** when neither team cap is set, which is exactly when the
- * snapshot measured it.
  *
  * ## The remaining allowance is an upper bound, not a promise
  *
@@ -235,15 +226,16 @@ export function capPreflight(
     usage.monthlyUsed,
     formatWhen(usage.monthlyUntil),
   );
-  // Only when the snapshot actually counted it — see the doc comment.
-  if (usage.dailyLimit === null && usage.monthlyLimit === null)
-    add(
-      "instance",
-      "this instance's 24-hour SES quota",
-      usage.instanceQuota,
-      usage.instanceUsed,
-      null,
-    );
+  // Always measured now that it is scoped to the team: it used to be an
+  // instance-wide scan the snapshot skipped whenever a team cap was set,
+  // reporting 0 and forcing this caller to guess when to believe it.
+  add(
+    "account",
+    "your AWS account's 24-hour SES quota",
+    usage.accountQuota,
+    usage.accountUsed,
+    null,
+  );
 
   allowances.sort((a, b) => a.remaining - b.remaining);
   const exceeded = allowances.find((a) => eligible > a.remaining) ?? null;

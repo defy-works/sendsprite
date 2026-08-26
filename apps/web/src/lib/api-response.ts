@@ -136,11 +136,11 @@ export async function rateHeaders(
       ),
       "x-ratelimit-reset": String(Math.floor(u.monthlyUntil.getTime() / 1000)),
     };
-  if (u.instanceQuota != null)
+  if (u.accountQuota != null)
     return {
-      "x-ratelimit-limit": String(u.instanceQuota),
+      "x-ratelimit-limit": String(u.accountQuota),
       "x-ratelimit-remaining": String(
-        Math.max(0, u.instanceQuota - u.instanceUsed),
+        Math.max(0, u.accountQuota - u.accountUsed),
       ),
     };
   return {

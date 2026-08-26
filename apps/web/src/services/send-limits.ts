@@ -1,10 +1,10 @@
 import { and, count, eq, gte, inArray, isNotNull, lt } from "drizzle-orm";
 import { SEND_CONSUMING_STATUS, type ErrorCode } from "@sendsprite/shared";
 import { db } from "@/db";
-import { emails, sendRateState, teamSettings } from "@/db/schema";
+import { emails, teamSendRate, teamSettings } from "@/db/schema";
 import { billingEnabled } from "./billing/config";
 import { billingRow, entitlementFrom } from "./billing/plans";
-import { getInstanceSettings } from "./instance-settings";
+import { getTeamAws } from "./team-aws";
 
 export type TokenResult = { ok: true } | { ok: false; retryInMs: number };
 export type CapResult =
@@ -19,25 +19,30 @@ export type CapResult =
 const ACTIVE = SEND_CONSUMING_STATUS;
 
 /**
- * One token = one SES SendEmail. Refills continuously at MaxSendRate/s with
- * burst = MaxSendRate (min 1), so an idle bucket never stores more than one
- * second of sends. The singleton row is read `FOR UPDATE` inside the
- * transaction, which serialises concurrent takers across workers.
+ * One token = one SES SendEmail, for one team. Refills continuously at that
+ * team's MaxSendRate/s with burst = MaxSendRate (min 1), so an idle bucket
+ * never stores more than one second of sends. The team's row is read
+ * `FOR UPDATE` inside the transaction, which serialises concurrent takers
+ * across workers **for that team** — one tenant's volume no longer drains the
+ * bucket every other tenant draws from.
  */
-export async function takeSesToken(now = new Date()): Promise<TokenResult> {
-  const s = await getInstanceSettings();
-  const rate = Math.max(1, s.sesMaxSendRate ?? 1);
+export async function takeSesToken(
+  teamId: string,
+  now = new Date(),
+): Promise<TokenResult> {
+  const aws = await getTeamAws(teamId);
+  const rate = Math.max(1, aws?.sesMaxSendRate ?? 1);
   return db().transaction(async (tx) => {
     await tx
-      .insert(sendRateState)
-      .values({ id: 1, tokens: rate, refilledAt: now })
+      .insert(teamSendRate)
+      .values({ teamId, tokens: rate, refilledAt: now })
       .onConflictDoNothing();
     const [row] = await tx
       .select()
-      .from(sendRateState)
-      .where(eq(sendRateState.id, 1))
+      .from(teamSendRate)
+      .where(eq(teamSendRate.teamId, teamId))
       .for("update");
-    if (!row) throw new Error("send_rate_state singleton missing");
+    if (!row) throw new Error("team_send_rate row missing");
     // A lagging clock (another worker's `now` behind the stamp) earns nothing
     // and must not rewind the stamp, or the next taker double-credits.
     const stamp = Math.max(now.getTime(), row.refilledAt.getTime());
@@ -45,9 +50,9 @@ export async function takeSesToken(now = new Date()): Promise<TokenResult> {
     const tokens = Math.min(rate, row.tokens + elapsed * rate);
     const ok = tokens >= 1;
     await tx
-      .update(sendRateState)
+      .update(teamSendRate)
       .set({ tokens: ok ? tokens - 1 : tokens, refilledAt: new Date(stamp) })
-      .where(eq(sendRateState.id, 1));
+      .where(eq(teamSendRate.teamId, teamId));
     return ok
       ? { ok: true }
       : { ok: false, retryInMs: Math.ceil(((1 - tokens) / rate) * 1000) };
@@ -55,12 +60,15 @@ export async function takeSesToken(now = new Date()): Promise<TokenResult> {
 }
 
 /** Empties the bucket as of `now`; tests use it to control the clock. */
-export async function resetRateForTests(now: Date): Promise<void> {
+export async function resetRateForTests(
+  teamId: string,
+  now: Date,
+): Promise<void> {
   await db()
-    .insert(sendRateState)
-    .values({ id: 1, tokens: 0, refilledAt: now })
+    .insert(teamSendRate)
+    .values({ teamId, tokens: 0, refilledAt: now })
     .onConflictDoUpdate({
-      target: sendRateState.id,
+      target: teamSendRate.teamId,
       set: { tokens: 0, refilledAt: now },
     });
 }
@@ -221,33 +229,41 @@ export async function checkTeamCaps(
   return { ok: true };
 }
 
-/** Sends SES accepted (`sent_at`) instance-wide in the trailing 24 h. */
-async function countSentLast24h(now: Date) {
+/** Sends SES accepted (`sent_at`) for one team in the trailing 24 h. */
+async function countSentLast24h(teamId: string, now: Date) {
   const since = new Date(now.getTime() - 24 * 3600 * 1000);
   const [row] = await db()
     .select({ n: count() })
     .from(emails)
-    .where(and(isNotNull(emails.sentAt), gte(emails.sentAt, since)));
+    .where(
+      and(
+        eq(emails.teamId, teamId),
+        isNotNull(emails.sentAt),
+        gte(emails.sentAt, since),
+      ),
+    );
   return Number(row?.n ?? 0);
 }
 
 /**
- * SES Max24HourSend is account-wide: count every send across the instance in
- * the trailing 24 h (`sent_at`, which is set once SES accepted the message).
- * In-flight `sending` rows have no `sent_at` yet and are not counted, so this
- * too is a soft cap; SES itself is the hard one.
+ * SES Max24HourSend is account-wide, and every team now has its own AWS
+ * account — so "account-wide" means that team's sends in the trailing 24 h
+ * (`sent_at`, set once SES accepted the message). In-flight `sending` rows
+ * have no `sent_at` yet and are not counted, so this too is a soft cap; SES
+ * itself is the hard one.
  */
-export async function checkInstanceQuota(
+export async function checkAccountQuota(
+  teamId: string,
   adding: number,
   now = new Date(),
 ): Promise<CapResult> {
-  const s = await getInstanceSettings();
-  if (!s.sesDailyQuota) return { ok: true };
-  return (await countSentLast24h(now)) + adding > s.sesDailyQuota
+  const aws = await getTeamAws(teamId);
+  if (!aws?.sesDailyQuota) return { ok: true };
+  return (await countSentLast24h(teamId, now)) + adding > aws.sesDailyQuota
     ? {
         ok: false,
         code: "daily_quota_exceeded",
-        message: `SES 24-hour quota of ${s.sesDailyQuota} reached.`,
+        message: `SES 24-hour quota of ${aws.sesDailyQuota} reached.`,
       }
     : { ok: true };
 }
@@ -265,23 +281,25 @@ export interface UsageSnapshot {
   monthlyFrom: Date;
   /** Exclusive end of that window. */
   monthlyUntil: Date;
-  /** SES Max24HourSend, null when unknown (AWS not connected). */
-  instanceQuota: number | null;
-  /** Instance-wide sends in the trailing 24 h. */
-  instanceUsed: number;
+  /** The team's SES Max24HourSend, null when AWS is not connected. */
+  accountQuota: number | null;
+  /** That team's sends in the trailing 24 h. */
+  accountUsed: number;
 }
 
 /**
- * What the REST rate-limit headers report. The instance-wide count (a scan of
- * every team's sends) is skipped whenever the team has a cap of its own.
+ * What the REST rate-limit headers report. The account count used to be a
+ * scan of every team's sends, skipped whenever the team had a cap of its own
+ * — which meant it sometimes reported 0 and callers had to know not to
+ * believe it. Scoped to the team it is an indexed lookup, so it is always
+ * real.
  */
 export async function usageSnapshot(
   teamId: string,
   now = new Date(),
 ): Promise<UsageSnapshot> {
   const caps = await resolveTeamCaps(teamId, now);
-  const s = await getInstanceSettings();
-  const capped = caps.daily != null || caps.monthly != null;
+  const aws = await getTeamAws(teamId);
   return {
     dailyLimit: caps.daily,
     dailyUsed:
@@ -293,7 +311,7 @@ export async function usageSnapshot(
         : 0,
     monthlyFrom: caps.monthlyFrom,
     monthlyUntil: caps.monthlyUntil,
-    instanceQuota: s.sesDailyQuota ?? null,
-    instanceUsed: capped ? 0 : await countSentLast24h(now),
+    accountQuota: aws?.sesDailyQuota ?? null,
+    accountUsed: await countSentLast24h(teamId, now),
   };
 }
