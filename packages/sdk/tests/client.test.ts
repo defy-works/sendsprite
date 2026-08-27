@@ -335,7 +335,10 @@ describe("Sendsprite client core", () => {
     vi.stubEnv("SENDSPRITE_URL", undefined);
     try {
       expect(() => new Sendsprite()).toThrow(/apiKey/);
-      expect(() => new Sendsprite({ apiKey: "k" })).toThrow(/baseUrl/);
+      // No URL anywhere means the hosted instance, not an error.
+      expect(new Sendsprite({ apiKey: "k" }).baseUrl).toBe(
+        "https://sendsprite.com",
+      );
     } finally {
       vi.unstubAllEnvs();
     }

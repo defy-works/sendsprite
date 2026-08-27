@@ -6,7 +6,7 @@
  * real ones up and is the only module that reads `process`.
  */
 import { Command } from "commander";
-import { SDK_VERSION } from "../client";
+import { DEFAULT_BASE_URL, SDK_VERSION } from "../client";
 import { SendspriteError } from "../errors";
 import type { Sendsprite } from "../index";
 import { registerDomains } from "./commands/domains";
@@ -80,32 +80,35 @@ const fromEnv = (value: string | undefined): string | undefined => {
  * Resolving them field by field means `SENDSPRITE_URL=https://evil.test` on a
  * logged-in machine sends the saved `ss_live_` key — a long-lived credential
  * the operator never re-typed — to a host of the attacker's choosing. So a
- * half-set environment is an error naming the missing variable, never a
- * silent fallback to the file for the other half.
+ * URL in the environment without a key is an error, never a silent fallback
+ * to the file for the other half. A key on its own is fine: it goes to
+ * `SENDSPRITE_URL` if set, else to the hosted instance — the same rule as the
+ * SDK — and the saved file is not consulted at all.
  */
 export function resolveCredentials(deps: CliDeps): Credentials {
   const url = fromEnv(deps.env.SENDSPRITE_URL);
   const apiKey = fromEnv(deps.env.SENDSPRITE_API_KEY);
-  if (url !== undefined || apiKey !== undefined) {
-    if (url === undefined) {
-      throw new Error(
-        "SENDSPRITE_API_KEY is set but SENDSPRITE_URL is not. Set both, or unset SENDSPRITE_API_KEY to use the saved credentials — the two are never mixed.",
-      );
-    }
-    if (apiKey === undefined) {
-      throw new Error(
-        "SENDSPRITE_URL is set but SENDSPRITE_API_KEY is not. Set both, or unset SENDSPRITE_URL to use the saved credentials — the two are never mixed.",
-      );
-    }
+  if (url !== undefined && apiKey === undefined) {
+    throw new Error(
+      "SENDSPRITE_URL is set but SENDSPRITE_API_KEY is not. Set both, or unset SENDSPRITE_URL to use the saved credentials — the two are never mixed.",
+    );
+  }
+  if (apiKey !== undefined) {
     return {
-      config: { url: normalizeInstanceUrl(url, "SENDSPRITE_URL"), apiKey },
+      config: {
+        url:
+          url === undefined
+            ? DEFAULT_BASE_URL
+            : normalizeInstanceUrl(url, "SENDSPRITE_URL"),
+        apiKey,
+      },
       source: "the environment",
     };
   }
   const file = loadConfig(deps.configDir);
   if (!file) {
     throw new Error(
-      "Not logged in. Run `sendsprite login --url <instance> --api-key <key>`, or set both SENDSPRITE_URL and SENDSPRITE_API_KEY.",
+      "Not logged in. Run `sendsprite login --api-key <key>` (add `--url <instance>` for a self-hosted Sendsprite), or set SENDSPRITE_API_KEY.",
     );
   }
   return { config: file, source: "the config file" };

@@ -12,11 +12,11 @@ agent genuinely needs to manage domains.
 
 ## Configuration
 
-| Variable              | Description                                                                    |
-| --------------------- | ------------------------------------------------------------------------------ |
-| `SENDSPRITE_URL`      | **Required.** Your instance, e.g. `https://mail.example.com`.                  |
-| `SENDSPRITE_API_KEY`  | **Required.** An API key (`ss_live_…`).                                        |
-| `SENDSPRITE_MCP_HOST` | `--http` bind address. Defaults to `127.0.0.1`; read below before changing it. |
+| Variable              | Description                                                                                    |
+| --------------------- | ---------------------------------------------------------------------------------------------- |
+| `SENDSPRITE_API_KEY`  | **Required.** An API key (`ss_live_…`).                                                        |
+| `SENDSPRITE_URL`      | A self-hosted instance, e.g. `https://mail.example.com`. Defaults to `https://sendsprite.com`. |
+| `SENDSPRITE_MCP_HOST` | `--http` bind address. Defaults to `127.0.0.1`; read below before changing it.                 |
 
 ## stdio (Claude Desktop, Claude Code)
 
@@ -27,7 +27,6 @@ agent genuinely needs to manage domains.
       "command": "npx",
       "args": ["-y", "@sendsprite/mcp"],
       "env": {
-        "SENDSPRITE_URL": "https://mail.example.com",
         "SENDSPRITE_API_KEY": "ss_live_..."
       }
     }
@@ -43,9 +42,7 @@ stream.
 ## Streamable HTTP
 
 ```bash
-SENDSPRITE_URL=https://mail.example.com \
-SENDSPRITE_API_KEY=ss_live_... \
-npx @sendsprite/mcp --http 8787
+SENDSPRITE_API_KEY=ss_live_... npx @sendsprite/mcp --http 8787
 ```
 
 Serves `POST /mcp` (default port 3333). Stateless: one server and one

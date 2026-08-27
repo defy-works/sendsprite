@@ -1,3 +1,4 @@
+import { DEFAULT_BASE_URL } from "sendsprite";
 import { MCP_VERSION } from "./server";
 
 export const DEFAULT_PORT = 3333;
@@ -14,8 +15,9 @@ Usage
   sendsprite-mcp --http [port]   listen for POST ${MCP_PATH} (default port ${DEFAULT_PORT})
 
 Environment
-  SENDSPRITE_URL       required — your instance, e.g. https://mail.acme.com
   SENDSPRITE_API_KEY   required — an API key with the permissions the tools need
+  SENDSPRITE_URL       a self-hosted instance, e.g. https://mail.acme.com
+                       (default ${DEFAULT_BASE_URL})
   SENDSPRITE_MCP_HOST  --http bind address (default ${DEFAULT_HOST}; anything
                        else exposes an unauthenticated endpoint holding your key)
 `;

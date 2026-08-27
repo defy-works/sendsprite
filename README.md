@@ -40,7 +40,7 @@ import { Sendsprite } from "sendsprite";
 
 const sendsprite = new Sendsprite({
   apiKey: process.env.SENDSPRITE_API_KEY, // ss_live_…
-  baseUrl: "https://mail.acme.com", // your instance
+  // baseUrl: "https://mail.acme.com", // only for a self-hosted instance
 });
 
 const { id } = await sendsprite.emails.send({

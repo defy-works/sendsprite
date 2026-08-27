@@ -6,13 +6,6 @@ export const metadata = {
 
 # MCP server
 
-> **Not yet published to npm.** The server is built and working — it ships
-> in the repository as `packages/mcp` — but the package has not been
-> released, so `npx @sendsprite/mcp` will not resolve yet. Until it does,
-> build it from the repository (`bun run --filter @sendsprite/mcp build`) and
-> run `node packages/mcp/dist/bin.js` wherever this page says
-> `npx @sendsprite/mcp`. Everything below is the shipped behaviour.
-
 `@sendsprite/mcp` exposes your instance to an MCP client — Claude Desktop,
 Claude Code, or anything else that speaks the Model Context Protocol — so an
 agent can send a test email, look up why a message bounced, or read your
@@ -32,7 +25,6 @@ domains and webhooks, or to use the template and contact tools — those need a
       "command": "npx",
       "args": ["-y", "@sendsprite/mcp"],
       "env": {
-        "SENDSPRITE_URL": "https://mail.example.com",
         "SENDSPRITE_API_KEY": "ss_live_..."
       }
     }
@@ -40,17 +32,16 @@ domains and webhooks, or to use the template and contact tools — those need a
 }
 ```
 
-Both environment variables are required; the process exits 1 naming whichever
-is missing. The server logs to stderr only — it holds the real stdout handle
-privately and points `process.stdout.write` at stderr — so a dependency that
-prints a banner cannot corrupt the stdio protocol stream.
+`SENDSPRITE_API_KEY` is required; the process exits 1 without it. Add
+`SENDSPRITE_URL` only for a self-hosted instance — it defaults to
+`https://sendsprite.com`. The server logs to stderr only — it holds the real
+stdout handle privately and points `process.stdout.write` at stderr — so a
+dependency that prints a banner cannot corrupt the stdio protocol stream.
 
 ## HTTP mode
 
 ```bash
-SENDSPRITE_URL=https://mail.example.com \
-SENDSPRITE_API_KEY=ss_live_... \
-npx @sendsprite/mcp --http 8787
+SENDSPRITE_API_KEY=ss_live_... npx @sendsprite/mcp --http 8787
 ```
 
 Serves the streamable HTTP transport at `POST /mcp`, stateless — a new

@@ -15,7 +15,7 @@ const TABS: Tab[] = [
     id: "curl",
     label: "curl",
     file: "shell",
-    code: `curl https://mail.example.com/api/v1/emails \\
+    code: `curl https://sendsprite.com/api/v1/emails \\
   -H "Authorization: Bearer ss_live_..." \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -32,7 +32,6 @@ const TABS: Tab[] = [
     code: `import { Sendsprite } from "sendsprite";
 
 const sendsprite = new Sendsprite({
-  baseUrl: "https://mail.example.com",
   apiKey: process.env.SENDSPRITE_API_KEY,
 });
 
@@ -61,7 +60,7 @@ function Welcome({ name }: { name: string }) {
   );
 }
 
-const sendsprite = new Sendsprite({ baseUrl, apiKey });
+const sendsprite = new Sendsprite({ apiKey });
 await sendsprite.emails.send({
   from: "Acme <hello@example.com>",
   to: ["you@example.com"],
@@ -73,9 +72,7 @@ await sendsprite.emails.send({
     id: "cli",
     label: "CLI",
     file: "shell",
-    code: `npx sendsprite login \\
-  --url https://mail.example.com \\
-  --api-key ss_live_...
+    code: `npx sendsprite login --api-key ss_live_...
 
 npx sendsprite emails send \\
   --from "Acme <hello@example.com>" \\

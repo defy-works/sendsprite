@@ -6,23 +6,17 @@ export const metadata = {
 
 # CLI
 
-> **Not yet published to npm.** The CLI is built and working — it ships
-> inside the `sendsprite` package as its `bin` — but that package has not
-> been released, so `npx sendsprite` will not resolve yet. Until it does,
-> build the package from the repository and run `node packages/sdk/dist/cli.js`
-> wherever this page says `npx sendsprite`. Everything below is the shipped
-> behaviour.
-
 `npx sendsprite` is the `sendsprite` npm package's binary — no separate
 install, and the same client underneath.
 
 ## login
 
 ```bash
-npx sendsprite login \
-  --url https://mail.example.com \
-  --api-key ss_live_...
+npx sendsprite login --api-key ss_live_...
 ```
+
+That logs into the hosted instance at `https://sendsprite.com`. Self-hosting?
+Add `--url https://mail.example.com`; the origin is saved alongside the key.
 
 ```
 Logged in to Acme as ci (ss_live_ab…)
@@ -35,9 +29,10 @@ first of `$SENDSPRITE_CONFIG_DIR`, `$XDG_CONFIG_HOME/sendsprite`,
 `%APPDATA%\sendsprite` (Windows only) and `~/.config/sendsprite` that
 applies.
 
-`SENDSPRITE_URL` and `SENDSPRITE_API_KEY` work instead of logging in — handy
-in CI. Any command other than `login` fails with a message pointing at
-`sendsprite login` when neither is available.
+`SENDSPRITE_API_KEY` works instead of logging in — handy in CI — with
+`SENDSPRITE_URL` alongside it for a self-hosted instance. Any command other
+than `login` fails with a message pointing at `sendsprite login` when neither
+is available.
 
 ## whoami
 

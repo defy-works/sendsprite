@@ -2,10 +2,16 @@ import { SendspriteError, type SendspriteErrorCode } from "./errors";
 
 export const SDK_VERSION = "0.3.0"; // kept in sync with package.json by the release pipeline
 
+/** The hosted instance, used when neither `baseUrl` nor `SENDSPRITE_URL` is given. */
+export const DEFAULT_BASE_URL = "https://sendsprite.com";
+
 export interface SendspriteOptions {
   /** `ss_live_…` key; defaults to `SENDSPRITE_API_KEY`. */
   apiKey?: string;
-  /** Your instance, e.g. `https://mail.acme.com`; defaults to `SENDSPRITE_URL`. */
+  /**
+   * Your instance, e.g. `https://mail.acme.com`; defaults to `SENDSPRITE_URL`,
+   * then to the hosted `https://sendsprite.com`.
+   */
   baseUrl?: string;
   /** Retries on 429/5xx/network errors (default 2). */
   maxRetries?: number;
@@ -45,15 +51,11 @@ export class HttpClient {
 
   constructor(options: SendspriteOptions = {}) {
     const apiKey = options.apiKey ?? readEnv("SENDSPRITE_API_KEY");
-    const baseUrl = options.baseUrl ?? readEnv("SENDSPRITE_URL");
+    const baseUrl =
+      options.baseUrl ?? readEnv("SENDSPRITE_URL") ?? DEFAULT_BASE_URL;
     if (!apiKey) {
       throw new Error(
         "Sendsprite: apiKey is required (or set SENDSPRITE_API_KEY).",
-      );
-    }
-    if (!baseUrl) {
-      throw new Error(
-        "Sendsprite: baseUrl is required (or set SENDSPRITE_URL).",
       );
     }
     this.apiKey = apiKey;

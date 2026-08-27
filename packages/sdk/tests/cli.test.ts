@@ -247,7 +247,8 @@ describe("cli", () => {
   });
 
   it("login without flags on a non-TTY explains what is missing", async () => {
-    await expect(run(["login"])).rejects.toThrow(/--url/);
+    // The URL has a default; only the key can be missing.
+    await expect(run(["login"])).rejects.toThrow(/--api-key/);
   });
 
   it("login normalizes the URL it saves and rejects unusable ones", async () => {
@@ -283,22 +284,33 @@ describe("cli", () => {
     const asked: { question: string; mask: boolean }[] = [];
     const prompt = (question: string, opts?: { mask?: boolean }) => {
       asked.push({ question, mask: opts?.mask === true });
-      return Promise.resolve(
-        question.startsWith("API key") ? "ss_live_typed" : "https://typed.io",
-      );
+      return Promise.resolve("ss_live_typed");
     };
     const d = dir();
     const { out } = await run(["login"], fakeClient(), d, {}, prompt);
     expect(asked).toEqual([
-      { question: "Instance URL: ", mask: false },
-      // The whole point of prompting instead of passing --api-key.
+      // Only the key: the URL defaults to the hosted instance, never a prompt.
+      // Masking is the whole point of prompting instead of passing --api-key.
       { question: "API key: ", mask: true },
     ]);
     expect(loadConfig(d)).toEqual({
-      url: "https://typed.io",
+      url: "https://sendsprite.com",
       apiKey: "ss_live_typed",
     });
     expect(out).not.toContain("ss_live_typed");
+  });
+
+  it("login --url overrides the hosted default for a self-hosted instance", async () => {
+    const d = dir();
+    await run(
+      ["login", "--url", "https://mail.acme.com/api/v1", "--api-key", "k"],
+      fakeClient(),
+      d,
+    );
+    expect(loadConfig(d)).toEqual({
+      url: "https://mail.acme.com",
+      apiKey: "k",
+    });
   });
 
   it("login mentions that --api-key is visible to other processes", () => {
@@ -350,9 +362,15 @@ describe("cli", () => {
         SENDSPRITE_URL: "https://evil.test",
       }),
     ).rejects.toThrow(/SENDSPRITE_API_KEY is not/);
-    await expect(
-      run(["whoami"], fakeClient(), d, { SENDSPRITE_API_KEY: "ss_live_env" }),
-    ).rejects.toThrow(/SENDSPRITE_URL is not/);
+    // A key alone is the operator's own, freshly typed: it goes to the hosted
+    // instance, and the saved file is not consulted.
+    const keyOnly = await run(["whoami"], fakeClient(), d, {
+      SENDSPRITE_API_KEY: "ss_live_env",
+    });
+    expect(keyOnly.created[0]).toEqual({
+      url: "https://sendsprite.com",
+      apiKey: "ss_live_env",
+    });
     // Nothing was ever built, so nothing could have been sent.
     const half = await run(["whoami"], fakeClient(), d, {
       SENDSPRITE_URL: "https://evil.test",

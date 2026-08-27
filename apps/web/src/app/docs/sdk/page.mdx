@@ -22,18 +22,20 @@ ESM and CJS builds ship side by side, Node 20+.
 import { Sendsprite } from "sendsprite";
 
 const sendsprite = new Sendsprite({
-  baseUrl: "https://mail.acme.com",
   apiKey: process.env.SENDSPRITE_API_KEY,
 });
 ```
 
-| Option       | Default              | Meaning                                              |
-| ------------ | -------------------- | ---------------------------------------------------- |
-| `apiKey`     | `SENDSPRITE_API_KEY` | The `ss_live_…` secret.                              |
-| `baseUrl`    | `SENDSPRITE_URL`     | Your instance origin; `/api/v1` is appended for you. |
-| `maxRetries` | `2`                  | Retries on 429, 5xx and network errors.              |
-| `timeoutMs`  | `30000`              | Per-request timeout.                                 |
-| `fetch`      | `globalThis.fetch`   | Custom fetch implementation.                         |
+That talks to the hosted instance. Self-hosting? Pass
+`baseUrl: "https://mail.acme.com"` or set `SENDSPRITE_URL`.
+
+| Option       | Default                                         | Meaning                                              |
+| ------------ | ----------------------------------------------- | ---------------------------------------------------- |
+| `apiKey`     | `SENDSPRITE_API_KEY`                            | The `ss_live_…` secret.                              |
+| `baseUrl`    | `SENDSPRITE_URL`, else `https://sendsprite.com` | Your instance origin; `/api/v1` is appended for you. |
+| `maxRetries` | `2`                                             | Retries on 429, 5xx and network errors.              |
+| `timeoutMs`  | `30000`                                         | Per-request timeout.                                 |
+| `fetch`      | `globalThis.fetch`                              | Custom fetch implementation.                         |
 
 Both credentials fall back to the environment, so `new Sendsprite()` is
 usually enough. A missing one throws immediately rather than at the first

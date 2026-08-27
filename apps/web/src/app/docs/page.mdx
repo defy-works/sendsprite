@@ -30,7 +30,7 @@ A key is either `full` (everything) or `sending_only` (send and read your own
 Authenticate with `Authorization: Bearer <key>`.
 
 ```bash
-curl https://mail.example.com/api/v1/emails \
+curl https://sendsprite.com/api/v1/emails \
   -H "Authorization: Bearer ss_live_..." \
   -H "Content-Type: application/json" \
   -d '{
@@ -51,7 +51,6 @@ The same call with the SDK:
 import { Sendsprite } from "sendsprite";
 
 const sendsprite = new Sendsprite({
-  baseUrl: "https://mail.example.com",
   apiKey: process.env.SENDSPRITE_API_KEY,
 });
 
@@ -63,9 +62,10 @@ const { id } = await sendsprite.emails.send({
 });
 ```
 
-`baseUrl` and `apiKey` fall back to `SENDSPRITE_URL` and
-`SENDSPRITE_API_KEY`, so in most apps the constructor takes no arguments at
-all.
+`apiKey` falls back to `SENDSPRITE_API_KEY`, so in most apps the constructor
+takes no arguments at all. Requests go to the hosted instance at
+`https://sendsprite.com`; self-hosting, pass `baseUrl` (or set
+`SENDSPRITE_URL`).
 
 ## 3. Watch it land
 
@@ -75,7 +75,7 @@ the events your instance records for it — `queued`, `sent`, `delivered`,
 `failed` and `cancelled`. The same timeline is available over the API:
 
 ```bash
-curl https://mail.example.com/api/v1/emails/em_... \
+curl https://sendsprite.com/api/v1/emails/em_... \
   -H "Authorization: Bearer ss_live_..."
 ```
 

@@ -190,8 +190,9 @@ async function main() {
 
   let client: Sendsprite;
   try {
-    // Reads SENDSPRITE_URL / SENDSPRITE_API_KEY and throws naming whichever
-    // is missing, which is nearly the only configuration this binary has.
+    // Reads SENDSPRITE_API_KEY (required) and SENDSPRITE_URL (defaults to
+    // the hosted instance), which is nearly the only configuration this
+    // binary has.
     client = new Sendsprite();
   } catch (e) {
     log(message(e));

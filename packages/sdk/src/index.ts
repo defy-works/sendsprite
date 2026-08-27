@@ -3,6 +3,7 @@ export {
   type SendspriteOptions,
   type RequestOptions,
   SDK_VERSION,
+  DEFAULT_BASE_URL,
 } from "./client";
 export type { StreamOptions, StreamHandle } from "./stream";
 export type { Emails } from "./resources/emails";

@@ -15,22 +15,22 @@ import { Sendsprite } from "sendsprite";
 
 const sendsprite = new Sendsprite({
   apiKey: process.env.SENDSPRITE_API_KEY, // ss_live_…
-  baseUrl: "https://mail.acme.com", // your instance
 });
 ```
 
-`apiKey` and `baseUrl` fall back to the `SENDSPRITE_API_KEY` and
-`SENDSPRITE_URL` environment variables.
+That talks to the hosted instance at `https://sendsprite.com`. Self-hosting?
+Pass `baseUrl: "https://mail.acme.com"` (or set `SENDSPRITE_URL`). `apiKey`
+falls back to the `SENDSPRITE_API_KEY` environment variable.
 
 ### Options
 
-| Option       | Default              | Description                                  |
-| ------------ | -------------------- | -------------------------------------------- |
-| `apiKey`     | `SENDSPRITE_API_KEY` | API key with the permissions the call needs. |
-| `baseUrl`    | `SENDSPRITE_URL`     | Instance origin; `/api/v1` is appended.      |
-| `maxRetries` | `2`                  | Retries on 429, 5xx and network errors.      |
-| `timeoutMs`  | `30000`              | Per-request timeout.                         |
-| `fetch`      | `globalThis.fetch`   | Custom fetch implementation.                 |
+| Option       | Default                                         | Description                                  |
+| ------------ | ----------------------------------------------- | -------------------------------------------- |
+| `apiKey`     | `SENDSPRITE_API_KEY`                            | API key with the permissions the call needs. |
+| `baseUrl`    | `SENDSPRITE_URL`, else `https://sendsprite.com` | Instance origin; `/api/v1` is appended.      |
+| `maxRetries` | `2`                                             | Retries on 429, 5xx and network errors.      |
+| `timeoutMs`  | `30000`                                         | Per-request timeout.                         |
+| `fetch`      | `globalThis.fetch`                              | Custom fetch implementation.                 |
 
 ### Errors
 
