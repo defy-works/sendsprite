@@ -130,9 +130,15 @@ export function EventPicker({
             : `${chosen.length} of ${WEBHOOK_EVENT_TYPES.length} selected`}
         </button>
 
+        {/* `hidden` as a class, not the attribute: `display:grid` from the
+            grid utility wins over the attribute's UA `display:none`, and the
+            fold would not fold. The inputs stay mounted either way — they are
+            the form's fields. */}
         <div
-          hidden={!open}
-          className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3"
+          className={cn(
+            "gap-2 sm:grid-cols-2 lg:grid-cols-3",
+            open ? "grid" : "hidden",
+          )}
         >
           {WEBHOOK_EVENT_TYPES.map((t) => (
             <Checkbox
