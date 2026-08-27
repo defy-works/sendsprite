@@ -1,0 +1,152 @@
+export const metadata = {
+  title: "Privacy Policy",
+  description:
+    "What personal data the hosted Sendsprite service at sendsprite.com collects, why, who processes it, how long it is kept, and your rights.",
+};
+
+# Privacy Policy
+
+**Effective 28 August 2026.** This policy explains how **defy.works** ("we",
+"us") handles personal data on the hosted Sendsprite service at
+**sendsprite.com**. It is written to be read in one sitting; if anything is
+unclear, ask at [hello@defy.works](mailto:hello@defy.works).
+
+## Two kinds of data, two roles
+
+The Service handles personal data in two capacities, and the distinction
+matters for what we do with it and who you should contact.
+
+- **Account data** — information about you and your team as users of the
+  Service. Here we decide why and how the data is processed: we are the
+  **controller**.
+- **Customer data** — the recipients, contacts, email content and events that
+  you put into the Service in order to send email. Here you decide why the
+  data is processed and we act on your instructions: you are the controller and
+  we are your **processor**. If you are a recipient of an email sent through
+  Sendsprite and want to know why you received it or have it stop, contact the
+  sender; they are the ones holding your consent.
+
+## Self-hosted instances
+
+Sendsprite is open source. This policy covers only the instance we run at
+sendsprite.com. An instance run by anyone else is that operator's
+responsibility, and we receive no data from it.
+
+## Account data we collect
+
+| Data                                                                   | Where it comes from                    | Why                                                           |
+| ---------------------------------------------------------------------- | -------------------------------------- | ------------------------------------------------------------- |
+| Name, email address, password hash                                     | Sign-up form                           | Creating and securing your account                            |
+| Google or GitHub profile (id, email, name, avatar)                     | The provider, when you sign in with it | Signing you in without a password                             |
+| Session IP address and user agent                                      | Your browser or client                 | Keeping you signed in, spotting stolen sessions               |
+| Audit log (action, actor, IP, user agent, time)                        | Actions in the dashboard and API       | Letting team admins see who changed what; abuse investigation |
+| Team name, members, invitations, settings                              | You and your team                      | Running the team                                              |
+| API key names and hashed secrets                                       | Keys you create                        | Authenticating API, SMTP, CLI and MCP requests                |
+| AWS credentials or stack identifiers, Cloudflare OAuth tokens          | Connections you make in Settings       | Sending through your SES account; writing DNS records for you |
+| Billing state (plan, subscription id, usage counts, Polar customer id) | Polar and our own metering             | Charging the right amount and enforcing plan limits           |
+| Support email                                                          | You, when you write to us              | Answering you                                                 |
+
+AWS credentials and Cloudflare tokens are encrypted at rest with a key that is
+not stored alongside the database. We never see your card number: payment
+details go directly to Polar.
+
+We do not run advertising trackers or third-party analytics on the dashboard.
+The only cookies are the ones that keep you signed in.
+
+## Customer data we process for you
+
+- **Contacts and contact books**: email addresses, names and any merge fields
+  you attach.
+- **Emails**: sender, recipients, subject, headers, body and attachments, and
+  the delivery events SES reports back (sent, delivered, bounced, complained,
+  rejected).
+- **Tracking**: when open or click tracking is on (the default for a new team,
+  changeable per team and per message) the Service records that a tracking
+  pixel was loaded or a rewritten link was followed, together with the
+  requesting IP address and user agent. Turn tracking off in **Settings** or
+  per message if you do not want this.
+- **Suppressions and unsubscribes**: addresses that bounced, complained or
+  unsubscribed, so you stop sending to them.
+- **Webhook deliveries**: the payloads and responses of events sent to your
+  endpoints.
+
+We process customer data only to provide the Service as you have configured
+it, and never for our own marketing or to build profiles of recipients.
+
+## Who else processes data
+
+| Provider                | Role                                                                               | Location                       |
+| ----------------------- | ---------------------------------------------------------------------------------- | ------------------------------ |
+| **Amazon Web Services** | Delivers your email through **your own** SES account.                              | The SES region you choose      |
+| **Polar**               | Merchant of record for paid plans: collects payment, issues invoices, handles tax. | European Union / United States |
+| **Cloudflare**          | Only if you connect it: creates DNS records in your zone for domain verification.  | Global                         |
+| **Google, GitHub**      | Only if you sign in with them: authenticate you and give us your basic profile.    | United States                  |
+
+The Service's own servers and database run on infrastructure we operate.
+
+We do not sell personal data, and we do not share it with anyone else except
+where the law requires it or to defend our rights.
+
+## International transfers
+
+We are based in the Republic of Korea and our providers operate in the EU and
+the United States, so data moves across borders as part of providing the
+Service. Where a transfer needs a legal safeguard we rely on the provider's
+standard contractual clauses or an equivalent mechanism.
+
+## How long we keep it
+
+- **Email bodies and attachments** are purged by a nightly job once they are
+  older than your team's retention setting (**Settings → Retention**), which
+  is capped by the instance maximum. Metadata — sender, recipients, subject,
+  events — stays until you delete the email or the team, so the dashboard and
+  API history continue to work.
+- **Webhook delivery logs** follow the same retention window.
+- **Contacts, templates, campaigns, suppressions** stay until you delete them.
+- **Sessions** end when you sign out, when a team admin removes you, or when
+  they expire.
+- **Audit log** is kept for the life of the team.
+- **Deleting a team** removes its domains, keys, contacts, emails, events and
+  settings. Deleting your account (contact us) removes your personal profile;
+  teams you own must be deleted or handed over first.
+- **Billing records** are kept for as long as tax and accounting law requires,
+  in Polar's systems and ours.
+
+Backups may retain copies for up to 30 days after deletion.
+
+## Your rights
+
+Depending on where you live you may have the right to access, correct, export,
+restrict or delete your personal data, to object to processing, and to complain
+to a supervisory authority (in Korea, the Personal Information Protection
+Commission). Most of this you can do yourself in the dashboard — profile,
+sessions, team deletion, contact export. For anything else, email
+[hello@defy.works](mailto:hello@defy.works) and we will respond within 30
+days.
+
+If your request concerns customer data — you received an email through
+Sendsprite and want to know why — we will forward it to the sender, who is the
+controller, and help them respond.
+
+## Security
+
+Passwords are hashed; credentials for AWS and Cloudflare are encrypted at rest;
+all traffic to the Service is over TLS; API keys are shown once and stored
+hashed. Access to production systems is limited to the people who operate the
+Service. If we learn of a breach affecting your data we will tell you without
+undue delay and, where the law requires, the relevant authority.
+
+## Children
+
+The Service is not directed at children and we do not knowingly collect data
+from anyone under 18. If you believe a child has created an account, tell us
+and we will delete it.
+
+## Changes
+
+We will post changes here and, for material changes, notify you by email or in
+the dashboard at least 14 days before they take effect.
+
+## Contact
+
+defy.works · [hello@defy.works](mailto:hello@defy.works)

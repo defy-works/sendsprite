@@ -36,6 +36,16 @@ export function Footer() {
                 </a>
               </li>
               <li>
+                <Link href="/terms" className={LINK}>
+                  Terms
+                </Link>
+              </li>
+              <li>
+                <Link href="/privacy" className={LINK}>
+                  Privacy
+                </Link>
+              </li>
+              <li>
                 <a href="https://defy.works" className={LINK}>
                   Built by defy.works
                 </a>

@@ -14,6 +14,23 @@ export default async function SignupPage(props: PageProps<"/signup">) {
   return (
     <>
       <AuthForm mode="signup" providers={env.providers} next={next} />
+      <p className="mt-4 text-xs text-white/45">
+        By creating an account you agree to the{" "}
+        <Link
+          className="text-indigo-300/80 hover:text-indigo-200"
+          href="/terms"
+        >
+          Terms of Service
+        </Link>{" "}
+        and{" "}
+        <Link
+          className="text-indigo-300/80 hover:text-indigo-200"
+          href="/privacy"
+        >
+          Privacy Policy
+        </Link>
+        .
+      </p>
       <p className="mt-6 text-sm text-white/60">
         Already have an account?{" "}
         <Link

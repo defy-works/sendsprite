@@ -1,0 +1,190 @@
+export const metadata = {
+  title: "Terms of Service",
+  description:
+    "The terms under which defy.works provides the hosted Sendsprite service at sendsprite.com.",
+};
+
+# Terms of Service
+
+**Effective 28 August 2026.** These terms govern the hosted Sendsprite service
+at **sendsprite.com** (the "Service"), operated by **defy.works** ("we", "us").
+By creating an account or using the Service you agree to them. If you are
+accepting on behalf of a company, you confirm you have authority to bind it, and
+"you" means that company.
+
+The Service is a control plane for transactional and marketing email: an API,
+a dashboard, domain provisioning, an event pipeline, webhooks, an SMTP relay,
+and the `sendsprite` SDK, CLI and MCP server. Delivery itself happens through
+**your own Amazon SES account**, which you connect to the Service and which
+remains governed by your agreement with Amazon Web Services.
+
+## 1. Self-hosted instances are not covered
+
+Sendsprite is open source, and anyone may run their own instance. These terms
+apply only to the instance we operate at sendsprite.com. An instance run by
+someone else — including one you run yourself — is governed by whoever
+operates it, and by the software licence in the repository, not by this
+document.
+
+## 2. Accounts and teams
+
+You need an account to use the Service. You may sign up with an email address
+and password, or through Google or GitHub. Keep your credentials, API keys and
+SMTP passwords confidential; everything done with them is treated as done by
+you. Tell us at [hello@defy.works](mailto:hello@defy.works) as soon as you
+suspect they have been compromised.
+
+Every resource — domains, keys, contacts, templates, emails — belongs to a
+**team**. Team owners and admins can invite members, change settings, connect
+or disconnect AWS, and delete the team. Actions of every member are attributed
+to the team.
+
+You must be at least 18 years old, or the age of majority where you live, to
+use the Service.
+
+## 3. Acceptable use
+
+The Service sends email on your behalf, and the reputation of every sender
+depends on every other sender behaving. You agree that you will:
+
+- **Send only to people who have agreed to hear from you.** Purchased, scraped
+  or rented lists are prohibited. Marketing email must have consent you can
+  demonstrate.
+- **Keep the unsubscribe mechanism intact.** Campaign messages carry an
+  unsubscribe link and RFC 8058 one-click headers; you may not remove, hide or
+  break them, and you must honour every unsubscribe and suppression.
+- **Identify yourself truthfully.** No forged headers, misleading subject lines,
+  impersonation of another person or organisation, or sending from domains you
+  do not control.
+- **Comply with the law** where you and your recipients are, including
+  anti-spam, consumer protection and data protection laws (for example CAN-SPAM,
+  GDPR, and Korea's Personal Information Protection Act and Act on Promotion of
+  Information and Communications Network Utilization).
+- **Not send** malware, phishing, fraud, harassment, illegal content, or content
+  that infringes others' rights.
+- **Not probe, overload or circumvent** the Service, its rate limits, its
+  billing, or the accounts of other teams.
+
+We may suspend sending, ban a team, or terminate an account, with or without
+notice, where we reasonably believe these rules are being broken or where
+Amazon, a mailbox provider or a regulator requires it. We will tell you why
+unless the law prevents us.
+
+## 4. Your content
+
+You own the emails, templates, contacts and other content you put into the
+Service. You grant us the limited licence needed to store, process, render and
+transmit it in order to provide the Service, and for nothing else. You are
+responsible for that content, for having the rights to send it, and for the
+consequences of sending it.
+
+We do not read your email content except where necessary to operate the
+Service (for example to debug a delivery failure you have reported), to respond
+to an abuse complaint, or where the law requires it.
+
+## 5. Your Amazon Web Services account
+
+Sending requires you to connect an AWS account, either through the
+CloudFormation quick-create stack or by pasting IAM credentials. You are
+responsible for that account, for the charges Amazon bills to it, and for
+keeping the permissions in scope. We store the credentials encrypted, use them
+only for the SES, SNS and CloudFormation operations the Service performs, and
+you can disconnect at any time from **Settings → Sending**. Where the Service
+cannot tear down a stack it will say so and leave you a console link; you are
+responsible for cleaning up resources it could not remove.
+
+## 6. Plans, billing and taxes
+
+The Service offers a Free plan and paid plans with an included monthly volume
+and a per-1,000 overage rate. Current prices are shown in **Settings →
+Billing**. Payments are processed by **Polar**, acting as merchant of record;
+Polar is the seller on your invoice and handles VAT and sales tax, and its
+terms apply to the payment itself.
+
+Subscriptions renew monthly until cancelled. Usage is metered per delivered
+email and overage is billed in arrears. You can cancel, change plan or update
+payment details through the customer portal at any time; cancellation takes
+effect at the end of the current period, and we do not refund partial periods
+except where the law requires it. If a payment fails we may downgrade the team
+to the Free plan's limits after a grace period.
+
+We may change prices with at least 30 days' notice by email or in the
+dashboard. Continued use after the change takes effect means you accept the new
+price.
+
+## 7. Availability and support
+
+We aim to keep the Service available and will tell you about planned
+maintenance where we can, but we do not promise any particular uptime. Support
+is by email at [hello@defy.works](mailto:hello@defy.works) and through the
+GitHub repository; there is no guaranteed response time on the Free plan.
+
+We may change or retire features. Where a change removes something you depend
+on we will give reasonable notice, and the software remains open source so you
+can always self-host.
+
+## 8. Software licences
+
+The Sendsprite server is licensed under the Functional Source License
+(FSL-1.1-MIT), and the client packages under MIT. Those licences govern the
+code, not this Service, and nothing here restricts the rights they grant.
+"Sendsprite" and its logo are trademarks of defy.works; see the trademark
+policy in the repository.
+
+## 9. Termination
+
+You can delete your team at any time from **Settings → Danger zone**, and your
+account by contacting us. We may terminate or suspend your access under section
+3, for non-payment, or on 30 days' notice for any other reason. On termination
+your right to use the Service ends, and we delete your data as described in the
+[Privacy Policy](/privacy). Sections 4, 10, 11 and 12 survive termination.
+
+## 10. Disclaimers
+
+The Service is provided **"as is"** and **"as available"**. To the fullest
+extent permitted by law we disclaim all warranties, express or implied,
+including merchantability, fitness for a particular purpose and
+non-infringement. In particular we do not warrant that email will be delivered,
+delivered on time, or land in the inbox: delivery depends on Amazon SES, on
+mailbox providers and on your own sending reputation, none of which we control.
+
+## 11. Limitation of liability
+
+To the fullest extent permitted by law, we are not liable for any indirect,
+incidental, special, consequential or punitive damages, or for lost profits,
+revenue, data or goodwill, arising out of or related to the Service. Our total
+liability for all claims in any twelve-month period is limited to the amount
+you paid us for the Service in that period, or ₩100,000 if you paid nothing.
+Nothing in these terms limits liability that cannot be limited under
+applicable law, including for wilful misconduct or gross negligence.
+
+## 12. Indemnity
+
+You will defend and indemnify us against claims, damages and costs (including
+reasonable legal fees) arising from your content, your use of the Service in
+breach of these terms, or your violation of any law or third-party right.
+
+## 13. Changes to these terms
+
+We may update these terms. For material changes we will give at least 14 days'
+notice by email or in the dashboard before they take effect. If you do not
+agree, stop using the Service before the change takes effect; continued use
+afterwards is acceptance.
+
+## 14. Governing law and disputes
+
+These terms are governed by the laws of the **Republic of Korea**, without
+regard to conflict-of-law rules. Any dispute that we cannot resolve informally
+will be brought in the courts of Seoul, Republic of Korea, and you and we
+submit to their jurisdiction. If you are a consumer in a jurisdiction whose law
+gives you the right to sue at home, nothing here takes that away.
+
+## 15. General
+
+These terms, the [Privacy Policy](/privacy) and any plan-specific terms shown
+at checkout are the entire agreement between you and us about the Service. If
+a provision is unenforceable the rest remains in force. You may not assign
+these terms without our consent; we may assign them in a merger or sale of the
+business. Failure to enforce a provision is not a waiver.
+
+Questions: [hello@defy.works](mailto:hello@defy.works).
