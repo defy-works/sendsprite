@@ -64,7 +64,7 @@ describe("connect template deletion order", () => {
     yaml.indexOf("\nResources:"),
     yaml.indexOf("\nOutputs:"),
   );
-  const blocks = resources.split(/\n  (?=[A-Z]\w+:\n)/).slice(1);
+  const blocks = resources.split(/\n {2}(?=[A-Z]\w+:\n)/).slice(1);
 
   it("has every resource other than ServiceRole depend on it", () => {
     const names = blocks.map((b) => b.split(":")[0]!);
