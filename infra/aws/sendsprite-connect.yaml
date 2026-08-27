@@ -45,6 +45,10 @@ Resources:
                   - ses:GetEmailIdentity
                   - ses:PutEmailIdentityMailFromAttributes
                   - ses:CreateConfigurationSet
+                  # Team deletion tears the config set down; see services/team-delete.ts.
+                  # DeleteConfigurationSet cascades over the event destination
+                  # (verified against the API), so no separate delete for that.
+                  - ses:DeleteConfigurationSet
                   - ses:CreateConfigurationSetEventDestination
                   - ses:UpdateConfigurationSetEventDestination
                   - ses:SendEmail
@@ -62,6 +66,8 @@ Resources:
               - Effect: Allow
                 Action:
                   - sns:CreateTopic
+                  # Also team deletion: the topic goes with the config set.
+                  - sns:DeleteTopic
                   - sns:Subscribe
                   - sns:ConfirmSubscription
                   - sns:GetTopicAttributes
