@@ -56,10 +56,7 @@ own instance.
 
 ## Packages
 
-Two packages are published from this repo. Neither has had its first release
-yet, so the install lines below will not resolve until it happens; build them
-from the repository in the meantime (`bun run --filter sendsprite build`,
-`bun run --filter @sendsprite/mcp build`).
+Two packages are published from this repo to npm.
 
 | Package                           | Install                       | What it is                                                                                                                                                                                       |
 | --------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
