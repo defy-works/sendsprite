@@ -4,7 +4,7 @@ import { useEffect, useState, useTransition } from "react";
 import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
 import { IconExternal } from "@/components/ui/icons";
-import { startQuickCreate } from "../actions";
+import { cancelQuickCreate, startQuickCreate } from "../actions";
 import { Alert, Notice } from "./shared";
 
 type StatusBody = {
@@ -64,6 +64,7 @@ export function QuickCreate({
   /** True once AWS has called back, so the copy can stop saying "click Create stack". */
   const [provisioning, setProvisioning] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  const [cancelling, startCancel] = useTransition();
 
   // Resume polling if the owner comes back with a callback still outstanding.
   useEffect(() => {
@@ -146,6 +147,23 @@ export function QuickCreate({
     });
   };
 
+  /**
+   * Offered only before AWS calls back. Once `provisioning` is true the token
+   * is already burnt and the config set, topic and subscription are being
+   * created; that phase is under a minute, and abandoning it midway is what
+   * strands half of them in the account.
+   */
+  const cancel = () =>
+    startCancel(async () => {
+      const res = await cancelQuickCreate();
+      if (!res.ok) {
+        setError(res.error);
+        return;
+      }
+      setPolling(false);
+      setProvisioning(false);
+    });
+
   return (
     <div className="flex flex-col gap-3">
       {!available && (
@@ -171,6 +189,11 @@ export function QuickCreate({
               : "Waiting for CloudFormation…"}
           </span>
         )}
+        {polling && !provisioning && (
+          <Button variant="subtle" onClick={cancel} loading={cancelling}>
+            Cancel
+          </Button>
+        )}
       </div>
       {polling && (
         <p className="text-sm text-white/65">
@@ -184,7 +207,9 @@ export function QuickCreate({
             <>
               Click <strong>Create stack</strong> in the tab we opened and
               acknowledge the IAM capability checkbox. This page updates on its
-              own.
+              own. Changed your mind? <strong>Cancel</strong> unlocks the
+              button; a stack you already started will be refused when it calls
+              back and will roll itself back.
             </>
           )}
         </p>

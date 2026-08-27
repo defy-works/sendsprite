@@ -1,7 +1,8 @@
 # Disconnect tears the stack down; the wizard has an escape hatch
 
 **Date:** 2026-08-27
-**Status:** approved, not yet implemented
+**Status:** approved. Escape hatch shipped 2026-08-27 (`cancelQuickCreate`);
+teardown not yet implemented.
 
 ## Problem
 

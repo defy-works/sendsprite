@@ -14,6 +14,9 @@ beforeAll(async () => {
     // row: sharing an issuer with a test that consumed one earlier in this
     // file would make them pass or fail on ordering.
     { id: "u4", name: "Four", email: "u4@example.com" },
+    // Leaves a consumed token behind on purpose (the revoke-leaves-in-flight
+    // test), so it cannot share an issuer with anything above.
+    { id: "u5", name: "Five", email: "u5@example.com" },
   ]);
   // setup_tokens.team_id is a real FK now: a token names the team its stack
   // will connect.
@@ -128,6 +131,35 @@ describe("setup tokens", () => {
     expect(await revokePendingSetupTokens("aws_callback", "u3", "org_1")).toBe(
       0,
     );
+  });
+  /**
+   * The wizard's Cancel button calls this. It must not reach a token AWS has
+   * already presented: from that line on, provisioning is running in the
+   * customer's account, and "cancelling" it would only strand the half that
+   * had been created. The button is hidden for that phase; this is the
+   * server-side guarantee behind the hiding.
+   */
+  it("revoke leaves a consumed (in-flight) token alone", async () => {
+    const {
+      issueSetupToken,
+      consumeSetupToken,
+      inFlightSetupToken,
+      revokePendingSetupTokens,
+    } = await import("@/services/setup-tokens");
+    const { token } = await issueSetupToken({
+      purpose: "aws_callback",
+      issuedBy: "u5",
+      teamId: "org_1",
+      region: "us-east-1",
+      ttlMs: 60_000,
+    });
+    expect(await consumeSetupToken("aws_callback", token)).not.toBeNull();
+    expect(await revokePendingSetupTokens("aws_callback", "u5", "org_1")).toBe(
+      0,
+    );
+    expect(
+      await inFlightSetupToken("aws_callback", "u5", "org_1", 60_000),
+    ).not.toBeNull();
   });
   /**
    * The bug this covers is the one users reported as "the one-click always

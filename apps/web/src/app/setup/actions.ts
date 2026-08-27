@@ -94,6 +94,27 @@ export async function startQuickCreate(
   };
 }
 
+/**
+ * The way out of "Waiting for CloudFormation…" other than the token expiring.
+ *
+ * Revokes the caller's pending one-click token so the wizard's status poll
+ * stops seeing it and the button unlocks. Only *unconsumed* tokens are
+ * touched — `revokePendingSetupTokens` filters on `consumedAt IS NULL` — so
+ * once AWS has called back and provisioning is under way there is nothing
+ * here to cancel, and the client hides the button for that phase anyway.
+ *
+ * If a stack is already creating when this runs, its callback presents a
+ * token that no longer exists, gets a 4xx, and the template reports FAILED —
+ * the stack rolls itself back and deletes the IAM user. That is the same
+ * self-healing path an expired link takes; cancelling just does not make the
+ * owner wait an hour for it.
+ */
+export async function cancelQuickCreate(): Promise<Result<void>> {
+  const a = await actor();
+  await revokePendingSetupTokens("aws_callback", a.userId, a.teamId);
+  return { ok: true, data: undefined };
+}
+
 export async function connectKeys(fd: FormData) {
   const a = await actor();
   const r = region(fd.get("region"));
