@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["bun-types", "node"],
+    // `sendsprite`'s published types live in packages/sdk/dist, which is
+    // gitignored and absent on a clean checkout, so typechecking against it
+    // would need a prior SDK build. Point the specifier at the SDK source
+    // instead. Types only: `sendsprite` stays external in tsup.config.ts, so
+    // the published bundle still imports it at runtime.
+    "paths": { "sendsprite": ["../sdk/src/index.ts"] }
+  },
+  "include": ["src", "tests"]
+}

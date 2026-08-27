@@ -1,0 +1,1 @@
+ALTER TABLE "campaigns" ADD COLUMN "merge_defaults" jsonb;

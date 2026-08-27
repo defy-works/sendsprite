@@ -1,0 +1,2 @@
+ALTER TABLE "instance_settings" ALTER COLUMN "ses_max_send_rate" SET DATA TYPE double precision;--> statement-breakpoint
+ALTER TABLE "instance_settings" ADD CONSTRAINT "instance_settings_singleton" CHECK (id = 1);

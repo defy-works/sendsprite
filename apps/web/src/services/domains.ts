@@ -1,0 +1,755 @@
+import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
+import {
+  CreateEmailIdentityCommand,
+  DeleteEmailIdentityCommand,
+  GetEmailIdentityCommand,
+  PutEmailIdentityMailFromAttributesCommand,
+} from "@aws-sdk/client-sesv2";
+import {
+  can,
+  CreateDomainInput,
+  newId,
+  type PageQuery,
+} from "@sendsprite/shared";
+import { db } from "@/db";
+import { keysetPage, type Page } from "@/db/keyset";
+import { domains } from "@/db/schema";
+import { makeSes } from "@/lib/aws/clients";
+import { resolveAwsContext } from "@/lib/aws/credentials";
+import type { FetchLike } from "@/lib/cloudflare/client";
+import { expectedRecords } from "@/lib/dns/records";
+import { matchZone } from "@/lib/dns/zone-match";
+import { checkRecords, publicResolver, type Resolver } from "@/lib/dns/check";
+import { detectCloudflareZone } from "@/lib/dns/cloudflare-zone";
+import { recordAudit } from "@/lib/audit";
+import type { Result } from "@/lib/result";
+import { getTeamAws } from "./team-aws";
+import { cloudflareClient, listZones } from "./cloudflare-connect";
+import { fanOutEvent } from "./webhooks";
+import type { TeamActor } from "./team";
+
+export type Domain = typeof domains.$inferSelect;
+
+/**
+ * `startAfter` is a delay in seconds (pg-boss casts a number to an interval).
+ * `singletonKey` dedups on a queue with a policy that enforces it: the
+ * `domain.verify` queue is `exclusive`, so one verify job per domain can be
+ * created/retry/active at a time and a duplicate send is dropped (null).
+ * Resolves to the job id, or null when deduped.
+ */
+export type Enqueue = (
+  queue: string,
+  data: object,
+  opts?: { startAfter?: number; singletonKey?: string },
+) => Promise<unknown>;
+
+/** Injection points: the job queue, Cloudflare's fetch, and the DNS resolver. */
+interface Deps {
+  enqueue: Enqueue;
+  fetch?: FetchLike;
+  resolver?: Resolver;
+}
+
+/**
+ * A pending domain is re-checked by the `domain.verify-sweep` cron (every
+ * 2 minutes; see jobs/handlers/domain-verify.ts) for 72 hours before it
+ * fails. The sweep skips rows checked within SWEEP_STALE_S so a tick never
+ * re-runs a check the previous tick just finished.
+ */
+const SWEEP_STALE_S = 100;
+/** A verified domain is re-checked (forced) once its last check is this old. */
+const RECHECK_AFTER_S = 24 * 3600;
+const FIRST_VERIFY_AFTER_S = 30;
+const VERIFY_WINDOW_MS = 72 * 3600 * 1000;
+const DENIED: Result<never> = {
+  ok: false,
+  code: "forbidden",
+  error: "You don't have permission to do that.",
+};
+const DUPLICATE: Result<never> = {
+  ok: false,
+  code: "conflict",
+  error: "That domain is already added on this instance.",
+};
+const NOT_FOUND: Result<never> = {
+  ok: false,
+  code: "not_found",
+  error: "Domain not found.",
+};
+const CF_DISCONNECTED =
+  "Cloudflare is not connected. Reconnect it in Settings → Sending, or add the records at your DNS provider.";
+const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const errName = (e: unknown) =>
+  typeof e === "object" && e !== null
+    ? (e as { name?: string }).name
+    : undefined;
+/** Postgres SQLSTATE, on the driver error or (drizzle) its `cause`. */
+const pgCode = (e: unknown): string | undefined => {
+  const o = e as { code?: string; cause?: { code?: string } } | null;
+  return o?.code ?? o?.cause?.code;
+};
+
+export async function listDomains(teamId: string): Promise<Domain[]> {
+  return db()
+    .select()
+    .from(domains)
+    .where(eq(domains.teamId, teamId))
+    .orderBy(domains.createdAt);
+}
+
+/**
+ * REST page, newest first (the dashboard's `listDomains` is oldest first).
+ * Keyset paging on `(created_at, id)` (cursor from `@/lib/cursor`).
+ */
+export const listDomainsPage = (
+  teamId: string,
+  q: PageQuery,
+): Promise<Result<Page<Domain>>> =>
+  keysetPage(domains, q, eq(domains.teamId, teamId));
+
+export async function getDomain(
+  teamId: string,
+  id: string,
+): Promise<Domain | null> {
+  const [d] = await db()
+    .select()
+    .from(domains)
+    .where(and(eq(domains.id, id), eq(domains.teamId, teamId)))
+    .limit(1);
+  return d ?? null;
+}
+
+async function loadById(id: string): Promise<Domain | undefined> {
+  const [d] = await db()
+    .select()
+    .from(domains)
+    .where(eq(domains.id, id))
+    .limit(1);
+  return d;
+}
+
+function enqueueVerify(enqueue: Enqueue, domainId: string, startAfter = 0) {
+  return enqueue(
+    "domain.verify",
+    { domainId },
+    { startAfter, singletonKey: domainId },
+  );
+}
+
+/**
+ * Add a sending domain. Picks `auto` DNS mode when a connected Cloudflare
+ * zone covers the name, `manual` otherwise, then queues provisioning.
+ */
+export async function createDomain(
+  actor: TeamActor,
+  input: unknown,
+  deps: Deps,
+): Promise<Result<Domain>> {
+  if (!can(actor.role, "domains.manage")) return DENIED;
+  const parsed = CreateDomainInput.safeParse(input);
+  if (!parsed.success)
+    return { ok: false, error: "Enter a valid domain like mail.example.com." };
+  const name = parsed.data.name;
+  const aws = await getTeamAws(actor.teamId);
+  if (!aws)
+    return {
+      ok: false,
+      code: "not_configured",
+      error: "Connect AWS first (Settings → Sending).",
+    };
+  const [dupe] = await db()
+    .select({ id: domains.id })
+    .from(domains)
+    .where(eq(domains.name, name))
+    .limit(1);
+  if (dupe) return DUPLICATE;
+  const zone = matchZone(name, await listZones(actor.teamId, deps.fetch));
+  const id = newId("dom");
+  let row: Domain | undefined;
+  try {
+    [row] = await db()
+      .insert(domains)
+      .values({
+        id,
+        teamId: actor.teamId,
+        name,
+        region: aws.region,
+        cloudflareZoneId: zone?.id ?? null,
+        dnsMode: zone ? "auto" : "manual",
+        mailFromDomain: `bounce.${name}`,
+        verifyUntil: new Date(Date.now() + VERIFY_WINDOW_MS),
+        createdBy: actor.userId,
+      })
+      .returning();
+  } catch (e) {
+    // Two concurrent adds of the same name: the unique index decides.
+    if (pgCode(e) === "23505") return DUPLICATE;
+    throw e;
+  }
+  if (!row) throw new Error("domains insert returned no row");
+  await recordAudit({
+    teamId: actor.teamId,
+    actorUserId: actor.userId,
+    action: "domains.create",
+    targetType: "domain",
+    targetId: id,
+    diff: { name: { to: name }, dnsMode: { to: row.dnsMode } },
+    ...actor.meta,
+  });
+  // The queue can be unreachable (pg-boss down, schema missing) while the
+  // row is already there; keep the domain and surface the problem on it so
+  // "Retry provisioning" can re-send instead of the user re-adding.
+  try {
+    await deps.enqueue("domain.provision", { domainId: id });
+  } catch (e) {
+    const lastError = `Could not queue provisioning: ${errMsg(e)}`;
+    [row] = await db()
+      .update(domains)
+      .set({ lastError })
+      .where(eq(domains.id, id))
+      .returning();
+    if (!row) throw new Error("domains update returned no row");
+    console.error(`[domains] ${lastError}`);
+  }
+  return { ok: true, data: row };
+}
+
+/**
+ * Re-send `domain.provision` for a domain whose provisioning never ran
+ * (queue failure at create time) or failed terminally. Refused once the
+ * identity exists (tokens stored): Re-verify covers that case.
+ */
+export async function retryProvisioning(
+  actor: TeamActor,
+  id: string,
+  deps: Pick<Deps, "enqueue">,
+): Promise<Result> {
+  if (!can(actor.role, "domains.manage")) return DENIED;
+  const d = await getDomain(actor.teamId, id);
+  if (!d) return NOT_FOUND;
+  if (d.dkimTokens.length > 0)
+    return {
+      ok: false,
+      code: "conflict",
+      error: "This domain is already provisioned.",
+    };
+  await db()
+    .update(domains)
+    .set({
+      status: "pending",
+      lastError: null,
+      verifyUntil: new Date(Date.now() + VERIFY_WINDOW_MS),
+    })
+    .where(eq(domains.id, id));
+  await recordAudit({
+    teamId: actor.teamId,
+    actorUserId: actor.userId,
+    action: "domains.retry_provisioning",
+    targetType: "domain",
+    targetId: id,
+    diff: { status: { from: d.status, to: "pending" } },
+    ...actor.meta,
+  });
+  try {
+    await deps.enqueue("domain.provision", { domainId: id });
+  } catch (e) {
+    const lastError = `Could not queue provisioning: ${errMsg(e)}`;
+    await db().update(domains).set({ lastError }).where(eq(domains.id, id));
+    return { ok: false, code: "internal_error", error: lastError };
+  }
+  return { ok: true, data: undefined };
+}
+
+/**
+ * Job: SES identity + MAIL FROM + (auto mode) Cloudflare records, then
+ * schedule the first verification. Idempotent: an existing identity is
+ * read back for its tokens and Cloudflare upserts by (type, name[, content]).
+ * The tokens and expected records are persisted before the Cloudflare loop
+ * and each record's `cloudflareId` right after its upsert, so a failure
+ * mid-loop leaves the ids already created on the row (delete removes them;
+ * the retry patches instead of duplicating). Auto mode with Cloudflare
+ * disconnected degrades to manual (records are still computed for the user
+ * to add by hand). Throws after recording
+ * `lastError` so pg-boss retries; on the handler's `finalAttempt` the
+ * domain is also marked `failed` (no more retries are coming).
+ */
+export async function provisionDomain(
+  domainId: string,
+  deps: Deps,
+  { finalAttempt = false }: { finalAttempt?: boolean } = {},
+): Promise<void> {
+  const d = await loadById(domainId);
+  if (!d) return;
+  try {
+    const ses = makeSes(await resolveAwsContext(d.teamId));
+    const aws = await getTeamAws(d.teamId);
+    const identity = await ses
+      .send(
+        new CreateEmailIdentityCommand({
+          EmailIdentity: d.name,
+          ConfigurationSetName: aws?.configSet ?? undefined,
+          DkimSigningAttributes: { NextSigningKeyLength: "RSA_2048_BIT" },
+        }),
+      )
+      .catch((e: unknown) => {
+        if (errName(e) !== "AlreadyExistsException") throw e;
+        return ses.send(new GetEmailIdentityCommand({ EmailIdentity: d.name }));
+      });
+    const tokens = identity.DkimAttributes?.Tokens ?? [];
+    await ses.send(
+      new PutEmailIdentityMailFromAttributesCommand({
+        EmailIdentity: d.name,
+        MailFromDomain: d.mailFromDomain,
+        BehaviorOnMxFailure: "USE_DEFAULT_VALUE",
+      }),
+    );
+    const recs = expectedRecords({
+      domain: d.name,
+      region: d.region,
+      dkimTokens: tokens,
+      mailFromDomain: d.mailFromDomain,
+    });
+    // A re-run (pg-boss retry, or the identity already existing) recomputes
+    // the rows but must not forget which of them Apply has already written:
+    // the Cloudflare id is what delete removes and re-apply patches.
+    const applied = new Map(
+      d.expectedRecords.map((r) => [`${r.type} ${r.name}`, r.cloudflareId]),
+    );
+    for (const r of recs) {
+      const id = applied.get(`${r.type} ${r.name}`);
+      if (id) r.cloudflareId = id;
+    }
+    await db()
+      .update(domains)
+      .set({
+        dkimTokens: tokens,
+        dkimStatus: identity.DkimAttributes?.Status ?? null,
+        expectedRecords: [...recs],
+        lastError: null,
+        // The records are stored, not written. In Cloudflare mode they land
+        // in the zone when the owner clicks Apply (`applyDnsRecords`), so
+        // nothing changes in a zone a person has not looked at; in manual
+        // mode they are copied out by hand. The zone link on the domain page
+        // helps either way, so it is detected for both. A failed lookup is
+        // not fatal — it just means no link.
+        cloudflareZone: await detectCloudflareZone(
+          d.name,
+          deps.resolver ?? publicResolver(),
+        ).catch(() => null),
+      })
+      .where(eq(domains.id, d.id));
+    await enqueueVerify(deps.enqueue, d.id, FIRST_VERIFY_AFTER_S);
+  } catch (e) {
+    await db()
+      .update(domains)
+      .set({
+        lastError: errMsg(e),
+        ...(finalAttempt && { status: "failed" as const }),
+      })
+      .where(eq(domains.id, d.id));
+    throw e;
+  }
+}
+
+async function setError(id: string, lastError: string) {
+  await db()
+    .update(domains)
+    .set({ lastError, lastCheckedAt: new Date() })
+    .where(eq(domains.id, id));
+}
+
+/**
+ * Write the expected records into the domain's Cloudflare zone — on request,
+ * never as a side effect of provisioning, so nothing lands in a zone until a
+ * person has looked at the rows and clicked.
+ *
+ * Safe to repeat: `upsertRecord` matches on type + name, so a re-apply
+ * repairs a record that was edited or deleted by hand and keeps the ids of
+ * the rest. Ids are persisted after every record so a failure mid-loop
+ * leaves the ones already created on the row — delete removes them, the
+ * next apply patches them. A verify is queued at the usual delay so the page
+ * turns green without waiting for the sweep.
+ *
+ * Cloudflare being disconnected is an error here, not a demotion to manual:
+ * the zone match is still true, and reconnecting makes the button work
+ * again without re-adding the domain.
+ */
+export async function applyDnsRecords(
+  actor: TeamActor,
+  id: string,
+  deps: Pick<Deps, "fetch" | "enqueue">,
+): Promise<Result<Domain>> {
+  if (!can(actor.role, "domains.manage")) return DENIED;
+  const d = await getDomain(actor.teamId, id);
+  if (!d) return NOT_FOUND;
+  if (d.dkimTokens.length === 0 || d.expectedRecords.length === 0)
+    return {
+      ok: false,
+      code: "conflict",
+      error: "SES hasn't issued the records yet.",
+    };
+  if (d.dnsMode !== "auto" || !d.cloudflareZoneId)
+    return {
+      ok: false,
+      code: "conflict",
+      error:
+        "This domain is not in a Cloudflare zone you authorised; add the records at your DNS provider.",
+    };
+  const cf = await cloudflareClient(actor.teamId, deps.fetch);
+  if (!cf) return { ok: false, code: "not_configured", error: CF_DISCONNECTED };
+  const zoneId = d.cloudflareZoneId;
+  const recs = d.expectedRecords.map((r) => ({ ...r }));
+  const persist = (patch: Partial<typeof domains.$inferInsert> = {}) =>
+    db()
+      .update(domains)
+      .set({ expectedRecords: recs, ...patch })
+      .where(eq(domains.id, d.id));
+  try {
+    for (const r of recs) {
+      const { id: cloudflareId } = await cf.upsertRecord(zoneId, {
+        type: r.type,
+        name: r.name,
+        content: r.value,
+        priority: r.priority,
+      });
+      r.cloudflareId = cloudflareId;
+      await persist();
+    }
+  } catch (e) {
+    await persist({ lastError: `Cloudflare: ${errMsg(e)}` });
+    return {
+      ok: false,
+      code: "internal_error",
+      error: `Cloudflare refused a record: ${errMsg(e)}`,
+    };
+  }
+  const [row] = await persist({
+    dnsAppliedAt: new Date(),
+    lastError: null,
+  }).returning();
+  if (!row) throw new Error("domains update returned no row");
+  await recordAudit({
+    teamId: actor.teamId,
+    actorUserId: actor.userId,
+    action: "domains.apply_dns",
+    targetType: "domain",
+    targetId: id,
+    diff: { records: { to: recs.length } },
+    ...actor.meta,
+  });
+  await enqueueVerify(deps.enqueue, d.id, FIRST_VERIFY_AFTER_S);
+  return { ok: true, data: row };
+}
+
+/**
+ * Job: poll SES + DNS once. Verified → done; pending → left for the next
+ * sweep; past the window → failed. It never re-enqueues itself: the
+ * `domain.verify-sweep` cron picks pending rows by `lastCheckedAt`, which
+ * every outcome below bumps. AWS disconnected sets `lastError` and leaves
+ * the status (the sweep keeps trying once per tick until reconnect or
+ * Re-verify); the SES identity gone is `failed` (the user deletes and
+ * re-adds). Any other SES error records `lastError` and rethrows so
+ * pg-boss retries. A verified domain is a no-op unless `force` (Re-verify,
+ * daily re-check): then it stays verified while SES still agrees, and is
+ * demoted to pending only when SES reports DKIM or MAIL FROM as `FAILED` or
+ * `NOT_STARTED` (or the identity is gone). A transient SES status
+ * (`PENDING`, `TEMPORARY_FAILURE`) keeps it verified — sending still works
+ * — with `lastError` noting it; the 72 h `verifyUntil` window never applies
+ * to a domain that is already verified, and a demotion starts a fresh one.
+ */
+export async function verifyDomain(
+  domainId: string,
+  deps: Pick<Deps, "resolver" | "enqueue">,
+  { force = false }: { force?: boolean } = {},
+): Promise<void> {
+  const d = await loadById(domainId);
+  if (!d || (d.status === "verified" && !force)) return;
+  let ses;
+  try {
+    ses = makeSes(await resolveAwsContext(d.teamId));
+  } catch (e) {
+    await setError(d.id, errMsg(e));
+    return;
+  }
+  let ident;
+  try {
+    ident = await ses.send(
+      new GetEmailIdentityCommand({ EmailIdentity: d.name }),
+    );
+  } catch (e) {
+    if (errName(e) === "NotFoundException") {
+      const [row] = await db()
+        .update(domains)
+        .set({
+          status: "failed",
+          lastCheckedAt: new Date(),
+          lastError: "SES identity was removed; delete and re-add the domain.",
+        })
+        .where(eq(domains.id, d.id))
+        .returning();
+      if (row) await fanOutStatusChange(d.status, row, deps.enqueue);
+      return;
+    }
+    await setError(d.id, errMsg(e));
+    throw e;
+  }
+  const recs = await checkRecords(d.expectedRecords, deps.resolver);
+  const dkimOk = ident.DkimAttributes?.Status === "SUCCESS";
+  const mailFromOk =
+    ident.MailFromAttributes?.MailFromDomainStatus === "SUCCESS";
+  const spfOk = recs.some((r) => r.kind === "MAIL_FROM_SPF" && r.ok);
+  const dmarcOk = recs.some((r) => r.kind === "DMARC" && r.ok);
+  // SES is the authority on sending; SPF/DMARC are advisory and shown per-record.
+  const sesOk = dkimOk && mailFromOk;
+  const sesStatuses = [
+    ident.DkimAttributes?.Status,
+    ident.MailFromAttributes?.MailFromDomainStatus,
+  ];
+  const hardFailure = sesStatuses.some(
+    (s) => s === "FAILED" || s === "NOT_STARTED",
+  );
+  // Already verified and SES reports only a transient state: keep sending.
+  const transient = d.status === "verified" && !sesOk && !hardFailure;
+  const verified = sesOk || transient;
+  // Demotion opens a fresh 72 h window: the old one (set when the domain
+  // was added) has long passed and would fail it on the very next sweep.
+  const demoted = d.status === "verified" && !verified;
+  const expired =
+    d.status !== "verified" &&
+    !verified &&
+    !!d.verifyUntil &&
+    d.verifyUntil.getTime() < Date.now();
+  const [row] = await db()
+    .update(domains)
+    .set({
+      expectedRecords: recs,
+      dkimStatus: ident.DkimAttributes?.Status ?? null,
+      mailFromStatus: ident.MailFromAttributes?.MailFromDomainStatus ?? null,
+      spfOk,
+      dmarcOk,
+      lastCheckedAt: new Date(),
+      status: verified ? "verified" : expired ? "failed" : "pending",
+      verifiedAt: verified ? (d.verifiedAt ?? new Date()) : null,
+      ...(demoted && { verifyUntil: new Date(Date.now() + VERIFY_WINDOW_MS) }),
+      lastError: transient
+        ? `SES reported ${sesStatuses
+            .filter((s) => s && s !== "SUCCESS")
+            .join("/")}; will re-check`
+        : expired
+          ? "Verification timed out after 72 hours. Check the records and click Re-verify."
+          : null,
+    })
+    .where(eq(domains.id, d.id))
+    .returning();
+  if (row) await fanOutStatusChange(d.status, row, deps.enqueue);
+}
+
+/**
+ * Webhooks on status transitions: `domain.verified` when a domain becomes
+ * verified; `domain.failed` when a verified domain is demoted (the daily
+ * re-check found SES disagreeing) or a check fails it for good.
+ */
+async function fanOutStatusChange(
+  before: Domain["status"],
+  after: Domain,
+  enqueue: Enqueue,
+) {
+  if (after.status === before) return;
+  const type =
+    after.status === "verified"
+      ? "domain.verified"
+      : before === "verified" || after.status === "failed"
+        ? "domain.failed"
+        : null;
+  if (!type) return;
+  await fanOutEvent(
+    after.teamId,
+    type,
+    newId("evt"),
+    { domain: publicDomain(after) },
+    { enqueue },
+  );
+}
+
+export interface SweepCandidate {
+  id: string;
+  /** Verified domain due for its daily re-check (`verifyDomain` needs `force`). */
+  force: boolean;
+}
+
+const notCheckedFor = (seconds: number) =>
+  or(
+    isNull(domains.lastCheckedAt),
+    lt(domains.lastCheckedAt, sql`now() - make_interval(secs => ${seconds})`),
+  );
+
+/**
+ * Domains the verification sweep should enqueue: pending, provisioned
+ * (tokens stored), and not checked within the last SWEEP_STALE_S (rows past
+ * `verifyUntil` are included on purpose: the next check marks them
+ * `failed`); plus verified domains unchecked for RECHECK_AFTER_S, flagged
+ * `force` so the check runs and can demote them.
+ */
+export async function selectSweepCandidates(): Promise<SweepCandidate[]> {
+  const rows = await db()
+    .select({ id: domains.id, status: domains.status })
+    .from(domains)
+    .where(
+      and(
+        sql`${domains.dkimTokens} != '[]'::jsonb`,
+        or(
+          and(eq(domains.status, "pending"), notCheckedFor(SWEEP_STALE_S)),
+          and(eq(domains.status, "verified"), notCheckedFor(RECHECK_AFTER_S)),
+        ),
+      ),
+    )
+    .orderBy(domains.createdAt);
+  return rows.map((r) => ({ id: r.id, force: r.status === "verified" }));
+}
+
+/**
+ * Manual "Re-verify": resets the window and runs one forced check inline so
+ * the click answers right away; while the domain stays pending the sweep
+ * keeps checking it. A verified domain is not demoted up front: it keeps
+ * its status (and `verifiedAt`) unless the check finds SES disagreeing; a
+ * failed one goes back to pending so the check can decide.
+ */
+export async function reverifyDomain(
+  actor: TeamActor,
+  id: string,
+  deps: Pick<Deps, "resolver" | "enqueue">,
+): Promise<Result> {
+  if (!can(actor.role, "domains.manage")) return DENIED;
+  const d = await getDomain(actor.teamId, id);
+  if (!d) return NOT_FOUND;
+  // Before provisioning there is no identity to check; the job will verify.
+  if (d.dkimTokens.length === 0)
+    return {
+      ok: false,
+      code: "conflict",
+      error: "Provisioning hasn't finished yet.",
+    };
+  const status = d.status === "failed" ? "pending" : d.status;
+  await db()
+    .update(domains)
+    .set({
+      status,
+      verifyUntil: new Date(Date.now() + VERIFY_WINDOW_MS),
+      lastError: null,
+    })
+    .where(eq(domains.id, id));
+  await recordAudit({
+    teamId: actor.teamId,
+    actorUserId: actor.userId,
+    action: "domains.reverify",
+    targetType: "domain",
+    targetId: id,
+    diff: { status: { from: d.status, to: status } },
+    ...actor.meta,
+  });
+  try {
+    await verifyDomain(id, deps, { force: true });
+  } catch (e) {
+    return {
+      ok: false,
+      code: "internal_error",
+      error: `Check failed: ${errMsg(e)}`,
+    };
+  }
+  return { ok: true, data: undefined };
+}
+
+export interface DeleteOutcome {
+  /** Cloudflare records we created but could not remove (0 in manual mode). */
+  leftoverDnsRecords: number;
+}
+
+/**
+ * Remove the SES identity and the Cloudflare records we created, then the
+ * row. The row survives an SES failure so the user can retry; Cloudflare
+ * failures are reported as `leftoverDnsRecords` rather than blocking. With
+ * AWS disconnected there is nothing to clean up on either side (the SES
+ * identity belongs to an account we can no longer reach, and the Cloudflare
+ * records are left for the same reason); the row is just deleted and every
+ * record we created counts as left over.
+ */
+export async function deleteDomain(
+  actor: TeamActor,
+  id: string,
+  deps: Pick<Deps, "fetch">,
+): Promise<Result<DeleteOutcome>> {
+  if (!can(actor.role, "domains.manage")) return DENIED;
+  const d = await getDomain(actor.teamId, id);
+  if (!d) return NOT_FOUND;
+  const connected = (await getTeamAws(actor.teamId)) !== null;
+  if (connected) {
+    try {
+      const ses = makeSes(await resolveAwsContext(actor.teamId));
+      await ses
+        .send(new DeleteEmailIdentityCommand({ EmailIdentity: d.name }))
+        .catch((e: unknown) => {
+          if (errName(e) !== "NotFoundException") throw e;
+        });
+    } catch (e) {
+      return {
+        ok: false,
+        code: "internal_error",
+        error: `Could not remove: ${errMsg(e)}`,
+      };
+    }
+  }
+  let leftoverDnsRecords = 0;
+  if (!connected) {
+    leftoverDnsRecords = d.expectedRecords.filter((r) => r.cloudflareId).length;
+  } else if (d.dnsMode === "auto" && d.cloudflareZoneId) {
+    const zoneId = d.cloudflareZoneId;
+    const cf = await cloudflareClient(actor.teamId, deps.fetch);
+    for (const r of d.expectedRecords) {
+      if (!r.cloudflareId) continue;
+      if (!cf) {
+        leftoverDnsRecords++;
+        continue;
+      }
+      try {
+        await cf.deleteRecord(zoneId, r.cloudflareId);
+      } catch (e) {
+        leftoverDnsRecords++;
+        console.warn(
+          `[domains] could not delete Cloudflare record ${r.type} ${r.name} (${r.cloudflareId}):`,
+          errMsg(e),
+        );
+      }
+    }
+  }
+  await db().delete(domains).where(eq(domains.id, id));
+  await recordAudit({
+    teamId: actor.teamId,
+    actorUserId: actor.userId,
+    action: "domains.delete",
+    targetType: "domain",
+    targetId: id,
+    diff: { name: { from: d.name } },
+    ...actor.meta,
+  });
+  return { ok: true, data: { leftoverDnsRecords } };
+}
+
+/** REST shape: DNS records without the Cloudflare ids, no internals. */
+export const publicDomain = (d: Domain) => ({
+  id: d.id,
+  name: d.name,
+  status: d.status,
+  dnsMode: d.dnsMode,
+  region: d.region,
+  records: d.expectedRecords.map((r) => ({
+    kind: r.kind,
+    type: r.type,
+    name: r.name,
+    value: r.value,
+    priority: r.priority ?? null,
+    ok: r.ok,
+  })),
+  lastError: d.lastError,
+  createdAt: d.createdAt,
+  verifiedAt: d.verifiedAt,
+});

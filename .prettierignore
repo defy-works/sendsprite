@@ -1,0 +1,10 @@
+apps/web/next-env.d.ts
+**/.next/
+**/node_modules/
+**/.pgdata/
+**/dist/
+.wolf/
+.opencode/
+.claude/
+CLAUDE.md
+AGENTS.md

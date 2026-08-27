@@ -1,0 +1,162 @@
+export const metadata = {
+  title: "CLI",
+  description:
+    "npx sendsprite — login, whoami, domains list, emails send, emails tail and templates pull/push.",
+};
+
+# CLI
+
+`npx sendsprite` is the `sendsprite` npm package's binary — no separate
+install, and the same client underneath.
+
+## login
+
+```bash
+npx sendsprite login --api-key ss_live_...
+```
+
+That logs into the hosted instance at `https://sendsprite.com`. Self-hosting?
+Add `--url https://mail.example.com`; the origin is saved alongside the key.
+
+```
+Logged in to Acme as ci (ss_live_ab…)
+```
+
+Missing values are prompted for on an interactive terminal and are an error
+otherwise. The credentials are verified with a `/me` call before anything is
+written, then saved to `config.json` with mode `600`. The directory is the
+first of `$SENDSPRITE_CONFIG_DIR`, `$XDG_CONFIG_HOME/sendsprite`,
+`%APPDATA%\sendsprite` (Windows only) and `~/.config/sendsprite` that
+applies.
+
+`SENDSPRITE_API_KEY` works instead of logging in — handy in CI — with
+`SENDSPRITE_URL` alongside it for a self-hosted instance. When the key is in
+the environment the saved file is not consulted at all, and `SENDSPRITE_URL`
+without `SENDSPRITE_API_KEY` is an error rather than a fallback: the two are
+never mixed, so an exported URL can never send a saved key somewhere else.
+Any command other than `login` fails with a message pointing at
+`sendsprite login` when neither is available.
+
+A `401`, `403` or `404` is reported with the instance it was sent to and
+whether the credentials came from the environment or the config file — the
+first question when a stale exported key shadows a fresh `login`. `--help`
+and `--version` need no credentials.
+
+Everything except `whoami` and `emails send` needs a `full` key; a
+`sending_only` key gets `forbidden` (403) on the rest.
+
+## whoami
+
+```bash
+npx sendsprite whoami
+```
+
+```
+Team  Acme (vhMxwjVEBfgEozUN…)
+Key   ci (ss_live_ab…) · full
+```
+
+`--json` prints the raw `/me` response.
+
+## domains list
+
+```bash
+npx sendsprite domains list
+```
+
+```
+NAME               STATUS    MODE    REGION     ID
+mail.example.com   verified  auto    us-east-1  dom_7q2…
+other.example.com  pending   manual  us-east-1  dom_9k4…
+```
+
+`MODE` is the domain's `dnsMode`: `auto` (records managed in a connected
+Cloudflare zone) or `manual`. `--json` prints the raw array instead of the
+table. One page is shown; `--limit <n>` sets its size (1–100, default 25) and
+a trailing `... more` line means there is another.
+
+## emails send
+
+```bash
+npx sendsprite emails send \
+  --from "Acme <hello@mail.example.com>" \
+  --to ada@example.com \
+  --to grace@example.com \
+  --subject "Hello" \
+  --text "It works." \
+  --tag env=ci
+```
+
+```
+Queued em_4f9…
+```
+
+| Flag                                     | Notes                                               |
+| ---------------------------------------- | --------------------------------------------------- |
+| `--from`                                 | Required.                                           |
+| `--to`, `--cc`, `--bcc`, `--reply-to`    | Repeatable; at least one `--to`.                    |
+| `--subject`                              | Required.                                           |
+| `--text`, `--html`, `--html-file <path>` | At least one body.                                  |
+| `--tag k=v`                              | Repeatable.                                         |
+| `--schedule <iso>`                       | Maps to `scheduledAt`.                              |
+| `--idempotency-key`                      | Makes the send safely retryable.                    |
+| `--json`                                 | Print the API response instead of the summary line. |
+
+## emails tail
+
+```bash
+npx sendsprite emails tail
+```
+
+```
+em_4f9…  delivered  ada@example.com   Hello
+em_5a1…  bounced    grace@example.com Hello
+```
+
+Subscribes to the instance's change stream and, for each email change,
+fetches the email and prints its id, status, recipients and subject — one
+line per change, in order. Needs a `full` key. `--json` prints one JSON object
+per line (the full email, with `events`); a failed lookup is a
+`{ id, error }` line there and a stderr line otherwise, so a `jq` pipe never
+breaks. Ctrl-C closes the stream.
+
+## templates pull / push
+
+```bash
+npx sendsprite templates pull ./emails    # write every template to ./emails
+npx sendsprite templates push ./emails    # create what is missing, update the rest
+```
+
+Templates as files in your repository: three files per template, named by the
+slug — `<slug>.json` (`name`, `subject`, `variablesSchema`), `<slug>.html`, and
+`<slug>.txt` when there is a text body. Needs a `full` key.
+
+| Flag        | Meaning                                               |
+| ----------- | ----------------------------------------------------- |
+| `--dry-run` | Report what would change and write (or send) nothing. |
+
+Each prints one line per template — `wrote`/`unchanged` for `pull`,
+`created`/`updated`/`unchanged` (with the fields that changed) for `push` —
+and a `N templates, M changed` total. Notes about what was left alone go to
+stderr. `push` reads and validates the whole directory before sending
+anything, so one broken file means nothing is pushed; a `.html` or `.txt`
+with no matching `.json` is reported and ignored. A comparison is
+byte-for-byte on what `pull` wrote, so an unedited round trip sends no
+request and cuts no version.
+
+Both directions are conservative about what they will not do:
+
+- **`push` never deletes.** A template on the instance with no file in the
+  directory is reported and left alone.
+- **A missing `<slug>.txt` means "no opinion", not "clear the text body".** An
+  absent file is ambiguous, so `push` reports the difference and leaves the
+  stored text body as it is.
+- **`pull` refuses a slug it did not expect.** A file name comes from the
+  server, so it is checked against the slug rule before anything is written.
+- **`pull` leaves local-only templates alone** and tells you `push` would
+  create them.
+
+Put `* text=auto eol=lf` in a `.gitattributes` beside the files: on Windows with
+`core.autocrlf=true` a checked-out body becomes CRLF, and `push` will correctly
+— but confusingly — see that as a change to every template. Full reference:
+[Templates](/docs/templates).

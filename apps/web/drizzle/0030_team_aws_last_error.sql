@@ -1,0 +1,1 @@
+ALTER TABLE "team_aws" ADD COLUMN "last_error" text;

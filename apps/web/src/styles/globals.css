@@ -1,0 +1,352 @@
+@import "tailwindcss";
+
+/* ============================================================
+ * Design language inherited from Defyworks site_v2 /
+ * aws-cost-dashboard. Tokens, glass surfaces, hairlines and the
+ * mono "num-stamp" label are carried over verbatim so Sendsprite
+ * reads as part of the same family.
+ *
+ * App surfaces (/app/*) use the dense variant: no Lenis, no ring
+ * cursor, no marquees. The landing page (Phase 4) may add them.
+ * ============================================================ */
+
+/* ========== FONTS (self-hosted, no external CDN) ========== */
+
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("/fonts/SpaceGrotesk-Variable.woff2") format("woff2-variations");
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "SUIT";
+  src: url("/fonts/SUIT-Variable.woff2") format("woff2-variations");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ========== THEME TOKENS (Tailwind v4 @theme) ========== */
+
+@theme {
+  /* Colors — ink + indigo scale */
+  --color-ink: #000000;
+  --color-shadow: #0a0a0a;
+  /* One step above the page, for anything that floats over it. */
+  --color-raised: #131317;
+  --color-indigo-50: #eef2ff;
+  --color-indigo-100: #e0e7ff;
+  --color-indigo-200: #c7d2fe;
+  --color-indigo-300: #a5b4fc;
+  --color-indigo-400: #818cf8;
+  --color-indigo-500: #6366f1;
+  --color-indigo-600: #4f46e5;
+  --color-indigo-700: #4338ca;
+  --color-indigo-800: #312e81;
+  --color-indigo-900: #1e1b4b;
+  --color-indigo-950: #0d0c2a;
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-danger: #ef4444;
+
+  /* Fonts */
+  --font-display: "Space Grotesk", "SUIT", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Space Grotesk", "SUIT", ui-sans-serif, system-ui, sans-serif;
+  --font-ko: "SUIT", "Space Grotesk", ui-sans-serif, sans-serif;
+  --font-mono:
+    ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+
+  /* Motion — durations */
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+  --duration-slow: 400ms;
+  --duration-slower: 800ms;
+
+  /* Motion — easings */
+  --ease-out-soft: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out-soft: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-spring: cubic-bezier(0.68, -0.55, 0.265, 1.55);
+
+  /* Radii */
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 20px;
+
+  /* Containers / sizing */
+  --breakpoint-3xl: 1920px;
+
+  /* Shadows */
+  --shadow-glow-indigo: 0 0 40px rgba(99, 102, 241, 0.35);
+  --shadow-glow-indigo-lg: 0 0 80px rgba(99, 102, 241, 0.45);
+  --shadow-glass: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+/* ========== BASE ========== */
+
+:root {
+  color-scheme: dark;
+}
+
+html {
+  background: var(--color-ink);
+  color: white;
+  font-family: var(--font-display);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  min-height: 100dvh;
+  overflow-x: hidden;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-indigo-500);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/*
+ * Except the editor canvas's own editables.
+ *
+ * A selected block already draws a 2px indigo outline, and focusing the
+ * paragraph inside it drew the same ring again two pixels in — two identical
+ * rectangles for one thing. Nothing is lost: focusing an editable selects its
+ * block, so the block's outline *is* the focus indicator.
+ *
+ * Here rather than as a utility on the element, because this rule is
+ * unlayered and every Tailwind utility is in `@layer utilities` — an unlayered
+ * declaration wins over a layered one whatever their specificities are, so
+ * `focus-visible:outline-none` on the element loses to the rule above.
+ */
+.ss-canvas [contenteditable]:focus-visible {
+  outline: none;
+}
+
+::selection {
+  background: var(--color-indigo-500);
+  color: white;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  z-index: 999;
+  padding: 1rem 1.5rem;
+  background: var(--color-indigo-500);
+  color: white;
+  text-decoration: none;
+  border-radius: var(--radius-md);
+}
+.skip-link:focus {
+  left: 1rem;
+  top: 1rem;
+}
+
+/* Tabular figures everywhere numbers are compared column-wise.
+ * Space Grotesk's default figures are proportional, which makes
+ * a stack of dollar amounts ragged and hard to scan. */
+.tnum,
+table {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+[lang="ko"],
+.font-ko {
+  font-family: var(--font-ko);
+}
+
+/* ========== UTILITIES ========== */
+
+@utility glass {
+  background: color-mix(in srgb, var(--color-shadow) 52%, transparent);
+  backdrop-filter: blur(14px) saturate(1.1);
+  -webkit-backdrop-filter: blur(14px) saturate(1.1);
+  border: 1px solid color-mix(in srgb, white 18%, transparent);
+  border-radius: var(--radius-lg);
+}
+
+@utility glass-strong {
+  background: color-mix(in srgb, var(--color-shadow) 64%, transparent);
+  backdrop-filter: blur(18px) saturate(1.2);
+  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  border: 1px solid color-mix(in srgb, white 22%, transparent);
+  border-radius: var(--radius-lg);
+}
+
+/*
+ * Anything that floats *over* content: menus, listboxes, the date popover,
+ * toasts, dialogs.
+ *
+ * Not `glass` or `glass-strong`. Those are for panels that sit *in* the page,
+ * where letting the backdrop through is the point. A dropdown is read against
+ * whatever it happens to cover, and at 52–64% the rows underneath came
+ * straight through the labels — the team switcher over a list of teams was
+ * two lists of teams. Near-opaque and one step lighter than the page, so the
+ * panel reads as a layer above rather than a tint of what is behind it. The
+ * blur stays for the edge, not for the fill.
+ */
+@utility popover {
+  background: color-mix(in srgb, var(--color-raised) 97%, transparent);
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  border: 1px solid color-mix(in srgb, white 14%, transparent);
+  border-radius: var(--radius-lg);
+}
+
+/* Hairline — 1px sharp on any DPR, indigo-tinted white at low opacity */
+@utility hairline {
+  height: 1px;
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, white 22%, transparent),
+    color-mix(in srgb, white 12%, transparent)
+  );
+}
+
+/* Outlined display type — stroke via text-stroke */
+@utility outlined {
+  color: transparent;
+  -webkit-text-stroke: 1.5px currentColor;
+  text-stroke: 1.5px currentColor;
+  paint-order: stroke fill;
+}
+
+/* Ambient hairline grid overlay — extremely subtle graph-paper texture */
+@utility grid-hairlines {
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 80px 80px;
+}
+
+/* Number-stamp for section counters and metric labels */
+@utility num-stamp {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--color-indigo-300) 80%, transparent);
+}
+
+/* Entry reveal — staggered fade+rise on initial load. */
+@utility rise-in {
+  opacity: 0;
+  transform: translateY(20px);
+  animation: rise-in 600ms var(--ease-out-soft) forwards;
+}
+@keyframes rise-in {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Big metric readout — the one place we let type get large. */
+@utility metric-xl {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 0.95;
+  font-variant-numeric: tabular-nums;
+  font-size: clamp(2.25rem, 5vw, 3.5rem);
+}
+
+/* ========== OVERLAY / ENTRY MOTION ==========
+ *
+ * Declared at the top level rather than inside a `@utility`, because these are
+ * referenced from `animate-[...]` arbitrary values in components. All of them
+ * are wrapped in `motion-safe:` at the call site, and the
+ * `prefers-reduced-motion` block above collapses anything that is not.
+ */
+
+@keyframes modal-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes modal-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+}
+
+/* Menus and listboxes: a short, small rise from the trigger's edge. */
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.97);
+  }
+}
+
+@keyframes drawer-in {
+  from {
+    transform: translateX(-100%);
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px) scale(0.98);
+  }
+}
+
+/* Row/card entry, staggered by an inline `animation-delay`. Distinct from
+ * `rise-in`: shorter and shallower, because a table of forty rows animating
+ * 20px each reads as the page failing to settle. */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@utility fade-up {
+  animation: fade-up var(--duration-normal) var(--ease-out-soft) backwards;
+}
+
+/* Indeterminate shimmer for loading surfaces. */
+@utility shimmer {
+  position: relative;
+  overflow: hidden;
+}
+@utility shimmer-bar {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.04) 0%,
+    rgba(255, 255, 255, 0.1) 50%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.4s var(--ease-in-out-soft) infinite;
+}
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}

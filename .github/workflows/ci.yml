@@ -1,0 +1,157 @@
+name: CI
+on:
+  push:
+    # Both names, so a push runs CI whichever the repository ends up using
+    # (the checkout is `master`; GitHub creates `main` for new repos).
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: sendsprite
+          POSTGRES_PASSWORD: sendsprite
+          POSTGRES_DB: sendsprite
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sendsprite"
+          --health-interval 5s
+          --health-retries 20
+    env:
+      APP_URL: http://localhost:3000
+      APP_SECRET: ci-secret-ci-secret-ci-secret-ci-secret
+      DATABASE_URL: postgres://sendsprite:sendsprite@localhost:5432/sendsprite
+      # Integration tests use the service container instead of downloading
+      # embedded-postgres binaries.
+      TEST_DATABASE_URL: postgres://sendsprite:sendsprite@localhost:5432/sendsprite
+      E2E_PORT: "3000"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run lint
+      - run: bun run format:check
+      - run: bun run test
+      # Build the two published packages and dry-run the tarballs: a broken
+      # `files` list or `exports` map fails here instead of at publish time.
+      - run: bun run --filter sendsprite build
+      - run: bun run --filter @sendsprite/mcp build
+      - name: Pack check (sendsprite)
+        run: npm pack --dry-run
+        working-directory: packages/sdk
+      - name: Pack check (@sendsprite/mcp)
+        run: npm pack --dry-run
+        working-directory: packages/mcp
+      - run: bun run test:integration
+      # The vitest suite runs under Node (vitest's bin has a node shebang), so
+      # it cannot catch a Bun-runtime regression in the webhook SSRF pin --
+      # which is how a silently unpinned delivery path shipped once already.
+      # This step runs that check under Bun, on purpose.
+      - name: Verify the delivery pin under Bun
+        run: bun run verify:pin
+      - run: bunx playwright install --with-deps chromium
+        working-directory: apps/web
+      - run: bun run db:migrate
+        working-directory: apps/web
+      - run: bun run test:e2e
+        working-directory: apps/web
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+          retention-days: 7
+
+  cfn:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # For the OIDC token AWS exchanges for the publish role below.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install cfn-lint
+      - run: cfn-lint infra/aws/sendsprite-connect.yaml
+      # Publish `latest/` on every push to the default branch, so the template
+      # the one-click wizard serves is the template in the repo. It used to be
+      # uploaded by hand, and drifted: a stack that could not send (bug-016)
+      # stayed live for two days that way. The versioned `v*/` copy is
+      # published by the tag workflow (publish-image.yml), since this one does
+      # not run on tags.
+      #
+      # Credentials come from an IAM role that trusts GitHub's OIDC provider
+      # for exactly this repository on `master` and `v*` tags, and may only
+      # `s3:PutObject` under `sendsprite-cfn/`. No secret is involved.
+      #
+      # The bucket serves `latest/` publicly through a bucket policy, NOT
+      # through object ACLs: Object Ownership is BucketOwnerEnforced, so
+      # `--acl public-read` is rejected with AccessControlListNotSupported.
+      - uses: aws-actions/configure-aws-credentials@v4
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        with:
+          role-to-assume: arn:aws:iam::582071018365:role/sendsprite-ci-cfn-publish
+          aws-region: us-east-1
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: aws s3 cp infra/aws/sendsprite-connect.yaml s3://sendsprite-cfn/latest/sendsprite-connect.yaml --content-type text/yaml
+
+  # Deliberately no `needs: test`: the image build is independent of the test
+  # suite, so both jobs run in parallel and a red test job still shows whether
+  # the Docker image builds and boots.
+  docker:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: sendsprite
+          POSTGRES_PASSWORD: sendsprite
+          POSTGRES_DB: sendsprite
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sendsprite"
+          --health-interval 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: sendsprite:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # Boots the standalone image against the service Postgres: proves the
+      # traced node_modules/.bun symlinks, boot migrations and /api/health work.
+      - name: Smoke-test image
+        run: |
+          docker run -d --name ss --network host \
+            -e APP_URL=http://localhost:3000 \
+            -e APP_SECRET=ci-secret-ci-secret-ci-secret-ci-secret \
+            -e DATABASE_URL=postgres://sendsprite:sendsprite@localhost:5432/sendsprite \
+            -e EMAIL_PASSWORD_ENABLED=true \
+            sendsprite:ci
+          for i in $(seq 1 30); do
+            if curl -fsS localhost:3000/api/health; then
+              echo; echo "healthy after ${i} tries"; exit 0
+            fi
+            sleep 2
+          done
+          echo "image did not become healthy"; exit 1
+      - name: Container logs
+        if: failure()
+        run: docker logs ss || true
+      # This job stays push-free so it can also run on pull requests, where
+      # the token is read-only. Publishing to GHCR is publish-image.yml, which
+      # runs on the default branch and on `v*` tags and repeats this same boot
+      # check per architecture before it moves a tag.

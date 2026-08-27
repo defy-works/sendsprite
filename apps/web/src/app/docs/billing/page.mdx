@@ -1,0 +1,200 @@
+export const metadata = {
+  title: "Billing",
+  description:
+    "Plans, included volume, overage, usage metering and the customer portal on the hosted Sendsprite service — and what turning billing on means for an instance you host yourself.",
+};
+
+# Billing
+
+Billing belongs to the **hosted service at sendsprite.com**. On an instance you
+host yourself `BILLING_ENABLED` defaults to `false`, and with it off there is no
+Billing page, no checkout, no provider webhook endpoint, no billing job and no
+plan-derived limit — sending behaves exactly as it did before the feature
+existed. If you never turn the flag on, none of this page applies to you; if you
+are thinking of turning it on, read **Turning billing on** in
+[Self-hosting](/docs/self-hosting) first, because the flip is not free.
+
+## What you are paying for
+
+Sendsprite sends through **your own Amazon SES account** — the one you connect
+in **Dashboard → Settings → Sending**. AWS bills you for delivery at its own
+rates, directly, and Sendsprite never marks it up or resells it. There is no
+per-email cost on our side to recover.
+
+What the plans pay for is the control plane: the API, the dashboard, domain
+provisioning and verification, the event pipeline, webhook delivery, tracking,
+the SMTP relay, the CLI and the MCP server.
+
+## Plans
+
+Three tiers — **Free**, **Pro** and **Scale** — each with a fixed monthly price
+and an included volume of emails, and the two paid tiers with a per-1,000
+overage rate beyond it. The current prices and volumes are in **Dashboard →
+Settings → Billing**, which reads them from the payment provider's own
+catalogue.
+
+They are deliberately not repeated here. No price, no product id and no
+allowance is compiled into Sendsprite: each product carries `plan`,
+`included_emails` and `overage_per_1k_cents` in its provider-side metadata, the
+app resolves a subscription to entitlements by reading those three fields, and a
+price change in the provider dashboard therefore takes effect without a deploy.
+A table on this page would start drifting the day it was written.
+
+"Emails" means messages accepted by the Sendsprite API, the SMTP relay or the
+dashboard. A message refused before it is queued — an unverified domain, a
+suppressed recipient, a validation error — is never counted. A message that
+later bounces **is** counted: it was sent. Recipients do not multiply the count:
+one API call with ten `to` addresses is one email.
+
+## Included volume, overage and limits
+
+On a plan with **no metered price** — Free is one — the included volume is a
+hard limit. Past it the API answers `429 monthly_quota_exceeded` until the
+period rolls over.
+
+On a plan **with** a metered price, sending past the included volume is billed
+at the overage rate rather than blocked: losing your sending because you had a
+good week is the wrong failure. Which of the two a subscription gets is read off
+the subscription itself, not off a flag in our code.
+
+Either way every response from the emails endpoints carries the usual headers:
+
+```
+x-ratelimit-limit: 50000
+x-ratelimit-remaining: 48211
+x-ratelimit-reset: 1789084800
+```
+
+Where the plan's included volume is the binding cap, `x-ratelimit-limit` is that
+volume and `x-ratelimit-reset` is the end of your **billing period** as a Unix
+timestamp.
+
+On a plan whose overage is billed there is no monthly ceiling to report, so the
+headers fall through to whatever binds next — your own SES account's 24-hour
+quota (each team connects its own AWS account), which is a trailing window and
+therefore carries no `x-ratelimit-reset`, or `unlimited` when there is no cap
+of any kind. The same is true in the other direction: a
+`team_settings.daily_limit`, or the instance-wide default daily limit an
+operator sets under `/admin`, binds before the plan does, and then the reset is
+the next UTC midnight. The instance's default _monthly_ limit never touches a
+team with billing on: the plan decides the monthly allowance, including when
+the plan says there is none.
+
+### The overage spend ceiling
+
+The paid tiers carry a **ceiling on overage charges** per cycle (`cap_amount` on
+the metered price — $200 on Pro, $500 on Scale). It exists so that a runaway
+loop cannot turn into a five-figure invoice.
+
+**Reaching it does not stop your sending.** That is deliberate, and it is the
+opposite of what the word "cap" usually suggests: the ceiling bounds the _bill_,
+not the _service_. Past it you keep sending and we stop charging for the excess.
+Nothing in Sendsprite enforces it either — it is provider configuration, applied
+when the invoice is drawn, and no code path in this app reads it except to
+display it.
+
+If you want sending itself to stop at a number, ask for
+`team_settings.monthly_limit` to be set: that is a hard cap and it takes
+precedence over the plan.
+
+## Your billing period
+
+Your period runs from the day you subscribed, not from the 1st: subscribe on the
+10th and your allowance renews on the 10th. The usage figure, the meter on the
+billing page and `x-ratelimit-reset` all follow that **billing** period — the
+calendar month is not involved.
+
+Free teams have no subscription and therefore no anniversary, so their window is
+the UTC calendar month.
+
+If a renewal has not been confirmed by the provider yet, the stored period is
+rolled forward by its own length so there is always a window in force. That
+keeps the anniversary you bought rather than jumping the boundary to the 1st;
+for a subscription billed near the end of a month it can drift by a day or so
+while the renewal is late, and it settles as soon as the renewal lands.
+
+## How usage is measured
+
+Usage is rolled up **hourly**. Once an hour has closed and settled for 30
+minutes, a sweep (at 37 minutes past each hour) sends one usage record for it
+to the payment provider, carrying the hour's count in `metadata.count`.
+Nothing is sent per email, so a slow or unavailable payment provider can never
+slow down or fail a send — the worst case is that the usage figure on your
+invoice catches up a little later. Each record carries a deterministic id, so a
+retried delivery is discarded by the provider instead of being billed twice.
+
+**We meter on acceptance.** The unit is a message the API accepted, not a
+message SES delivered. Once an hour has been reported, that hour is final: an
+email that is cancelled or fails more than about 30 minutes after its hour
+closed has already been counted, and nothing un-counts it. In practice a send
+resolves within minutes of being accepted, so the window is narrow — but it is
+real, and this is the honest description of what you are billed for.
+
+The number on your billing page is read live from your email log, so it is
+always current; the "reported to the payment provider" figure beside it is how
+much has reached the provider so far, and it lags by up to about ninety minutes.
+
+## Upgrading, downgrading and payment methods
+
+**Dashboard → Settings → Billing**:
+
+- **Choose** on a plan opens a checkout for it. A change takes effect once the
+  payment clears and the provider's webhook lands. It is how a team with no
+  subscription buys its first one.
+- Once you have a subscription the plan tiles show **Change in portal**
+  instead. Plan changes are made on the subscription you already have, so a
+  second checkout is never opened — and never offered.
+- **Manage billing** opens the customer portal: plan changes, payment methods,
+  invoices, receipts and cancellation.
+
+Owners and admins can change the plan (`billing.manage`); members see the plan
+and the usage but get no buttons.
+
+Cancelling keeps your plan until the end of the period you have paid for; after
+that the team returns to the Free plan's limits.
+
+## When a payment fails
+
+The provider marks the subscription `past_due` and retries the charge. Your plan
+keeps working for **7 days** from that moment, and the billing page shows an
+amber banner carrying the deadline.
+
+Past those 7 days the team is held to the **Free plan's allowance**. The
+subscription stays open, the portal keeps working, and the paid caps come back
+the moment a charge succeeds. Sending is not cut off the hour a card expires,
+and nothing is deleted.
+
+## Self-hosting
+
+With `BILLING_ENABLED=false` (the default):
+
+- no Billing page, and no Billing card under Settings;
+- `POST /api/billing/webhook` returns 404;
+- no billing job is registered with the worker, and no payment SDK is loaded;
+- the only send limits are the ones you set yourself — per team under
+  **Admin → Organizations** (`team_settings.daily_limit` / `monthly_limit`),
+  or the instance-wide default daily and monthly limits under **Admin →
+  Instance** for teams with none of their own — and each team's SES account
+  quota.
+
+Turning it on needs `POLAR_ACCESS_TOKEN`, `POLAR_WEBHOOK_SECRET`, `POLAR_SERVER`
+and a webhook endpoint registered with the provider at
+`https://your-instance/api/billing/webhook`, plus the products, the meter and
+the metered prices set up on the provider side. The runbook — including the
+grandfathering step that keeps the flip from capping every existing team — is
+under **Turning billing on** in [Self-hosting](/docs/self-hosting).
+
+Even on the hosted service, `team_settings` wins over the plan wherever it is
+set — per team and per column, so one team's monthly cap can be lifted without
+touching its plan. It is the operator's escape hatch.
+
+## Payments and invoicing
+
+Payments on the hosted service are processed by **Polar**, acting as merchant of
+record: Polar is the seller on your invoice and handles VAT and sales tax.
+Invoices and receipts live in the customer portal.
+
+Your Sendsprite **team id** is the customer reference passed to Polar, so it
+appears on the customer record there. Note that team ids carry no prefix, unlike
+every other public Sendsprite id (`em_`, `dom_`, `key_`, `wh_`) — they come from
+the authentication provider.

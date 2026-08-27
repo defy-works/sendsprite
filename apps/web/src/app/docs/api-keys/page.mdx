@@ -1,0 +1,110 @@
+export const metadata = {
+  title: "API keys",
+  description:
+    "Full vs sending-only keys, domain scoping, and how to rotate or revoke a Sendsprite key.",
+};
+
+# API keys
+
+Every call to `/api/v1` authenticates with a bearer key:
+
+```
+Authorization: Bearer ss_live_...
+```
+
+The SDK sends that header for you — `new Sendsprite({ apiKey })`, or leave it
+out and set `SENDSPRITE_API_KEY`. The same variable serves the
+[CLI](/docs/cli) and the [MCP server](/docs/mcp), and the key doubles as the
+password of the [SMTP relay](/docs/sending#smtp-relay).
+
+Keys are created in **Dashboard → API keys** (`/app/api-keys`) or over the
+API with a `full` key.
+
+## The secret
+
+A secret is `ss_live_` followed by 32 random bytes in base64url. It is
+returned **once**, by the create call, and never again: only its SHA-256 hash
+is stored, and the dashboard identifies a key by its first 16 characters
+(`ss_live_` plus 8) plus the name you gave it.
+
+An unknown secret and a revoked one are indistinguishable from the outside —
+both answer `unauthorized` (401), as does a missing or malformed header.
+
+## Permissions
+
+| Permission     | Can do                                                                                                                          |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `full`         | Everything: send, read emails, manage domains, keys, webhooks and suppressions, read stats, open the live stream.               |
+| `sending_only` | `POST /emails`, `POST /emails/batch`, and `GET /me`. Everything else answers `forbidden` (403) with "This key is sending-only." |
+
+A `sending_only` key also cannot bypass suppressions: `overrideSuppression`
+is silently ignored on it, so it can never mail an address someone put on the
+list by hand.
+
+Give the key that lives in your production app `sending_only`, and the same
+to an MCP agent. Keep `full` for CI, scripts and the CLI.
+
+`GET /me` — `sendsprite.me()` — is how a key finds out what it is: the team
+(`id`, `name`) and the key itself (`id`, `name`, `permission`, `keyPrefix`,
+`domainId`). `sendsprite login` and `whoami` use it.
+
+## Domain scoping
+
+Pass `domainId` when creating a key and it may only send from that domain; a
+`from` on any other verified domain is refused with `forbidden` and "This API
+key is restricted to another domain." The domain must already belong to your
+team, otherwise the create is a `validation_error` ("Domain not found.").
+
+```ts
+const key = await sendsprite.apiKeys.create({
+  name: "billing-service",
+  permission: "sending_only",
+  domainId: "dom_...",
+});
+key.secret; // ss_live_… — the only time you will see it
+```
+
+Over REST:
+
+```bash
+curl https://sendsprite.com/api/v1/api-keys \
+  -H "Authorization: Bearer ss_live_..." \
+  -H "Content-Type: application/json" \
+  -d '{ "name": "billing-service", "permission": "sending_only", "domainId": "dom_..." }'
+```
+
+```json
+{ "id": "key_...", "secret": "ss_live_..." }
+```
+
+`name` is required (1–64 characters, trimmed); `permission` defaults to
+`full`.
+
+## Listing, rotating, revoking
+
+```ts
+const { data, nextCursor } = await sendsprite.apiKeys.list({ limit: 50 });
+await sendsprite.apiKeys.revoke("key_...");
+```
+
+`GET /api/v1/api-keys` returns live keys, newest first, as
+`{ data, nextCursor }`. Each entry carries `id`, `name`, `permission`,
+`keyPrefix`, `domainId`, `lastUsedAt` and `createdAt` — never the secret.
+`lastUsedAt` is written at most once a minute per key, so it is a coarse
+"is this key still in use?" signal rather than an audit trail.
+
+There is no rotate endpoint, because rotation should never have a window
+where neither key works. Rotate by overlapping:
+
+1. Create a second key with the same permission and scope.
+2. Deploy it.
+3. Confirm the old key's `lastUsedAt` has stopped moving.
+4. `DELETE /api/v1/api-keys/:id` (`apiKeys.revoke`) on the old one — `204`.
+
+Revoking is immediate and irreversible — the row is kept (greyed out in the
+dashboard, hidden from the API list) so the audit history still names it, but
+the secret stops authenticating on the next request. Deleting a key does not
+touch the emails it sent.
+
+Keys are also the password for the [SMTP relay](/docs/sending#smtp-relay), so
+revoking one logs out whatever was relaying with it.

@@ -1,0 +1,2 @@
+CREATE INDEX "suppressions_team_lower_email_idx" ON "suppressions" USING btree ("team_id",lower(btrim("email")));--> statement-breakpoint
+CREATE INDEX "contacts_book_id_idx" ON "contacts" USING btree ("book_id","id");

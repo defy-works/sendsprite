@@ -1,0 +1,112 @@
+export const metadata = {
+  title: "Getting started",
+  description:
+    "Install the sendsprite SDK, create an API key and send your first email.",
+};
+
+# Getting started
+
+Sendsprite is an email API on top of Amazon SES. Sign in at
+[sendsprite.com](https://sendsprite.com) or [run your own instance](/docs/self-hosting);
+either way you connect your own AWS account, verify a sending domain, and
+your app talks to `/api/v1` — through the `sendsprite` SDK, plain REST, the
+CLI, an MCP server or SMTP.
+
+Everything below assumes AWS is connected and one sending domain is verified.
+If not, start at [Domains](/docs/domains) (self-hosting first, if that is
+you).
+
+## 1. Create an API key
+
+Open **Dashboard → API keys** (`/app/api-keys`) and create a key. The secret
+looks like `ss_live_…` and is shown **once** — only its SHA-256 hash is
+stored, so copy it straight into your secret manager.
+
+A key is either `full` (everything) or `sending_only` (send and read your own
+`/me`), and can be pinned to a single sending domain. See
+[API keys](/docs/api-keys).
+
+## 2. Send an email
+
+```bash
+npm install sendsprite
+```
+
+```ts
+import { Sendsprite } from "sendsprite";
+
+const sendsprite = new Sendsprite();
+
+const { id } = await sendsprite.emails.send({
+  from: "Acme <hello@mail.example.com>",
+  to: "ada@example.com",
+  subject: "Hello from Sendsprite",
+  html: "<p>It works.</p>",
+});
+```
+
+`apiKey` falls back to `SENDSPRITE_API_KEY`, so the constructor usually takes
+no arguments. Requests go to the hosted instance at `https://sendsprite.com`;
+self-hosting, pass `baseUrl: "https://<your-instance>"` or set
+`SENDSPRITE_URL`. Node 20+, ESM and CJS. The package is also the CLI
+(`npx sendsprite emails send …`) and ships React email rendering and a Next.js
+webhook handler — see [SDK](/docs/sdk).
+
+Over REST it is one call, authenticated with `Authorization: Bearer <key>`:
+
+```bash
+curl https://sendsprite.com/api/v1/emails \
+  -H "Authorization: Bearer ss_live_..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "from": "Acme <hello@mail.example.com>",
+    "to": ["ada@example.com"],
+    "subject": "Hello from Sendsprite",
+    "html": "<p>It works.</p>"
+  }'
+```
+
+A successful send answers `201 { "id": "em_…" }` (the SDK returns the same
+object). The `from` address must sit on a domain this team has verified,
+otherwise the call fails with `domain_not_verified` (422). Every failure is a
+JSON envelope `{ "error": { "code", "message", "details?" } }`; the SDK
+throws a `SendspriteError` carrying the same `code` and `status`.
+
+## 3. Watch it land
+
+Open **Dashboard → Emails** (`/app/emails`). Every message has a timeline of
+the events your instance records for it — `queued`, `sent`, `delivered`,
+`delivery_delayed`, `bounced`, `complained`, `rejected`, `opened`, `clicked`,
+`failed` and `cancelled`. The same timeline is available over the API with a
+`full` key:
+
+```ts
+const email = await sendsprite.emails.get(id);
+email.status; // "queued" → "sent" → "delivered" …
+email.events; // oldest first
+```
+
+```bash
+curl https://sendsprite.com/api/v1/emails/em_... \
+  -H "Authorization: Bearer ss_live_..."
+```
+
+## Other ways in
+
+- **CLI** — `npx sendsprite login`, then `emails send`, `emails tail`,
+  `domains list`, `templates pull/push`. See [CLI](/docs/cli).
+- **MCP** — `npx -y @sendsprite/mcp` gives Claude Desktop, Claude Code or any
+  MCP client the same API under the key you hand it. See
+  [MCP server](/docs/mcp).
+- **SMTP** — legacy apps relay through port `587` with STARTTLS, any
+  username and an API key as the password. See
+  [Sending → SMTP relay](/docs/sending#smtp-relay).
+
+## Where to go next
+
+- [Sending](/docs/sending) — every field of a send, attachments, tags,
+  scheduling, idempotency, tracking, suppressions and the SMTP relay.
+- [Webhooks](/docs/webhooks) — get the events pushed to your app, signed.
+- [SDK](/docs/sdk) — the `sendsprite` package, React email templates and the
+  live change stream.
+- [API reference](/docs/api) — the full OpenAPI 3.1 document, rendered.

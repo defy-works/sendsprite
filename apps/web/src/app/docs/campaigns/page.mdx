@@ -1,0 +1,721 @@
+export const metadata = {
+  title: "Campaigns",
+  description:
+    "Sendsprite campaigns: the block editor, who a campaign is sent to, scheduling, cancelling, stats, and every way a campaign can pause or stop.",
+};
+
+# Campaigns
+
+A **campaign** is one message sent to a [contact book](/docs/contacts). You
+write it as a list of blocks, Sendsprite renders it to email-safe HTML once,
+fills in each recipient's merge fields, and the fan-out turns the book's
+eligible contacts into ordinary [emails](/docs/sending) — the same queue, the
+same SES token bucket, the same events, webhooks and metering a transactional
+send goes through.
+
+Campaigns live at **Dashboard → Campaigns** (`/app/campaigns`) and under
+`/api/v1/campaigns`.
+
+Two access rules come before anything else:
+
+- **Every campaigns route needs a `full` API key**, reads included. A
+  `sending_only` key exists to sit on an application server that sends
+  password resets; if it could reach this surface it would be one `POST` away
+  from mailing every contact the team has. All eight operations answer `403`
+  for it.
+- **In the dashboard, campaigns are an admin or owner action.** The
+  `campaigns.manage` permission is not held by `member`, which does hold
+  `contacts.manage` — a member can curate the list, and cannot mail it.
+
+```ts
+const campaign = await sendsprite.campaigns.create({
+  name: "August newsletter",
+  bookId: "cb_...",
+  domainId: "dom_...",
+  from: "Acme <hello@mail.acme.com>",
+  subject: "What we shipped in August",
+  blocks: [
+    { kind: "heading", level: 1, text: "What we shipped" },
+    {
+      kind: "text",
+      html: "Three things, and <strong>one</strong> of them is fast.",
+    },
+    {
+      kind: "button",
+      label: "Read the notes",
+      url: "https://acme.com/changelog",
+    },
+  ],
+});
+// campaign.status === "draft"
+```
+
+Over REST:
+
+```bash
+curl -X POST "https://sendsprite.com/api/v1/campaigns" \
+  -H "Authorization: Bearer ss_live_..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "August newsletter",
+    "bookId": "cb_...",
+    "domainId": "dom_...",
+    "from": "Acme <hello@mail.acme.com>",
+    "subject": "What we shipped in August",
+    "blocks": [
+      { "kind": "heading", "level": 1, "text": "What we shipped" },
+      { "kind": "text", "html": "Three things, and <strong>one</strong> of them is fast." },
+      { "kind": "button", "label": "Read the notes", "url": "https://acme.com/changelog" }
+    ]
+  }'
+# → 201 {"id":"cmp_…","status":"draft",…}
+```
+
+Creating a campaign sends nothing. It is a `draft` until you schedule it.
+
+Beside the fields above, a campaign takes an optional `replyTo`, a `theme`,
+`mergeDefaults` and a `headerLayoutId`/`footerLayoutId` — each described
+below. `name` is up to 200 characters.
+
+## The body is a block list, not HTML
+
+There is no field anywhere that takes arbitrary markup. A campaign body is an
+array of typed blocks, and the renderer escapes every value it interpolates —
+so there is no path from the editor to a `<script>`, and no HTML sanitiser to
+be wrong about.
+
+| Block     | Fields                                                                                               | Renders to                                                                                                           |
+| --------- | ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `heading` | `level` (1, 2 or 3), `text`                                                                          | `<h1>`/`<h2>`/`<h3>` at 28 / 22 / 18 px, escaped.                                                                    |
+| `text`    | `html`                                                                                               | A `<p>` at 16 px. The one field emitted as markup — see below.                                                       |
+| `button`  | `label`, `url`, `corners`, `textColor`, `fullWidth`, `size` (`small`, `medium`, `large`)             | A "bulletproof" table-wrapped anchor: Outlook ignores padding on inline elements, so the cell provides the hit area. |
+| `image`   | `url`, `alt`, optional `href`, `width` (25/50/75/100), `corners`                                     | An `<img>` sized against its container, optionally wrapped in a link.                                                |
+| `divider` | `weight` (1–8), `lineStyle` (`solid`, `dashed`, `dotted`), `width` (25/50/75/100)                    | A rule.                                                                                                              |
+| `spacer`  | `size` (4–96)                                                                                        | A fixed-height cell.                                                                                                 |
+| `columns` | `layout` (`1`, `1-1`, `1-1-1`, `2-1`, `1-2`), `columns`, `background`, `gap` (0–48), `verticalAlign` | A row of fixed-width cells that stack on a phone. See below.                                                         |
+
+`heading`, `text`, `button` and `image` also take `align` (`left`, `center`,
+`right`); `heading`, `text`, `divider` and `button` take a `color`; every
+block except `spacer` takes `spaceTop` and `spaceBottom` (0–96 px). Every one
+of those is an enum, a bounded integer or a `#rrggbb` hex value, never a CSS
+string: a colour is the one author-supplied value that would otherwise be
+interpolated into a `style` attribute, where escaping does nothing. The
+divider's field is `lineStyle`, not `style`, because a block may never carry
+a raw style attribute and the name should not suggest it can.
+
+An unknown `kind` is a refusal naming the field, not a block that is quietly
+dropped on its way to thousands of inboxes.
+
+### Columns
+
+A `columns` block holds one, two or three columns of ordinary blocks:
+
+```json
+{
+  "kind": "columns",
+  "layout": "2-1",
+  "background": "#f3f4f6",
+  "columns": [
+    [{ "kind": "text", "html": "The wide side." }],
+    [{ "kind": "image", "url": "https://cdn.example.com/a.png", "alt": "A" }]
+  ]
+}
+```
+
+`columns.length` must match the layout — a `1-1-1` row with two columns is
+refused rather than rendered with an orphaned cell. The `1` layout is a row
+of one column: not a degenerate case but a band across the email, which is
+what gives a plain stack of blocks the things only a row has — a
+`background`, a `verticalAlign` (`top`, `middle`, `bottom`, applied to every
+cell) and space of its own.
+
+**A column may not contain another `columns` block.** That bound is
+deliberate: nested column tables are where email layout stops being portable,
+because the Word engine behind Outlook on Windows measures an inner table
+against a different containing block from every other client. One level is
+what can be rendered the same everywhere.
+
+Columns are laid out with **fixed pixel widths** that total the content width
+exactly, and the gutters are their own spacer cells rather than padding —
+Outlook honours cell padding by _adding_ it to the width, which would push the
+last column onto its own line. A `@media` rule stacks them below 620 px in
+Gmail, Apple Mail, iOS Mail and Outlook.com; Outlook on Windows ignores it and
+keeps them side by side, which is the readable fallback rather than a 552 px
+table squeezed into a 320 px screen.
+
+In the plain-text alternative the columns are flattened into reading order,
+left to right — the same order a screen reader takes them in.
+
+A column holds at most **20 blocks**, and the campaign as a whole still holds
+at most 100.
+
+`alt` is **required** on an image, not optional. An image with no alt text is
+invisible to a screen reader and to every client that blocks images by default
+— which is most of them, on first open.
+
+The limits: **100 blocks** per campaign, **10 000 characters** per text or
+inline-HTML field, 200 for a button label, 300 for image alt text, **2 048**
+for a URL, and 998 for the subject (the same rule a transactional send's
+subject gets, imported rather than restated).
+
+### The body theme
+
+`theme` sits beside `blocks` and describes the body as a whole rather than any
+one part of it:
+
+```json
+{
+  "theme": {
+    "pageBackground": "#0b1020",
+    "cardBackground": "#111827",
+    "contentWidth": 720,
+    "font": "serif",
+    "textColor": "#e5e7eb",
+    "linkColor": "#93c5fd",
+    "cardCorners": "sharp",
+    "contentPadding": 32
+  }
+}
+```
+
+Every field is optional, and **an absent theme renders exactly what a body
+rendered before themes existed** — so nothing had to be backfilled and an older
+campaign is not a special case. A block that sets its own `color` still wins
+over `textColor`: the theme is the default, not an override.
+
+`contentWidth` is one of `480`, `600` or `720`. 600 is what almost every email
+template uses, because it is what fits an Outlook reading pane at 96 dpi. The
+column arithmetic follows the width, and so does the breakpoint at which
+columns stack.
+
+`font` names a system stack — `sans`, `serif` or `mono` — not a font. A webfont
+in an email is a webfont most clients will not load, so the only honest choice
+is which fallback to specify.
+
+`linkColor` is the one field applied through a `<style>` rule rather than
+inline, because `text.html` may not carry a `style` attribute — that
+restriction is exactly what makes the field safe to emit unescaped. Gmail,
+Apple Mail and Outlook.com honour it; **Outlook on Windows keeps its default
+blue.**
+
+`contentPadding` (0–64 px) is the card's inner gutter, applied to every
+block's left and right edge; the vertical spacing is each block's own
+`spaceTop`/`spaceBottom`. On `PATCH`, `theme: null` resets to the defaults
+and omitting it leaves the theme alone.
+
+### Images
+
+An `image` block takes a URL, and it always has: mail clients fetch images with
+no credentials, so it must be public and absolute. What is new is that you no
+longer have to find somewhere to put it.
+
+The dashboard editor uploads to the instance and gives you a URL of the form
+`https://<APP_URL>/a/<token>`, served with a year of cache headers and no
+authentication — because the reader is a mail client in someone else's inbox.
+PNG, JPEG, GIF and WebP, up to 2 MB. **SVG is refused**: it is an image format
+that can contain a script, and these bytes are served from the app's own
+origin.
+
+The type is decided from the file's own header, not from its name or the
+`Content-Type` the browser guessed. Re-uploading the same bytes returns the
+same URL rather than storing a second copy.
+
+Nothing about this is required. An image already on your own CDN works exactly
+as well, and the API only ever sees a URL either way.
+
+### Layouts
+
+The dashboard ships a handful of block arrangements — announcement, hero, two-
+and three-column feature rows, an image-and-text row, a footer — and a team can
+save up to 50 of its own, each up to 100 blocks. A layout is used one of two
+ways:
+
+- **Inserted.** Appends a copy of its blocks, which you then edit like any
+  others; a layout that carries a theme _offers_ it rather than applying it.
+  Nothing links back to the layout afterwards.
+- **Linked as the header or footer.** A campaign's `headerLayoutId` and
+  `footerLayoutId` name one saved layout each, and the campaign is rendered
+  as `[…header, …body, …footer]` — followed, as always, by the unsubscribe
+  footer. The link is a reference, not a copy: **the layout's blocks are
+  resolved when the send starts**, so editing a shared footer updates every
+  campaign that has not yet gone out, and never one that has. The whole
+  composition renders in the campaign's own theme; a linked layout's theme is
+  not applied. A linked layout that has since been deleted leaves the slot
+  empty rather than failing the send, and shows as "Deleted layout" in the
+  editor.
+
+Saved layouts have no REST collection of their own. The two ids are on the
+campaign object and `POST`/`PATCH /campaigns` accept them — `null` on `PATCH`
+unlinks a slot — but an id must name one of the team's own layouts or it is
+refused as a `validation_error` naming the slot (`headerLayoutId` or
+`footerLayoutId`). An API-only client that
+wants a header composes it into `blocks` directly; the dashboard sets the ids
+from its layout list.
+
+### What `text.html` may contain
+
+Only what the editor emits: `<strong>`, `<em>`, `<br>`, and anchors whose
+`href` is `http:`, `https:` or `mailto:`. Everything else is refused, and so
+is anything unbalanced — every tag must close, in order, and links may not
+nest. That last rule is load-bearing rather than tidy: this value is written
+into the document **unescaped**, so an unclosed `<a>` would swallow every
+following block into one link and an unclosed `<strong>` would bold the rest
+of the message.
+
+### URLs
+
+Every `url` and `href` must be an absolute `http:`, `https:` or `mailto:` URL.
+Escaping is no defence inside an `href` — an escaped `javascript:` URL is
+still a working `javascript:` URL — so a scheme allow-list is the only thing
+that helps. Three more shapes are refused for reasons that are not obvious:
+
+- **Credentials.** `https://example.com@evil.test/login` points at
+  `evil.test` and reads as `example.com`. The scheme really is `https:`, so no
+  scheme check catches it.
+- **Spaces, quotes, backticks, angle brackets and backslashes**, unencoded.
+  `https://x.test/" onmouseover="alert(1)` is a _valid_ URL as far as a parser
+  is concerned; it closes the attribute the moment it is written out.
+- **Protocol-relative `//host/path`**, which inherits whatever scheme the
+  reader's client used.
+
+Percent-encode them and they are accepted.
+
+### What the recipient receives
+
+One 600 px table on a light background, with inline styles on every cell. That
+is the compatibility floor rather than nostalgia: Outlook on Windows renders
+with Word's HTML engine — no flexbox, no grid, no dependable `<style>` — and
+table cells with inline styles are the only layout that behaves the same in
+Gmail, Outlook, Apple Mail and the long tail.
+
+A **plain-text alternative is generated alongside it**, from the same blocks:
+headings and paragraphs become text, inline marks are stripped, a link becomes
+`label (url)`, a button becomes `label (url)`, an image becomes `[alt]` and a
+divider becomes `---`.
+
+The preview in the editor calls the same renderer the send calls, so it cannot
+disagree with what goes out. It is displayed in an empty `sandbox` iframe.
+
+**The blocks are rendered once per campaign**, when the send starts, and
+stored. Every recipient gets that stored HTML with their own merge fields and
+their own unsubscribe link substituted in. Re-rendering the blocks per
+recipient would let an edit to `blocks` mid-send give the first and the last
+recipient different mail.
+
+An **unsubscribe link is appended to every campaign**, in both the HTML and
+the text part, and the RFC 8058 headers go on every message. You do not add
+them and you cannot remove them. See [Unsubscribe](/docs/unsubscribe).
+
+## Personalisation
+
+The subject and any text in the body may carry `{{ name }}` merge fields —
+the same syntax a [template](/docs/templates) uses, with a softer failure:
+
+```ts
+await sendsprite.campaigns.create({
+  // …
+  subject: "{{ firstName }}, here is what we shipped",
+  blocks: [
+    {
+      kind: "text",
+      html: "Your {{ properties.plan }} plan now includes the changelog.",
+    },
+  ],
+  mergeDefaults: { firstName: "there", "properties.plan": "current" },
+});
+```
+
+The names resolve against the recipient's contact: `firstName`, `lastName`,
+`email`, and every custom property as `properties.<key>`. Whitespace inside
+the braces is ignored, and a name is letters, digits and underscores, dotted
+up to four segments deep.
+
+A transactional template refuses a missing value so that nobody mails
+"Hi ,". A campaign has thousands of recipients and must not fail the whole
+send because one of them lacks a first name, so a value that is **missing,
+blank, or not a scalar** (a whole object, an array) becomes the author's
+fallback for that name in `mergeDefaults`, or the empty string. Fallbacks are
+keyed by the full placeholder name, up to 100 of them and 200 characters
+each, single-line. In the dashboard the **Personalisation** panel lists
+exactly the names the body and subject currently use, one fallback field
+each, and the preview renders with the fallback or a sample value so you can
+see where each lands. `mergeDefaults: null` on `PATCH` clears every fallback.
+
+Escaping is decided by the part, exactly as for a template: a value merged
+into the HTML is HTML-escaped, into the text part is not, and into the
+subject is stripped of control characters first — the header-injection guard,
+applied to third-party contact data rather than used to refuse it. Nothing a
+contact typed into a property can become markup, a link, or a second header.
+A merged value is never re-scanned, so a property holding `{{x}}` renders as
+the literal `{{x}}`.
+
+Substitution happens per recipient, as each chunk is materialised, over the
+stored render. A campaign with no `{{ }}` anywhere takes the fast path and
+pays nothing. The one way a single recipient's render can fail is size — a
+personalised body past the renderer's ceiling, or a subject past 998
+characters — and that one recipient is skipped with a row saying so, rather
+than the campaign stopped.
+
+## Who gets it: subscribed **and** not suppressed
+
+Both, never either. This is the one question customers get wrong most often,
+because the two lists sound like the same list and are not:
+
+|            | `subscribed` on the contact                     | The suppression list                                 |
+| ---------- | ----------------------------------------------- | ---------------------------------------------------- |
+| Question   | "Does this person want this kind of mail?"      | "Can this address receive mail at all?"              |
+| Scope      | One contact book                                | The whole team                                       |
+| Written by | The unsubscribe link, the dashboard, CSV import | SES bounces and complaints, and `POST /suppressions` |
+
+They are kept apart on purpose ([Contacts](/docs/contacts) has the full
+argument): leaving a newsletter must not stop a password reset, and a hard
+bounce is not a withdrawal of consent. **Campaign selection is the single
+place where both apply**, because a campaign is exactly the kind of mail
+consent governs and exactly the kind of volume that destroys a sending
+reputation.
+
+So a contact is mailed only if `subscribed = true` **and** their address is
+not on the team's suppression list. Any suppression counts here, whatever its
+reason — a bounce, a complaint, or one you added by hand.
+
+`sendsprite.campaigns.audience(id)` — `GET /api/v1/campaigns/{id}/audience`,
+and the audience card in the dashboard — counts four numbers over the book:
+
+```json
+{ "contacts": 4210, "subscribed": 3980, "suppressed": 61, "eligible": 3931 }
+```
+
+These are **four views of one population, not four buckets that sum to it**.
+`subscribed` and `suppressed` overlap; `eligible` is a subset of `subscribed`.
+The number you can safely present as "excluded" is `contacts - eligible`,
+which counts a contact who is both unsubscribed _and_ suppressed exactly once.
+What always holds is `eligible <= subscribed <= contacts` and
+`suppressed <= contacts`.
+
+It is a **preview, not a promise**. The numbers are counted when you ask, and
+the audience is not frozen when the send starts — see "The audience is not
+frozen" under _When a campaign pauses or stops_ below.
+
+Suppression is checked a second time, per message, immediately before SES.
+Those are two checks at two different times rather than a duplicate: a hard
+bounce can land between selection and the send, and only the second one can
+catch it. A message stopped that way is `cancelled` with the reason on its
+timeline, not `failed` — nothing failed, we declined.
+
+## Scheduling
+
+```ts
+// At a time. A Date is sent as its ISO instant; a string must carry an offset.
+await sendsprite.campaigns.schedule(campaign.id, new Date("2026-09-01T09:00Z"));
+
+// Now — deliberately a different method, with no argument to leave out.
+await sendsprite.campaigns.sendNow(campaign.id);
+```
+
+Over REST both are the same route, told apart by the body:
+
+```bash
+# At a time (ISO 8601, offset required)
+curl -X POST "https://sendsprite.com/api/v1/campaigns/cmp_.../schedule" \
+  -H "Authorization: Bearer ss_live_..." \
+  -H "Content-Type: application/json" \
+  -d '{ "scheduledAt": "2026-09-01T09:00:00Z" }'
+
+# Now — no body at all
+curl -X POST "https://sendsprite.com/api/v1/campaigns/cmp_.../schedule" \
+  -H "Authorization: Bearer ss_live_..."
+```
+
+Both answer with the campaign in **`scheduled`**, never `sending` — including
+"now", which simply means "due immediately". A cron sweep is the only thing
+that starts a send, because starting is not a status flip: it renders the body
+once and stamps a start time, and a request handler that did that itself would
+be a second start path racing the sweep for the same campaign. So "send now"
+means "due now", and the next tick picks it up within a minute.
+
+The offset is required on `scheduledAt`, as it is everywhere else in the API,
+so "10:00" never means two different instants to two callers. **A time in the
+past is refused rather than clamped.** Both readings are defensible for a
+clock off by a second and neither is defensible for the one that matters — a
+timezone mistake that means yesterday, where clamping would mail the list
+immediately.
+
+Scheduling **re-checks everything**: the contact book still exists and is
+yours, the domain still exists and is still verified, and the `from` address
+still resolves to it. A campaign may have been authored weeks ago. A refusal
+here is a form error; the same problem noticed a minute later is a campaign
+that hard-bounces for every recipient. A linked header or footer layout is
+not part of this check: a deleted one renders as nothing, which is a smaller
+email rather than a broken one.
+
+### Editing
+
+Only `draft` and `scheduled` campaigns can be edited. **Editing a `scheduled`
+campaign reverts it to `draft` and clears its time**, so nobody ships an
+unreviewed change on a timer; re-arm it with another `POST …/schedule`. An
+update that changes nothing does neither, so re-saving an unchanged body is
+safe.
+
+`sending`, `sent` and `cancelled` are immutable. Editing the blocks of a
+half-sent campaign would mean the first 10 000 recipients got one message and
+the rest got another, under one name and one set of stats — an incoherence
+nobody can untangle afterwards.
+
+### How fast a campaign goes out
+
+A sweep runs once a minute and advances each sending campaign by one chunk of
+**500 recipients**, so 30 000 an hour per campaign. That is the rate at which
+recipients become queued messages; it is not the send rate, which is governed
+downstream by the SES token bucket exactly as it is for transactional mail.
+(One tick looks at ten campaigns, oldest first, so an instance with more than
+ten sending at once spreads the same work over more ticks.)
+
+A campaign is checked against the team's daily and monthly send caps and the
+instance's SES 24-hour quota, once per chunk, using the same functions an API
+send uses — so a campaign and an API send cannot disagree about whether you
+may send right now.
+
+## Cancelling, and what it cannot do
+
+`sendsprite.campaigns.cancel(id)` — `POST /api/v1/campaigns/{id}/cancel` —
+does one of two different things:
+
+| From        | To          | Meaning                                                                   |
+| ----------- | ----------- | ------------------------------------------------------------------------- |
+| `scheduled` | `draft`     | Un-armed. Nothing was sent; the time is cleared and it is editable again. |
+| `sending`   | `cancelled` | Stopped part-way. Terminal and immutable.                                 |
+
+Anything else is a `409`. A `draft` has nothing to cancel; `sent` and
+`cancelled` are already at the end.
+
+**Cancelling a `sending` campaign stops further fan-out and nothing else.**
+Every recipient already materialised is an ordinary queued email on the
+ordinary send path, and anything already handed to SES is gone. There is no
+recall in SES and there is none here. Cancel is worth reaching for the moment
+you notice a mistake, because it saves everyone the fan-out has not reached
+yet — but it is not an undo.
+
+The `counts` are therefore left exactly as they stand, and **will keep rising
+for a while** as deliveries, opens and clicks land for mail that was already
+in flight. Zeroing them would make the row read as though nothing had been
+sent, which is the one thing a cancelled campaign's operator must not believe.
+`sentAt` stays null: the fan-out never finished.
+
+`cancelled` is not reachable from `draft` or `scheduled`, and it cannot be
+edited or restarted. If you need to mail the rest of the book, that is a new
+campaign — and a new campaign has its own recipient rows, so everyone who
+received the first half receives it again.
+
+### Deleting
+
+`sendsprite.campaigns.remove(id)` — `DELETE /api/v1/campaigns/{id}` — is
+refused with a `409` while a campaign is `sending`; cancel it first. Otherwise
+it deletes at any status, including `sent`.
+
+Deleting is **"stop listing this campaign", not "erase the send"**. The
+`emails` rows it produced stay in the mail log with their bodies, their events
+and the id of the campaign that produced them. What is lost is the campaign's
+own name, blocks and count cache.
+
+## `campaign.sent` means queued, not received
+
+This is the distinction that generates support threads.
+
+- **`campaign.sent`** fires when the **last recipient has been queued**. Every
+  message exists and is on its way to SES, and precisely nobody has
+  necessarily received anything yet. An automation that reads this as
+  "delivered" is wrong by the entire delivery window, and its first symptom
+  will be its own users saying so.
+- **`campaign.completed`** fires when every message the campaign queued has
+  reached a terminal state — delivered, bounced, failed or cancelled. This is
+  the one to wait on before reading a campaign's final numbers, and its
+  payload carries them.
+
+Both fire exactly once per campaign, and both carry `data.campaign`. A
+cancelled campaign fires neither: it never finished queueing, so there is no
+"every recipient" to be done with. See [Webhooks](/docs/webhooks).
+
+The campaign's own `status` follows the same rule — `sent` means "every
+recipient was queued". `sentAt` is when the fan-out **finished**, not when it
+started.
+
+## Stats
+
+Nine numbers, on the campaign row and in every webhook payload:
+
+`recipients`, `sent`, `delivered`, `opened`, `clicked`, `unsubscribed`,
+`bounced`, `complained`, `failed`.
+
+They are **derived from the mail log**, not tallied as events arrive. A
+counter incremented per event drifts the first time a webhook retries or a
+worker dies mid-update — and SES delivery is explicitly at-least-once — and a
+stats page that disagrees with the mail log is worse than one that takes an
+extra second. So every number is a query over the campaign's own emails, and
+the stored `counts` is a cache of that query.
+
+Three consequences:
+
+- **`opened` and `clicked` count recipients, not events.** Someone who opens
+  the same message six times is one opener. That is what "open rate" means to
+  everyone who reads one, and the only reading under which `opened / sent` is
+  a rate rather than an arbitrary ratio. The raw events are still on each
+  message's own timeline.
+- **No count can exceed `recipients`**, because all nine count subsets of one
+  row set. `sent` counts messages there is evidence left our hands, which
+  includes any event only SES could have produced — so an out-of-order
+  notification can never print `delivered: 1, sent: 0`. `failed` sits outside
+  that bound on purpose: a message that failed before SES accepted it never
+  left.
+- **`unsubscribed` is attributed by time, not by link.** It counts recipients
+  whose consent was withdrawn _after_ this campaign mailed them. Two campaigns
+  sent the same afternoon will both claim the same unsubscribe. There is no
+  column recording which message an unsubscribe came from, and inventing one
+  attribution rule that is wrong in a different way would not be an
+  improvement.
+
+The campaign page recomputes the numbers live. The cached `counts` on a list
+view is refreshed by the sweep while a campaign is moving, so for a campaign
+that finished days ago a late open or click will show on the detail page
+before it shows in the list.
+
+## When a campaign pauses or stops
+
+All of these are deliberate, and all of them are visible: each one writes a
+`campaigns.paused` or `campaigns.stopped` row to the team's audit log, once
+per campaign per reason, naming what refused and why. The rule dividing the
+two is reversibility.
+
+### It **pauses** — the campaign stays `sending` and resumes by itself
+
+The cursor stays exactly where it is, so a resumed campaign continues from the
+recipient it stopped at and mails nobody twice.
+
+- **A send cap.** The team's daily or monthly cap, or the instance's SES
+  24-hour quota, would be breached by the next chunk. The campaign resumes on
+  its own when the allowance renews — or the moment you upgrade the plan or an
+  operator raises the limit. Cancelling instead would be actively harmful:
+  `cancelled` cannot be restarted, so the only route left would be a _new_
+  campaign over the same book, and everyone who already received the first
+  half would receive it again.
+
+  A chunk is all-or-nothing, so asking for 500 with 200 of the allowance left
+  refuses the whole chunk. Under one chunk of an allowance goes unused.
+
+- **The sending domain stopped being verified.** Deleted, or demoted by a
+  re-verification that SES disagreed with. Between authoring a campaign and
+  its last chunk, nothing else re-asserts this — and the alternative is 38 000
+  individual rejections and one ruined reputation. It resumes the moment there
+  is a verified domain for that `from` address again, under whatever id, which
+  is why re-adding a deleted domain is enough.
+
+### It **pauses**, but does not resume by itself
+
+- **The contact book was deleted.** Deleting a book cascades every contact in
+  it away, which empties the next chunk — and an empty chunk is the fan-out's
+  finish condition. Left alone, the campaign would flip to `sent`, fire
+  `campaign.sent`, and tell you 50 000 people were mailed when 12 000 were,
+  with nothing anywhere to contradict it. So it pauses instead, because
+  pausing cannot lie and finishing can.
+
+  It cannot resume, though: the contacts went with the book, re-importing them
+  mints new ids, and a re-created book gets a new id this campaign will never
+  name. **Cancel it.** Only restoring the original book row under its original
+  id would let it finish.
+
+  You should rarely meet this: deleting a book is refused outright while a
+  campaign over it is `sending`, with a message naming the campaign to cancel
+  first. A `scheduled` campaign deliberately does not block the delete —
+  nothing has been mailed, `scheduled` is still editable, and the campaign
+  will decline to start rather than mail nobody.
+
+### It **stops** — the campaign becomes `cancelled`
+
+No amount of waiting fixes either of these, because both are facts about the
+campaign's own stored data:
+
+- **The stored blocks no longer render.** A body that fails the block contract
+  — a migration, a hand-edit, an older version of the contract — is not mailed
+  in a degraded form. Mailing a visibly broken email to a whole contact book
+  is worse than refusing to send it. The audit row names the block and the
+  reason.
+- **The `from` address cannot be parsed.** It would make every row in the
+  campaign unsendable, so it is one campaign-level stop rather than 50 000
+  individually failing sends.
+
+### Before it starts, none of this stops it — it waits
+
+A campaign that is still `scheduled` when one of these is true is **left
+`scheduled`** and reconsidered on the next tick, whichever the reason. It has
+mailed nobody, so there is no half-sent state to resolve, and `scheduled` is
+still editable — so you can fix the address, the blocks, the domain or the
+book and the campaign goes out. The cost is a campaign that sits past its time
+with only an audit row to say why, which is why the audit row is written even
+there.
+
+### The audience is not frozen
+
+Selection walks the book by contact id rather than materialising the whole
+audience up front. A book edited mid-send is therefore read as it is _now_: a
+contact added during a send is included if their id sorts after the cursor and
+missed if it sorts before it, and an unsubscribe mid-send takes effect for the
+chunks not yet walked but not for the ones already materialised.
+
+For a window measured in the minutes a fan-out takes, this is accepted rather
+than overlooked. If it matters to you, stop editing the book while a campaign
+over it is sending.
+
+## The REST surface
+
+Every route needs a `full` key.
+
+| Method   | Path                       | Does                                                                                                 |
+| -------- | -------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `GET`    | `/campaigns`               | Page, newest first. `?status=` filters; an unknown value is a `validation_error`, not an empty page. |
+| `POST`   | `/campaigns`               | `201` with a `draft`. Sends nothing.                                                                 |
+| `GET`    | `/campaigns/{id}`          | One campaign.                                                                                        |
+| `PATCH`  | `/campaigns/{id}`          | Partial update. `409` unless `draft` or `scheduled`.                                                 |
+| `DELETE` | `/campaigns/{id}`          | `204`. `409` while `sending`.                                                                        |
+| `POST`   | `/campaigns/{id}/schedule` | `{ "scheduledAt": … }`, or no body for now. `409` unless `draft` or `scheduled`.                     |
+| `POST`   | `/campaigns/{id}/cancel`   | `scheduled` → `draft`, `sending` → `cancelled`. `409` otherwise.                                     |
+| `GET`    | `/campaigns/{id}/audience` | The four numbers. A campaign whose book is gone answers four zeros, not a `404`.                     |
+
+A `bookId` or `domainId` that is unknown, belongs to another team, or names an
+unverified domain is refused with the field named. Those columns carry no
+foreign key, so that check is the only thing standing between a typo and a
+campaign addressed at another team's contacts.
+
+### SDK
+
+```ts
+const campaign = await sendsprite.campaigns.create({
+  name: "August newsletter",
+  bookId,
+  domainId,
+  from: "Acme <hello@mail.acme.com>",
+  subject: "What we shipped in August",
+  blocks: [{ kind: "heading", level: 1, text: "What we shipped" }],
+});
+
+await sendsprite.campaigns.update(campaign.id, {
+  replyTo: "Acme <support@acme.com>",
+  mergeDefaults: { firstName: "there" },
+  footerLayoutId: "lay_...", // null unlinks; omit to leave alone
+});
+
+const { eligible } = await sendsprite.campaigns.audience(campaign.id);
+
+await sendsprite.campaigns.schedule(campaign.id, new Date("2026-09-01T09:00Z"));
+// or, deliberately a different verb:
+await sendsprite.campaigns.sendNow(campaign.id);
+
+await sendsprite.campaigns.cancel(campaign.id);
+
+for await (const c of sendsprite.campaigns.iterate({ status: "sent" })) {
+  console.log(c.name, c.counts.delivered);
+}
+```
+
+`schedule(id, at)` requires the time and `sendNow(id)` is a separate method
+with no arguments to forget. One method whose second argument is optional
+would mail everyone on the book the day somebody left it out, which is the
+wrong shape for an irreversible action. See [SDK](/docs/sdk).

@@ -1,0 +1,62 @@
+name: CLA
+
+# Deliberately no `push` trigger: the action signs and re-checks pull requests,
+# and on a push there is no pull request to comment on or to re-check, so a
+# push run can only fail or no-op noisily.
+on:
+  # `issue_comment` is how a contributor signs: they post the statement the bot
+  # asked for, and this run records it. It fires on pull request comments too —
+  # to GitHub a pull request is an issue.
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, synchronize, reopened, closed]
+
+jobs:
+  cla:
+    runs-on: ubuntu-latest
+    # Ignore comments on real issues, and ignore the bot's own prompt.
+    if: >-
+      github.event_name == 'pull_request_target' ||
+      (github.event.issue.pull_request != null &&
+       github.actor != 'github-actions[bot]')
+    permissions:
+      # `contents: write` commits the signature file, `pull-requests: write`
+      # posts and updates the bot comment. Both are required.
+      contents: write
+      pull-requests: write
+      actions: write
+      statuses: write
+    steps:
+      - uses: contributor-assistant/github-action@v2.6.1
+        env:
+          # Signatures are stored in this repository (see `path-to-signatures`),
+          # so the default token is enough. If you move the signature file to a
+          # separate repository — the usual reason is to keep it out of the
+          # public history, or to share one file across several projects — set
+          # `remote-repository-name`/`remote-organization-name` below and add a
+          # `PERSONAL_ACCESS_TOKEN` repository secret: a PAT with `repo` scope
+          # on that other repository. GITHUB_TOKEN cannot write outside this
+          # repository, so without the PAT every signature silently fails.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+        with:
+          path-to-signatures: .github/cla/signatures.json
+          path-to-document: https://github.com/defy-works/sendsprite/blob/master/CLA.md
+          branch: cla-signatures
+          # remote-repository-name: sendsprite-cla
+          # remote-organization-name: defy-works
+          allowlist: dependabot[bot],github-actions[bot],renovate[bot]
+          custom-notsigned-prcomment: >-
+            Thanks for the pull request. Before it can be merged we need you to
+            sign the [Contributor Licence Agreement](https://github.com/defy-works/sendsprite/blob/master/CLA.md)
+            — once, covering everything you send us afterwards. You keep your
+            copyright; the licence you grant is what lets us offer Sendsprite
+            under commercial terms alongside the FSL. See
+            [CONTRIBUTING.md](https://github.com/defy-works/sendsprite/blob/master/CONTRIBUTING.md#the-cla-and-why-there-is-one)
+            for the reasoning.
+
+            To sign, copy the line below into a new comment on this pull
+            request:
+          custom-pr-sign-comment: "I have read the CLA document and I hereby sign the CLA"
+          custom-allsigned-prcomment: "All contributors have signed the CLA. Thanks!"

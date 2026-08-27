@@ -1,0 +1,26 @@
+node_modules/
+.next/
+dist/
+out/
+.env
+.env.*
+!.env.example
+*.tsbuildinfo
+playwright-report/
+test-results/
+.pgdata/
+
+# Local agent tooling, deliberately untracked.
+#
+# `.wolf` and `.opencode` are written and rewritten by their CLIs — session
+# state, token ledgers, scan caches and vendored hook scripts — so tracking
+# them means a diff on every session and lint errors in code that is not ours.
+# `CLAUDE.md` and `.claude` are one contributor's assistant configuration, not
+# a project convention every contributor has to adopt. All four were swept in
+# by a broad `git add` on 2026-08-27; none had ever been tracked before.
+.wolf/
+.opencode/
+.claude/
+CLAUDE.md
+AGENTS.md
+.superpowers

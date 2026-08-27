@@ -1,0 +1,53 @@
+import { CloudFormationClient } from "@aws-sdk/client-cloudformation";
+import { SESv2Client } from "@aws-sdk/client-sesv2";
+import { SNSClient } from "@aws-sdk/client-sns";
+import { STSClient } from "@aws-sdk/client-sts";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
+import type { AwsContext } from "./credentials";
+import { FakeAwsClient } from "./fake-client";
+
+export { SES_REGIONS, type SesRegion } from "./regions";
+
+/**
+ * E2E seam: the Playwright suite runs a real server against a fake AWS.
+ * Both conditions are required so the fake can never activate in a
+ * production build, whatever the environment says.
+ */
+const e2eMock = () =>
+  process.env.AWS_E2E_MOCK === "1" && process.env.NODE_ENV !== "production";
+
+/** Factories are the seam for tests (aws-sdk-client-mock mocks the classes). */
+/**
+ * SES calls are bounded so a hung connection cannot hold an `email.send`
+ * job (and its `sending` row) until pg-boss expires it: 5 s to connect,
+ * 120 s per request (large attachments), 3 SDK attempts in total.
+ */
+export const makeSes = (c: AwsContext) =>
+  e2eMock()
+    ? // The fake answers by command name; the cast keeps callers typed.
+      (new FakeAwsClient() as unknown as SESv2Client)
+    : new SESv2Client({
+        region: c.region,
+        credentials: c.credentials,
+        maxAttempts: 3,
+        requestHandler: new NodeHttpHandler({
+          connectionTimeout: 5000,
+          requestTimeout: 120000,
+        }),
+      });
+export const makeSns = (c: AwsContext) =>
+  e2eMock()
+    ? (new FakeAwsClient() as unknown as SNSClient)
+    : new SNSClient({ region: c.region, credentials: c.credentials });
+export const makeSts = (c: AwsContext) =>
+  e2eMock()
+    ? (new FakeAwsClient() as unknown as STSClient)
+    : new STSClient({ region: c.region, credentials: c.credentials });
+/** Only ever used to delete the team's own connect stack on disconnect. */
+export const makeCfn = (c: AwsContext) =>
+  e2eMock()
+    ? (new FakeAwsClient() as unknown as CloudFormationClient)
+    : new CloudFormationClient({
+        region: c.region,
+        credentials: c.credentials,
+      });

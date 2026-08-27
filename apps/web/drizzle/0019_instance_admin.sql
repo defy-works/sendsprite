@@ -1,0 +1,1 @@
+ALTER TABLE "user" ADD COLUMN "instance_admin" boolean DEFAULT false;

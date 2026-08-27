@@ -1,0 +1,285 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Sendsprite - least-privilege IAM user for Amazon SES + SNS events. An access key is created inside the stack's Lambda and posted once to your Sendsprite instance; it never enters CloudFormation state.
+Parameters:
+  # Must be https: an HTTP->HTTPS redirect would drop the POST body and the
+  # callback would fail.
+  CallbackUrl:
+    Type: String
+    Description: Your Sendsprite instance callback (prefilled, https).
+    AllowedPattern: "^https://.+"
+    ConstraintDescription: must be an https URL
+  # Deliberately not NoEcho: CloudFormation quick-create links ignore NoEcho
+  # parameters, so the wizard could not prefill it. The token is single-use and
+  # expires in 60 minutes, which is the mitigation.
+  CallbackToken:
+    Type: String
+    Description: One-time token (prefilled). Expires in 60 minutes.
+# Every resource carries an explicit name derived from the stack name. That is
+# what lets ServiceRole's policy be written as plain `!Sub` ARNs that reference
+# no other resource: SendspriteUser's policy names ServiceRole (PassRole) and
+# ServiceRole's policy names SendspriteUser (DeleteUser), and with `!GetAtt` in
+# both directions CloudFormation would refuse the cycle.
+Resources:
+  # Assumed by CloudFormation itself to delete this stack, so that "Disconnect"
+  # in Sendsprite can tear the stack down with the two cloudformation:* actions
+  # granted to the user below and nothing more.
+  #
+  # Why a role rather than wider permissions on the user: deletion runs in
+  # reverse dependency order, so `Callback` goes before `SendspriteUser` - and
+  # its Lambda's whole job on Delete is to remove that user's access keys. A
+  # DeleteStack without a role runs on a session minted from the caller's own
+  # credentials, i.e. the key the Lambda just deleted, and dies with half the
+  # stack still standing. With a role CloudFormation is never using the user's
+  # key at all. It also keeps iam:DeleteUser off a long-lived credential that
+  # a SaaS holds.
+  #
+  # It is deleted last: every other resource depends on it.
+  ServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-cfn"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: cloudformation.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: delete-this-stack
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iam:GetUser
+                  - iam:ListAccessKeys
+                  - iam:DeleteAccessKey
+                  - iam:ListUserPolicies
+                  - iam:DeleteUserPolicy
+                  - iam:ListAttachedUserPolicies
+                  - iam:ListGroupsForUser
+                  - iam:DeleteUser
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:user/sendsprite-${AWS::StackName}"
+              - Effect: Allow
+                Action:
+                  - iam:GetRole
+                  - iam:ListRolePolicies
+                  - iam:DeleteRolePolicy
+                  - iam:ListAttachedRolePolicies
+                  - iam:DetachRolePolicy
+                  - iam:ListInstanceProfilesForRole
+                  - iam:DeleteRole
+                Resource:
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/${AWS::StackName}-callback"
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/${AWS::StackName}-cfn"
+              # InvokeFunction: the custom resource's Delete handler is invoked
+              # by CloudFormation as this role.
+              - Effect: Allow
+                Action:
+                  - lambda:GetFunction
+                  - lambda:GetFunctionConfiguration
+                  - lambda:InvokeFunction
+                  - lambda:DeleteFunction
+                Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-callback"
+  SendspriteUser:
+    Type: AWS::IAM::User
+    DependsOn: ServiceRole
+    # W3037 checks actions against a list cfn-lint ships with, which does not
+    # yet carry `ses:ApplyTrackingConfigurationOverrides` — a permission-only
+    # action with no API call of its own, so it arrives late. The warning is
+    # not free to leave in place: cfn-lint exits non-zero on warnings and CI
+    # runs it. Drop this block once the bundled list catches up; until then a
+    # typo in any other action in this policy is on review to catch.
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W3037
+    Properties:
+      UserName: !Sub "sendsprite-${AWS::StackName}"
+      Policies:
+        - PolicyName: sendsprite-ses
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # SES identity ARNs are not known at stack time.
+              - Effect: Allow
+                Action:
+                  - ses:GetAccount
+                  - ses:PutAccountDetails
+                  - ses:CreateEmailIdentity
+                  - ses:DeleteEmailIdentity
+                  - ses:GetEmailIdentity
+                  - ses:PutEmailIdentityMailFromAttributes
+                  - ses:CreateConfigurationSet
+                  # Team deletion tears the config set down; see services/team-delete.ts.
+                  # DeleteConfigurationSet cascades over the event destination
+                  # (verified against the API), so no separate delete for that.
+                  - ses:DeleteConfigurationSet
+                  - ses:CreateConfigurationSetEventDestination
+                  - ses:UpdateConfigurationSetEventDestination
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                  # Every send passes ConfigurationOverrides.Tracking to turn
+                  # SES's own open/click rewriting off: Sendsprite tracks both
+                  # itself, and the config set's OPEN/CLICK event destination
+                  # would otherwise switch SES tracking on. SES authorises that
+                  # per-message override as an action of its own, so without
+                  # this line every SendEmail is refused with AccessDenied.
+                  - ses:ApplyTrackingConfigurationOverrides
+                Resource: "*"
+              # ConfirmSubscription: the webhook confirms through the SDK (with
+              # AuthenticateOnUnsubscribe) instead of GET SubscribeURL.
+              - Effect: Allow
+                Action:
+                  - sns:CreateTopic
+                  # Also team deletion: the topic goes with the config set.
+                  - sns:DeleteTopic
+                  - sns:Subscribe
+                  - sns:ConfirmSubscription
+                  - sns:GetTopicAttributes
+                  - sns:SetTopicAttributes
+                  - sns:ListSubscriptionsByTopic
+                Resource: !Sub "arn:aws:sns:*:${AWS::AccountId}:sendsprite-*"
+              # Subscription ARNs carry a UUID suffix; they are not topic-scoped.
+              - Effect: Allow
+                Action:
+                  - sns:Unsubscribe
+                  - sns:GetSubscriptionAttributes
+                Resource: "*"
+              - Effect: Allow
+                Action: sts:GetCallerIdentity
+                Resource: "*"
+              # Disconnect in Sendsprite deletes this stack. Only its own stack,
+              # and only through ServiceRole above - which is what PassRole
+              # hands to CloudFormation, and the only role this user may pass.
+              - Effect: Allow
+                Action:
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStacks
+                Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${AWS::StackName}-cfn"
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: cloudformation.amazonaws.com
+  CallbackFunctionRole:
+    Type: AWS::IAM::Role
+    DependsOn: ServiceRole
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-callback"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: sendsprite-access-keys
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iam:CreateAccessKey
+                  - iam:DeleteAccessKey
+                  - iam:ListAccessKeys
+                Resource: !GetAtt SendspriteUser.Arn
+  # The Lambda creates the access key itself and POSTs it to Sendsprite, so the
+  # secret never appears in CloudFormation resource properties, stack state or
+  # events. It always answers the pre-signed ResponseURL (SUCCESS or FAILED);
+  # a missing response would leave the stack hanging for an hour.
+  #   Create: create key -> one POST to CallbackUrl -> on any failure delete
+  #           the key it just created and report FAILED with the callback's
+  #           response body as the reason. The POST is not retried: the
+  #           callback token is single-use, and Sendsprite itself waits out
+  #           IAM propagation of the new key (retrying its STS check for up
+  #           to ~15 s, well inside the 45 s POST timeout below).
+  #   Delete: remove every access key of the user so the user can be deleted.
+  #   Update: no-op.
+  CallbackFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: ServiceRole
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-callback"
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 60
+      Role: !GetAtt CallbackFunctionRole.Arn
+      Code:
+        ZipFile: |
+          import json, urllib.request, urllib.error
+          import boto3
+          iam = boto3.client("iam")
+          def respond(event, context, status, reason=""):
+              body = json.dumps({"Status": status, "Reason": reason or "See CloudWatch logs",
+                  "PhysicalResourceId": event.get("PhysicalResourceId") or context.log_stream_name,
+                  "StackId": event["StackId"], "RequestId": event["RequestId"], "LogicalResourceId": event["LogicalResourceId"]}).encode()
+              req = urllib.request.Request(event["ResponseURL"], data=body, method="PUT", headers={"content-type": ""})
+              urllib.request.urlopen(req, timeout=10)
+          def post(url, payload):
+              # An explicit user-agent, because urllib's default (Python-urllib/3.12)
+              # is a signature Cloudflare's Browser Integrity Check rejects outright:
+              # the POST comes back 403 with "error code: 1010" and never reaches the
+              # instance. Any instance behind a proxy that screens on user-agent hits
+              # this, so the name travels with the request rather than being something
+              # each self-hoster has to discover. See infra/aws/README.md.
+              headers = {"content-type": "application/json", "user-agent": "Sendsprite-Connect/1.0 (+https://sendsprite.com)"}
+              req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST", headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=45) as r:
+                      return r.status, ""
+              except urllib.error.HTTPError as e:
+                  return e.code, e.read()[:500].decode("utf-8", "replace")
+          def create(p):
+              key = iam.create_access_key(UserName=p["UserName"])["AccessKey"]
+              try:
+                  # stackId + serviceRoleArn let Sendsprite delete this stack on
+                  # Disconnect (DeleteStack with RoleARN); see ServiceRole.
+                  payload = {"token": p["CallbackToken"], "accessKeyId": key["AccessKeyId"], "secretAccessKey": key["SecretAccessKey"],
+                      "region": p["Region"], "accountId": p["AccountId"],
+                      "stackId": p["StackId"], "serviceRoleArn": p["ServiceRoleArn"]}
+                  status, body = post(p["CallbackUrl"], payload)
+                  if status >= 300:
+                      raise Exception("callback returned %d: %s" % (status, body))
+              except Exception:
+                  iam.delete_access_key(UserName=p["UserName"], AccessKeyId=key["AccessKeyId"])
+                  raise
+          def delete(p):
+              for k in iam.list_access_keys(UserName=p["UserName"])["AccessKeyMetadata"]:
+                  iam.delete_access_key(UserName=p["UserName"], AccessKeyId=k["AccessKeyId"])
+          def handler(event, context):
+              try:
+                  p = event["ResourceProperties"]
+                  if event["RequestType"] == "Create":
+                      create(p)
+                  elif event["RequestType"] == "Delete":
+                      delete(p)
+                  respond(event, context, "SUCCESS")
+              except Exception as e:
+                  respond(event, context, "FAILED", str(e)[:1000])
+  # Ordering after SendspriteUser and ServiceRole is implied by the Refs below
+  # (an explicit DependsOn trips cfn-lint W3005).
+  Callback:
+    Type: Custom::SendspriteCallback
+    Properties:
+      ServiceToken: !GetAtt CallbackFunction.Arn
+      ServiceTimeout: 120
+      CallbackUrl: !Ref CallbackUrl
+      CallbackToken: !Ref CallbackToken
+      UserName: !Ref SendspriteUser
+      Region: !Ref AWS::Region
+      AccountId: !Ref AWS::AccountId
+      StackId: !Ref AWS::StackId
+      ServiceRoleArn: !GetAtt ServiceRole.Arn
+Outputs:
+  UserName:
+    Value: !Ref SendspriteUser
+  Note:
+    Value: "Disconnect in Sendsprite deletes this stack. Deleting it here works too."

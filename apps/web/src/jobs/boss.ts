@@ -1,0 +1,223 @@
+import { PgBoss, type Job, type JobWithMetadata, type Queue } from "pg-boss";
+
+type WorkerState = "running" | "disabled" | "stopped";
+export type JobHandler<T extends object = object> = (
+  jobs: Job<T>[],
+) => Promise<unknown>;
+/** Handler for a queue registered with `includeMetadata: true`. */
+export type MetadataJobHandler<T extends object = object> = (
+  jobs: JobWithMetadata<T>[],
+) => Promise<unknown>;
+
+/**
+ * Per-queue policy a handler owns (retry, expiry, retention, dead-letter,
+ * queue policy). `policy` is fixed at creation: pg-boss cannot update it.
+ */
+export type QueueOptions = Partial<
+  Pick<
+    Queue,
+    | "policy"
+    | "retryLimit"
+    | "retryDelay"
+    | "retryBackoff"
+    | "expireInSeconds"
+    | "retentionSeconds"
+    | "deadLetter"
+  >
+>;
+
+interface RegisterOptions {
+  cron?: string;
+  queue?: QueueOptions;
+  /** Hand the handler `JobWithMetadata` (retryCount/retryLimit, state…). */
+  includeMetadata?: boolean;
+}
+
+interface Registration extends RegisterOptions {
+  name: string;
+  handler: JobHandler<never> | MetadataJobHandler<never>;
+}
+
+interface Shared {
+  state: WorkerState;
+  /**
+   * `worker`: this process polls queues (supervises + schedules).
+   * `client`: send-only (web process with WORKER_MODE=separate/none).
+   */
+  role: "worker" | "client";
+  boss?: PgBoss;
+  bossPromise?: Promise<PgBoss>;
+  starting?: Promise<void>;
+  registry: Map<string, Registration>;
+}
+
+// Shared across bundles: Next evaluates this module once for the
+// instrumentation hook and again for route handlers, and dev HMR
+// re-evaluates it on reload. A plain module variable would report
+// "disabled" from /api/health while the worker is running.
+//
+// HMR caveat: handlers are attached to pg-boss once at start. Editing a
+// handler in dev updates the module but not the running worker — restart
+// `next dev` to pick the change up.
+const g = globalThis as { __sendspriteBoss?: Shared };
+const shared: Shared = (g.__sendspriteBoss ??= {
+  state: "disabled",
+  role: "client",
+  registry: new Map(),
+});
+
+export function getWorkerState(): WorkerState {
+  return shared.state;
+}
+
+/** Create the queue (no-op when it exists) and apply the updatable options. */
+async function ensureQueue(b: PgBoss, { name, queue }: Registration) {
+  await b.createQueue(name, queue);
+  if (queue) {
+    const { policy, ...updatable } = queue;
+    void policy; // fixed at creation; updateQueue rejects it
+    // A policy-only registration has nothing to update.
+    if (Object.keys(updatable).length > 0) await b.updateQueue(name, updatable);
+  }
+}
+
+async function attach(b: PgBoss, reg: Registration) {
+  await ensureQueue(b, reg);
+  if (reg.cron) await b.schedule(reg.name, reg.cron);
+  if (reg.includeMetadata)
+    await b.work(
+      reg.name,
+      { includeMetadata: true },
+      reg.handler as MetadataJobHandler,
+    );
+  else await b.work(reg.name, reg.handler as JobHandler);
+}
+
+/**
+ * Register a queue and its handler. Before `startWorker()` the entry is
+ * queued up; while running, the queue is created and attached right away.
+ * Registering the same name again replaces the earlier entry.
+ * With `includeMetadata: true` the handler receives `JobWithMetadata`
+ * (e.g. `retryCount`/`retryLimit` to detect the final attempt).
+ */
+export function registerQueue<T extends object>(
+  name: string,
+  handler: JobHandler<T>,
+  opts?: RegisterOptions & { includeMetadata?: false },
+): void;
+export function registerQueue<T extends object>(
+  name: string,
+  handler: MetadataJobHandler<T>,
+  opts: RegisterOptions & { includeMetadata: true },
+): void;
+export function registerQueue<T extends object>(
+  name: string,
+  handler: JobHandler<T> | MetadataJobHandler<T>,
+  opts: RegisterOptions = {},
+) {
+  const reg: Registration = {
+    name,
+    handler,
+    cron: opts.cron,
+    queue: opts.queue,
+    includeMetadata: opts.includeMetadata,
+  };
+  shared.registry.set(name, reg);
+  if (shared.state === "running" && shared.boss) {
+    void attach(shared.boss, reg).catch((err) =>
+      console.error(`[worker] failed to attach queue ${name}`, err),
+    );
+  }
+}
+
+/**
+ * Started pg-boss instance with every registered queue created, so any
+ * process (web with WORKER_MODE=separate included) can `send`. Only the
+ * worker role supervises (maintenance) and schedules (cron): a send-only
+ * client must not run either. Re-entrant: concurrent callers share one
+ * start.
+ */
+export async function getBoss(): Promise<PgBoss> {
+  if (shared.boss) return shared.boss;
+  if (shared.bossPromise) return shared.bossPromise;
+  shared.bossPromise = (async () => {
+    const url = process.env.DATABASE_URL;
+    if (!url) throw new Error("DATABASE_URL is not set");
+    const worker = shared.role === "worker";
+    const boss = new PgBoss({
+      connectionString: url,
+      schema: "pgboss",
+      supervise: worker,
+      schedule: worker,
+    });
+    boss.on("error", (e) => console.error("[pg-boss]", e));
+    await boss.start();
+    // Registration side effects only: every handler module calls
+    // registerQueue on import. No handler is attached here.
+    await import("./handlers");
+    for (const reg of shared.registry.values()) await ensureQueue(boss, reg);
+    shared.boss = boss;
+    return boss;
+  })().finally(() => {
+    shared.bossPromise = undefined;
+  });
+  return shared.bossPromise;
+}
+
+/** Drop the instance so the next getBoss()/startWorker() begins from scratch. */
+async function teardownBoss() {
+  const b = shared.boss;
+  shared.boss = undefined;
+  if (b) await b.stop({ graceful: false }).catch(() => undefined);
+}
+
+/**
+ * Create every registered queue, attach handlers and begin polling.
+ * Idempotent and re-entrant: concurrent callers await the same start.
+ */
+export async function startWorker(): Promise<void> {
+  if (shared.state === "running") return;
+  if (shared.starting) return shared.starting;
+  shared.starting = (async () => {
+    await import("./handlers");
+    if (shared.bossPromise) await shared.bossPromise.catch(() => undefined);
+    // A send-only instance (created by getBoss() before the worker started)
+    // neither supervises nor schedules; replace it with a worker instance.
+    if (shared.boss && shared.role !== "worker") await teardownBoss();
+    shared.role = "worker";
+    const b = await getBoss();
+    try {
+      for (const reg of shared.registry.values()) await attach(b, reg);
+    } catch (err) {
+      // Half-attached workers must not survive into a retry.
+      await teardownBoss();
+      throw err;
+    }
+    shared.state = "running";
+    console.info(
+      `[worker] started (${[...shared.registry.keys()].join(", ")})`,
+    );
+  })().finally(() => {
+    shared.starting = undefined;
+  });
+  return shared.starting;
+}
+
+/** Stop polling and close the pool. State stays "disabled" if never started. */
+export async function stopWorker() {
+  if (shared.starting) await shared.starting.catch(() => undefined);
+  if (shared.bossPromise) await shared.bossPromise.catch(() => undefined);
+  const b = shared.boss;
+  if (!b) return;
+  await b.stop({ graceful: true, timeout: 10_000 });
+  shared.boss = undefined;
+  shared.role = "client";
+  shared.state = "stopped";
+}
+
+/**
+ * pg-boss bumps `retryCount` on each re-fetch, so the attempt on which it
+ * has reached `retryLimit` is the last one: a failure there is terminal.
+ */
+export const isFinalAttempt = (job: JobWithMetadata<never> | JobWithMetadata) =>
+  job.retryCount >= job.retryLimit;
