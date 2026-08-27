@@ -95,8 +95,12 @@ Coolify fills three values itself, using its magic `SERVICE_*` variables:
 | `SERVICE_HEX_64_APPSECRET`  | Generates `APP_SECRET` once and stores it.                                                                                                         |
 | `SERVICE_PASSWORD_POSTGRES` | Generates the Postgres password, shared by both services.                                                                                          |
 
-Everything else — `SIGNUP_MODE`, the OAuth pairs, `AWS_DEFAULT_REGION` — appears
-as an editable field in Coolify's environment tab, prefilled with the default.
+Everything else — `SIGNUP_MODE`, the OAuth pairs, `AWS_DEFAULT_REGION`, the
+Cloudflare client, billing — appears as an editable field in Coolify's
+environment tab, prefilled with the default. Coolify only hands a container the
+variables the compose file references, so every option from the table below is
+listed there; a variable typed into the tab that the file does not mention never
+reaches the app.
 
 Two things to know before you deploy:
 
@@ -108,10 +112,20 @@ Two things to know before you deploy:
   Cloudflare credential in the database is encrypted with a key derived from it,
   so changing it later makes those unreadable.
 
-The SMTP relay is off in that file. It speaks raw TCP, which cannot go through
-an HTTP proxy, so turning it on means setting `SMTP_ENABLED=true` _and_
-uncommenting the `ports:` block, which publishes the container's 2587 as `587`
-on the host — check nothing else on the server already holds it.
+Coolify reads the compose file from git and strips its comments, so there is
+nothing to uncomment on the server: every switch in that file is a variable.
+
+- **SMTP relay** — off by default. It speaks raw TCP, which cannot go through
+  Coolify's HTTP proxy, so it is published straight on the host — bound to
+  loopback on port 2587 until you turn it on, where it collides with nothing.
+  To accept mail set `SMTP_ENABLED=true`, `SMTP_BIND=0.0.0.0` and
+  `SMTP_PORT=587`, check nothing else on the server holds 587, and open it in
+  the firewall.
+- **Own STARTTLS certificate** — set `SMTP_TLS_DIR` to a host directory holding
+  the PEM files (say `/etc/letsencrypt/live/mail.example.com`). It is mounted
+  read-only at `/certs`, so `SMTP_TLS_CERT=/certs/fullchain.pem` and
+  `SMTP_TLS_KEY=/certs/privkey.pem`. Unset, an empty volume sits there and the
+  relay generates a self-signed pair.
 
 ## Environment
 

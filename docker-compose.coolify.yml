@@ -65,17 +65,57 @@ services:
       # Fixed: the container runs as a non-root user and cannot bind below
       # 1024. SMTP_PORT below is the port on the *host*, mapped onto this one.
       - SMTP_PORT=2587
+      - SMTP_MAX_SIZE=${SMTP_MAX_SIZE:-10485760}
+      # Own STARTTLS certificate: set SMTP_TLS_DIR (below) to a host directory
+      # holding the PEM files; it is mounted at /certs, so these are
+      # /certs/<file>. Unset: a self-signed pair is generated.
+      - SMTP_TLS_CERT=${SMTP_TLS_CERT:-}
+      - SMTP_TLS_KEY=${SMTP_TLS_KEY:-}
+      # Comma-separated emails that always have instance-admin access — the
+      # lockout escape hatch. Unset: the first account to sign up is flagged.
+      - INSTANCE_ADMIN_EMAILS=${INSTANCE_ADMIN_EMAILS:-}
       - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+      # S3 URL of the one-click CloudFormation template. Empty: Sendsprite's
+      # public bucket. Point it at your own copy to audit what you deploy.
+      - CFN_TEMPLATE_URL=${CFN_TEMPLATE_URL:-}
+      # Cloudflare OAuth client (Manage Account -> OAuth clients) so Sendsprite
+      # can write DNS records itself once a domain owner authorises it. Its
+      # redirect URI must be exactly <APP_URL>/api/setup/cloudflare/callback.
+      # Empty: domains show the records to add by hand.
+      - CLOUDFLARE_OAUTH_CLIENT_ID=${CLOUDFLARE_OAUTH_CLIENT_ID:-}
+      - CLOUDFLARE_OAUTH_CLIENT_SECRET=${CLOUDFLARE_OAUTH_CLIENT_SECRET:-}
+      - CLOUDFLARE_OAUTH_SCOPES=${CLOUDFLARE_OAUTH_SCOPES:-}
       # Optional OAuth sign-in; leave empty to offer email + password only.
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
       - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
-    # To accept SMTP, set SMTP_ENABLED=true and uncomment this. SMTP_PORT is
-    # published straight on the host — check nothing else on the server already
-    # holds 587, and open it in the firewall.
-    # ports:
-    #   - "${SMTP_PORT:-587}:2587"
+      # Hosted-service billing (Polar). Off by default: a self-hosted instance
+      # has no Billing page, no checkout and no plan limits. Turning it on
+      # needs the token and webhook secret, and DEFAULT_PLAN must be set in the
+      # same deploy (anything but `free` is refused while billing is off).
+      - BILLING_ENABLED=${BILLING_ENABLED:-false}
+      - POLAR_ACCESS_TOKEN=${POLAR_ACCESS_TOKEN:-}
+      - POLAR_WEBHOOK_SECRET=${POLAR_WEBHOOK_SECRET:-}
+      - POLAR_SERVER=${POLAR_SERVER:-production}
+      - POLAR_METER_ID=${POLAR_METER_ID:-}
+      - BILLING_EVENT_NAME=${BILLING_EVENT_NAME:-email.sent}
+      - DEFAULT_PLAN=${DEFAULT_PLAN:-free}
+    # Coolify reads this file from git and strips comments, so nothing here
+    # can be "uncommented" on the server: every switch is a variable.
+    #
+    # SMTP is raw TCP and cannot go through Coolify's HTTP proxy, so it is
+    # published straight on the host. Off by default: bound to loopback on an
+    # unprivileged port, where it collides with nothing. To accept mail set
+    # SMTP_ENABLED=true, SMTP_BIND=0.0.0.0 and SMTP_PORT=587 (check nothing
+    # else holds 587, and open it in the firewall).
+    ports:
+      - "${SMTP_BIND:-127.0.0.1}:${SMTP_PORT:-2587}:2587"
+    # SMTP_TLS_DIR is a host directory with the PEM files, mounted read-only
+    # at /certs. Unset it falls back to an empty named volume, so the mount
+    # is harmless until you need it.
+    volumes:
+      - ${SMTP_TLS_DIR:-sendsprite-tls}:/certs:ro
     depends_on:
       db:
         condition: service_healthy
@@ -98,6 +138,7 @@ services:
 
 volumes:
   sendsprite-pgdata:
+  sendsprite-tls:
 # Scaling the worker out: set WORKER_MODE=separate above and add a second
 # service with the same image, the same DATABASE_URL and APP_SECRET,
 # WORKER_MODE=inline, SMTP_ENABLED=false and no domain. Migrations run at boot

@@ -16,6 +16,21 @@ describe("parseEnv", () => {
     expect(env.SIGNUP_MODE).toBe("auto");
     expect(env.EMAIL_PASSWORD_ENABLED).toBe(false);
   });
+  it("treats an empty string as unset (compose `${VAR:-}` passthrough)", () => {
+    const env = parseEnv({
+      ...BASE,
+      CLOUDFLARE_OAUTH_CLIENT_ID: "",
+      POLAR_ACCESS_TOKEN: "",
+      CFN_TEMPLATE_URL: "",
+      SMTP_ENABLED: "",
+      INSTANCE_ADMIN_EMAILS: "",
+    });
+    expect(env.CLOUDFLARE_OAUTH_CLIENT_ID).toBeUndefined();
+    expect(env.POLAR_ACCESS_TOKEN).toBeUndefined();
+    expect(env.CFN_TEMPLATE_URL).toMatch(/^https:\/\//);
+    expect(env.SMTP_ENABLED).toBe(true);
+    expect(env.INSTANCE_ADMIN_EMAILS).toBeUndefined();
+  });
   it("derives auth provider flags from presence of both id and secret", () => {
     const env = parseEnv({
       ...BASE,

@@ -154,7 +154,14 @@ export type Env = z.infer<typeof schema> & {
 };
 
 export function parseEnv(raw: Record<string, string | undefined>): Env {
-  const parsed = schema.safeParse(raw);
+  // An empty string is "unset". Compose files pass optional values through as
+  // `VAR=${VAR:-}`, which hands the container `VAR=""` when the field is left
+  // blank, and `z.string().min(1).optional()` would reject that where it
+  // accepts a missing key.
+  const cleaned = Object.fromEntries(
+    Object.entries(raw).filter(([, v]) => v !== ""),
+  );
+  const parsed = schema.safeParse(cleaned);
   if (!parsed.success) {
     const msg = parsed.error.issues
       .map((i) => `${i.path.join(".")}: ${i.message}`)
