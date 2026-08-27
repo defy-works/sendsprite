@@ -49,9 +49,17 @@ const BLOCKS = [
 
 interface SeedOpts {
   /** One entry per contact. `email` overrides the generated address. */
-  contacts?: { email?: string; subscribed?: boolean }[];
+  contacts?: {
+    email?: string;
+    subscribed?: boolean;
+    firstName?: string;
+    lastName?: string;
+    properties?: Record<string, string>;
+  }[];
   status?: string;
   blocks?: unknown;
+  subject?: string;
+  mergeDefaults?: Record<string, string>;
   /** Pre-render, as `campaign.start-sweep` does before the first chunk. */
   render?: boolean;
 }
@@ -68,6 +76,8 @@ async function seed({
   contacts: want = [{}, {}, {}],
   status = "sending",
   blocks = BLOCKS,
+  subject = "Hello",
+  mergeDefaults,
   render = true,
 }: SeedOpts = {}) {
   const { db } = await import("@/db");
@@ -104,6 +114,9 @@ async function seed({
         teamId: team.id,
         email: c.email ?? `r${i}@rcpt.test`,
         subscribed: c.subscribed ?? true,
+        firstName: c.firstName ?? null,
+        lastName: c.lastName ?? null,
+        ...(c.properties ? { properties: c.properties } : {}),
       })),
     );
   // Only a `text`/`button` list renders; a deliberately invalid one is stored
@@ -124,9 +137,10 @@ async function seed({
       bookId,
       domainId,
       name: "August news",
-      subject: "Hello",
+      subject,
       from: `news@${domainName}`,
       blocks: blocks as never,
+      mergeDefaults: mergeDefaults ?? null,
       html: rendered?.html ?? null,
       text: rendered?.text ?? null,
       status: status as "sending",
@@ -1015,5 +1029,93 @@ describe("campaign fan-out", () => {
       true,
     );
     expect((await campaignRow(campaignId)).status).toBe("sending");
+  });
+});
+
+describe("per-recipient merge fields", () => {
+  const MERGE_BLOCKS = [
+    { kind: "text", html: "Hi {{ firstName }} at {{ properties.company }}" },
+  ];
+
+  it("gives each recipient their own subject and body", async () => {
+    const { campaignId } = await seed({
+      subject: "Hello {{ firstName }}",
+      blocks: MERGE_BLOCKS,
+      contacts: [
+        {
+          email: "ada@rcpt.test",
+          firstName: "Ada",
+          properties: { company: "Analytical" },
+        },
+        {
+          email: "bo@rcpt.test",
+          firstName: "Bo",
+          properties: { company: "Bytes" },
+        },
+      ],
+    });
+    const rec = recorder();
+    await (await fanout()).fanoutChunk(campaignId, { enqueue: rec.enqueue });
+    const rows = await emailRows(campaignId);
+    expect(rows).toHaveLength(2);
+    const byTo = Object.fromEntries(rows.map((r) => [r.to[0], r]));
+    expect(byTo["ada@rcpt.test"]!.subject).toBe("Hello Ada");
+    expect(byTo["ada@rcpt.test"]!.html).toContain("Hi Ada at Analytical");
+    expect(byTo["bo@rcpt.test"]!.subject).toBe("Hello Bo");
+    expect(byTo["bo@rcpt.test"]!.html).toContain("Hi Bo at Bytes");
+  });
+
+  it("a missing field uses the author fallback, or empty", async () => {
+    const { campaignId } = await seed({
+      subject: "Hi {{ firstName }}",
+      blocks: [
+        { kind: "text", html: "{{ firstName }} / {{ properties.company }}" },
+      ],
+      mergeDefaults: { firstName: "there" },
+      contacts: [{ email: "no@rcpt.test" }],
+    });
+    const rec = recorder();
+    await (await fanout()).fanoutChunk(campaignId, { enqueue: rec.enqueue });
+    const [row] = await emailRows(campaignId);
+    // firstName falls back to "there"; company has no fallback → empty.
+    expect(row!.subject).toBe("Hi there");
+    expect(row!.html).toContain("there / ");
+  });
+
+  it("HTML-escapes a merge value in the body", async () => {
+    const { campaignId } = await seed({
+      subject: "x",
+      blocks: [{ kind: "text", html: "{{ firstName }}" }],
+      contacts: [{ email: "x@rcpt.test", firstName: '<b>"' }],
+    });
+    const rec = recorder();
+    await (await fanout()).fanoutChunk(campaignId, { enqueue: rec.enqueue });
+    const [row] = await emailRows(campaignId);
+    expect(row!.html).toContain("&lt;b&gt;&quot;");
+    expect(row!.html).not.toContain("<b>");
+  });
+
+  it("strips a control character a value would inject into the subject", async () => {
+    const { campaignId } = await seed({
+      subject: "Hi {{ firstName }}",
+      blocks: [{ kind: "text", html: "x" }],
+      contacts: [{ email: "inj@rcpt.test", firstName: "Ada\r\nBcc: evil@x" }],
+    });
+    const rec = recorder();
+    await (await fanout()).fanoutChunk(campaignId, { enqueue: rec.enqueue });
+    const [row] = await emailRows(campaignId);
+    expect(row!.subject).toBe("Hi AdaBcc: evil@x");
+    expect(row!.subject).not.toMatch(/[\r\n]/);
+  });
+
+  it("a campaign with no merge fields is unaffected (fast path)", async () => {
+    const { campaignId } = await seed({
+      subject: "Plain",
+      contacts: [{ email: "p@rcpt.test", firstName: "Ada" }],
+    });
+    const rec = recorder();
+    await (await fanout()).fanoutChunk(campaignId, { enqueue: rec.enqueue });
+    const [row] = await emailRows(campaignId);
+    expect(row!.subject).toBe("Plain");
   });
 });

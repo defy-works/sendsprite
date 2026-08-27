@@ -592,6 +592,8 @@ describe("campaign CRUD", () => {
         "domainId",
         "from",
         "id",
+        // Merge-field fallbacks are authored data too, read back the same way.
+        "mergeDefaults",
         "name",
         "replyTo",
         "scheduledAt",

@@ -82,6 +82,7 @@ export default async function NewCampaignPage() {
         // seeing first, and it has nothing to show until a block exists.
         nodes: editorNodesOf([blockDefaults("heading"), blockDefaults("text")]),
         theme: {},
+        mergeDefaults: {},
       }}
     />
   );

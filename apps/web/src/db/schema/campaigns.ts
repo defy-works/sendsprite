@@ -11,6 +11,7 @@ import {
   type CampaignBlock,
   type CampaignCounts,
   type CampaignTheme,
+  type MergeDefaults,
 } from "@sendsprite/shared";
 import { contacts } from "./contacts";
 import { emails } from "./emails";
@@ -94,6 +95,12 @@ export const campaigns = pgTable(
      * backfill and an old row is not a special case anywhere.
      */
     theme: jsonb("theme").$type<CampaignTheme>(),
+    /**
+     * Author-set fallbacks for `{{ name }}` merge fields, by placeholder name.
+     * Null means none — a merge field with no value and no fallback renders
+     * empty. See services/campaigns/fanout.ts and the shared renderer.
+     */
+    mergeDefaults: jsonb("merge_defaults").$type<MergeDefaults>(),
     /**
      * Rendered once when sending starts, then reused for every recipient.
      * Stored so a later edit of `blocks` cannot change what a half-sent

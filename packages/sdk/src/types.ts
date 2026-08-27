@@ -780,6 +780,13 @@ export interface CreateCampaignInput {
   blocks: CampaignBlock[];
   /** Absent means the renderer's defaults. */
   theme?: CampaignTheme;
+  /**
+   * Fallbacks for `{{ name }}` merge fields, by placeholder name. A body and
+   * subject may use `{{ firstName }}`, `{{ properties.company }}` and the
+   * like; each contact's value is substituted per recipient, and a contact
+   * missing the field gets the fallback here, or empty.
+   */
+  mergeDefaults?: Record<string, string>;
 }
 
 /**
@@ -797,6 +804,8 @@ export interface UpdateCampaignInput {
   blocks?: CampaignBlock[];
   /** `null` resets to the defaults; omitting it leaves the theme alone. */
   theme?: CampaignTheme | null;
+  /** `null` clears every merge fallback; omitting it leaves them alone. */
+  mergeDefaults?: Record<string, string> | null;
 }
 
 /**
@@ -836,6 +845,8 @@ export interface CampaignObject {
   blocks: CampaignBlock[];
   /** `null` when the campaign renders with the defaults. */
   theme: CampaignTheme | null;
+  /** Merge-field fallbacks; `null` when the campaign sets none. */
+  mergeDefaults: Record<string, string> | null;
   status: CampaignStatus;
   scheduledAt: string | null;
   /** When the fan-out finished, not when it started. */

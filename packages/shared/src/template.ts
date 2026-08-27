@@ -377,3 +377,85 @@ export function renderTemplate(
     },
   };
 }
+
+// eslint-disable-next-line no-control-regex -- stripping control characters is the point
+const CONTROL_CHARS = /[\x00-\x1F\x7F]/g;
+
+/**
+ * The campaign sibling of {@link renderTemplate}: the same `{{ name }}` syntax
+ * and the same safety, with a softer failure.
+ *
+ * A transactional template refuses a missing value so that nobody mails
+ * "Hi ,". A campaign has thousands of recipients and must not fail the whole
+ * send because one of them lacks a first name — so a value that is missing,
+ * blank, or not a scalar (e.g. `{{ properties }}`, a whole object) becomes the
+ * author's per-name fallback, or empty. This is the behaviour {@link isBlank}
+ * and the strict engine's Decision 2 deliberately refuse for templates, and
+ * deliberately allow here.
+ *
+ * Escaping is per field, exactly as in `renderTemplate`: `html` HTML-escapes
+ * every substituted value, `text` does not, and `subject` does not — but each
+ * value substituted into the subject is stripped of control characters first.
+ * That is the header-injection guard, applied to third-party contact data
+ * rather than used to refuse it: the authored subject was validated
+ * `NO_CONTROL_CHARS` when the campaign was saved, so what is left to police is
+ * the merged-in value.
+ *
+ * Returns `{ error }` only on a size overflow, which the fan-out defers on
+ * exactly like a block-render failure. A field with no placeholder is returned
+ * untouched, so a campaign that personalises nothing pays nothing here.
+ */
+export function renderCampaignFields(
+  fields: { subject: string; html: string; text: string },
+  values: Record<string, unknown>,
+  defaults: Record<string, string> = {},
+): { subject: string; html: string; text: string } | { error: string } {
+  const names = new Set<string>();
+  for (const f of [fields.subject, fields.html, fields.text])
+    for (const n of placeholderNames(f)) names.add(n);
+  if (names.size === 0) return { ...fields };
+
+  // Each distinct name resolved to a plain string once — the same
+  // resolve-once guarantee `renderTemplate` relies on, so a hostile accessor
+  // cannot return one value for the subject and another for the body.
+  const str = new Map<string, string>();
+  for (const name of names) {
+    let raw: unknown;
+    try {
+      raw = lookup(values, name);
+    } catch {
+      raw = undefined;
+    }
+    if (isBlank(raw)) {
+      str.set(name, defaults[name] ?? "");
+      continue;
+    }
+    const r = resolve(raw);
+    str.set(name, r.kind === "value" ? r.text : (defaults[name] ?? ""));
+  }
+
+  const render = (
+    source: string,
+    transform: (v: string) => string,
+  ): string | null => {
+    let out = "";
+    let cut = 0;
+    for (const m of source.matchAll(placeholder())) {
+      out += source.slice(cut, m.index);
+      cut = (m.index as number) + m[0].length;
+      out += transform(str.get(m[1] as string) ?? "");
+      if (out.length > MAX_RENDERED_CHARS) return null;
+    }
+    out += source.slice(cut);
+    return out.length > MAX_RENDERED_CHARS ? null : out;
+  };
+
+  const subject = render(fields.subject, (v) => v.replace(CONTROL_CHARS, ""));
+  const html = render(fields.html, escapeHtml);
+  const text = render(fields.text, (v) => v);
+  if (subject === null || html === null || text === null)
+    return { error: "The personalised body is too large." };
+  if (subject.length > MAX_SUBJECT_CHARS)
+    return { error: "The personalised subject is too long." };
+  return { subject, html, text };
+}

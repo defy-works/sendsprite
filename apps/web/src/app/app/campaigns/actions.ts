@@ -57,7 +57,13 @@ export interface CampaignDraft {
   blocks: CampaignBlock[];
   /** `{}` renders the defaults, which is what an absent theme has always done. */
   theme: CampaignTheme;
+  /** Merge-field fallbacks by placeholder name; `{}` is none. */
+  mergeDefaults: Record<string, string>;
 }
+
+/** Whether the draft carries any merge-field fallback at all. */
+const hasMergeDefaults = (d: CampaignDraft) =>
+  Object.keys(d.mergeDefaults).length > 0;
 
 export async function createCampaign(
   draft: CampaignDraft,
@@ -67,6 +73,8 @@ export async function createCampaign(
     // Omitted rather than null: `CreateCampaignInput.replyTo` is `.optional()`,
     // and a null would be a validation error rather than "there isn't one".
     replyTo: draft.replyTo.trim() ? draft.replyTo : undefined,
+    // Empty is "no fallbacks", which the create path expresses by omission.
+    mergeDefaults: hasMergeDefaults(draft) ? draft.mergeDefaults : undefined,
   });
   if (!res.ok) return res;
   revalidatePath("/app/campaigns");
@@ -82,6 +90,10 @@ export async function updateCampaign(
     // `null`, not `undefined`: on the update path clearing the field has to be
     // expressible, and `undefined` there means "leave it alone".
     replyTo: draft.replyTo.trim() ? draft.replyTo : null,
+    // `null` (not `{}`) when empty, so a campaign that sets no fallbacks
+    // compares equal to a null column and its schedule is not reverted by a
+    // no-op save. See `changedFields` in services/campaigns/crud.ts.
+    mergeDefaults: hasMergeDefaults(draft) ? draft.mergeDefaults : null,
   });
   if (!res.ok) return res;
   revalidatePath(`/app/campaigns/${id}`);

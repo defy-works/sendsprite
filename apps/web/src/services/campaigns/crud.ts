@@ -126,6 +126,7 @@ export const publicCampaign = (c: Campaign) => ({
   subject: c.subject,
   blocks: c.blocks,
   theme: c.theme,
+  mergeDefaults: c.mergeDefaults,
   status: c.status,
   scheduledAt: c.scheduledAt,
   sentAt: c.sentAt,
@@ -351,6 +352,7 @@ export async function createCampaign(
       replyTo: p.data.replyTo ?? null,
       blocks: p.data.blocks,
       theme: p.data.theme ?? null,
+      mergeDefaults: p.data.mergeDefaults ?? null,
       // `status`, `counts` and the timestamps take their column defaults: a
       // campaign is always born a `draft` with an all-zero count cache.
       createdBy: actor.userId,
@@ -386,6 +388,7 @@ const EDITABLE_FIELDS = [
   // unchanged theme re-sent on every save must not read as an edit, because
   // an edit reverts a scheduled campaign to a draft.
   "theme",
+  "mergeDefaults",
 ] as const;
 
 type EditableField = (typeof EDITABLE_FIELDS)[number];
@@ -456,6 +459,10 @@ export async function updateCampaign(
     // `null` is a real value here — "reset to the defaults" — so only
     // `undefined` means "leave it alone".
     theme: p.data.theme === undefined ? current.theme : p.data.theme,
+    mergeDefaults:
+      p.data.mergeDefaults === undefined
+        ? current.mergeDefaults
+        : p.data.mergeDefaults,
   };
   const fields = changedFields(current, next);
   // Nothing moved: no write, no audit row, and — the reason this check is

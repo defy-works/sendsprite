@@ -8,6 +8,7 @@ import {
   useTransition,
 } from "react";
 import type { CampaignStatus, CampaignTheme } from "@sendsprite/shared";
+import { placeholderNames, renderCampaignFields } from "@sendsprite/shared";
 import { Alert } from "@/components/ui/Alert";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -53,6 +54,8 @@ export interface EditorCampaign {
   nodes: EditorNode[];
   /** `{}` is "the renderer's defaults", which is what a null column means. */
   theme: CampaignTheme;
+  /** Fallbacks for `{{ name }}` merge fields, by placeholder name; `{}` is none. */
+  mergeDefaults: Record<string, string>;
 }
 
 const STATUS_VARIANT: Record<CampaignStatus, BadgeVariant> = {
@@ -133,6 +136,13 @@ export function CampaignEditor({
 
   const set = <K extends keyof EditorCampaign>(k: K, v: EditorCampaign[K]) =>
     setC((prev) => ({ ...prev, [k]: v }));
+  const setMerge = (name: string, value: string) =>
+    setC((prev) => {
+      const next = { ...prev.mergeDefaults };
+      if (value === "") delete next[name];
+      else next[name] = value;
+      return { ...prev, mergeDefaults: next };
+    });
   const setNodes = useCallback(
     (fn: (nodes: EditorNode[]) => EditorNode[]) =>
       setC((prev) => ({ ...prev, nodes: fn(prev.nodes) })),
@@ -161,6 +171,32 @@ export function CampaignEditor({
     [c.nodes, c.theme],
   );
 
+  // The merge fields in play: exactly what the fan-out scans — the rendered
+  // html and text, plus the subject. Empty when the campaign personalises
+  // nothing, which is what keeps the panel and the preview substitution out
+  // of the way of a plain campaign.
+  const mergeNames = useMemo(
+    () =>
+      placeholderNames(
+        `${c.subject}\n${preview.ok ? `${preview.html}\n${preview.text}` : ""}`,
+      ),
+    [c.subject, preview],
+  );
+  // The preview with sample values in place of the tokens, so the author sees
+  // a real recipient's view rather than `{{ firstName }}`. A fallback the
+  // author set shows through; anything else gets a friendly stand-in.
+  const shown = useMemo(() => {
+    const base = preview.ok
+      ? { subject: c.subject, html: preview.html, text: preview.text }
+      : null;
+    if (!base || mergeNames.length === 0) return base;
+    const r = renderCampaignFields(
+      base,
+      sampleValues(mergeNames, c.mergeDefaults),
+    );
+    return "error" in r ? base : r;
+  }, [preview, mergeNames, c.subject, c.mergeDefaults]);
+
   const bookMissing = c.bookId !== "" && !books.some((b) => b.id === c.bookId);
   const domainMissing =
     c.domainId !== "" && !domains.some((d) => d.id === c.domainId);
@@ -174,6 +210,7 @@ export function CampaignEditor({
     subject: state.subject,
     blocks: blocksOfTree(state.nodes),
     theme: state.theme,
+    mergeDefaults: state.mergeDefaults,
   });
 
   const save = () => {
@@ -264,128 +301,136 @@ export function CampaignEditor({
         readOnly={readOnly}
         invalidIndex={preview.ok ? null : preview.index}
         settings={
-          <Card>
-            <CardHeader>
-              <CardTitle>Settings</CardTitle>
-            </CardHeader>
-            <CardBody className="grid gap-4 sm:grid-cols-2">
-              <Field
-                id="cmp-name"
-                label="Name"
-                hint="Internal only. Recipients never see it."
-              >
-                <Input
+          <>
+            <Card>
+              <CardHeader>
+                <CardTitle>Settings</CardTitle>
+              </CardHeader>
+              <CardBody className="grid gap-4 sm:grid-cols-2">
+                <Field
                   id="cmp-name"
-                  value={c.name}
-                  maxLength={200}
-                  disabled={readOnly}
-                  onChange={(e) => set("name", e.target.value)}
-                />
-              </Field>
+                  label="Name"
+                  hint="Internal only. Recipients never see it."
+                >
+                  <Input
+                    id="cmp-name"
+                    value={c.name}
+                    maxLength={200}
+                    disabled={readOnly}
+                    onChange={(e) => set("name", e.target.value)}
+                  />
+                </Field>
 
-              <Field id="cmp-subject" label="Subject">
-                <Input
-                  id="cmp-subject"
-                  value={c.subject}
-                  disabled={readOnly}
-                  onChange={(e) => set("subject", e.target.value)}
-                />
-              </Field>
+                <Field id="cmp-subject" label="Subject">
+                  <Input
+                    id="cmp-subject"
+                    value={c.subject}
+                    disabled={readOnly}
+                    onChange={(e) => set("subject", e.target.value)}
+                  />
+                </Field>
 
-              <Field
-                id="cmp-book"
-                label="Contact book"
-                error={
-                  bookMissing
-                    ? "The book this campaign was drawn from has been deleted. Pick another before saving."
-                    : undefined
-                }
-                hint="Everyone in it who is subscribed and not suppressed — consent and deliverability are separate, and both have to say yes."
-              >
-                <Select
+                <Field
                   id="cmp-book"
-                  value={c.bookId}
-                  disabled={readOnly}
-                  placeholder="Choose a book…"
-                  onChange={(v) => set("bookId", v)}
-                  options={[
-                    /* A campaign outlives its book: `book_id` carries no
+                  label="Contact book"
+                  error={
+                    bookMissing
+                      ? "The book this campaign was drawn from has been deleted. Pick another before saving."
+                      : undefined
+                  }
+                  hint="Everyone in it who is subscribed and not suppressed — consent and deliverability are separate, and both have to say yes."
+                >
+                  <Select
+                    id="cmp-book"
+                    value={c.bookId}
+                    disabled={readOnly}
+                    placeholder="Choose a book…"
+                    onChange={(v) => set("bookId", v)}
+                    options={[
+                      /* A campaign outlives its book: `book_id` carries no
                        foreign key, so the stored id can point at nothing.
                        Kept as an option so the row still renders what it
                        says, with a warning telling the author to repoint it. */
-                    ...(bookMissing
-                      ? [
-                          {
-                            value: c.bookId,
-                            label: "Deleted book",
-                            hint: c.bookId,
-                          },
-                        ]
-                      : []),
-                    ...books.map((b) => ({
-                      value: b.id,
-                      label: b.name,
-                      hint: `${b.contactCount.toLocaleString("en-US")} contacts`,
-                    })),
-                  ]}
-                />
-              </Field>
+                      ...(bookMissing
+                        ? [
+                            {
+                              value: c.bookId,
+                              label: "Deleted book",
+                              hint: c.bookId,
+                            },
+                          ]
+                        : []),
+                      ...books.map((b) => ({
+                        value: b.id,
+                        label: b.name,
+                        hint: `${b.contactCount.toLocaleString("en-US")} contacts`,
+                      })),
+                    ]}
+                  />
+                </Field>
 
-              <Field
-                id="cmp-domain"
-                label="Sending domain"
-                error={
-                  domainMissing
-                    ? "This domain is gone or no longer verified. A campaign sent from it would fail for every recipient."
-                    : undefined
-                }
-              >
-                <Select
+                <Field
                   id="cmp-domain"
-                  value={c.domainId}
-                  disabled={readOnly}
-                  placeholder="Choose a domain…"
-                  onChange={(v) => set("domainId", v)}
-                  options={[
-                    ...(domainMissing
-                      ? [
-                          {
-                            value: c.domainId,
-                            label: "Deleted or unverified",
-                            hint: c.domainId,
-                          },
-                        ]
-                      : []),
-                    ...domains.map((d) => ({ value: d.id, label: d.name })),
-                  ]}
-                />
-              </Field>
+                  label="Sending domain"
+                  error={
+                    domainMissing
+                      ? "This domain is gone or no longer verified. A campaign sent from it would fail for every recipient."
+                      : undefined
+                  }
+                >
+                  <Select
+                    id="cmp-domain"
+                    value={c.domainId}
+                    disabled={readOnly}
+                    placeholder="Choose a domain…"
+                    onChange={(v) => set("domainId", v)}
+                    options={[
+                      ...(domainMissing
+                        ? [
+                            {
+                              value: c.domainId,
+                              label: "Deleted or unverified",
+                              hint: c.domainId,
+                            },
+                          ]
+                        : []),
+                      ...domains.map((d) => ({ value: d.id, label: d.name })),
+                    ]}
+                  />
+                </Field>
 
-              <Field
-                id="cmp-from"
-                label="From"
-                hint="Must be an address at the domain above."
-              >
-                <Input
+                <Field
                   id="cmp-from"
-                  value={c.from}
-                  placeholder="hello@yourdomain.com"
-                  disabled={readOnly}
-                  onChange={(e) => set("from", e.target.value)}
-                />
-              </Field>
+                  label="From"
+                  hint="Must be an address at the domain above."
+                >
+                  <Input
+                    id="cmp-from"
+                    value={c.from}
+                    placeholder="hello@yourdomain.com"
+                    disabled={readOnly}
+                    onChange={(e) => set("from", e.target.value)}
+                  />
+                </Field>
 
-              <Field id="cmp-replyto" label="Reply-to (optional)">
-                <Input
-                  id="cmp-replyto"
-                  value={c.replyTo}
-                  placeholder="none"
-                  disabled={readOnly}
-                  onChange={(e) => set("replyTo", e.target.value)}
-                />
-              </Field>
-            </CardBody>
-          </Card>
+                <Field id="cmp-replyto" label="Reply-to (optional)">
+                  <Input
+                    id="cmp-replyto"
+                    value={c.replyTo}
+                    placeholder="none"
+                    disabled={readOnly}
+                    onChange={(e) => set("replyTo", e.target.value)}
+                  />
+                </Field>
+              </CardBody>
+            </Card>
+            <MergePanel
+              names={mergeNames}
+              defaults={c.mergeDefaults}
+              onChange={setMerge}
+              readOnly={readOnly}
+            />
+          </>
         }
         preview={
           /* Contents, not a card: these share the body card with the canvas so
@@ -393,25 +438,27 @@ export function CampaignEditor({
           <>
             <p className="text-sm break-words text-white/65">
               <span className="text-white/40">Subject </span>
-              {c.subject || <span className="text-white/40">(none)</span>}
+              {shown?.subject || <span className="text-white/40">(none)</span>}
             </p>
-            {preview.ok ? (
+            {shown ? (
               <>
-                <EmailPreview title="Campaign preview" html={preview.html} />
+                <EmailPreview title="Campaign preview" html={shown.html} />
                 <details>
                   <summary className="cursor-pointer text-xs text-white/50">
                     Plain-text part
                   </summary>
                   <pre className="mt-2 max-h-64 overflow-auto rounded-md bg-white/4 p-3 font-mono text-xs whitespace-pre-wrap text-white/75">
-                    {preview.text}
+                    {shown.text}
                   </pre>
                 </details>
               </>
             ) : (
-              <Alert>{preview.error}</Alert>
+              <Alert>{!preview.ok ? preview.error : ""}</Alert>
             )}
             <p className="text-xs text-white/50">
-              The unsubscribe footer is added per recipient.
+              {mergeNames.length > 0
+                ? "Merge fields are shown with sample values; the unsubscribe footer is added per recipient."
+                : "The unsubscribe footer is added per recipient."}
             </p>
           </>
         }
@@ -444,6 +491,102 @@ export function CampaignEditor({
   );
 }
 
+/** Friendly stand-ins for the built-in contact fields in the preview. */
+const SAMPLE_FIELD: Record<string, string> = {
+  firstName: "Alex",
+  lastName: "Rivera",
+  email: "alex@example.com",
+};
+
+/**
+ * Sample values for the preview: a fallback the author set, else a friendly
+ * stand-in, so `{{ firstName }}` reads as "Alex" and `{{ properties.company }}`
+ * as "[company]" rather than as a raw token. Dotted `properties.*` names are
+ * nested so the renderer's dotted lookup finds them.
+ */
+function sampleValues(
+  names: string[],
+  defaults: Record<string, string>,
+): Record<string, unknown> {
+  const values: Record<string, unknown> = {};
+  const properties: Record<string, string> = {};
+  for (const n of names) {
+    if (n.startsWith("properties.")) {
+      const key = n.slice("properties.".length);
+      properties[key] = defaults[n] || `[${key}]`;
+    } else {
+      values[n] = defaults[n] || SAMPLE_FIELD[n] || `[${n}]`;
+    }
+  }
+  values.properties = properties;
+  return values;
+}
+
+/**
+ * The personalization panel. Lists the merge fields the body and subject use
+ * and lets the author set a fallback for each — the value a recipient missing
+ * that field gets, instead of empty. It only ever lists what is actually in
+ * use, so it is empty (a hint) until the author types a `{{ }}`.
+ */
+function MergePanel({
+  names,
+  defaults,
+  onChange,
+  readOnly,
+}: {
+  names: string[];
+  defaults: Record<string, string>;
+  onChange: (name: string, value: string) => void;
+  readOnly: boolean;
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Personalization</CardTitle>
+      </CardHeader>
+      <CardBody className="flex flex-col gap-4">
+        <p className="text-sm text-white/65">
+          Type{" "}
+          <code className="rounded bg-white/8 px-1 py-0.5 text-xs">
+            {"{{ firstName }}"}
+          </code>{" "}
+          in the subject or a text block and each recipient gets their own
+          value. Available fields: <code className="text-xs">firstName</code>,{" "}
+          <code className="text-xs">lastName</code>,{" "}
+          <code className="text-xs">email</code>, and any contact property as{" "}
+          <code className="text-xs">{"{{ properties.name }}"}</code>.
+        </p>
+        {names.length === 0 ? (
+          <p className="text-sm text-white/40">
+            No merge fields yet. One appears here to set a fallback for as soon
+            as you use it.
+          </p>
+        ) : (
+          <div className="flex flex-col gap-3">
+            {names.map((name) => (
+              <Field
+                key={name}
+                id={`cmp-merge-${name}`}
+                label={`{{ ${name} }}`}
+                hint="Shown when a contact is missing this field. Empty if you leave it blank."
+              >
+                <Input
+                  id={`cmp-merge-${name}`}
+                  value={defaults[name] ?? ""}
+                  placeholder="(empty)"
+                  maxLength={200}
+                  disabled={readOnly}
+                  onChange={(e) => onChange(name, e.target.value)}
+                />
+              </Field>
+            ))}
+          </div>
+        )}
+      </CardBody>
+    </Card>
+  );
+}
+
 /**
  * The campaign minus its editor ids, for the dirty check.
  *
@@ -462,5 +605,6 @@ function serialisable(c: EditorCampaign) {
     subject: c.subject,
     blocks: blocksOfTree(c.nodes),
     theme: c.theme,
+    mergeDefaults: c.mergeDefaults,
   };
 }

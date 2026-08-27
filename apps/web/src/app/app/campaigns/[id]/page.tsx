@@ -104,6 +104,7 @@ export default async function CampaignPage({
           subject: c.subject,
           nodes: editorNodesOf(c.blocks),
           theme: c.theme ?? {},
+          mergeDefaults: c.mergeDefaults ?? {},
         }}
       />
 

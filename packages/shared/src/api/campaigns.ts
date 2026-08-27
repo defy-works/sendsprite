@@ -541,6 +541,36 @@ export const CampaignTheme = z.object({
 });
 export type CampaignTheme = z.infer<typeof CampaignTheme>;
 
+/** A merge placeholder name: `firstName`, `properties.company`. */
+const MERGE_NAME =
+  /^[A-Za-z_][A-Za-z0-9_]{0,63}(?:\.[A-Za-z_][A-Za-z0-9_]{0,63}){0,3}$/;
+export const MAX_MERGE_DEFAULTS = 100;
+export const MAX_MERGE_DEFAULT_CHARS = 200;
+
+/**
+ * Author-set fallbacks for merge fields, by placeholder name. Keys match the
+ * `{{ name }}` grammar; values are plain single-line text — a fallback goes
+ * into a rendered subject, so it is held to the same `NO_CONTROL_CHARS` rule
+ * the authored subject is. Bounded so a campaign row cannot carry an
+ * unbounded map.
+ */
+export const MergeDefaults = z
+  .record(
+    z.string().regex(MERGE_NAME, "Not a valid merge-field name."),
+    z
+      .string()
+      .max(MAX_MERGE_DEFAULT_CHARS)
+      .regex(
+        NO_CONTROL_CHARS,
+        "A fallback must not contain control characters.",
+      ),
+  )
+  .refine(
+    (o) => Object.keys(o).length <= MAX_MERGE_DEFAULTS,
+    `At most ${MAX_MERGE_DEFAULTS} merge fallbacks.`,
+  );
+export type MergeDefaults = z.infer<typeof MergeDefaults>;
+
 /**
  * One block of a campaign body.
  *
@@ -607,6 +637,14 @@ export const CreateCampaignInput = z.object({
    * that never sends one is not opting out of anything.
    */
   theme: CampaignTheme.optional(),
+  /**
+   * Fallbacks for `{{ name }}` merge fields, by placeholder name. A campaign
+   * body and subject may contain `{{ firstName }}`, `{{ properties.company }}`
+   * and the like; the fan-out substitutes each contact's value per recipient,
+   * and a contact missing the field gets the fallback here, or empty. Absent
+   * means every merge field falls back to empty.
+   */
+  mergeDefaults: MergeDefaults.optional(),
 });
 export type CreateCampaignInput = z.infer<typeof CreateCampaignInput>;
 
@@ -632,6 +670,8 @@ export const UpdateCampaignInput = z.object({
   blocks: Blocks.optional(),
   /** `null` resets to the defaults; omitting it leaves the theme alone. */
   theme: CampaignTheme.nullable().optional(),
+  /** `null` clears every fallback; omitting it leaves them alone. */
+  mergeDefaults: MergeDefaults.nullable().optional(),
 });
 export type UpdateCampaignInput = z.infer<typeof UpdateCampaignInput>;
 
@@ -683,6 +723,8 @@ export const CampaignObject = z.object({
    * actually sends is a document that is wrong.
    */
   theme: CampaignTheme.nullable(),
+  /** Merge-field fallbacks; `null` when the campaign sets none. */
+  mergeDefaults: MergeDefaults.nullable(),
   status: z.enum(CAMPAIGN_STATUSES),
   scheduledAt: z.iso.datetime().nullable(),
   /** When the fan-out finished, not when it started. */

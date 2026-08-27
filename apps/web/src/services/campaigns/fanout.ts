@@ -4,7 +4,9 @@ import {
   UNSUBSCRIBE_MARKER,
   escapeHtml,
   newId,
+  placeholderCount,
   renderBlocks,
+  renderCampaignFields,
   type ErrorCode,
 } from "@sendsprite/shared";
 import { db } from "@/db";
@@ -297,6 +299,12 @@ export async function fanoutChunk(
     ? [parseAddress(campaign.replyTo)?.email ?? campaign.replyTo]
     : [];
 
+  // Whether any recipient needs per-recipient substitution at all, decided
+  // once for the whole chunk: a campaign with no `{{ }}` keeps the fast path
+  // — one stored render, rewritten only for the unsubscribe link — and pays
+  // nothing for a feature it does not use.
+  const merges = campaignUsesMerge(campaign);
+
   const planned: Planned[] = contacts.map((contact) => {
     const to = parseAddress(contact.email);
     // Nothing in `contacts` should fail this — the table has a check
@@ -308,6 +316,12 @@ export async function fanoutChunk(
     // One source for both links: the footer's and the header's must always
     // carry the same token, and they are two different routes.
     const links = unsubscribeLinks(contact.id, campaign.id);
+    const personal = personalize(campaign, contact, merges);
+    // A per-recipient render can only fail on size, and only a pathological
+    // value reaches it; that one recipient is skipped rather than the whole
+    // campaign stopped, and the skip row keeps it from being reconsidered.
+    if (!personal)
+      return { contact, emailId: null, skipReason: "personalize" as const };
     return {
       contact,
       emailId,
@@ -322,8 +336,8 @@ export async function fanoutChunk(
         fromEmail: from.email,
         to: [to.email],
         replyTo,
-        subject: campaign.subject,
-        ...body(campaign, emailId, links.pageUrl, tracking),
+        subject: personal.subject,
+        ...body(personal, emailId, links.pageUrl, tracking),
         // Header-safe by construction rather than by hope: the names match
         // `HEADER_NAME` (`[A-Za-z0-9-]{1,80}`) and are not in the reserved
         // set, and the values satisfy `NO_CONTROL_CHARS` because a token is
@@ -1071,22 +1085,70 @@ async function stopCampaign(
  * per-campaign open and click counts possible at all.
  */
 function body(
-  campaign: Campaign,
+  src: { html: string; text: string },
   emailId: string,
   url: string,
   opts: { trackOpens: boolean; trackClicks: boolean },
 ): { html: string; text: string } {
   const env = loadEnv();
-  let html = campaign.html ?? "";
+  let html = src.html;
   if (opts.trackClicks)
     html = wrapLinks(html, emailId, env.APP_URL, env.APP_SECRET);
   if (opts.trackOpens) html = injectPixel(html, emailId, env.APP_URL);
   const footer = `<a href="${escapeHtml(url)}">Unsubscribe</a>`;
   return {
     html: html.replaceAll(UNSUBSCRIBE_MARKER, () => footer),
-    text: (campaign.text ?? "").replaceAll(
-      UNSUBSCRIBE_MARKER,
-      () => `Unsubscribe: ${url}`,
-    ),
+    text: src.text.replaceAll(UNSUBSCRIBE_MARKER, () => `Unsubscribe: ${url}`),
   };
+}
+
+/** Does this campaign use any merge field anywhere the fan-out substitutes? */
+function campaignUsesMerge(c: Campaign): boolean {
+  return (
+    placeholderCount(c.subject) +
+      placeholderCount(c.html ?? "") +
+      placeholderCount(c.text ?? "") >
+    0
+  );
+}
+
+/**
+ * One recipient's subject and body with `{{ name }}` merge fields resolved
+ * against this contact and the campaign's fallbacks. The fast path — a
+ * campaign with no merge fields — returns the stored render untouched, so it
+ * is exactly what it was before merge existed. Null only on the size-overflow
+ * error, which drops the one recipient.
+ *
+ * The stored `html` still carries {@link UNSUBSCRIBE_MARKER} (a control
+ * character, matched by no placeholder) at this point; `body()` swaps it for
+ * the recipient's link afterwards.
+ */
+function personalize(
+  campaign: Campaign,
+  contact: EligibleContact,
+  merges: boolean,
+): { subject: string; html: string; text: string } | null {
+  const fields = {
+    subject: campaign.subject,
+    html: campaign.html ?? "",
+    text: campaign.text ?? "",
+  };
+  if (!merges) return fields;
+  const r = renderCampaignFields(
+    fields,
+    {
+      email: contact.email,
+      firstName: contact.firstName,
+      lastName: contact.lastName,
+      properties: contact.properties ?? {},
+    },
+    campaign.mergeDefaults ?? {},
+  );
+  if ("error" in r) {
+    console.warn(
+      `[campaigns] ${campaign.id}: recipient ${contact.id} skipped, personalise: ${r.error}`,
+    );
+    return null;
+  }
+  return r;
 }

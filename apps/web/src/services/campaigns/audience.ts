@@ -53,6 +53,8 @@ export interface EligibleContact {
   email: string;
   firstName: string | null;
   lastName: string | null;
+  /** Arbitrary per-contact keys, reachable in a body as `{{ properties.x }}`. */
+  properties: Record<string, string>;
 }
 
 /**
@@ -113,6 +115,7 @@ export async function selectEligible(
       email: contacts.email,
       firstName: contacts.firstName,
       lastName: contacts.lastName,
+      properties: contacts.properties,
     })
     .from(contacts)
     .where(and(...where))
