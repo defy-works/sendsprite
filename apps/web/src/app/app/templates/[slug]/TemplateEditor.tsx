@@ -606,7 +606,6 @@ export function TemplateEditor({
               // background of its own, and without a wrapper the frame would
               // inherit the dashboard's dark colour-scheme.
               wrap={authoring === "html"}
-              height="28rem"
             />
             {preview.data.text !== null && (
               <details>

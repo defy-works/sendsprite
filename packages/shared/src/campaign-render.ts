@@ -523,7 +523,7 @@ export function renderBlocks(
   // background for you; naming `color-scheme: light` here says this document
   // has its own palette and should not be re-coloured.
   const html =
-    `<!doctype html><html style="background:${t.pageBackground};color-scheme:light"><head><meta charset="utf-8" />` +
+    `<!doctype html><html style="height:100%;background:${t.pageBackground};color-scheme:light"><head><meta charset="utf-8" />` +
     `<meta name="color-scheme" content="light" />` +
     `<meta name="supported-color-schemes" content="light" />` +
     `<meta name="viewport" content="width=device-width,initial-scale=1" />` +

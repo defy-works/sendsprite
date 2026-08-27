@@ -400,11 +400,7 @@ export function CampaignEditor({
               </p>
               {preview.ok ? (
                 <>
-                  <EmailPreview
-                    title="Campaign preview"
-                    html={preview.html}
-                    height="30rem"
-                  />
+                  <EmailPreview title="Campaign preview" html={preview.html} />
                   <details>
                     <summary className="cursor-pointer text-xs text-white/50">
                       Plain-text part

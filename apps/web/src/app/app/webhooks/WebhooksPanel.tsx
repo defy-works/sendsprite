@@ -1,16 +1,16 @@
 "use client";
 import { useActionState, useState } from "react";
-import { can, WEBHOOK_EVENT_TYPES, type TeamRole } from "@sendsprite/shared";
+import { can, type TeamRole } from "@sendsprite/shared";
 import { createWebhook } from "./actions";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/Card";
 import { CopyField } from "@/components/ui/CopyField";
+import { EventPicker } from "./EventPicker";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
 import { Label } from "@/components/ui/Label";
 import { Link } from "@/components/ui/Link";
-import { Checkbox } from "@/components/ui/Toggle";
 
 /** Dates are pre-formatted on the server so SSR and hydration agree. */
 export type WebhookRow = {
@@ -104,19 +104,7 @@ export function WebhooksPanel({
                     required
                   />
                 </div>
-                <fieldset>
-                  <legend className="mb-2 text-sm font-medium">Events</legend>
-                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                    {WEBHOOK_EVENT_TYPES.map((t) => (
-                      <Checkbox
-                        key={t}
-                        name="events"
-                        value={t}
-                        label={<code className="text-xs">{t}</code>}
-                      />
-                    ))}
-                  </div>
-                </fieldset>
+                <EventPicker />
                 <div>
                   <Button type="submit" loading={pending}>
                     Add endpoint

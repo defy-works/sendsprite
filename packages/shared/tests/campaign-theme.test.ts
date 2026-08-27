@@ -54,7 +54,11 @@ describe("the body theme", () => {
         textColor: "#1f2937",
       },
     });
-    expect(html).toContain('style="background:#0b1020;color-scheme:light"');
+    // `height:100%` so a document shorter than the frame still paints the
+    // root's background all the way down.
+    expect(html).toContain(
+      'style="height:100%;background:#0b1020;color-scheme:light"',
+    );
     expect(html).toContain("background:#fef3c7");
     expect(html).toContain("color:#1f2937");
     // The default is gone, not merely overridden somewhere later.

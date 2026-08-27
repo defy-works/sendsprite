@@ -34,8 +34,11 @@ export function LogoBlock() {
         aria-label="Sendsprite"
         className="flex items-center gap-2 rounded-md px-1.5 py-1 transition-opacity hover:opacity-80"
       >
-        <MarkTile scale={1.15} className={collapsed ? "" : "md:hidden"} />
-        {!collapsed && <Logo scale={1.9} className="hidden md:block" />}
+        {/* The mark is a 24-square and the wordmark a 76×15 strip, so equal
+            scales make the mark tower over the text it is set against. Sized
+            by eye against the cap height instead. */}
+        <MarkTile scale={0.95} className={collapsed ? "" : "md:hidden"} />
+        {!collapsed && <Logo scale={2} className="hidden md:block" />}
       </Link>
     </div>
   );

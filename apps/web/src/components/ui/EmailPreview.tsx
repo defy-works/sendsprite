@@ -34,7 +34,14 @@ export function EmailPreview({
   /** Wrap the value in a minimal light document. For raw body fragments. */
   wrap = false,
   className,
-  height = "36rem",
+  /**
+   * Tall by default, and measured against the window rather than the text.
+   *
+   * A preview is the only place the email is seen before thousands of people
+   * see it, and it was being shown through a 28–36rem letterbox on a screen
+   * with room for twice that. `min()` keeps it from outgrowing a laptop.
+   */
+  height = "min(74vh, 52rem)",
 }: {
   html: string;
   title: string;
@@ -121,11 +128,11 @@ function openInTab(doc: string) {
  */
 function wrapFragment(fragment: string): string {
   return (
-    `<!doctype html><html style="background:#ffffff;color-scheme:light">` +
+    `<!doctype html><html style="height:100%;background:#ffffff;color-scheme:light">` +
     `<head><meta charset="utf-8" />` +
     `<meta name="color-scheme" content="light" />` +
     `<meta name="viewport" content="width=device-width,initial-scale=1" /></head>` +
-    `<body style="margin:0;padding:16px;background:#ffffff;color:#111111">` +
+    `<body style="margin:0;min-height:100%;padding:16px;background:#ffffff;color:#111111">` +
     fragment +
     `</body></html>`
   );

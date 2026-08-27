@@ -67,7 +67,7 @@ export function EmailDetail({
             // fragment, and wrapping one in another `<html>` is what makes a
             // preview disagree with what the recipient saw.
             <div className="flex flex-col gap-2">
-              <EmailPreview title="Email preview" html={html} height="32rem" />
+              <EmailPreview title="Email preview" html={html} />
               <p className="text-xs text-white/50">
                 Tracking is stripped from this preview; links are live.
               </p>
