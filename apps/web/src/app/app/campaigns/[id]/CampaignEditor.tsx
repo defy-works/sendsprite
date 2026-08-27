@@ -17,7 +17,7 @@ import { Field } from "@/components/ui/Field";
 import { Input } from "@/components/ui/Input";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Select } from "@/components/ui/Select";
-import { IconEye, IconSend } from "@/components/ui/icons";
+import { IconSend } from "@/components/ui/icons";
 import { useToast } from "@/components/ui/toast";
 import { BlockDesigner } from "@/components/editor/BlockDesigner";
 import { TestSendDialog } from "@/components/app/TestSendDialog";
@@ -388,36 +388,32 @@ export function CampaignEditor({
           </Card>
         }
         preview={
-          <Card className="xl:sticky xl:top-6 xl:self-start">
-            <CardHeader>
-              <CardTitle>Preview</CardTitle>
-              <IconEye className="text-white/30" />
-            </CardHeader>
-            <CardBody className="flex flex-col gap-3">
-              <p className="text-sm break-words text-white/65">
-                <span className="text-white/40">Subject </span>
-                {c.subject || <span className="text-white/40">(none)</span>}
-              </p>
-              {preview.ok ? (
-                <>
-                  <EmailPreview title="Campaign preview" html={preview.html} />
-                  <details>
-                    <summary className="cursor-pointer text-xs text-white/50">
-                      Plain-text part
-                    </summary>
-                    <pre className="mt-2 max-h-64 overflow-auto rounded-md bg-white/4 p-3 font-mono text-xs whitespace-pre-wrap text-white/75">
-                      {preview.text}
-                    </pre>
-                  </details>
-                </>
-              ) : (
-                <Alert>{preview.error}</Alert>
-              )}
-              <p className="text-xs text-white/50">
-                The unsubscribe footer is added per recipient.
-              </p>
-            </CardBody>
-          </Card>
+          /* Contents, not a card: these share the body card with the canvas so
+             the header and the mode switch stay put when the mode changes. */
+          <>
+            <p className="text-sm break-words text-white/65">
+              <span className="text-white/40">Subject </span>
+              {c.subject || <span className="text-white/40">(none)</span>}
+            </p>
+            {preview.ok ? (
+              <>
+                <EmailPreview title="Campaign preview" html={preview.html} />
+                <details>
+                  <summary className="cursor-pointer text-xs text-white/50">
+                    Plain-text part
+                  </summary>
+                  <pre className="mt-2 max-h-64 overflow-auto rounded-md bg-white/4 p-3 font-mono text-xs whitespace-pre-wrap text-white/75">
+                    {preview.text}
+                  </pre>
+                </details>
+              </>
+            ) : (
+              <Alert>{preview.error}</Alert>
+            )}
+            <p className="text-xs text-white/50">
+              The unsubscribe footer is added per recipient.
+            </p>
+          </>
         }
       />
 

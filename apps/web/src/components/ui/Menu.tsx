@@ -28,6 +28,7 @@ export function Menu({
   align = "end",
   className,
   label,
+  onOpenChange,
 }: {
   /** Receives `{ open }` so a chevron can rotate. */
   trigger: (state: { open: boolean }) => ReactNode;
@@ -35,10 +36,26 @@ export function Menu({
   align?: "start" | "end";
   className?: string;
   label?: string;
+  /**
+   * Told when the menu opens and closes.
+   *
+   * For a caller whose *own* box has to change while it is open — the popover
+   * is `absolute z-50`, but z-index is resolved inside the nearest stacking
+   * context, so a caller that sits in one has to lift itself or later siblings
+   * paint over the menu.
+   */
+  onOpenChange?: (open: boolean) => void;
 }) {
   const id = useId();
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
+  // In an effect, not in the click handler: a caller that re-renders on this
+  // must not be told during another component's render.
+  const notify = useRef(onOpenChange);
+  notify.current = onOpenChange;
+  useEffect(() => {
+    notify.current?.(open);
+  }, [open]);
   const list = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 

@@ -8,6 +8,7 @@ import {
   type FontFamily,
   type LeafBlock,
   type BlockSpacing,
+  type ButtonSize,
 } from "./api/campaigns";
 import { escapeHtml } from "./template";
 
@@ -179,6 +180,13 @@ const HEADING_SIZE: Record<1 | 2 | 3, string> = {
   3: "18px",
 };
 
+/** What each button size means, in the two numbers a button is made of. */
+const BUTTON_PADDING: Record<ButtonSize, { pad: string; font: string }> = {
+  small: { pad: "8px 16px", font: "14px" },
+  medium: { pad: "12px 24px", font: "16px" },
+  large: { pad: "16px 32px", font: "18px" },
+};
+
 const RADIUS: Record<CornerStyle, string> = {
   sharp: "0",
   soft: "6px",
@@ -333,6 +341,9 @@ function renderLeaf(b: LeafBlock, width: number, t: Resolved): string {
       // rather than the inner cell, because `text-align` on a cell does not
       // move a table that is `width:auto`.
       const radius = RADIUS[b.corners ?? "soft"];
+      // Absent is the padding and size this always rendered, so an existing
+      // button is untouched.
+      const size = BUTTON_PADDING[b.size ?? "medium"];
       const bg = b.color ?? ACCENT;
       const fg = b.textColor ?? "#ffffff";
       const align = b.align ?? "left";
@@ -348,7 +359,7 @@ function renderLeaf(b: LeafBlock, width: number, t: Resolved): string {
       const attrs = margin
         ? `align="${align}" style="${margin}"`
         : `align="${align}" ${table}`;
-      return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" ${attrs}><tr><td align="center" style="background:${bg};border-radius:${radius}"><a href="${escapeHtml(b.url)}" style="${t.fontCss};display:inline-block;padding:12px 24px;font-size:16px;color:${fg};text-decoration:none;border-radius:${radius}">${escapeHtml(b.label)}</a></td></tr></table>`;
+      return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" ${attrs}><tr><td align="center" style="background:${bg};border-radius:${radius}"><a href="${escapeHtml(b.url)}" style="${t.fontCss};display:inline-block;padding:${size.pad};font-size:${size.font};color:${fg};text-decoration:none;border-radius:${radius}">${escapeHtml(b.label)}</a></td></tr></table>`;
     }
     case "image": {
       const pct = b.width ?? 100;
@@ -372,8 +383,21 @@ function renderLeaf(b: LeafBlock, width: number, t: Resolved): string {
             : "margin:0";
       return `<div style="${margin};width:${px}px;max-width:100%">${inner}</div>`;
     }
-    case "divider":
-      return `<hr style="border:0;border-top:1px solid ${b.color ?? "#e5e7eb"};margin:24px 0" />`;
+    case "divider": {
+      /*
+       * An `<hr>` with a top border, not a `background`: a zero-height rule
+       * whose colour is a border is the one shape Outlook, Gmail and Apple
+       * Mail all draw the same. `width` is a percentage of the container and
+       * `margin:auto` centres the short ones, which is what a rule narrower
+       * than the card is usually for.
+       */
+      const weight = b.weight ?? 1;
+      const line = b.lineStyle ?? "solid";
+      const width = b.width ?? 100;
+      const box =
+        width === 100 ? "margin:24px 0" : `width:${width}%;margin:24px auto`;
+      return `<hr style="border:0;border-top:${weight}px ${line} ${b.color ?? "#e5e7eb"};${box}" />`;
+    }
     case "spacer":
       return `<div style="height:${b.size}px;line-height:${b.size}px;font-size:0">&nbsp;</div>`;
   }
@@ -390,6 +414,9 @@ function renderLeaf(b: LeafBlock, width: number, t: Resolved): string {
 /** The columns table itself, without the row that positions it in the card. */
 function columnsTable(b: ColumnsBlock, t: Resolved): string {
   const gap = b.gap ?? GUTTER;
+  // On the attribute *and* the style: the attribute is what Outlook reads and
+  // the property is what everything else does.
+  const valign = b.verticalAlign ?? "top";
   const widths = columnWidths(b.layout, t.usableWidth, gap);
   const cells = b.columns
     .map((column, i) => {
@@ -400,7 +427,7 @@ function columnsTable(b: ColumnsBlock, t: Resolved): string {
           : column
               .map((leaf) => spaced(renderLeaf(leaf, width, t), leaf))
               .join("");
-      return `<td class="ss-col" width="${width}" valign="top" style="width:${width}px;vertical-align:top">${inner}</td>`;
+      return `<td class="ss-col" width="${width}" valign="${valign}" style="width:${width}px;vertical-align:${valign}">${inner}</td>`;
     })
     .join(
       `<td class="ss-gutter" width="${gap}" style="width:${gap}px;font-size:0;line-height:0">&nbsp;</td>`,

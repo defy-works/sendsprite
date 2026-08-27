@@ -1,4 +1,5 @@
 import {
+  type VerticalAlign,
   COLUMN_COUNT,
   MAX_BLOCKS_PER_COLUMN,
   type CampaignBlock,
@@ -44,6 +45,8 @@ export interface EditorRow {
   background?: string;
   /** The gutter between columns. Absent is the renderer's 16px. */
   gap?: number;
+  /** Where a short column sits beside a tall one. Absent is `top`. */
+  verticalAlign?: VerticalAlign;
   spaceTop?: number;
   spaceBottom?: number;
   columns: EditorLeaf[][];
@@ -103,6 +106,9 @@ export function editorNodesOf(blocks: readonly CampaignBlock[]): EditorNode[] {
           layout: b.layout,
           ...(b.background ? { background: b.background } : {}),
           ...(b.gap === undefined ? {} : { gap: b.gap }),
+          ...(b.verticalAlign === undefined
+            ? {}
+            : { verticalAlign: b.verticalAlign }),
           ...(b.spaceTop === undefined ? {} : { spaceTop: b.spaceTop }),
           ...(b.spaceBottom === undefined
             ? {}
@@ -126,6 +132,7 @@ export function blocksOfTree(nodes: readonly EditorNode[]): CampaignBlock[] {
           // padding for an absent value, which is what keeps a body written
           // before spacing existed rendering byte for byte as it did.
           ...(n.gap ? { gap: n.gap } : {}),
+          ...(n.verticalAlign ? { verticalAlign: n.verticalAlign } : {}),
           ...(n.spaceTop ? { spaceTop: n.spaceTop } : {}),
           ...(n.spaceBottom ? { spaceBottom: n.spaceBottom } : {}),
           columns: n.columns.map((col) => col.map((l) => l.block)),
@@ -303,7 +310,12 @@ export function updateRow(
   patch: Partial<
     Pick<
       EditorRow,
-      "layout" | "background" | "gap" | "spaceTop" | "spaceBottom"
+      | "layout"
+      | "background"
+      | "gap"
+      | "verticalAlign"
+      | "spaceTop"
+      | "spaceBottom"
     >
   >,
 ): EditorNode[] {
@@ -313,7 +325,13 @@ export function updateRow(
     // An explicit `undefined` in the patch means "clear it", which is not the
     // same as leaving the key off — spreading would otherwise store the key
     // with an undefined value and serialise it into the body.
-    for (const k of ["background", "gap", "spaceTop", "spaceBottom"] as const)
+    for (const k of [
+      "background",
+      "gap",
+      "verticalAlign",
+      "spaceTop",
+      "spaceBottom",
+    ] as const)
       if (k in patch && patch[k] === undefined) delete next[k];
     return patch.layout ? relayout(next, patch.layout) : next;
   });

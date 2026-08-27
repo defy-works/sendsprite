@@ -250,6 +250,31 @@ export const BlockSpace = z.number().int().min(0).max(96);
  */
 export const ColumnGap = z.number().int().min(0).max(48);
 
+/**
+ * Where a column's contents sit when the columns are unequal in height.
+ *
+ * A row's cells are as tall as the tallest one, so a short caption beside a
+ * tall image had nowhere to go but the top. `valign` on the cell is one of the
+ * few alignment properties every mail client honours, Outlook included, which
+ * is why this is worth having as a control rather than a workaround.
+ */
+export const VERTICAL_ALIGNMENTS = ["top", "middle", "bottom"] as const;
+export const VerticalAlign = z.enum(VERTICAL_ALIGNMENTS);
+export type VerticalAlign = z.infer<typeof VerticalAlign>;
+
+/** A rule's weight, in pixels. */
+export const DividerWeight = z.number().int().min(1).max(8);
+
+/** A rule's line, as the three CSS borders every client draws. */
+export const DIVIDER_STYLES = ["solid", "dashed", "dotted"] as const;
+export const DividerStyle = z.enum(DIVIDER_STYLES);
+export type DividerStyle = z.infer<typeof DividerStyle>;
+
+/** A button's padding, as three steps rather than a number. */
+export const BUTTON_SIZES = ["small", "medium", "large"] as const;
+export const ButtonSize = z.enum(BUTTON_SIZES);
+export type ButtonSize = z.infer<typeof ButtonSize>;
+
 export const CORNER_STYLES = ["sharp", "soft", "pill"] as const;
 export const CornerStyle = z.enum(CORNER_STYLES);
 export type CornerStyle = z.infer<typeof CornerStyle>;
@@ -298,6 +323,7 @@ export const ButtonBlock = z.object({
   corners: CornerStyle.optional(),
   /** Stretches to the container width. Useful in a narrow column. */
   fullWidth: z.boolean().optional(),
+  size: ButtonSize.optional(),
   spaceTop: BlockSpace.optional(),
   spaceBottom: BlockSpace.optional(),
 });
@@ -327,6 +353,15 @@ export type ImageBlock = z.infer<typeof ImageBlock>;
 export const DividerBlock = z.object({
   kind: z.literal("divider"),
   color: HexColor.optional(),
+  weight: DividerWeight.optional(),
+  /**
+   * `lineStyle`, not `style`: a block field called `style` reads like the HTML
+   * attribute, and the one thing a block may never carry is a raw style
+   * attribute — the renderer interpolates these values into one.
+   */
+  lineStyle: DividerStyle.optional(),
+  /** Percentage of the container, so a rule can be a short centred flourish. */
+  width: ImageWidth.optional(),
   spaceTop: BlockSpace.optional(),
   spaceBottom: BlockSpace.optional(),
 });
@@ -402,6 +437,8 @@ export const ColumnsBlock = z
     layout: ColumnLayout,
     background: HexColor.optional(),
     gap: ColumnGap.optional(),
+    /** Applies to every cell in the row. Absent is `top`, as it always was. */
+    verticalAlign: VerticalAlign.optional(),
     spaceTop: BlockSpace.optional(),
     spaceBottom: BlockSpace.optional(),
     columns: z

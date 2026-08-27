@@ -99,7 +99,14 @@ export function BlockDesigner({
   invalidIndex?: number | null;
   /** Rendered above the canvas — the fields that are not the body. */
   settings?: ReactNode;
-  /** The right-hand column. */
+  /**
+   * The preview's *contents*, not a card.
+   *
+   * It shares the body card, so the title, the block count and the Edit /
+   * Preview switch stay exactly where they are when the mode changes. Passing
+   * a card would put a card inside a card and move the header, which is the
+   * layout shift this arrangement exists to avoid.
+   */
   preview: ReactNode;
   bodyTitle?: string;
 }) {
@@ -340,7 +347,7 @@ export function BlockDesigner({
           {/* The card stays in preview mode; only its canvas goes. The toggle
               lives in this header, and hiding the header is how you build a
               preview mode nobody can leave. */}
-          <Card className={cn(mode === "preview" && "hidden")}>
+          <Card>
             <CardHeader>
               <CardTitle>{bodyTitle}</CardTitle>
               <div className="flex items-center gap-3">
@@ -350,7 +357,12 @@ export function BlockDesigner({
                 {modeToggle}
               </div>
             </CardHeader>
-            <CardBody className="flex flex-col gap-0 p-0">
+            <CardBody
+              className={cn(
+                "flex flex-col gap-0 p-0",
+                mode === "preview" && "hidden",
+              )}
+            >
               <Canvas
                 nodes={nodes}
                 theme={theme}
@@ -366,21 +378,11 @@ export function BlockDesigner({
                 onInsertRow={insertRowAt}
               />
             </CardBody>
+            {mode === "preview" && (
+              <CardBody className="flex flex-col gap-3 p-0">{preview}</CardBody>
+            )}
           </Card>
         </div>
-
-        {mode === "preview" && (
-          <div
-            className="flex flex-col gap-3"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between">
-              <p className="num-stamp">{bodyTitle}</p>
-              {modeToggle}
-            </div>
-            {preview}
-          </div>
-        )}
       </div>
 
       <DragOverlay dropAnimation={null}>

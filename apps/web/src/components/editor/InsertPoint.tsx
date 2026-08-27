@@ -1,4 +1,5 @@
 "use client";
+import { useState } from "react";
 import { COLUMN_LAYOUTS, type ColumnLayout } from "@sendsprite/shared";
 import { Menu, MenuItem, MenuLabel, MenuSeparator } from "@/components/ui/Menu";
 import { IconColumns, IconPlus } from "@/components/ui/icons";
@@ -37,6 +38,15 @@ export function InsertPoint({
   always?: boolean;
   label?: string;
 }) {
+  /*
+   * Lifted above the other insert points while the menu is open.
+   *
+   * Each of these is its own stacking context, so the menu's `z-50` is
+   * resolved *inside* this one — and every insert point further down the body
+   * comes later in the DOM at the same z-index, so they painted their buttons
+   * over the open menu.
+   */
+  const [open, setOpen] = useState(false);
   return (
     /*
      * Zero height and no pointer events of its own.
@@ -48,7 +58,9 @@ export function InsertPoint({
      * sits in the gutter beside the card rather than over the content — which
      * is where every editor of this shape puts it, for this reason.
      */
-    <div className="pointer-events-none relative z-10 h-0">
+    <div
+      className={cn("pointer-events-none relative h-0", open ? "z-40" : "z-10")}
+    >
       <span
         aria-hidden
         className={cn(
@@ -60,6 +72,7 @@ export function InsertPoint({
         <Menu
           label={label}
           align="start"
+          onOpenChange={setOpen}
           trigger={({ open }) => (
             <span
               title={label}

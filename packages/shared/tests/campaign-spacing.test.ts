@@ -159,3 +159,80 @@ describe("the spacing contract", () => {
     expect(parsed).toEqual({ kind: "spacer", size: 24 });
   });
 });
+
+describe("the row's vertical alignment", () => {
+  const row = (verticalAlign?: "top" | "middle" | "bottom"): Block => ({
+    kind: "columns",
+    layout: "1-1",
+    ...(verticalAlign ? { verticalAlign } : {}),
+    columns: [[TEXT], [TEXT]],
+  });
+
+  it("defaults to top, as it always was", () => {
+    expect(html([row()])).toContain('valign="top"');
+  });
+
+  it("writes the attribute and the property together", () => {
+    // The attribute is what Outlook reads and the property is what everything
+    // else does; one without the other aligns in half the clients.
+    const out = html([row("middle")]);
+    // Both column cells, and only them — the page cell around the card is
+    // top-aligned for its own reasons and is not what this controls.
+    expect(out.match(/class="ss-col"[^>]*valign="middle"/g)).toHaveLength(2);
+    expect(out).toContain("vertical-align:middle");
+    expect(out).not.toMatch(/class="ss-col"[^>]*valign="top"/);
+  });
+});
+
+describe("the divider", () => {
+  const div = (over: Record<string, unknown> = {}): Block =>
+    ({ kind: "divider", ...over }) as Block;
+
+  it("is a 1px solid rule across the card by default", () => {
+    expect(html([div()])).toContain(
+      'style="border:0;border-top:1px solid #e5e7eb;margin:24px 0"',
+    );
+  });
+
+  it("takes a weight and a line", () => {
+    expect(html([div({ weight: 4, lineStyle: "dashed" })])).toContain(
+      "border-top:4px dashed",
+    );
+  });
+
+  it("centres itself when it is narrower than the card", () => {
+    // A short rule is a flourish, and a flourish against the left margin looks
+    // like a mistake.
+    const out = html([div({ width: 50 })]);
+    expect(out).toContain("width:50%");
+    expect(out).toContain("margin:24px auto");
+  });
+
+  it("refuses a line style it does not know", () => {
+    expect(
+      CampaignBlock.safeParse({ kind: "divider", lineStyle: "groove" }).success,
+    ).toBe(false);
+  });
+});
+
+describe("the button's size", () => {
+  const button = (size?: "small" | "medium" | "large"): Block => ({
+    kind: "button",
+    label: "Go",
+    url: "https://example.com",
+    ...(size ? { size } : {}),
+  });
+
+  it("is the padding it always had when absent", () => {
+    expect(html([button()])).toContain("padding:12px 24px;font-size:16px");
+  });
+
+  it("moves the padding and the type together", () => {
+    expect(html([button("small")])).toContain(
+      "padding:8px 16px;font-size:14px",
+    );
+    expect(html([button("large")])).toContain(
+      "padding:16px 32px;font-size:18px",
+    );
+  });
+});

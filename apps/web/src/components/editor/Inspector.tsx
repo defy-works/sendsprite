@@ -1,11 +1,16 @@
 "use client";
 import {
+  BUTTON_SIZES,
   COLUMN_LAYOUTS,
+  DIVIDER_STYLES,
   IMAGE_WIDTHS,
+  VERTICAL_ALIGNMENTS,
   type ColumnLayout,
   type CornerStyle,
+  type DividerStyle,
   type ImageWidth,
   type LeafBlock,
+  type VerticalAlign,
 } from "@sendsprite/shared";
 import { ColorField } from "@/components/ui/ColorField";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
@@ -131,6 +136,17 @@ function LeafStyle({
             onChange={(v) => onChange({ ...block, align: v })}
           />
           <SegmentedControl
+            label="Size"
+            value={block.size ?? "medium"}
+            options={BUTTON_SIZES.map((v) => ({
+              value: v,
+              label: v === "small" ? "S" : v === "medium" ? "M" : "L",
+              title: v[0]!.toUpperCase() + v.slice(1),
+            }))}
+            disabled={readOnly}
+            onChange={(size) => onChange({ ...block, size })}
+          />
+          <SegmentedControl
             label="Corners"
             value={block.corners ?? "soft"}
             options={CORNER_OPTIONS}
@@ -197,13 +213,49 @@ function LeafStyle({
 
     case "divider":
       return (
-        <ColorField
-          label="Colour"
-          value={block.color}
-          fallback="#e5e7eb"
-          disabled={readOnly}
-          onChange={(color) => onChange({ ...block, color })}
-        />
+        <div className="flex flex-col gap-4">
+          <ColorField
+            label="Colour"
+            value={block.color}
+            fallback="#e5e7eb"
+            disabled={readOnly}
+            onChange={(color) => onChange({ ...block, color })}
+          />
+          <SegmentedControl
+            label="Line"
+            value={block.lineStyle ?? "solid"}
+            options={DIVIDER_STYLES.map((v) => ({
+              value: v,
+              label: <RuleGlyph style={v} />,
+              title: v[0]!.toUpperCase() + v.slice(1),
+            }))}
+            disabled={readOnly}
+            onChange={(lineStyle) => onChange({ ...block, lineStyle })}
+          />
+          <SegmentedControl
+            label="Weight"
+            value={String(block.weight ?? 1)}
+            options={["1", "2", "4", "8"].map((v) => ({
+              value: v,
+              label: v,
+              title: `${v}px`,
+            }))}
+            disabled={readOnly}
+            onChange={(v) => onChange({ ...block, weight: Number(v) })}
+          />
+          <SegmentedControl
+            label="Width"
+            value={String(block.width ?? 100)}
+            options={IMAGE_WIDTHS.map((w) => ({
+              value: String(w),
+              label: `${w}%`,
+            }))}
+            disabled={readOnly}
+            onChange={(v) =>
+              onChange({ ...block, width: Number(v) as ImageWidth })
+            }
+          />
+        </div>
       );
 
     case "spacer":
@@ -227,6 +279,7 @@ export function RowInspector({
     layout?: ColumnLayout;
     background?: string | undefined;
     gap?: number | undefined;
+    verticalAlign?: VerticalAlign | undefined;
     spaceTop?: number | undefined;
     spaceBottom?: number | undefined;
   }) => void;
@@ -256,6 +309,21 @@ export function RowInspector({
         disabled={readOnly}
         onChange={(background) => onChange({ background })}
       />
+      <SegmentedControl
+        label="Vertical alignment"
+        value={row.verticalAlign ?? "top"}
+        options={VERTICAL_ALIGNMENTS.map((v) => ({
+          value: v,
+          label: <VAlignGlyph align={v} />,
+          title: v[0]!.toUpperCase() + v.slice(1),
+        }))}
+        disabled={readOnly}
+        onChange={(verticalAlign) => onChange({ verticalAlign })}
+      />
+      <p className="text-xs text-white/50">
+        Where a short column sits beside a tall one. `valign` is one of the few
+        alignment properties Outlook honours, so this holds everywhere.
+      </p>
       {/* Bounded tighter than block spacing: the gutter comes out of the
           columns, and 48px of it leaves little of a three-column row. */}
       <SpaceField
@@ -273,6 +341,38 @@ export function RowInspector({
         onChange={(patch) => onChange(patch)}
       />
     </div>
+  );
+}
+
+/** The line, drawn — three words in a segmented control is three ellipses. */
+function RuleGlyph({ style }: { style: DividerStyle }) {
+  return (
+    <span
+      aria-hidden
+      className="block h-0 w-8 border-t-2 border-current"
+      style={{ borderStyle: style }}
+    />
+  );
+}
+
+/** Two bars in a box, at the height the contents will sit. */
+function VAlignGlyph({ align }: { align: VerticalAlign }) {
+  return (
+    <span
+      aria-hidden
+      className="flex h-3.5 w-5 flex-col justify-center gap-[2px]"
+      style={{
+        justifyContent:
+          align === "top"
+            ? "flex-start"
+            : align === "bottom"
+              ? "flex-end"
+              : "center",
+      }}
+    >
+      <span className="h-[2px] w-full rounded-[1px] bg-current opacity-70" />
+      <span className="h-[2px] w-3 rounded-[1px] bg-current opacity-70" />
+    </span>
   );
 }
 

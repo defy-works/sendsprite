@@ -251,9 +251,24 @@ describe("untrusted blocks at the jsonb boundary", () => {
 
   it("drops properties the contract does not know about", () => {
     const { html } = renderBlocks(
-      untrusted({ kind: "divider", style: "background:url(javascript:1)" }),
+      untrusted({ kind: "divider", onclick: "javascript:1" }),
     );
     expect(html).not.toContain("javascript");
+  });
+
+  it("refuses a known property carrying an unknown value", () => {
+    // Stripping is for keys the contract has never heard of. A key it *does*
+    // know, holding something outside its enum, is a body that disagrees with
+    // the contract — and rendering it minus the field would quietly send
+    // something other than what is stored.
+    expect(() =>
+      renderBlocks(
+        untrusted({
+          kind: "divider",
+          lineStyle: "url(javascript:1)",
+        }),
+      ),
+    ).toThrow(InvalidCampaignBlockError);
   });
 });
 

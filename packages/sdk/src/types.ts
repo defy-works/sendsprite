@@ -580,6 +580,20 @@ export type HexColor = string;
 /** Corner rounding, as a preset rather than a radius. */
 export type CornerStyle = "sharp" | "soft" | "pill";
 
+/**
+ * Where a column's contents sit when the columns are unequal in height.
+ *
+ * A row's cells are as tall as the tallest, so a short caption beside a tall
+ * image had nowhere to go but the top.
+ */
+export type VerticalAlign = "top" | "middle" | "bottom";
+
+/** A rule's line. */
+export type DividerStyle = "solid" | "dashed" | "dotted";
+
+/** A button's padding and type size, as three steps. */
+export type ButtonSize = "small" | "medium" | "large";
+
 /** Image width as a percentage of its container. Quarters only. */
 export type ImageWidth = 25 | 50 | 75 | 100;
 
@@ -631,6 +645,7 @@ export interface ButtonBlock extends BlockSpacing {
   corners?: CornerStyle;
   /** Stretches to the container width — useful inside a narrow column. */
   fullWidth?: boolean;
+  size?: ButtonSize;
 }
 
 export interface ImageBlock extends BlockSpacing {
@@ -650,6 +665,12 @@ export interface ImageBlock extends BlockSpacing {
 export interface DividerBlock extends BlockSpacing {
   kind: "divider";
   color?: HexColor;
+  /** Line weight in pixels, 1–8. */
+  weight?: number;
+  /** Named `lineStyle`, not `style`: a block never carries a style attribute. */
+  lineStyle?: DividerStyle;
+  /** Percentage of the container, so a rule can be a short centred flourish. */
+  width?: ImageWidth;
 }
 
 /** Vertical whitespace, 4–96 pixels. */
@@ -690,6 +711,8 @@ export interface ColumnsBlock extends BlockSpacing {
   background?: HexColor;
   /** The gutter between columns, in pixels, 0–48. Defaults to 16. */
   gap?: number;
+  /** Applies to every cell in the row. Defaults to `top`. */
+  verticalAlign?: VerticalAlign;
   columns: LeafBlock[][];
 }
 

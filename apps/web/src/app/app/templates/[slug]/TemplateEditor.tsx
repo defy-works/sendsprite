@@ -585,55 +585,65 @@ export function TemplateEditor({
     </Card>
   );
 
+  /*
+   * The preview's contents, separate from the card around them.
+   *
+   * The visual editor puts these inside the body card, under the same header
+   * as the canvas, so switching mode does not move anything. The HTML
+   * authoring layout still has a panel of its own, and wraps them below.
+   */
+  const previewBody = (
+    <>
+      {compiled && !compiled.ok && <Alert>{compiled.error}</Alert>}
+      {preview.ok ? (
+        <>
+          <p className="text-sm break-words text-white/65">
+            <span className="text-white/40">Subject </span>
+            {preview.data.subject}
+          </p>
+          <EmailPreview
+            title="Template preview"
+            html={preview.data.html}
+            // A template body is a fragment, not a document: it paints no
+            // background of its own, and without a wrapper the frame would
+            // inherit the dashboard's dark colour-scheme.
+            wrap={authoring === "html"}
+          />
+          {preview.data.text !== null && (
+            <details>
+              <summary className="cursor-pointer text-xs text-white/50">
+                Plain-text part
+              </summary>
+              <pre className="mt-2 max-h-64 overflow-auto rounded-md bg-white/4 p-3 font-mono text-xs whitespace-pre-wrap text-white/75">
+                {preview.data.text}
+              </pre>
+            </details>
+          )}
+        </>
+      ) : (
+        <Alert>{preview.error}</Alert>
+      )}
+      <p className="text-xs text-white/50">
+        Variables with a default show it; the rest show <code>{"{name}"}</code>.
+      </p>
+      {/* Said out loud, because its absence looks like a missing feature.
+            A template is the body of a transactional send — a receipt, a
+            password reset — and mail like that carries no unsubscribe. The
+            footer belongs to campaigns, which are bulk mail to a list. */}
+      <p className="text-xs text-white/40">
+        No unsubscribe footer: a template is transactional. Campaigns get one
+        automatically.
+      </p>
+    </>
+  );
+
   const previewCard = (
     <Card className="xl:sticky xl:top-6 xl:self-start">
       <CardHeader>
         <CardTitle>Preview</CardTitle>
         <IconEye className="text-white/30" />
       </CardHeader>
-      <CardBody className="flex flex-col gap-3">
-        {compiled && !compiled.ok && <Alert>{compiled.error}</Alert>}
-        {preview.ok ? (
-          <>
-            <p className="text-sm break-words text-white/65">
-              <span className="text-white/40">Subject </span>
-              {preview.data.subject}
-            </p>
-            <EmailPreview
-              title="Template preview"
-              html={preview.data.html}
-              // A template body is a fragment, not a document: it paints no
-              // background of its own, and without a wrapper the frame would
-              // inherit the dashboard's dark colour-scheme.
-              wrap={authoring === "html"}
-            />
-            {preview.data.text !== null && (
-              <details>
-                <summary className="cursor-pointer text-xs text-white/50">
-                  Plain-text part
-                </summary>
-                <pre className="mt-2 max-h-64 overflow-auto rounded-md bg-white/4 p-3 font-mono text-xs whitespace-pre-wrap text-white/75">
-                  {preview.data.text}
-                </pre>
-              </details>
-            )}
-          </>
-        ) : (
-          <Alert>{preview.error}</Alert>
-        )}
-        <p className="text-xs text-white/50">
-          Variables with a default show it; the rest show{" "}
-          <code>{"{name}"}</code>.
-        </p>
-        {/* Said out loud, because its absence looks like a missing feature.
-            A template is the body of a transactional send — a receipt, a
-            password reset — and mail like that carries no unsubscribe. The
-            footer belongs to campaigns, which are bulk mail to a list. */}
-        <p className="text-xs text-white/40">
-          No unsubscribe footer: a template is transactional. Campaigns get one
-          automatically.
-        </p>
-      </CardBody>
+      <CardBody className="flex flex-col gap-3">{previewBody}</CardBody>
     </Card>
   );
 
@@ -704,7 +714,7 @@ export function TemplateEditor({
               {variablesCard}
             </div>
           }
-          preview={previewCard}
+          preview={previewBody}
         />
       ) : (
         <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,26rem)]">
