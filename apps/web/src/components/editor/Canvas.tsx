@@ -16,6 +16,7 @@ import {
   renderBlockFragment,
   type CampaignTheme,
   type LeafBlock,
+  type VerticalAlign,
 } from "@sendsprite/shared";
 import { Fragment, useMemo, type ReactNode } from "react";
 import { Button } from "@/components/ui/Button";
@@ -474,13 +475,16 @@ function RowShell({
         </ChromeBar>
       )}
 
-      <div className="flex" style={{ gap }}>
+      {/* `items-stretch` so every column is as tall as the tallest, which is
+          what makes aligning inside one visible at all. */}
+      <div className="flex items-stretch" style={{ gap }}>
         {row.columns.map((column, i) => (
           <Column
             key={i}
             rowId={row.id}
             index={i}
             grow={growOf(row.layout, i)}
+            verticalAlign={row.verticalAlign ?? "top"}
             leaves={column}
             theme={theme}
             readOnly={readOnly}
@@ -506,6 +510,7 @@ function Column({
   rowId,
   index,
   grow,
+  verticalAlign,
   leaves,
   theme,
   readOnly,
@@ -517,6 +522,7 @@ function Column({
   rowId: string;
   index: number;
   grow: number;
+  verticalAlign: VerticalAlign;
   leaves: EditorLeaf[];
   theme: CampaignTheme;
   readOnly: boolean;
@@ -540,7 +546,28 @@ function Column({
     >
       <div
         ref={setNodeRef}
-        style={{ flexGrow: grow, flexBasis: 0 }}
+        style={{
+          flexGrow: grow,
+          flexBasis: 0,
+          /*
+           * The row's vertical alignment, on the canvas as well as in the
+           * email.
+           *
+           * It only reached the rendered document, so setting a row to
+           * "middle" changed the preview and did nothing to the thing being
+           * edited — which reads as a control that does not work. A column is
+           * a flex column here, so the cell's `vertical-align` is this
+           * column's `justify-content`.
+           */
+          display: "flex",
+          flexDirection: "column",
+          justifyContent:
+            verticalAlign === "middle"
+              ? "center"
+              : verticalAlign === "bottom"
+                ? "flex-end"
+                : "flex-start",
+        }}
         className={cn(
           "min-w-0 transition-colors",
           leaves.length === 0 && "min-h-16 rounded border border-dashed",
