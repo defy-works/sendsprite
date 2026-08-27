@@ -43,6 +43,7 @@ export const BLOCK_LABELS: Record<BlockKind, string> = {
 
 /** What each layout is called in the palette, and what it looks like. */
 export const LAYOUT_LABELS: Record<ColumnLayout, string> = {
+  "1": "One column",
   "1-1": "Two columns",
   "1-1-1": "Three columns",
   "2-1": "Wide + narrow",

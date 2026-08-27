@@ -41,17 +41,31 @@ const rowWith = (
 ): EditorRow => ({ ...editorRow(layout), columns });
 
 describe("editorNodesOf / blocksOfTree", () => {
-  it("round-trips a body with rows and leaves", () => {
-    const blocks = [
-      blockDefaults("heading"),
+  it("round-trips a body of rows unchanged", () => {
+    const blocks: CampaignBlock[] = [
       {
-        kind: "columns" as const,
-        layout: "1-1" as const,
+        kind: "columns",
+        layout: "1",
+        columns: [[blockDefaults("heading")]],
+      },
+      {
+        kind: "columns",
+        layout: "1-1",
         columns: [[blockDefaults("text")], [blockDefaults("button")]],
       },
-      blockDefaults("divider"),
     ];
     expect(blocksOfTree(editorNodesOf(blocks))).toEqual(blocks);
+  });
+
+  it("wraps a bare leaf in a row of one column", () => {
+    // The body is a list of rows. A leaf straight in it — which is what the
+    // API accepts and what every body written before this did — comes back
+    // wrapped, so an ordinary paragraph has the same settings a column does.
+    // One column at the full content width renders what a bare leaf rendered.
+    const heading = blockDefaults("heading");
+    expect(blocksOfTree(editorNodesOf([heading]))).toEqual([
+      { kind: "columns", layout: "1", columns: [[heading]] },
+    ]);
   });
 
   it("keeps a row background and omits it when unset", () => {
@@ -151,11 +165,22 @@ describe("locate", () => {
 
 describe("moveItem", () => {
   it("reorders at the root", () => {
-    const a = leaf("heading");
-    const b = leaf("text");
-    const c = leaf("divider");
+    // The root holds rows, so this is what reordering the body is.
+    const a = rowWith("1", [[]]);
+    const b = rowWith("1", [[]]);
+    const c = rowWith("1", [[]]);
     const moved = moveItem([a, b, c], c.id, "root", 0);
     expect(moved.map((n) => n.id)).toEqual([c.id, a.id, b.id]);
+  });
+
+  it("gives a leaf dragged out of a column a row of its own", () => {
+    const orphan = leaf("button");
+    const row = rowWith("1-1", [[orphan], []]);
+    const moved = moveItem([row], orphan.id, "root", 0);
+    const [first] = moved;
+    expect(first?.type).toBe("row");
+    expect(first?.type === "row" && first.layout).toBe("1");
+    expect(itemsIn(moved, columnContainer(first!.id, 0))).toEqual([orphan.id]);
   });
 
   it("moves a leaf from the root into a column", () => {

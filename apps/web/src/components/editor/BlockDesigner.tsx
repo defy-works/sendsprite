@@ -182,22 +182,6 @@ export function BlockDesigner({
     });
   };
 
-  /**
-   * Adds at a position in the body, which is what the gaps between blocks ask
-   * for. The palette's own click still appends — it has no position to mean.
-   */
-  const insertLeafAt = (kind: LeafKind, index: number) => {
-    const node = editorLeaf(blockDefaults(kind));
-    onChange((tree) => insertNode(tree, "root", index, node));
-    setSelectedId(node.id);
-  };
-
-  const insertRowAt = (layout: ColumnLayout, index: number) => {
-    const node = editorRow(layout);
-    onChange((tree) => insertNode(tree, "root", index, node));
-    setSelectedId(node.id);
-  };
-
   /** Click-to-add: appends to the root, or into the selected block's container. */
   const addLeaf = (kind: LeafKind) => {
     const node = editorLeaf(blockDefaults(kind));
@@ -315,28 +299,37 @@ export function BlockDesigner({
             />
           </Card>
           <Card className="p-4" role="region" aria-label="Block settings">
-            <p className="num-stamp mb-3 flex items-center gap-1.5">
+            {/*
+             * The whole path, always — Body, then the row if there is one,
+             * then the block.
+             *
+             * It only showed the row, so a block sitting straight in the body
+             * had no crumb at all and no way back to the body's own settings
+             * except knowing to click the canvas background. Every level that
+             * has settings is now a step you can take.
+             */}
+            <nav
+              aria-label="Selection"
+              className="num-stamp mb-3 flex flex-wrap items-center gap-1.5"
+            >
+              <Crumb onClick={() => setSelectedId(null)}>Body</Crumb>
               {parentRow && (
                 <>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedId(parentRow)}
-                    className="num-stamp text-white/45 underline-offset-2 hover:text-white hover:underline"
-                  >
-                    Row
-                  </button>
-                  <IconChevronRight
-                    aria-hidden
-                    className="text-[10px] text-white/25"
-                  />
+                  <CrumbArrow />
+                  <Crumb onClick={() => setSelectedId(parentRow)}>Row</Crumb>
                 </>
               )}
-              {selectedNode
-                ? selectedNode.type === "row"
-                  ? "Row style"
-                  : `${BLOCK_LABELS[selectedNode.block.kind]} style`
-                : "Body style"}
-            </p>
+              {selectedNode && (
+                <>
+                  <CrumbArrow />
+                  <span>
+                    {selectedNode.type === "row"
+                      ? "Row"
+                      : BLOCK_LABELS[selectedNode.block.kind]}
+                  </span>
+                </>
+              )}
+            </nav>
             {/* Nothing selected means the author is looking at the email, not
                 at a paragraph — so the panel offers the email. */}
             {selectedNode === null ? (
@@ -400,8 +393,6 @@ export function BlockDesigner({
                   onChange((tree) => replaceLeaf(tree, id, block))
                 }
                 onRemove={removeById}
-                onInsertLeaf={insertLeafAt}
-                onInsertRow={insertRowAt}
               />
             </CardBody>
             {mode === "preview" && (
@@ -437,4 +428,27 @@ function DragChip({ id, nodes }: { id: string; nodes: EditorNode[] }) {
       {label}
     </span>
   );
+}
+
+/** A step in the selection path: somewhere with settings, one click away. */
+function Crumb({
+  onClick,
+  children,
+}: {
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="num-stamp text-white/45 underline-offset-2 transition-colors hover:text-white hover:underline"
+    >
+      {children}
+    </button>
+  );
+}
+
+function CrumbArrow() {
+  return <IconChevronRight aria-hidden className="text-[10px] text-white/25" />;
 }

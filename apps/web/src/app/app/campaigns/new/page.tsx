@@ -8,7 +8,7 @@ import { listBooks } from "@/services/contacts";
 import { listDomains } from "@/services/domains";
 import { getTeamAws } from "@/services/team-aws";
 import { blockDefaults } from "@/lib/editor/blocks";
-import { editorLeaf } from "@/lib/editor/tree";
+import { editorNodesOf } from "@/lib/editor/tree";
 import { CampaignEditor } from "../[id]/CampaignEditor";
 
 export const metadata = { title: "New campaign" };
@@ -80,10 +80,7 @@ export default async function NewCampaignPage() {
         subject: "",
         // A starter rather than a blank page — the preview is the thing worth
         // seeing first, and it has nothing to show until a block exists.
-        nodes: [
-          editorLeaf(blockDefaults("heading")),
-          editorLeaf(blockDefaults("text")),
-        ],
+        nodes: editorNodesOf([blockDefaults("heading"), blockDefaults("text")]),
         theme: {},
       }}
     />

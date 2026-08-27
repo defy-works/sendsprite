@@ -35,7 +35,6 @@ import { TestSendDialog } from "@/components/app/TestSendDialog";
 import { blockDefaults } from "@/lib/editor/blocks";
 import {
   blocksOfTree,
-  editorLeaf,
   editorNodesOf,
   type EditorNode,
 } from "@/lib/editor/tree";
@@ -314,10 +313,7 @@ export function TemplateEditor({
     if (!ok) return;
     setT((prev) => ({
       ...prev,
-      nodes: [
-        editorLeaf(blockDefaults("heading")),
-        editorLeaf(blockDefaults("text")),
-      ],
+      nodes: editorNodesOf([blockDefaults("heading"), blockDefaults("text")]),
       theme: {},
     }));
   };

@@ -357,7 +357,9 @@ export function InlineEditor({
             // Above the block, not over it, and only for the selected one — a
             // permanent bar over every paragraph is the stack of forms again.
             onCanvas &&
-              "popover absolute -top-4 left-0 z-30 px-1 py-0.5 shadow-glass",
+              // Clear of the paragraph: the bar is ~32px tall, so anything
+              // shallower covers the line being edited.
+              "popover absolute -top-10 left-0 z-30 px-1 py-0.5 shadow-glass",
             onCanvas && !toolbarOpen && "hidden",
           )}
         >

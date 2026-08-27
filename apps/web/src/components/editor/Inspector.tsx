@@ -324,16 +324,19 @@ export function RowInspector({
         Where a short column sits beside a tall one. `valign` is one of the few
         alignment properties Outlook honours, so this holds everywhere.
       </p>
-      {/* Bounded tighter than block spacing: the gutter comes out of the
-          columns, and 48px of it leaves little of a three-column row. */}
-      <SpaceField
-        id="column-gap"
-        label="Gap between columns"
-        space={row.gap}
-        max={48}
-        disabled={readOnly}
-        onChange={(gap) => onChange({ gap })}
-      />
+      {/* No gutter on a row of one: there is nothing on either side of it.
+          Bounded tighter than block spacing otherwise — the gutter comes out
+          of the columns, and 48px of it leaves little of a three-column row. */}
+      {row.layout !== "1" && (
+        <SpaceField
+          id="column-gap"
+          label="Gap between columns"
+          space={row.gap}
+          max={48}
+          disabled={readOnly}
+          onChange={(gap) => onChange({ gap })}
+        />
+      )}
       <SpacingFields
         spaceTop={row.spaceTop}
         spaceBottom={row.spaceBottom}
@@ -379,13 +382,15 @@ function VAlignGlyph({ align }: { align: VerticalAlign }) {
 /** The ratio, drawn. Three words in a segmented control is three ellipses. */
 function LayoutGlyph({ layout }: { layout: ColumnLayout }) {
   const parts =
-    layout === "1-1"
-      ? [1, 1]
-      : layout === "1-1-1"
-        ? [1, 1, 1]
-        : layout === "2-1"
-          ? [2, 1]
-          : [1, 2];
+    layout === "1"
+      ? [1]
+      : layout === "1-1"
+        ? [1, 1]
+        : layout === "1-1-1"
+          ? [1, 1, 1]
+          : layout === "2-1"
+            ? [2, 1]
+            : [1, 2];
   return (
     <span aria-hidden className="flex h-3 w-8 items-stretch gap-[2px]">
       {parts.map((p, i) => (

@@ -183,15 +183,15 @@ const inspector = (page: Page) =>
   page.getByRole("region", { name: "Block settings" });
 
 /**
- * Selects the nth block on the canvas, so the inspector is showing its fields.
+ * Selects a block on the canvas by name, so the inspector shows its fields.
  *
  * The canvas draws the email rather than a stack of labelled forms, so a
  * block's fields are not on the block — selecting it is what brings them up.
  * The rendered markup is inert, which is why the click lands on the list item
  * and not on whatever the block rendered as.
  */
-const selectBlock = async (page: Page, nth: number) => {
-  await canvas(page).getByRole("listitem").nth(nth).click();
+const selectBlock = async (page: Page, name: string) => {
+  await canvas(page).getByRole("listitem", { name }).first().click();
 };
 
 /** Adds a block by clicking its palette tile, which appends it to the body. */
@@ -313,7 +313,7 @@ test("a campaign reaches one eligible contact, and unsubscribing needs a POST", 
   await expect(page.locator("#cmp-from")).toHaveValue(`hello@${domain}`);
 
   // The starter body is a heading and a text block; the other two are added.
-  await selectBlock(page, 0);
+  await selectBlock(page, "Heading block");
   await inspector(page)
     .getByLabel("Text", { exact: true })
     .fill("What we shipped in August");
@@ -326,7 +326,7 @@ test("a campaign reaches one eligible contact, and unsubscribing needs a POST", 
    * it `.first()` resolves to a button that is hidden until the block is
    * selected and never becomes clickable.
    */
-  const body = canvas(page).getByLabel("Text block", { exact: true }).first();
+  const body = canvas(page).getByLabel("Text content", { exact: true }).first();
   // TEMP PROBE
   try {
     await body.click({ timeout: 4000 });
@@ -336,7 +336,7 @@ test("a campaign reaches one eligible contact, and unsubscribing needs a POST", 
       "PROBE " +
         JSON.stringify(
           await page.evaluate(() => {
-            const el = document.querySelector('[aria-label="Text block"]')!;
+            const el = document.querySelector('[aria-label="Text content"]')!;
             const r = el.getBoundingClientRect();
             const cx = r.x + r.width / 2;
             const cy = r.y + r.height / 2;
@@ -386,7 +386,7 @@ test("a campaign reaches one eligible contact, and unsubscribing needs a POST", 
     const button = [...document.querySelectorAll("button")].find(
       (b) => b.getAttribute("aria-label") === "Bold",
     );
-    const editor = document.querySelector('[aria-label="Text block"]');
+    const editor = document.querySelector('[aria-label="Text content"]');
     if (!button || !editor) return "the toolbar or the editor is not there";
     const press = () => {
       button.focus();

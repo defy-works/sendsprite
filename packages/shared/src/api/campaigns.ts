@@ -408,12 +408,22 @@ export type LeafBlock = z.infer<typeof LeafBlock>;
  * maps to fixed pixel widths the renderer owns. The name is the ratio, so
  * `"2-1"` is a wide column then a narrow one.
  */
-export const COLUMN_LAYOUTS = ["1-1", "1-1-1", "2-1", "1-2"] as const;
+/**
+ * `"1"` first, because it is the ordinary case.
+ *
+ * A row of one column is not a degenerate row — it is a band across the email
+ * that happens to hold a single stack, and it is what gives an ordinary
+ * paragraph the things only a row has: a background, a vertical alignment, and
+ * space of its own. Without it the body was two kinds of thing, and only one
+ * of them could be styled.
+ */
+export const COLUMN_LAYOUTS = ["1", "1-1", "1-1-1", "2-1", "1-2"] as const;
 export const ColumnLayout = z.enum(COLUMN_LAYOUTS);
 export type ColumnLayout = z.infer<typeof ColumnLayout>;
 
 /** How many columns each preset has. */
 export const COLUMN_COUNT: Record<ColumnLayout, number> = {
+  "1": 1,
   "1-1": 2,
   "1-1-1": 3,
   "2-1": 2,
@@ -443,7 +453,7 @@ export const ColumnsBlock = z
     spaceBottom: BlockSpace.optional(),
     columns: z
       .array(z.array(LeafBlock).max(MAX_BLOCKS_PER_COLUMN))
-      .min(2)
+      .min(1)
       .max(3),
   })
   // `superRefine` rather than `refine`, because the message has to name both

@@ -3,7 +3,7 @@ import { requireTeam } from "@/lib/session";
 import { listDomains } from "@/services/domains";
 import { getTeamAws } from "@/services/team-aws";
 import { blockDefaults } from "@/lib/editor/blocks";
-import { editorLeaf } from "@/lib/editor/tree";
+import { editorNodesOf } from "@/lib/editor/tree";
 import { TemplateEditor } from "../[slug]/TemplateEditor";
 
 export const metadata = { title: "New template" };
@@ -37,10 +37,13 @@ export default async function NewTemplatePage() {
         // still one click away, and a template created through the API keeps
         // working exactly as it did; this is only what the dashboard offers
         // first, and offering a blank `<textarea>` first was the report.
-        nodes: [
-          editorLeaf({ kind: "heading", level: 2, text: "Hello {{name}}" }),
-          editorLeaf(blockDefaults("text")),
-        ],
+        // Through `editorNodesOf`, so the starter is rows like everything
+        // else: the body is a list of rows, and a bare leaf built here would
+        // be the one thing in the editor without a row's settings.
+        nodes: editorNodesOf([
+          { kind: "heading", level: 2, text: "Hello {{name}}" },
+          blockDefaults("text"),
+        ]),
         theme: {},
       }}
     />

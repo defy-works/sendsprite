@@ -15,15 +15,13 @@ import {
   FONT_STACKS,
   renderBlockFragment,
   type CampaignTheme,
-  type ColumnLayout,
   type LeafBlock,
 } from "@sendsprite/shared";
 import { Fragment, useMemo, type ReactNode } from "react";
 import { Button } from "@/components/ui/Button";
 import { IconColumns, IconGrip, IconTrash } from "@/components/ui/icons";
 import { cn } from "@/lib/cn";
-import { BLOCK_LABELS, blockIssue } from "@/lib/editor/blocks";
-import type { LeafKind } from "@/lib/editor/blocks";
+import { BLOCK_LABELS, LAYOUT_LABELS, blockIssue } from "@/lib/editor/blocks";
 import {
   columnContainer,
   type EditorLeaf,
@@ -31,7 +29,6 @@ import {
   type EditorRow,
 } from "@/lib/editor/tree";
 import { InlineEditor } from "./InlineEditor";
-import { InsertPoint } from "./InsertPoint";
 
 /**
  * The canvas: the email itself, with the editing chrome laid over it.
@@ -67,8 +64,6 @@ export function Canvas({
   onSelect,
   onChangeLeaf,
   onRemove,
-  onInsertLeaf,
-  onInsertRow,
 }: {
   nodes: EditorNode[];
   /** What the page looks like, so the canvas looks like it too. */
@@ -80,9 +75,6 @@ export function Canvas({
   onSelect: (id: string | null) => void;
   onChangeLeaf: (id: string, block: LeafBlock) => void;
   onRemove: (id: string) => void;
-  /** Adds a block at a position in the body, from the gap it was asked for. */
-  onInsertLeaf: (kind: LeafKind, index: number) => void;
-  onInsertRow: (layout: ColumnLayout, index: number) => void;
 }) {
   const pad = theme.contentPadding ?? 24;
   return (
@@ -110,15 +102,6 @@ export function Canvas({
           <ul aria-label="Email body" className="flex list-none flex-col">
             {nodes.map((node, i) => (
               <Fragment key={node.id}>
-                {!readOnly && (
-                  <li aria-hidden className="list-none">
-                    <InsertPoint
-                      index={i}
-                      onAddLeaf={onInsertLeaf}
-                      onAddRow={onInsertRow}
-                    />
-                  </li>
-                )}
                 {node.type === "row" ? (
                   <RowShell
                     row={node}
@@ -148,15 +131,7 @@ export function Canvas({
             ))}
           </ul>
         </SortableContext>
-        {!readOnly && (
-          <Tail
-            empty={nodes.length === 0}
-            index={nodes.length}
-            pad={pad}
-            onInsertLeaf={onInsertLeaf}
-            onInsertRow={onInsertRow}
-          />
-        )}
+        {!readOnly && <Tail empty={nodes.length === 0} pad={pad} />}
       </div>
     </div>
   );
@@ -169,19 +144,7 @@ export function Canvas({
  * background and its own white card, so a body with three blocks looked like
  * two documents with a gap between them.
  */
-function Tail({
-  empty,
-  index,
-  pad,
-  onInsertLeaf,
-  onInsertRow,
-}: {
-  empty: boolean;
-  index: number;
-  pad: number;
-  onInsertLeaf: (kind: LeafKind, index: number) => void;
-  onInsertRow: (layout: ColumnLayout, index: number) => void;
-}) {
+function Tail({ empty, pad }: { empty: boolean; pad: number }) {
   const { setNodeRef, isOver } = useDroppable({ id: "root" });
   // Only while something is being dragged, or while there is nothing to drop
   // onto. A permanent dashed box under every body is a second way to add a
@@ -189,13 +152,6 @@ function Tail({
   const dragging = useDndContext().active !== null;
   return (
     <div style={{ paddingLeft: pad, paddingRight: pad, paddingBottom: pad }}>
-      <InsertPoint
-        always
-        index={index}
-        label="Add a block at the end"
-        onAddLeaf={onInsertLeaf}
-        onAddRow={onInsertRow}
-      />
       <div
         ref={setNodeRef}
         className={cn(
@@ -232,7 +188,16 @@ function Tail({
  */
 function ChromeBar({ children }: { children: ReactNode }) {
   return (
-    <div className="pointer-events-none absolute -top-4 left-0 z-30 hidden [[data-selected='true']_>_&]:flex">
+    /*
+     * Clear of the block, not half over it.
+     *
+     * The bar is about 32px tall, so anything shallower than that overlaps the
+     * block's first line — which was the whole complaint about the two bars it
+     * replaced. `-top-10` leaves its bottom edge 8px above the block. For the
+     * first block in the card that puts it over the page background, which is
+     * where a toolbar belongs anyway.
+     */
+    <div className="pointer-events-none absolute -top-10 left-0 z-30 hidden [[data-selected='true']_>_&]:flex">
       <div className="popover pointer-events-auto flex items-center gap-0.5 px-1 py-0.5 shadow-glass">
         {children}
       </div>
@@ -342,6 +307,9 @@ function LeafShell({
     <li
       ref={setNodeRef}
       data-selected={selected}
+      // Named, because a row and the block inside it are both list items now
+      // and "the first one" no longer identifies either.
+      aria-label={`${BLOCK_LABELS[block.kind]} block`}
       style={{
         transform: CSS.Transform.toString(transform),
         transition,
@@ -392,7 +360,10 @@ function LeafShell({
             surface="canvas"
             value={block.html}
             readOnly={readOnly}
-            label="Text block"
+            // Distinct from the list item's own "Text block": both carry an
+            // aria-label, and one name for two elements makes each of them
+            // ambiguous to a screen reader and to a test.
+            label="Text content"
             onChange={(next) => onChange(leaf.id, { ...block, html: next })}
             toolbarOpen={selected}
             toolbarExtras={
@@ -469,6 +440,7 @@ function RowShell({
     <li
       ref={setNodeRef}
       data-selected={selected}
+      aria-label={`${LAYOUT_LABELS[row.layout]} row`}
       style={{
         transform: CSS.Transform.toString(transform),
         transition,
@@ -492,10 +464,12 @@ function RowShell({
             listeners={listeners}
             onRemove={() => onRemove(row.id)}
           >
-            <span className="flex items-center gap-1 px-1 text-[10px] text-white/45">
-              <IconColumns className="text-sm" />
-              {row.layout}
-            </span>
+            {row.layout !== "1" && (
+              <span className="flex items-center gap-1 px-1 text-[10px] text-white/45">
+                <IconColumns className="text-sm" />
+                {row.layout}
+              </span>
+            )}
           </ChromeButtons>
         </ChromeBar>
       )}

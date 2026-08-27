@@ -332,6 +332,7 @@ describe("SDK types mirror @sendsprite/shared", () => {
       [...shared.CORNER_STYLES].sort(),
     );
     const columnLayouts: Record<sdk.ColumnLayout, true> = {
+      "1": true,
       "1-1": true,
       "1-1-1": true,
       "2-1": true,

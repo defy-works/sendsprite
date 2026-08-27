@@ -114,9 +114,9 @@ test("a template built in the visual editor compiles to its body", async ({
   // The canvas draws the blocks as they will look, so a block's fields are in
   // the inspector rather than on the block: select it, then edit it.
   const canvas = page.getByRole("list", { name: "Email body" });
-  // The block, not the heading inside it: the rendered markup is inert, so the
-  // shell around it is the click target.
-  await canvas.getByRole("listitem").first().click();
+  // By name: a row and the block inside it are both list items, so "the first
+  // one" is the row that wraps the heading rather than the heading.
+  await canvas.getByRole("listitem", { name: "Heading block" }).click();
   await page
     .getByRole("region", { name: "Block settings" })
     .getByLabel("Text", { exact: true })
@@ -163,8 +163,7 @@ test("a template built in the visual editor compiles to its body", async ({
   // rather than following the link — which is the point of it being inert.
   await page
     .getByRole("list", { name: "Email body" })
-    .getByRole("listitem")
-    .filter({ hasText: "Get started" })
+    .getByRole("listitem", { name: "Button block" })
     .click();
   await expect(
     page

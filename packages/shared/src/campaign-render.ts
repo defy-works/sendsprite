@@ -216,6 +216,8 @@ function columnWidths(
   const gaps = COLUMN_COUNT[layout] - 1;
   const usable = content - gaps * gap;
   switch (layout) {
+    case "1":
+      return [usable];
     case "1-1": {
       const half = Math.floor(usable / 2);
       return [half, usable - half];

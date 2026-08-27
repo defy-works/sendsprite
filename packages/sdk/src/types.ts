@@ -700,10 +700,14 @@ export type LeafBlock =
  * Column ratios, as presets. The name is the ratio, so `"2-1"` is a wide
  * column then a narrow one. `columns.length` must match: `"1-1-1"` with two
  * columns is a `validation_error`, not a row with an empty cell.
+ *
+ * `"1"` is a row of one column — a band across the email holding a single
+ * stack. It is what the dashboard wraps every ordinary block in, so that a
+ * paragraph can carry a background, a vertical alignment and space of its own.
  */
-export type ColumnLayout = "1-1" | "1-1-1" | "2-1" | "1-2";
+export type ColumnLayout = "1" | "1-1" | "1-1-1" | "2-1" | "1-2";
 
-/** A row of two or three columns. At most 20 blocks per column. */
+/** A row of one, two or three columns. At most 20 blocks per column. */
 export interface ColumnsBlock extends BlockSpacing {
   kind: "columns";
   layout: ColumnLayout;

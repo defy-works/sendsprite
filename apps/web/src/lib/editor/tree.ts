@@ -115,8 +115,26 @@ export function editorNodesOf(blocks: readonly CampaignBlock[]): EditorNode[] {
             : { spaceBottom: b.spaceBottom }),
           columns: b.columns.map((col) => col.map(editorLeaf)),
         }
-      : editorLeaf(b),
+      : // A leaf straight in the body becomes a row of one column.
+        //
+        // The body is a list of rows now, always. It used to be a mix — some
+        // entries rows, some bare blocks — and only the rows had a background,
+        // a vertical alignment or space of their own, so whether an ordinary
+        // paragraph could be styled depended on how it happened to be created.
+        // Wrapping on the way in makes the two the same thing.
+        //
+        // It changes what a save writes for a body authored through the API as
+        // bare leaves: they come back as one-column rows. The rendered email is
+        // the same — one column at the full content width is the width a bare
+        // leaf had — but the stored JSON is not, which is why it happens on
+        // open rather than in a migration nobody asked for.
+        wrapInRow(editorLeaf(b)),
   );
+}
+
+/** One leaf, in a row of its own. */
+export function wrapInRow(leaf: EditorLeaf): EditorRow {
+  return { id: newBlockId(), type: "row", layout: "1", columns: [[leaf]] };
 }
 
 /** The editor's tree as the contract stores it. */
@@ -233,8 +251,13 @@ export function insertNode(
   const parsed = parseContainer(container);
   if (!parsed) return [...nodes];
   if (parsed.kind === "root") {
+    // The root holds rows. A leaf dropped or added there gets one.
     const next = [...nodes];
-    next.splice(clamp(index, next.length), 0, node);
+    next.splice(
+      clamp(index, next.length),
+      0,
+      node.type === "leaf" ? wrapInRow(node) : node,
+    );
     return next;
   }
   if (node.type !== "leaf") return [...nodes];

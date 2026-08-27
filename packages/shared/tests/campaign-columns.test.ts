@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { renderBlocks } from "../src/campaign-render";
 import {
   CampaignBlock,
+  COLUMN_COUNT,
   COLUMN_LAYOUTS,
   ColumnsBlock,
   MAX_BLOCKS_PER_COLUMN,
@@ -50,7 +51,9 @@ describe("the columns block", () => {
   it.each(COLUMN_LAYOUTS)(
     "totals exactly the content width for the %s layout",
     (layout) => {
-      const columns = Array.from({ length: layout === "1-1-1" ? 3 : 2 }, () => [
+      // Every layout, at whatever number of columns it declares — including
+      // the row of one, whose single cell has to be the whole content width.
+      const columns = Array.from({ length: COLUMN_COUNT[layout] }, () => [
         text("x"),
       ]);
       const { html } = render([row(layout, columns)]);

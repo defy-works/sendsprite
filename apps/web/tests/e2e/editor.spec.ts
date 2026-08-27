@@ -134,8 +134,12 @@ test("the body theme reaches the rendered document", async ({ page }) => {
   await page.goto("/app/templates/new");
 
   // Nothing selected means the style panel is the body's, which is where a
-  // theme is set. Clicking the canvas background clears any selection.
-  await page.getByText("Body style").click();
+  // theme is set. The selection breadcrumb's first step goes there from
+  // anywhere, which is the point of it.
+  await page
+    .getByRole("navigation", { name: "Selection" })
+    .getByRole("button", { name: "Body" })
+    .click();
   await page.getByRole("radio", { name: "480" }).click();
   await page.getByRole("radio", { name: "Serif" }).click();
 
@@ -158,22 +162,57 @@ test("the canvas draws the email, and preview mode drops the chrome", async ({
   await expect(canvas.getByRole("heading").first()).toBeVisible();
 
   // Space is a block's own, and it reaches the document.
-  await canvas.getByRole("listitem").first().click();
+  await canvas.getByRole("listitem", { name: "Heading block" }).click();
   const inspector = page.getByRole("region", { name: "Block settings" });
   await chooseOption(page, "space-above", "48");
 
-  // On the cell that positions the block, which is where the renderer writes
-  // it — the page cell around the card has padding of its own, and matching on
-  // the computed value would find that one first.
-  // Preview is the only preview: there is no panel showing the same body
-  // beside the canvas, so opening it is what puts the frame on screen — and
-  // it takes the palette and the inspector away while it is there.
+  /*
+   * A div inside the column, not a table cell.
+   *
+   * Every block sits in a row of one column now, and a leaf's own space inside
+   * a cell is a wrapping `div`: Outlook adds cell padding to the cell's width,
+   * and the cell carries the column's width, so padding there would overflow
+   * the row by exactly that much.
+   *
+   * Preview is also the only preview — there is no panel beside the canvas —
+   * so opening it is what puts the frame on screen, and it takes the palette
+   * and the inspector away while it is there.
+   */
   const frame = await openPreview(page, "Template preview");
-  await expect(frame.locator('td[style*="padding:48px"]')).toHaveCount(1);
+  await expect(frame.locator('div[style*="padding:48px"]')).toHaveCount(1);
   await expect(inspector).toBeHidden();
   await expect(canvas).toBeHidden();
   await expect(frame.locator("table.ss-card")).toBeVisible();
 
   await page.getByRole("radio", { name: "Edit" }).click();
   await expect(canvas).toBeVisible();
+});
+
+test("every block is a row, and the breadcrumb is how you reach it", async ({
+  page,
+}) => {
+  await signUpOwner(page, "crumbs");
+  await page.goto("/app/templates/new");
+
+  const canvas = page.getByRole("list", { name: "Email body" });
+  const crumbs = page.getByRole("navigation", { name: "Selection" });
+  const inspector = page.getByRole("region", { name: "Block settings" });
+
+  // Every block sits in a row of one, so an ordinary paragraph has the things
+  // only a row used to have. A row is a container and cannot be clicked — the
+  // breadcrumb is the way up to it.
+  await canvas.getByRole("listitem", { name: "Heading block" }).click();
+  await expect(crumbs).toContainText("Heading");
+  await crumbs.getByRole("button", { name: "Row" }).click();
+  await expect(inspector).toContainText("Vertical alignment");
+  // Nothing sits beside it, so there is no gutter to set.
+  await expect(page.locator("#column-gap")).toHaveCount(0);
+
+  // A row with columns has one, and it reaches the rendered document.
+  await page.getByRole("button", { name: "Add Two columns" }).click();
+  await canvas.getByRole("listitem", { name: "Two columns row" }).click();
+  await chooseOption(page, "column-gap", "48");
+
+  const frame = await openPreview(page, "Template preview");
+  await expect(frame.locator('td.ss-gutter[width="48"]')).toBeVisible();
 });
