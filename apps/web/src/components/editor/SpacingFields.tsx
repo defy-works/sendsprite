@@ -1,5 +1,6 @@
 "use client";
 import { useId } from "react";
+import { DEFAULT_BLOCK_SPACE } from "@sendsprite/shared";
 import { Field } from "@/components/ui/Field";
 import { Select } from "@/components/ui/Select";
 
@@ -94,13 +95,25 @@ export function SpaceField({
   );
 }
 
-/** The pair every block carries: room above, room below. */
+/**
+ * The pair every block carries: room above, room below.
+ *
+ * Shown resolved, not as "None". Each kind of block has space it has always
+ * had — 24 above a heading, 24 under a button — and those used to be baked
+ * into the renderer where nobody could see or change them, so this control
+ * reported "None" while the email had 24px. It now shows the number in force
+ * and writes whatever is chosen, including zero, which the baked margin never
+ * allowed.
+ */
 export function SpacingFields({
+  kind,
   spaceTop,
   spaceBottom,
   disabled,
   onChange,
 }: {
+  /** Which block, so an unset field can show the space that kind starts with. */
+  kind: string;
   spaceTop: number | undefined;
   spaceBottom: number | undefined;
   disabled?: boolean;
@@ -109,6 +122,7 @@ export function SpacingFields({
     spaceBottom?: number | undefined;
   }) => void;
 }) {
+  const base = DEFAULT_BLOCK_SPACE[kind] ?? { top: 0, bottom: 0 };
   return (
     /* Stacked, not side by side: the inspector is 16rem wide, and two
        uppercase letterspaced labels in half of that is "ABOVE" and "BELOW"
@@ -117,14 +131,16 @@ export function SpacingFields({
       <SpaceField
         id="space-above"
         label="Space above"
-        space={spaceTop}
+        space={spaceTop ?? base.top}
+        zeroIsAbsent={false}
         disabled={disabled}
         onChange={(spaceTop) => onChange({ spaceTop })}
       />
       <SpaceField
         id="space-below"
         label="Space below"
-        space={spaceBottom}
+        space={spaceBottom ?? base.bottom}
+        zeroIsAbsent={false}
         disabled={disabled}
         onChange={(spaceBottom) => onChange({ spaceBottom })}
       />

@@ -84,6 +84,7 @@ export function LeafInspector({
           them, and the only thing that varies is what sits above it. */}
       {block.kind !== "spacer" && (
         <SpacingFields
+          kind={block.kind}
           spaceTop={block.spaceTop}
           spaceBottom={block.spaceBottom}
           disabled={readOnly}
@@ -338,6 +339,7 @@ export function RowInspector({
         />
       )}
       <SpacingFields
+        kind="columns"
         spaceTop={row.spaceTop}
         spaceBottom={row.spaceBottom}
         disabled={readOnly}

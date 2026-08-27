@@ -12,6 +12,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
+  DEFAULT_BLOCK_SPACE,
   FONT_STACKS,
   renderBlockFragment,
   type CampaignTheme,
@@ -25,6 +26,7 @@ import { cn } from "@/lib/cn";
 import { BLOCK_LABELS, LAYOUT_LABELS, blockIssue } from "@/lib/editor/blocks";
 import {
   columnContainer,
+  type ContainerId,
   type EditorLeaf,
   type EditorNode,
   type EditorRow,
@@ -72,12 +74,35 @@ const HEADING_SIZE: Record<1 | 2 | 3, string> = {
  *   a paragraph you cannot type into is not what a canvas is for.
  */
 
+/** A place a dragged block would land: which container, and where in it. */
+export interface Drop {
+  container: ContainerId;
+  index: number;
+}
+
+/**
+ * The line showing where a dragged block will land.
+ *
+ * Drawn from the same resolution the drop itself uses, so it cannot promise
+ * one position and deliver another. Without it a drag was a guess: dnd-kit
+ * shifts sortable items to make room, but a drop that retargets — onto a full
+ * row, say — moves the block somewhere the shifting never suggested.
+ */
+function DropLine() {
+  return (
+    <li aria-hidden className="relative z-20 h-0 list-none">
+      <span className="absolute inset-x-0 -top-px block h-0.5 rounded-full bg-indigo-500" />
+    </li>
+  );
+}
+
 export function Canvas({
   nodes,
   theme,
   readOnly,
   selectedId,
   invalidIndex,
+  dropAt,
   onSelect,
   onChangeLeaf,
   onRemove,
@@ -89,14 +114,28 @@ export function Canvas({
   selectedId: string | null;
   /** Index in `nodes` the preview blamed, which is the louder signal. */
   invalidIndex: number | null;
+  /** Where the drag in progress would land, or null when nothing is dragging. */
+  dropAt: Drop | null;
   onSelect: (id: string | null) => void;
   onChangeLeaf: (id: string, block: LeafBlock) => void;
   onRemove: (id: string) => void;
 }) {
   const pad = theme.contentPadding ?? 24;
+  // Nothing on the canvas is selectable while a block is in flight. A drag
+  // that crosses live text starts the browser's own text selection, and that
+  // steals the pointer capture dnd-kit is holding — which ends the drag with
+  // the block still attached to the cursor a moment ago and gone the next.
+  const inFlight = dropAt !== null;
   return (
     <div
-      className="ss-canvas flex justify-center overflow-x-auto rounded-lg p-4"
+      // `pt-12`, and no `overflow`: a selected block's toolbar sits above the
+      // block, which for the first one is above the card. `overflow-x-auto`
+      // clips vertically too, so the bar was cut in half; the padding is the
+      // room it needs.
+      className={cn(
+        "ss-canvas flex justify-center rounded-lg p-4 pt-12",
+        inFlight && "select-none",
+      )}
       style={{ background: theme.pageBackground ?? "#f3f4f6" }}
     >
       <div
@@ -119,11 +158,15 @@ export function Canvas({
           <ul aria-label="Email body" className="flex list-none flex-col">
             {nodes.map((node, i) => (
               <Fragment key={node.id}>
+                {dropAt?.container === "root" && dropAt.index === i && (
+                  <DropLine />
+                )}
                 {node.type === "row" ? (
                   <RowShell
                     row={node}
                     theme={theme}
                     pad={pad}
+                    dropAt={dropAt}
                     readOnly={readOnly}
                     selectedId={selectedId}
                     invalid={invalidIndex === i}
@@ -146,6 +189,9 @@ export function Canvas({
                 )}
               </Fragment>
             ))}
+            {dropAt?.container === "root" && dropAt.index >= nodes.length && (
+              <DropLine />
+            )}
           </ul>
         </SortableContext>
         {!readOnly && <Tail empty={nodes.length === 0} pad={pad} />}
@@ -272,6 +318,15 @@ const outline = (
   dragging: boolean,
   /** A row of one draws nothing: the block inside it is the same object. */
   bare = false,
+  /**
+   * Outline on hover.
+   *
+   * Blocks do; rows do not. A row hovered while the block inside it is
+   * selected drew a second rectangle a pixel outside the first, and a row is
+   * always hovered when its block is — the pointer cannot reach one without
+   * crossing the other.
+   */
+  hoverable = true,
 ) =>
   cn(
     // `flow-root`, so the block's own margins are inside the box the outline
@@ -286,7 +341,9 @@ const outline = (
         ? "outline outline-2 outline-amber-400/70"
         : selected
           ? "outline outline-2 outline-indigo-500"
-          : "outline outline-1 outline-transparent hover:outline-indigo-400/40",
+          : hoverable
+            ? "outline outline-1 outline-transparent hover:outline-indigo-400/40"
+            : null,
   );
 
 function LeafShell({
@@ -321,6 +378,8 @@ function LeafShell({
     listeners: SyntheticListenerMap | undefined;
     onRemove: () => void;
   };
+  /** Unused by a leaf; accepted so a column can pass one set of props down. */
+  dropAt?: Drop | null;
   readOnly: boolean;
   selected: boolean;
   invalid: boolean;
@@ -400,9 +459,12 @@ function LeafShell({
             lineHeight: 1.3,
             color: block.color ?? theme.textColor ?? "#111111",
             textAlign: block.align ?? "left",
-            margin: "24px 0 8px",
-            paddingTop: block.spaceTop ?? 0,
-            paddingBottom: block.spaceBottom ?? 0,
+            // The renderer's margin is gone from the block itself; the space
+            // is the block's own, resolved the same way here.
+            margin: 0,
+            paddingTop: block.spaceTop ?? DEFAULT_BLOCK_SPACE.heading!.top,
+            paddingBottom:
+              block.spaceBottom ?? DEFAULT_BLOCK_SPACE.heading!.bottom,
           }}
         />
       ) : block.kind === "text" ? (
@@ -415,14 +477,15 @@ function LeafShell({
         <div
           className="group/text relative"
           style={{
-            paddingTop: block.spaceTop ?? 0,
-            paddingBottom: block.spaceBottom ?? 0,
+            paddingTop: block.spaceTop ?? DEFAULT_BLOCK_SPACE.text!.top,
+            paddingBottom:
+              block.spaceBottom ?? DEFAULT_BLOCK_SPACE.text!.bottom,
             fontFamily: FONT_STACKS[theme.font ?? "sans"],
             fontSize: 16,
             lineHeight: 1.6,
             color: block.color ?? theme.textColor ?? "#111111",
             textAlign: block.align ?? "left",
-            margin: "0 0 16px",
+            margin: 0,
           }}
         >
           <InlineEditor
@@ -481,6 +544,7 @@ function RowShell({
   row,
   theme,
   pad,
+  dropAt,
   readOnly,
   selectedId,
   invalid,
@@ -491,6 +555,7 @@ function RowShell({
   row: EditorRow;
   theme: CampaignTheme;
   pad: number;
+  dropAt: Drop | null;
   readOnly: boolean;
   selectedId: string | null;
   invalid: boolean;
@@ -530,7 +595,13 @@ function RowShell({
       // A row of one and the block in it are one thing to the reader, so only
       // the block is outlined. Two rectangles a pixel apart, one for the row
       // and one for its only occupant, said there were two things here.
-      className={outline(selected, invalid, isDragging, row.layout === "1")}
+      className={outline(
+        selected,
+        invalid,
+        isDragging,
+        row.layout === "1",
+        false,
+      )}
     >
       {!readOnly && row.layout !== "1" && (
         <ChromeBar>
@@ -560,6 +631,7 @@ function RowShell({
             index={i}
             grow={growOf(row.layout, i)}
             verticalAlign={row.verticalAlign ?? "top"}
+            dropAt={dropAt}
             asRow={
               row.layout === "1"
                 ? {
@@ -595,6 +667,7 @@ function Column({
   index,
   grow,
   verticalAlign,
+  dropAt,
   asRow,
   leaves,
   theme,
@@ -608,6 +681,7 @@ function Column({
   index: number;
   grow: number;
   verticalAlign: VerticalAlign;
+  dropAt: Drop | null;
   /** Passed to the single block of a row of one. */
   asRow?: {
     attributes: DraggableAttributes;
@@ -673,21 +747,27 @@ function Column({
           </p>
         ) : (
           <ul className="flex list-none flex-col">
-            {leaves.map((leaf) => (
-              <LeafShell
-                key={leaf.id}
-                leaf={leaf}
-                theme={theme}
-                pad={0}
-                asRow={asRow}
-                readOnly={readOnly}
-                selected={selectedId === leaf.id}
-                invalid={false}
-                onSelect={onSelect}
-                onChange={onChangeLeaf}
-                onRemove={onRemove}
-              />
+            {leaves.map((leaf, i) => (
+              <Fragment key={leaf.id}>
+                {dropAt?.container === id && dropAt.index === i && <DropLine />}
+                <LeafShell
+                  leaf={leaf}
+                  theme={theme}
+                  pad={0}
+                  asRow={asRow}
+                  dropAt={dropAt}
+                  readOnly={readOnly}
+                  selected={selectedId === leaf.id}
+                  invalid={false}
+                  onSelect={onSelect}
+                  onChange={onChangeLeaf}
+                  onRemove={onRemove}
+                />
+              </Fragment>
             ))}
+            {dropAt?.container === id && dropAt.index >= leaves.length && (
+              <DropLine />
+            )}
           </ul>
         )}
       </div>

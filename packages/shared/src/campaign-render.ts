@@ -180,6 +180,34 @@ const HEADING_SIZE: Record<1 | 2 | 3, string> = {
   3: "18px",
 };
 
+/**
+ * The space each kind of block has always had around it.
+ *
+ * These were hard-coded into every block's own `margin`, which made them
+ * invisible and unchangeable: the spacing control said "None" while the
+ * renderer put 24px under every button, and a body could not be tightened up
+ * no matter what the author set. They are defaults now — the value used when a
+ * block does not say — so what was rendered before is still what is rendered,
+ * and the control finally tells the truth about what it is showing.
+ *
+ * One behaviour does change, and only inside a column holding several blocks:
+ * these are padding rather than margins, so two neighbours no longer collapse
+ * their gap to the larger of the two. Between rows nothing changes, because a
+ * row is a table cell and margins never collapsed across one.
+ */
+export const DEFAULT_BLOCK_SPACE: Record<
+  string,
+  { top: number; bottom: number }
+> = {
+  heading: { top: 24, bottom: 8 },
+  text: { top: 0, bottom: 16 },
+  button: { top: 8, bottom: 24 },
+  image: { top: 0, bottom: 0 },
+  divider: { top: 24, bottom: 24 },
+  spacer: { top: 0, bottom: 0 },
+  columns: { top: 0, bottom: 0 },
+};
+
 /** What each button size means, in the two numbers a button is made of. */
 const BUTTON_PADDING: Record<ButtonSize, { pad: string; font: string }> = {
   small: { pad: "8px 16px", font: "14px" },
@@ -284,7 +312,11 @@ function spacingOf(b: CampaignBlock | LeafBlock): {
   bottom: number;
 } {
   const s = b as BlockSpacing;
-  return { top: s.spaceTop ?? 0, bottom: s.spaceBottom ?? 0 };
+  const fallback = DEFAULT_BLOCK_SPACE[b.kind] ?? { top: 0, bottom: 0 };
+  return {
+    top: s.spaceTop ?? fallback.top,
+    bottom: s.spaceBottom ?? fallback.bottom,
+  };
 }
 
 /**
@@ -297,11 +329,7 @@ function spacingOf(b: CampaignBlock | LeafBlock): {
  */
 function row(inner: string, pad: number, b: CampaignBlock): string {
   const { top, bottom } = spacingOf(b);
-  const box =
-    top === 0 && bottom === 0
-      ? `padding:0 ${pad}px`
-      : `padding:${top}px ${pad}px ${bottom}px`;
-  return `<tr><td style="${box}">${inner}</td></tr>`;
+  return `<tr><td style="padding:${top}px ${pad}px ${bottom}px">${inner}</td></tr>`;
 }
 
 /**
@@ -328,7 +356,7 @@ function spaced(inner: string, b: LeafBlock): string {
 function renderLeaf(b: LeafBlock, width: number, t: Resolved): string {
   switch (b.kind) {
     case "heading":
-      return `<h${b.level} style="${t.fontCss};font-size:${HEADING_SIZE[b.level]};line-height:1.3;color:${b.color ?? t.textColor};margin:24px 0 8px;text-align:${b.align ?? "left"}">${escapeHtml(b.text)}</h${b.level}>`;
+      return `<h${b.level} style="${t.fontCss};font-size:${HEADING_SIZE[b.level]};line-height:1.3;color:${b.color ?? t.textColor};margin:0;text-align:${b.align ?? "left"}">${escapeHtml(b.text)}</h${b.level}>`;
     case "text":
       // Not escaped: `InlineHtml` in the contract restricts this to
       // <strong>, <em>, <br> and http(s)/mailto anchors, and requires them
@@ -336,7 +364,7 @@ function renderLeaf(b: LeafBlock, width: number, t: Resolved): string {
       // The value reaching this line has been re-checked against that schema
       // by `renderBlocks` — see the file comment for why that is not
       // redundant.
-      return `<p style="${t.fontCss};font-size:16px;line-height:1.6;color:${b.color ?? t.textColor};margin:0 0 16px;text-align:${b.align ?? "left"}">${b.html}</p>`;
+      return `<p style="${t.fontCss};font-size:16px;line-height:1.6;color:${b.color ?? t.textColor};margin:0;text-align:${b.align ?? "left"}">${b.html}</p>`;
     case "button": {
       // A table around the anchor: Outlook ignores padding on inline elements,
       // so the cell has to provide the hit area. The outer table is aligned
@@ -349,18 +377,20 @@ function renderLeaf(b: LeafBlock, width: number, t: Resolved): string {
       const bg = b.color ?? ACCENT;
       const fg = b.textColor ?? "#ffffff";
       const align = b.align ?? "left";
-      const table = b.fullWidth
-        ? `width="100%" style="width:100%;margin:8px 0 24px"`
-        : `style="margin:8px 0 24px"`;
+      const table = b.fullWidth ? `width="100%" style="width:100%"` : null;
+      // Only the horizontal margin now: the vertical is the block's spacing,
+      // written once on the box around it.
       const margin =
         !b.fullWidth && align === "center"
-          ? `margin:8px auto 24px`
+          ? `margin:0 auto`
           : !b.fullWidth && align === "right"
-            ? `margin:8px 0 24px auto`
+            ? `margin:0 0 0 auto`
             : null;
       const attrs = margin
         ? `align="${align}" style="${margin}"`
-        : `align="${align}" ${table}`;
+        : table
+          ? `align="${align}" ${table}`
+          : `align="${align}"`;
       return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" ${attrs}><tr><td align="center" style="background:${bg};border-radius:${radius}"><a href="${escapeHtml(b.url)}" style="${t.fontCss};display:inline-block;padding:${size.pad};font-size:${size.font};color:${fg};text-decoration:none;border-radius:${radius}">${escapeHtml(b.label)}</a></td></tr></table>`;
     }
     case "image": {
@@ -396,8 +426,7 @@ function renderLeaf(b: LeafBlock, width: number, t: Resolved): string {
       const weight = b.weight ?? 1;
       const line = b.lineStyle ?? "solid";
       const width = b.width ?? 100;
-      const box =
-        width === 100 ? "margin:24px 0" : `width:${width}%;margin:24px auto`;
+      const box = width === 100 ? "margin:0" : `width:${width}%;margin:0 auto`;
       return `<hr style="border:0;border-top:${weight}px ${line} ${b.color ?? "#e5e7eb"};${box}" />`;
     }
     case "spacer":

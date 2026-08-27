@@ -13,10 +13,25 @@ const html = (blocks: Block[], theme?: unknown) =>
   renderBlocks(blocks, theme ? { theme: theme as never } : {}).html;
 
 describe("block spacing", () => {
-  it("writes no vertical padding when a block asks for none", () => {
-    // The whole reason spacing could be added to a live table with no
-    // backfill: absent means the string this always rendered.
-    expect(html([TEXT])).toContain('style="padding:0 24px"');
+  it("falls back to the space that kind of block always had", () => {
+    // Absent is not zero: it is the margin the renderer used to bake into the
+    // block itself, moved out to where the author can see and change it. A
+    // paragraph has always had 16px under it and nothing above.
+    expect(html([TEXT])).toContain('style="padding:0px 24px 16px"');
+    expect(html([{ kind: "heading", level: 2, text: "H" }])).toContain(
+      'style="padding:24px 24px 8px"',
+    );
+    expect(
+      html([{ kind: "button", label: "Go", url: "https://e.test" }]),
+    ).toContain('style="padding:8px 24px 24px"');
+  });
+
+  it("no longer writes the margin into the block itself", () => {
+    // Both would apply, and the gap would be the sum of the two.
+    expect(html([TEXT])).not.toContain("margin:0 0 16px");
+    expect(html([{ kind: "heading", level: 1, text: "H" }])).not.toContain(
+      "margin:24px 0 8px",
+    );
   });
 
   it("writes the padding a block asks for, on the row that positions it", () => {
@@ -25,13 +40,28 @@ describe("block spacing", () => {
     );
   });
 
-  it("writes one side alone", () => {
+  it("writes one side alone, leaving the other on its default", () => {
     expect(html([{ ...TEXT, spaceTop: 32 }])).toContain(
-      'style="padding:32px 24px 0px"',
+      'style="padding:32px 24px 16px"',
     );
     expect(html([{ ...TEXT, spaceBottom: 32 }])).toContain(
       'style="padding:0px 24px 32px"',
     );
+  });
+
+  it("takes zero for an answer, which the baked margin never did", () => {
+    // The point of the change: a button's 24px was unremovable.
+    expect(
+      html([
+        {
+          kind: "button",
+          label: "Go",
+          url: "https://e.test",
+          spaceTop: 0,
+          spaceBottom: 0,
+        },
+      ]),
+    ).toContain('style="padding:0px 24px 0px"');
   });
 
   it("spaces a leaf inside a column with a div, not with cell padding", () => {
@@ -114,13 +144,13 @@ describe("the column gap", () => {
 
 describe("the card's own gutter", () => {
   it("defaults to 24 and is what the blocks are padded by", () => {
-    expect(html([TEXT])).toContain("padding:0 24px");
+    expect(html([TEXT])).toContain("24px 16px");
   });
 
   it("moves every edge together when the theme sets it", () => {
     const out = html([TEXT], { contentPadding: 8 });
-    expect(out).toContain("padding:0 8px");
-    expect(out).not.toContain("padding:0 24px");
+    expect(out).toContain("padding:0px 8px 16px");
+    expect(out).not.toContain(" 24px ");
   });
 
   it("changes what a full-width image is sized against", () => {
@@ -189,9 +219,11 @@ describe("the divider", () => {
     ({ kind: "divider", ...over }) as Block;
 
   it("is a 1px solid rule across the card by default", () => {
+    // Its 24px above and below is the block's spacing now, on the cell.
     expect(html([div()])).toContain(
-      'style="border:0;border-top:1px solid #e5e7eb;margin:24px 0"',
+      'style="border:0;border-top:1px solid #e5e7eb;margin:0"',
     );
+    expect(html([div()])).toContain('style="padding:24px 24px 24px"');
   });
 
   it("takes a weight and a line", () => {
@@ -205,7 +237,7 @@ describe("the divider", () => {
     // like a mistake.
     const out = html([div({ width: 50 })]);
     expect(out).toContain("width:50%");
-    expect(out).toContain("margin:24px auto");
+    expect(out).toContain("margin:0 auto");
   });
 
   it("refuses a line style it does not know", () => {

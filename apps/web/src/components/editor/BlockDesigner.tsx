@@ -10,6 +10,7 @@ import {
   useSensors,
   type CollisionDetection,
   type DragEndEvent,
+  type DragOverEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
 import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
@@ -46,7 +47,7 @@ import {
   type ContainerId,
   type EditorNode,
 } from "@/lib/editor/tree";
-import { Canvas } from "./Canvas";
+import { Canvas, type Drop } from "./Canvas";
 import { LeafInspector, RowInspector } from "./Inspector";
 import { LayoutPicker } from "./LayoutPicker";
 import { Palette, parsePaletteId } from "./Palette";
@@ -115,6 +116,14 @@ export function BlockDesigner({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   /**
+   * Where the thing being dragged would land, as a container and an index.
+   *
+   * Resolved on every move with the same function that resolves the drop, so
+   * the line drawn on the canvas and the position the block actually takes are
+   * the same answer rather than two guesses that usually agree.
+   */
+  const [dropAt, setDropAt] = useState<Drop | null>(null);
+  /**
    * Editing or reading.
    *
    * The canvas is faithful but it is not the email — it carries outlines, a
@@ -147,7 +156,7 @@ export function BlockDesigner({
     tree: EditorNode[],
     overId: string,
     moving: string | null,
-  ): { container: ContainerId; index: number } | null => {
+  ): Drop | null => {
     const asContainer = parseContainer(overId);
     if (asContainer)
       return {
@@ -182,8 +191,14 @@ export function BlockDesigner({
     return { container: over.container, index: over.index };
   };
 
+  const onDragOver = (e: DragOverEvent) => {
+    const overId = e.over ? String(e.over.id) : null;
+    setDropAt(overId ? resolveDrop(nodes, overId, String(e.active.id)) : null);
+  };
+
   const onDragEnd = (e: DragEndEvent) => {
     setDragging(null);
+    setDropAt(null);
     const overId = e.over ? String(e.over.id) : null;
     if (!overId) return;
     const activeId = String(e.active.id);
@@ -311,7 +326,11 @@ export function BlockDesigner({
       collisionDetection={collisionDetection}
       onDragStart={(e: DragStartEvent) => setDragging(String(e.active.id))}
       onDragEnd={onDragEnd}
-      onDragCancel={() => setDragging(null)}
+      onDragOver={onDragOver}
+      onDragCancel={() => {
+        setDragging(null);
+        setDropAt(null);
+      }}
     >
       {/* Clicking the background clears the selection, which is what makes the
           inspector feel like it belongs to the canvas. */}
@@ -455,6 +474,7 @@ export function BlockDesigner({
                 readOnly={readOnly}
                 selectedId={selectedId}
                 invalidIndex={invalidIndex}
+                dropAt={dropAt}
                 onSelect={setSelectedId}
                 onChangeLeaf={(id, block: LeafBlock) =>
                   onChange((tree) => replaceLeaf(tree, id, block))
