@@ -7,8 +7,16 @@ import {
   useState,
   useTransition,
 } from "react";
-import type { CampaignStatus, CampaignTheme } from "@sendsprite/shared";
-import { placeholderNames, renderCampaignFields } from "@sendsprite/shared";
+import type {
+  CampaignBlock,
+  CampaignStatus,
+  CampaignTheme,
+} from "@sendsprite/shared";
+import {
+  placeholderNames,
+  renderCampaignFields,
+  withHeaderFooter,
+} from "@sendsprite/shared";
 import { Alert } from "@/components/ui/Alert";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -31,6 +39,7 @@ import {
   type Result,
 } from "../actions";
 import { previewCampaign } from "../preview";
+import { listLayoutsAction } from "../layout-actions";
 
 export interface BookOption {
   id: string;
@@ -56,6 +65,9 @@ export interface EditorCampaign {
   theme: CampaignTheme;
   /** Fallbacks for `{{ name }}` merge fields, by placeholder name; `{}` is none. */
   mergeDefaults: Record<string, string>;
+  /** Linked header/footer layout ids; `""` is "no layout". */
+  headerLayoutId: string;
+  footerLayoutId: string;
 }
 
 const STATUS_VARIANT: Record<CampaignStatus, BadgeVariant> = {
@@ -129,6 +141,23 @@ export function CampaignEditor({
   const [committed, setCommitted] = useState(() =>
     JSON.stringify(serialisable(campaign)),
   );
+  const [layouts, setLayouts] = useState<
+    { id: string; name: string; blocks: CampaignBlock[] }[]
+  >([]);
+  useEffect(() => {
+    let live = true;
+    void listLayoutsAction().then((res) => {
+      if (live && res.ok)
+        setLayouts(
+          res.data.map((l) => ({ id: l.id, name: l.name, blocks: l.blocks })),
+        );
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+  const layoutBlocks = (id: string) =>
+    layouts.find((l) => l.id === id)?.blocks ?? null;
 
   const dirty = JSON.stringify(serialisable(c)) !== committed;
   const locked = mode === "edit" ? LOCKED[liveStatus] : null;
@@ -167,8 +196,18 @@ export function CampaignEditor({
    * `preview.ts`.
    */
   const preview = useMemo(
-    () => previewCampaign(blocksOfTree(c.nodes), c.theme),
-    [c.nodes, c.theme],
+    () =>
+      previewCampaign(
+        withHeaderFooter(
+          blocksOfTree(c.nodes),
+          layoutBlocks(c.headerLayoutId),
+          layoutBlocks(c.footerLayoutId),
+        ),
+        c.theme,
+      ),
+    // `layouts` is a dependency because the header/footer blocks resolve
+    // through it; a re-render after they load recomposes the preview.
+    [c.nodes, c.theme, c.headerLayoutId, c.footerLayoutId, layouts],
   );
 
   // The merge fields in play: exactly what the fan-out scans — the rendered
@@ -211,6 +250,8 @@ export function CampaignEditor({
     blocks: blocksOfTree(state.nodes),
     theme: state.theme,
     mergeDefaults: state.mergeDefaults,
+    headerLayoutId: state.headerLayoutId,
+    footerLayoutId: state.footerLayoutId,
   });
 
   const save = () => {
@@ -422,6 +463,32 @@ export function CampaignEditor({
                     onChange={(e) => set("replyTo", e.target.value)}
                   />
                 </Field>
+
+                <Field
+                  id="cmp-header"
+                  label="Header layout"
+                  hint="Linked, not copied: editing the layout updates this campaign until it sends."
+                >
+                  <Select
+                    id="cmp-header"
+                    value={c.headerLayoutId}
+                    disabled={readOnly}
+                    placeholder="None"
+                    onChange={(v) => set("headerLayoutId", v)}
+                    options={layoutOptions(layouts, c.headerLayoutId)}
+                  />
+                </Field>
+
+                <Field id="cmp-footer" label="Footer layout">
+                  <Select
+                    id="cmp-footer"
+                    value={c.footerLayoutId}
+                    disabled={readOnly}
+                    placeholder="None"
+                    onChange={(v) => set("footerLayoutId", v)}
+                    options={layoutOptions(layouts, c.footerLayoutId)}
+                  />
+                </Field>
               </CardBody>
             </Card>
             <MergePanel
@@ -489,6 +556,26 @@ export function CampaignEditor({
       </TestSendDialog>
     </div>
   );
+}
+
+/**
+ * Options for a header/footer layout select: "None", the team's layouts, and —
+ * if the campaign points at a layout that has since been deleted — the stale
+ * id kept visible so the row still says what it references, the way the book
+ * and domain selects keep a deleted id.
+ */
+function layoutOptions(
+  layouts: { id: string; name: string }[],
+  current: string,
+) {
+  const known = layouts.some((l) => l.id === current);
+  return [
+    { value: "", label: "None" },
+    ...(current !== "" && !known
+      ? [{ value: current, label: "Deleted layout", hint: current }]
+      : []),
+    ...layouts.map((l) => ({ value: l.id, label: l.name })),
+  ];
 }
 
 /** Friendly stand-ins for the built-in contact fields in the preview. */
@@ -606,5 +693,7 @@ function serialisable(c: EditorCampaign) {
     blocks: blocksOfTree(c.nodes),
     theme: c.theme,
     mergeDefaults: c.mergeDefaults,
+    headerLayoutId: c.headerLayoutId,
+    footerLayoutId: c.footerLayoutId,
   };
 }

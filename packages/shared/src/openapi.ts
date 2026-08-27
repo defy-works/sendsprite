@@ -939,7 +939,7 @@ export function buildOpenApiDocument(opts: OpenApiOptions) {
       version: opts.version ?? "1.0.0",
       description:
         "Self-hosted email API on Amazon SES. Authenticate every request with `Authorization: Bearer ss_live_…`. Errors share one envelope: `{ error: { code, message, details? } }`.\n\n" +
-        "**What the dashboard has that this API does not.** A campaign's `theme` (brand colours, fonts, spacing) is part of the contract and may be set here. Reusable *layouts* — a saved header/footer the editor copies into a new campaign — are dashboard-only: a layout is a starting point that is copied in, not a reference the campaign keeps, so the campaign you read back already contains everything a layout contributed and there is nothing further to expose. Uploaded images likewise: the editor stores them and the campaign body references them by URL.",
+        "**What the dashboard has that this API does not.** A campaign's `theme` (brand colours, fonts, spacing) is part of the contract and may be set here. *Layouts* — saved block fragments — have no collection of their own in this API. A campaign may link one as its header and one as its footer via `headerLayoutId`/`footerLayoutId`, which are resolved to the layout's current blocks at send time (so editing the layout updates every not-yet-sent campaign); these ids come from the dashboard, and an API-only client leaves them null and composes a header into `blocks` directly. Uploaded images likewise: the editor stores them and the campaign body references them by URL.",
     },
     servers: [{ url: `${opts.serverUrl.replace(/\/+$/, "")}/api/v1` }],
     security: [{ apiKey: [] }],

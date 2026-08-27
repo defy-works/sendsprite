@@ -572,6 +572,15 @@ export const MergeDefaults = z
 export type MergeDefaults = z.infer<typeof MergeDefaults>;
 
 /**
+ * A reference to a saved layout, linked (not copied) as a campaign's header or
+ * footer and resolved to its current blocks at send time. Just an id: layouts
+ * have no REST collection of their own, so an API-only client leaves these
+ * null and composes a header into `blocks` directly, while the dashboard sets
+ * them from its layout list. `null` on update clears the slot.
+ */
+const LayoutRef = z.string().trim().min(1).max(64);
+
+/**
  * One block of a campaign body.
  *
  * A leaf is still a discriminated union, so an unknown `kind` is a refusal
@@ -645,6 +654,10 @@ export const CreateCampaignInput = z.object({
    * means every merge field falls back to empty.
    */
   mergeDefaults: MergeDefaults.optional(),
+  /** Link a saved layout as the header, above the body. */
+  headerLayoutId: LayoutRef.optional(),
+  /** Link a saved layout as the footer, below the body. */
+  footerLayoutId: LayoutRef.optional(),
 });
 export type CreateCampaignInput = z.infer<typeof CreateCampaignInput>;
 
@@ -672,6 +685,10 @@ export const UpdateCampaignInput = z.object({
   theme: CampaignTheme.nullable().optional(),
   /** `null` clears every fallback; omitting it leaves them alone. */
   mergeDefaults: MergeDefaults.nullable().optional(),
+  /** `null` unlinks the header; omitting it leaves it alone. */
+  headerLayoutId: LayoutRef.nullable().optional(),
+  /** `null` unlinks the footer; omitting it leaves it alone. */
+  footerLayoutId: LayoutRef.nullable().optional(),
 });
 export type UpdateCampaignInput = z.infer<typeof UpdateCampaignInput>;
 
@@ -725,6 +742,9 @@ export const CampaignObject = z.object({
   theme: CampaignTheme.nullable(),
   /** Merge-field fallbacks; `null` when the campaign sets none. */
   mergeDefaults: MergeDefaults.nullable(),
+  /** Linked header/footer layout ids; `null` when the slot is empty. */
+  headerLayoutId: LayoutRef.nullable(),
+  footerLayoutId: LayoutRef.nullable(),
   status: z.enum(CAMPAIGN_STATUSES),
   scheduledAt: z.iso.datetime().nullable(),
   /** When the fan-out finished, not when it started. */

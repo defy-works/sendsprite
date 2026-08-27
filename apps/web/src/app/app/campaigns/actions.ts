@@ -59,6 +59,9 @@ export interface CampaignDraft {
   theme: CampaignTheme;
   /** Merge-field fallbacks by placeholder name; `{}` is none. */
   mergeDefaults: Record<string, string>;
+  /** Linked header/footer layout ids; `""` is "no layout". */
+  headerLayoutId: string;
+  footerLayoutId: string;
 }
 
 /** Whether the draft carries any merge-field fallback at all. */
@@ -75,6 +78,9 @@ export async function createCampaign(
     replyTo: draft.replyTo.trim() ? draft.replyTo : undefined,
     // Empty is "no fallbacks", which the create path expresses by omission.
     mergeDefaults: hasMergeDefaults(draft) ? draft.mergeDefaults : undefined,
+    // `""` (the select's "None") is not a valid id — omit it on create.
+    headerLayoutId: draft.headerLayoutId || undefined,
+    footerLayoutId: draft.footerLayoutId || undefined,
   });
   if (!res.ok) return res;
   revalidatePath("/app/campaigns");
@@ -94,6 +100,9 @@ export async function updateCampaign(
     // compares equal to a null column and its schedule is not reverted by a
     // no-op save. See `changedFields` in services/campaigns/crud.ts.
     mergeDefaults: hasMergeDefaults(draft) ? draft.mergeDefaults : null,
+    // `""` (None) clears the slot, which on the update path is `null`.
+    headerLayoutId: draft.headerLayoutId || null,
+    footerLayoutId: draft.footerLayoutId || null,
   });
   if (!res.ok) return res;
   revalidatePath(`/app/campaigns/${id}`);

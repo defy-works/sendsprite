@@ -83,6 +83,8 @@ export default async function NewCampaignPage() {
         nodes: editorNodesOf([blockDefaults("heading"), blockDefaults("text")]),
         theme: {},
         mergeDefaults: {},
+        headerLayoutId: "",
+        footerLayoutId: "",
       }}
     />
   );

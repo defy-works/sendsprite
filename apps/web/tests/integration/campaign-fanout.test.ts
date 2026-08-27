@@ -60,6 +60,9 @@ interface SeedOpts {
   blocks?: unknown;
   subject?: string;
   mergeDefaults?: Record<string, string>;
+  /** Linked layouts: seeded as team_layouts and linked to the campaign. */
+  headerLayout?: unknown;
+  footerLayout?: unknown;
   /** Pre-render, as `campaign.start-sweep` does before the first chunk. */
   render?: boolean;
 }
@@ -78,6 +81,8 @@ async function seed({
   blocks = BLOCKS,
   subject = "Hello",
   mergeDefaults,
+  headerLayout,
+  footerLayout,
   render = true,
 }: SeedOpts = {}) {
   const { db } = await import("@/db");
@@ -104,6 +109,22 @@ async function seed({
   await db()
     .insert(contactBooks)
     .values({ id: bookId, teamId: team.id, name: "News" });
+  const { teamLayouts } = await import("@/db/schema");
+  const linkLayout = async (blocks: unknown, tag: string) => {
+    if (!blocks) return null;
+    const id = `lay_${suffix}${tag}`;
+    await db()
+      .insert(teamLayouts)
+      .values({
+        id,
+        teamId: team.id,
+        name: `${tag}-${suffix}`,
+        blocks: blocks as never,
+      });
+    return id;
+  };
+  const headerLayoutId = await linkLayout(headerLayout, "h");
+  const footerLayoutId = await linkLayout(footerLayout, "f");
   const ids = want.map((_, i) => `ct_${suffix}${String(i).padStart(2, "0")}`);
   await db()
     .insert(contacts)
@@ -141,6 +162,8 @@ async function seed({
       from: `news@${domainName}`,
       blocks: blocks as never,
       mergeDefaults: mergeDefaults ?? null,
+      headerLayoutId,
+      footerLayoutId,
       html: rendered?.html ?? null,
       text: rendered?.text ?? null,
       status: status as "sending",
@@ -1117,5 +1140,79 @@ describe("per-recipient merge fields", () => {
     await (await fanout()).fanoutChunk(campaignId, { enqueue: rec.enqueue });
     const [row] = await emailRows(campaignId);
     expect(row!.subject).toBe("Plain");
+  });
+});
+
+describe("linked header and footer layouts", () => {
+  const HEADER = [{ kind: "text", html: "TOP-OF-EMAIL" }];
+  const FOOTER = [{ kind: "text", html: "BOTTOM-OF-EMAIL" }];
+  const BODY = [{ kind: "text", html: "THE-BODY" }];
+
+  it("renders header, then body, then footer, then the unsubscribe marker", async () => {
+    // render:false so startCampaign does the compose-and-store, which is the
+    // path a real send takes.
+    const { campaignId } = await seed({
+      blocks: BODY,
+      headerLayout: HEADER,
+      footerLayout: FOOTER,
+      status: "scheduled",
+      render: false,
+    });
+    const rec = recorder();
+    // startCampaign renders + stores; then a chunk materialises the rows.
+    await (await fanout()).startCampaign(campaignId, {});
+    await (await fanout()).fanoutChunk(campaignId, { enqueue: rec.enqueue });
+    const [row] = await emailRows(campaignId);
+    const html = row!.html!;
+    const top = html.indexOf("TOP-OF-EMAIL");
+    const body = html.indexOf("THE-BODY");
+    const bottom = html.indexOf("BOTTOM-OF-EMAIL");
+    const unsub = html.indexOf("Unsubscribe");
+    expect(top).toBeGreaterThanOrEqual(0);
+    expect(top).toBeLessThan(body);
+    expect(body).toBeLessThan(bottom);
+    expect(bottom).toBeLessThan(unsub);
+  });
+
+  it("resolves the layout at send, so an edit before send lands in the mail", async () => {
+    const { campaignId, db, suffix } = await seed({
+      blocks: BODY,
+      headerLayout: [{ kind: "text", html: "OLD-HEADER" }],
+      status: "scheduled",
+      render: false,
+    });
+    // Edit the linked layout after the campaign was drafted, before it starts.
+    const { teamLayouts } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    await db()
+      .update(teamLayouts)
+      .set({ blocks: [{ kind: "text", html: "NEW-HEADER" }] as never })
+      .where(eq(teamLayouts.id, `lay_${suffix}h`));
+    const rec = recorder();
+    await (await fanout()).startCampaign(campaignId, {});
+    await (await fanout()).fanoutChunk(campaignId, { enqueue: rec.enqueue });
+    const [row] = await emailRows(campaignId);
+    expect(row!.html).toContain("NEW-HEADER");
+    expect(row!.html).not.toContain("OLD-HEADER");
+  });
+
+  it("tolerates a linked layout that was deleted: the slot is just empty", async () => {
+    const { campaignId, db, suffix } = await seed({
+      blocks: BODY,
+      headerLayout: HEADER,
+      status: "scheduled",
+      render: false,
+    });
+    const { teamLayouts } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    await db()
+      .delete(teamLayouts)
+      .where(eq(teamLayouts.id, `lay_${suffix}h`));
+    const rec = recorder();
+    await (await fanout()).startCampaign(campaignId, {});
+    await (await fanout()).fanoutChunk(campaignId, { enqueue: rec.enqueue });
+    const [row] = await emailRows(campaignId);
+    expect(row!.html).toContain("THE-BODY");
+    expect(row!.html).not.toContain("TOP-OF-EMAIL");
   });
 });

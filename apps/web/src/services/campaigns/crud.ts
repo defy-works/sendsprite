@@ -9,7 +9,13 @@ import {
 } from "@sendsprite/shared";
 import { db } from "@/db";
 import type { Page } from "@/db/keyset";
-import { campaigns, contactBooks, domains, type Campaign } from "@/db/schema";
+import {
+  campaigns,
+  contactBooks,
+  domains,
+  teamLayouts,
+  type Campaign,
+} from "@/db/schema";
 import { recordAudit } from "@/lib/audit";
 import { canonicalJson } from "@/lib/canonical-json";
 import { decodeCursor, encodeCursor } from "@/lib/cursor";
@@ -127,6 +133,8 @@ export const publicCampaign = (c: Campaign) => ({
   blocks: c.blocks,
   theme: c.theme,
   mergeDefaults: c.mergeDefaults,
+  headerLayoutId: c.headerLayoutId,
+  footerLayoutId: c.footerLayoutId,
   status: c.status,
   scheduledAt: c.scheduledAt,
   sentAt: c.sentAt,
@@ -281,7 +289,29 @@ async function checkRefs(
   bookId: string,
   domainId: string,
   from: string,
+  layoutIds: (string | null)[] = [],
 ): Promise<Result<undefined>> {
+  // A linked header/footer must be one of this team's own layouts. Same shape
+  // as the book and domain checks: a cross-tenant id is a data leak, not a
+  // dangling reference, so it is refused rather than tolerated.
+  const wanted = layoutIds.filter((v): v is string => v !== null);
+  if (wanted.length) {
+    const found = await db()
+      .select({ id: teamLayouts.id })
+      .from(teamLayouts)
+      .where(
+        and(eq(teamLayouts.teamId, teamId), inArray(teamLayouts.id, wanted)),
+      );
+    const have = new Set(found.map((r) => r.id));
+    const missing = wanted.find((id) => !have.has(id));
+    if (missing)
+      return {
+        ok: false,
+        code: "validation_error",
+        error: "Layout not found.",
+        details: { field: "headerLayoutId" },
+      };
+  }
   const [book] = await db()
     .select({ id: contactBooks.id })
     .from(contactBooks)
@@ -337,6 +367,7 @@ export async function createCampaign(
     p.data.bookId,
     p.data.domainId,
     p.data.from,
+    [p.data.headerLayoutId ?? null, p.data.footerLayoutId ?? null],
   );
   if (!refs.ok) return refs;
   const [row] = await db()
@@ -353,6 +384,8 @@ export async function createCampaign(
       blocks: p.data.blocks,
       theme: p.data.theme ?? null,
       mergeDefaults: p.data.mergeDefaults ?? null,
+      headerLayoutId: p.data.headerLayoutId ?? null,
+      footerLayoutId: p.data.footerLayoutId ?? null,
       // `status`, `counts` and the timestamps take their column defaults: a
       // campaign is always born a `draft` with an all-zero count cache.
       createdBy: actor.userId,
@@ -389,6 +422,8 @@ const EDITABLE_FIELDS = [
   // an edit reverts a scheduled campaign to a draft.
   "theme",
   "mergeDefaults",
+  "headerLayoutId",
+  "footerLayoutId",
 ] as const;
 
 type EditableField = (typeof EDITABLE_FIELDS)[number];
@@ -463,6 +498,14 @@ export async function updateCampaign(
       p.data.mergeDefaults === undefined
         ? current.mergeDefaults
         : p.data.mergeDefaults,
+    headerLayoutId:
+      p.data.headerLayoutId === undefined
+        ? current.headerLayoutId
+        : p.data.headerLayoutId,
+    footerLayoutId:
+      p.data.footerLayoutId === undefined
+        ? current.footerLayoutId
+        : p.data.footerLayoutId,
   };
   const fields = changedFields(current, next);
   // Nothing moved: no write, no audit row, and — the reason this check is
@@ -476,6 +519,7 @@ export async function updateCampaign(
     next.bookId,
     next.domainId,
     next.from,
+    [next.headerLayoutId, next.footerLayoutId],
   );
   if (!refs.ok) return refs;
   const wasScheduled = current.status === "scheduled";

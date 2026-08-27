@@ -102,6 +102,14 @@ export const campaigns = pgTable(
      */
     mergeDefaults: jsonb("merge_defaults").$type<MergeDefaults>(),
     /**
+     * A saved layout linked (not copied) as this campaign's header/footer,
+     * resolved to its current blocks when sending starts. Null is an empty
+     * slot; a plain nullable text with no foreign key, like `book_id`, so a
+     * campaign outlives a deleted layout and the send tolerates a stale id.
+     */
+    headerLayoutId: text("header_layout_id"),
+    footerLayoutId: text("footer_layout_id"),
+    /**
      * Rendered once when sending starts, then reused for every recipient.
      * Stored so a later edit of `blocks` cannot change what a half-sent
      * campaign puts in the remaining inboxes — the first and last recipient

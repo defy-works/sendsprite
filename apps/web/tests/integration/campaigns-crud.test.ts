@@ -141,6 +141,49 @@ describe("campaign CRUD", () => {
     expect(page.data.data).toHaveLength(0);
   });
 
+  it("refuses a header layout from another team, and links one of its own", async () => {
+    const { db } = await import("@/db");
+    const { teamLayouts } = await import("@/db/schema");
+    const { randomBytes } = await import("node:crypto");
+    const mine = await seedTeam();
+    const theirs = await seedTeam();
+    const layoutOf = async (teamId: string) => {
+      const id = `lay_${randomBytes(6).toString("hex")}`;
+      await db()
+        .insert(teamLayouts)
+        .values({
+          id,
+          teamId,
+          name: `L-${id}`,
+          blocks: [{ kind: "text", html: "hi" }] as never,
+        });
+      return id;
+    };
+    const theirLayout = await layoutOf(theirs.team.id);
+    const foreign = await (
+      await svc()
+    ).createCampaign(mine.actor, {
+      ...mine.draft,
+      headerLayoutId: theirLayout,
+    });
+    expect(foreign).toMatchObject({ ok: false, code: "validation_error" });
+
+    const myLayout = await layoutOf(mine.team.id);
+    const ok = await (
+      await svc()
+    ).createCampaign(mine.actor, {
+      ...mine.draft,
+      headerLayoutId: myLayout,
+      footerLayoutId: myLayout,
+    });
+    expect(ok.ok).toBe(true);
+    if (ok.ok)
+      expect(ok.data).toMatchObject({
+        headerLayoutId: myLayout,
+        footerLayoutId: myLayout,
+      });
+  });
+
   it("refuses a domain from another team", async () => {
     const mine = await seedTeam();
     const theirs = await seedTeam();
@@ -590,7 +633,10 @@ describe("campaign CRUD", () => {
         "counts",
         "createdAt",
         "domainId",
+        // Linked header/footer layouts are authored data, read back the same way.
+        "footerLayoutId",
         "from",
+        "headerLayoutId",
         "id",
         // Merge-field fallbacks are authored data too, read back the same way.
         "mergeDefaults",

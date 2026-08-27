@@ -105,6 +105,8 @@ export default async function CampaignPage({
           nodes: editorNodesOf(c.blocks),
           theme: c.theme ?? {},
           mergeDefaults: c.mergeDefaults ?? {},
+          headerLayoutId: c.headerLayoutId ?? "",
+          footerLayoutId: c.footerLayoutId ?? "",
         }}
       />
 

@@ -1,12 +1,14 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   InvalidCampaignBlockError,
+  type CampaignBlock,
   UNSUBSCRIBE_MARKER,
   escapeHtml,
   newId,
   placeholderCount,
   renderBlocks,
   renderCampaignFields,
+  withHeaderFooter,
   type ErrorCode,
 } from "@sendsprite/shared";
 import { db } from "@/db";
@@ -17,6 +19,7 @@ import {
   contactBooks,
   emailEvents,
   emails,
+  teamLayouts,
   teamSettings,
   type Campaign,
   type CampaignRecipientStatus,
@@ -592,7 +595,7 @@ export async function startCampaign(
     // what stops an edit to `blocks` mid-send giving the first and the last
     // recipient different mail; `ensureRendered` is only the fallback for a
     // campaign that reached `sending` without passing through here.
-    rendered = renderBlocks(campaign.blocks, {
+    rendered = renderBlocks(await composeBody(campaign), {
       theme: campaign.theme ?? undefined,
     });
   } catch (e) {
@@ -993,7 +996,7 @@ async function ensureRendered(campaign: Campaign): Promise<Campaign | null> {
   if (campaign.html !== null && campaign.text !== null) return campaign;
   let rendered;
   try {
-    rendered = renderBlocks(campaign.blocks, {
+    rendered = renderBlocks(await composeBody(campaign), {
       theme: campaign.theme ?? undefined,
     });
   } catch (e) {
@@ -1100,6 +1103,35 @@ function body(
     html: html.replaceAll(UNSUBSCRIBE_MARKER, () => footer),
     text: src.text.replaceAll(UNSUBSCRIBE_MARKER, () => `Unsubscribe: ${url}`),
   };
+}
+
+/**
+ * The body with its linked header and footer layouts composed around it,
+ * resolved to the layouts' **current** blocks at this moment — which is what
+ * makes a header edit propagate to every not-yet-sent campaign. A slot with no
+ * id, or an id whose layout was deleted, is simply empty. Rendered once at
+ * send start; `ensureRendered` uses it too for the crashed-mid-start case.
+ */
+async function composeBody(campaign: Campaign): Promise<CampaignBlock[]> {
+  const ids = [campaign.headerLayoutId, campaign.footerLayoutId].filter(
+    (v): v is string => v !== null,
+  );
+  if (ids.length === 0) return campaign.blocks;
+  const rows = await db()
+    .select({ id: teamLayouts.id, blocks: teamLayouts.blocks })
+    .from(teamLayouts)
+    .where(
+      and(
+        eq(teamLayouts.teamId, campaign.teamId),
+        inArray(teamLayouts.id, ids),
+      ),
+    );
+  const byId = new Map(rows.map((r) => [r.id, r.blocks]));
+  return withHeaderFooter(
+    campaign.blocks,
+    campaign.headerLayoutId ? byId.get(campaign.headerLayoutId) : null,
+    campaign.footerLayoutId ? byId.get(campaign.footerLayoutId) : null,
+  );
 }
 
 /** Does this campaign use any merge field anywhere the fan-out substitutes? */

@@ -696,3 +696,21 @@ export function renderBlocks(
     text: text === "" ? UNSUBSCRIBE_MARKER : `${text}\n\n${UNSUBSCRIBE_MARKER}`,
   };
 }
+
+/**
+ * A campaign body with a linked header and/or footer layout composed around
+ * it: `[...header, ...body, ...footer]`. The one place the three block lists
+ * become one, shared by the send (`fanoutChunk` → `renderBlocks`) and the
+ * editor preview so they cannot disagree. The whole list renders in the
+ * campaign's own theme; a linked layout's own theme is not applied.
+ *
+ * `renderBlocks` still appends the unsubscribe footer after all of this, so
+ * the order in the inbox is header, body, footer layout, unsubscribe.
+ */
+export function withHeaderFooter(
+  body: readonly CampaignBlock[],
+  header: readonly CampaignBlock[] | null | undefined,
+  footer: readonly CampaignBlock[] | null | undefined,
+): CampaignBlock[] {
+  return [...(header ?? []), ...body, ...(footer ?? [])];
+}

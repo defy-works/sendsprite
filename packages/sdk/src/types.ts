@@ -787,6 +787,10 @@ export interface CreateCampaignInput {
    * missing the field gets the fallback here, or empty.
    */
   mergeDefaults?: Record<string, string>;
+  /** Link a saved layout as the header, resolved to its blocks at send. */
+  headerLayoutId?: string;
+  /** Link a saved layout as the footer. */
+  footerLayoutId?: string;
 }
 
 /**
@@ -806,6 +810,10 @@ export interface UpdateCampaignInput {
   theme?: CampaignTheme | null;
   /** `null` clears every merge fallback; omitting it leaves them alone. */
   mergeDefaults?: Record<string, string> | null;
+  /** `null` unlinks the header; omitting it leaves it alone. */
+  headerLayoutId?: string | null;
+  /** `null` unlinks the footer; omitting it leaves it alone. */
+  footerLayoutId?: string | null;
 }
 
 /**
@@ -847,6 +855,9 @@ export interface CampaignObject {
   theme: CampaignTheme | null;
   /** Merge-field fallbacks; `null` when the campaign sets none. */
   mergeDefaults: Record<string, string> | null;
+  /** Linked header/footer layout ids; `null` when the slot is empty. */
+  headerLayoutId: string | null;
+  footerLayoutId: string | null;
   status: CampaignStatus;
   scheduledAt: string | null;
   /** When the fan-out finished, not when it started. */
