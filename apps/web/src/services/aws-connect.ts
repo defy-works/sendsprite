@@ -1,3 +1,4 @@
+import { DeleteStackCommand } from "@aws-sdk/client-cloudformation";
 import { GetCallerIdentityCommand } from "@aws-sdk/client-sts";
 import {
   CreateConfigurationSetCommand,
@@ -15,13 +16,14 @@ import {
 import { z } from "zod";
 // Not `@/env`: that module is `server-only` and throws under vitest.
 import { loadEnv } from "@/env.schema";
-import { makeSes, makeSns, makeSts } from "@/lib/aws/clients";
+import { makeCfn, makeSes, makeSns, makeSts } from "@/lib/aws/clients";
 import type { AwsContext } from "@/lib/aws/credentials";
 import { resolveAwsContext } from "@/lib/aws/credentials";
 import { SES_REGIONS } from "@/lib/aws/regions";
 import { mapAccount, type SesAccount } from "@/lib/aws/ses-account";
 import type { Result } from "@/lib/result";
 import { configSetName, topicName } from "@/lib/aws/naming";
+import { parseStackArn, stackConsoleUrl } from "@/lib/aws/stack";
 import {
   disconnectTeamAws,
   getTeamAws,
@@ -57,6 +59,28 @@ type Connected = {
   /** Set when the connection was persisted but the SES event subscription failed. */
   warning?: string;
 };
+
+/**
+ * What the one-click callback knows that manual keys do not: the stack that
+ * created the IAM user, and the role CloudFormation may assume to delete it.
+ * Stored on the row so disconnect can tear the stack down.
+ */
+export type ConnectStack = { stackId: string; serviceRoleArn: string };
+
+/**
+ * What disconnect actually did about the stack, so the UI can say it rather
+ * than guess. `stack_orphaned` carries an obligation: an IAM user with a live
+ * access key is still in the customer's account and only they can remove it.
+ */
+export type DisconnectOutcome =
+  | { kind: "stack_deleting"; stackName: string; consoleUrl: string }
+  | {
+      kind: "stack_orphaned";
+      reason: "no_stack" | "access_denied" | "error";
+      stackName: string | null;
+      consoleUrl: string | null;
+      detail?: string;
+    };
 
 const errName = (e: unknown) => (e as { name?: string })?.name;
 const isAlreadyExists = (e: unknown) => errName(e) === "AlreadyExistsException";
@@ -200,6 +224,7 @@ async function finishConnect(
   ctx: AwsContext,
   keys: { accessKeyId: string; secretAccessKey: string },
   actor: Actor,
+  stack?: ConnectStack,
 ): Promise<Result<Connected>> {
   const { accountId, account } = await verifyIdentity(ctx);
   const configSet = configSetName(slug);
@@ -220,6 +245,8 @@ async function finishConnect(
       configSet,
       snsTopicArn: topicArn,
       snsSubscriptionArn: null,
+      stackId: stack?.stackId ?? null,
+      stackServiceRoleArn: stack?.serviceRoleArn ?? null,
       ...accountPatch(account),
       sesLastCheckedAt: now,
     },
@@ -263,6 +290,7 @@ export async function connectWithKeys(
   slug: string,
   input: unknown,
   actor: Actor,
+  stack?: ConnectStack,
 ): Promise<Result<Connected>> {
   const parsed = keysSchema.safeParse(input);
   if (!parsed.success)
@@ -279,6 +307,7 @@ export async function connectWithKeys(
       { region, credentials: { accessKeyId, secretAccessKey } },
       { accessKeyId, secretAccessKey },
       actor,
+      stack,
     );
   } catch (e) {
     return {
@@ -380,20 +409,46 @@ export async function requestProductionAccess(
 }
 
 /**
- * Forget credentials and SES state. The config set, topic and event
- * destination were created through the API (not by the CloudFormation
- * stack), so they stay in the team's own AWS account; the endpoint
- * subscription is removed best-effort so SNS stops posting to this instance.
+ * Forget credentials and SES state, and take the CloudFormation stack that
+ * created them down with it.
+ *
+ * Order matters and each step has a reason:
+ *  1. unsubscribe the SNS endpoint, best-effort, **first** — it needs the
+ *     credentials, and step 2 starts destroying them;
+ *  2. `DeleteStack` with the stack's own service role as `RoleARN`. Without
+ *     that role CloudFormation would run the delete on a session minted from
+ *     the very access key the stack's Lambda removes on the way down, and
+ *     die with half the stack standing. `AccessDenied` here means a stack
+ *     created before the template carried the role (or PassRole for it):
+ *     it cannot be torn down from this side, and the outcome says so;
+ *  3. delete the row, **unconditionally**: a teardown that failed must not
+ *     leave the team connected to credentials the owner asked to revoke.
+ *
+ * Completion is never awaited. The Lambda deletes the access key early in
+ * the teardown, so any poll from here would fail on its second call and tell
+ * us nothing; the console link in the outcome is where it finishes.
+ *
+ * The config set, topic and event destination were created through the API,
+ * not by the stack, and stay in the team's account: reconnecting is cheap
+ * and domains stay verified. `deleteTeam` is the deeper teardown.
  */
 export async function disconnectAws(
   teamId: string,
   actor: Actor,
-): Promise<Result> {
+): Promise<Result<DisconnectOutcome>> {
   const row = await getTeamAws(teamId);
   if (!row) return { ok: false, error: "AWS is not connected." };
-  if (row.snsSubscriptionArn) {
+  let ctx: AwsContext | null = null;
+  try {
+    ctx = await resolveAwsContext(teamId);
+  } catch (e) {
+    console.warn(
+      "aws-connect: no usable credentials on disconnect:",
+      errMsg(e),
+    );
+  }
+  if (ctx && row.snsSubscriptionArn) {
     try {
-      const ctx = await resolveAwsContext(teamId);
       await makeSns(ctx).send(
         new UnsubscribeCommand({ SubscriptionArn: row.snsSubscriptionArn }),
       );
@@ -401,8 +456,53 @@ export async function disconnectAws(
       console.warn("aws-connect: unsubscribe failed, continuing:", errMsg(e));
     }
   }
+  const outcome = ctx
+    ? await deleteConnectStack(ctx, row)
+    : orphaned(row, "error", "credentials could not be read");
   // The row *is* the connection, so disconnecting deletes it rather than
   // nulling a dozen columns and leaving a half-row behind.
   await disconnectTeamAws(teamId, actor);
-  return { ok: true, data: undefined };
+  return { ok: true, data: outcome };
+}
+
+async function deleteConnectStack(
+  ctx: AwsContext,
+  row: TeamAws,
+): Promise<DisconnectOutcome> {
+  if (!row.stackId || !row.stackServiceRoleArn)
+    return orphaned(row, "no_stack");
+  const ref = parseStackArn(row.stackId);
+  const consoleUrl = stackConsoleUrl(row.stackId);
+  if (!ref || !consoleUrl) return orphaned(row, "error", "malformed stack id");
+  try {
+    await makeCfn(ctx).send(
+      new DeleteStackCommand({
+        StackName: row.stackId,
+        RoleARN: row.stackServiceRoleArn,
+      }),
+    );
+    return { kind: "stack_deleting", stackName: ref.name, consoleUrl };
+  } catch (e) {
+    const name = errName(e) ?? "";
+    console.warn("aws-connect: DeleteStack failed:", name, errMsg(e));
+    return orphaned(
+      row,
+      /AccessDenied/i.test(name) ? "access_denied" : "error",
+      errMsg(e),
+    );
+  }
+}
+
+function orphaned(
+  row: TeamAws,
+  reason: "no_stack" | "access_denied" | "error",
+  detail?: string,
+): DisconnectOutcome {
+  return {
+    kind: "stack_orphaned",
+    reason,
+    stackName: row.stackId ? (parseStackArn(row.stackId)?.name ?? null) : null,
+    consoleUrl: row.stackId ? stackConsoleUrl(row.stackId) : null,
+    ...(detail && { detail }),
+  };
 }

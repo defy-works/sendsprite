@@ -9,6 +9,10 @@ import {
   vi,
 } from "vitest";
 import { mockClient } from "aws-sdk-client-mock";
+import {
+  CloudFormationClient,
+  DeleteStackCommand,
+} from "@aws-sdk/client-cloudformation";
 import { eq } from "drizzle-orm";
 import {
   SESv2Client,
@@ -32,6 +36,7 @@ import { seedTeamWithKey } from "./helpers";
 const ses = mockClient(SESv2Client);
 const sns = mockClient(SNSClient);
 const sts = mockClient(STSClient);
+const cfn = mockClient(CloudFormationClient);
 
 const TOPIC_ARN = "arn:aws:sns:us-east-1:123456789012:sendsprite-events";
 const SUB_ARN = `${TOPIC_ARN}:6b0e71bd-7e97-4d97-80ce-4a0994e55286`;
@@ -42,6 +47,12 @@ const KEYS = {
 };
 const awsErr = (name: string, message: string) =>
   Object.assign(new Error(message), { name });
+/** What the one-click callback passes on; manual keys pass nothing. */
+const STACK = {
+  stackId:
+    "arn:aws:cloudformation:us-east-1:123456789012:stack/sendsprite-connect-acme/3f1c2a10-9b7e-11ef-8c2d-0a1b2c3d4e5f",
+  serviceRoleArn: "arn:aws:iam::123456789012:role/sendsprite-connect-acme-cfn",
+};
 
 let pg: Awaited<ReturnType<typeof startPg>>;
 /** The team under test, and the slug its AWS resource names derive from. */
@@ -68,6 +79,7 @@ afterEach(() => {
   ses.reset();
   sns.reset();
   sts.reset();
+  cfn.reset();
 });
 
 function happyMocks() {
@@ -481,10 +493,18 @@ describe("disconnectAws", () => {
     expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(
       true,
     );
+    // Pasted keys: nothing for us to delete, and the outcome says so
+    // rather than pretending the revoke was complete.
     expect(await disconnectAws(TEAM, { userId: "u1" })).toEqual({
       ok: true,
-      data: undefined,
+      data: {
+        kind: "stack_orphaned",
+        reason: "no_stack",
+        stackName: null,
+        consoleUrl: null,
+      },
     });
+    expect(cfn.commandCalls(DeleteStackCommand)).toHaveLength(0);
     expect(sns.commandCalls(UnsubscribeCommand)[0]!.args[0].input).toEqual({
       SubscriptionArn: SUB_ARN,
     });
@@ -510,6 +530,108 @@ describe("disconnectAws", () => {
         (await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok,
       ).toBe(true);
       expect((await disconnectAws(TEAM, { userId: "u1" })).ok).toBe(true);
+      expect(await conn()).toBeNull();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe("disconnectAws with a one-click stack", () => {
+  async function connectedWithStack() {
+    happyMocks();
+    const { connectWithKeys } = await import("@/services/aws-connect");
+    const res = await connectWithKeys(
+      TEAM,
+      SLUG,
+      KEYS,
+      { userId: "u1" },
+      STACK,
+    );
+    expect(res.ok).toBe(true);
+    expect(await conn()).toMatchObject({
+      stackId: STACK.stackId,
+      stackServiceRoleArn: STACK.serviceRoleArn,
+    });
+  }
+
+  it("deletes the stack through its service role, after unsubscribing, and reports it", async () => {
+    await connectedWithStack();
+    sns.on(UnsubscribeCommand).resolves({});
+    cfn.on(DeleteStackCommand).resolves({});
+    const { disconnectAws } = await import("@/services/aws-connect");
+    const res = await disconnectAws(TEAM, { userId: "u1" });
+    expect(res).toEqual({
+      ok: true,
+      data: {
+        kind: "stack_deleting",
+        stackName: "sendsprite-connect-acme",
+        consoleUrl: expect.stringContaining(
+          "https://us-east-1.console.aws.amazon.com/cloudformation/",
+        ),
+      },
+    });
+    // RoleARN is the whole point: without it CloudFormation deletes on a
+    // session minted from the key the stack's own Lambda is about to remove.
+    expect(cfn.commandCalls(DeleteStackCommand)[0]!.args[0].input).toEqual({
+      StackName: STACK.stackId,
+      RoleARN: STACK.serviceRoleArn,
+    });
+    // Unsubscribe needs live credentials, so it must run before the stack
+    // starts revoking them.
+    const calls = [
+      ...sns.commandCalls(UnsubscribeCommand).map(() => "unsubscribe"),
+      ...cfn.commandCalls(DeleteStackCommand).map(() => "delete"),
+    ];
+    expect(calls).toEqual(["unsubscribe", "delete"]);
+    expect(await conn()).toBeNull();
+  });
+
+  it("AccessDenied (a stack older than the service role) → orphaned, row still gone", async () => {
+    await connectedWithStack();
+    sns.on(UnsubscribeCommand).resolves({});
+    cfn
+      .on(DeleteStackCommand)
+      .rejects(
+        awsErr("AccessDenied", "not authorized to perform iam:PassRole"),
+      );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { disconnectAws } = await import("@/services/aws-connect");
+      const res = await disconnectAws(TEAM, { userId: "u1" });
+      expect(res.ok).toBe(true);
+      if (res.ok)
+        expect(res.data).toMatchObject({
+          kind: "stack_orphaned",
+          reason: "access_denied",
+          stackName: "sendsprite-connect-acme",
+          consoleUrl: expect.stringContaining("stackId="),
+        });
+      // The owner asked to revoke; a teardown that could not happen must not
+      // keep the team connected to those credentials.
+      expect(await conn()).toBeNull();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("any other DeleteStack failure → orphaned with the reason, row still gone", async () => {
+    await connectedWithStack();
+    sns.on(UnsubscribeCommand).resolves({});
+    cfn
+      .on(DeleteStackCommand)
+      .rejects(awsErr("ValidationError", "Stack is in DELETE_IN_PROGRESS"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { disconnectAws } = await import("@/services/aws-connect");
+      const res = await disconnectAws(TEAM, { userId: "u1" });
+      expect(res.ok).toBe(true);
+      if (res.ok)
+        expect(res.data).toMatchObject({
+          kind: "stack_orphaned",
+          reason: "error",
+          detail: "Stack is in DELETE_IN_PROGRESS",
+        });
       expect(await conn()).toBeNull();
     } finally {
       warn.mockRestore();

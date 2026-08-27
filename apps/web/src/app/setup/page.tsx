@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { parseStackArn } from "@/lib/aws/stack";
 import { env } from "@/env";
 import { SES_REGIONS } from "@/lib/aws/regions";
 import { requireTeamAdmin } from "@/lib/session";
@@ -32,6 +33,9 @@ export default async function SetupPage({
     awsConnected: aws !== null,
     awsRegion: aws?.region ?? null,
     awsAccountId: aws?.accountId ?? null,
+    awsStackName: aws?.stackId
+      ? (parseStackArn(aws.stackId)?.name ?? null)
+      : null,
     sesAccountStatus: aws?.sesAccountStatus ?? null,
     sesReviewStatus: aws?.sesReviewStatus ?? null,
     sesDailyQuota: aws?.sesDailyQuota ?? null,

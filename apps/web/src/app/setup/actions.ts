@@ -17,6 +17,7 @@ import {
 import { setTeamSetupCompleted } from "@/services/team-settings";
 
 export type { Result } from "@/lib/result";
+export type { DisconnectOutcome } from "@/services/aws-connect";
 
 /** Server actions are thin: resolve the team admin, delegate, revalidate. */
 async function actor() {

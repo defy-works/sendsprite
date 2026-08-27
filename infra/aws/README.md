@@ -9,12 +9,13 @@ console and clicks _Create stack_; nothing is typed by hand.
 
 ## What the stack creates
 
-| Resource               | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SendspriteUser`       | IAM user `sendsprite-<stack name>` with one inline policy: SES account/identity/configuration-set read+write, `SendEmail`/`SendRawEmail`/`ApplyTrackingConfigurationOverrides`, `PutAccountDetails`; SNS `CreateTopic`/`Subscribe`/`ConfirmSubscription`/`GetTopicAttributes`/`SetTopicAttributes`/`ListSubscriptionsByTopic` scoped to `arn:aws:sns:*:<account>:sendsprite-*` (`ConfirmSubscription` lets the webhook confirm through the SDK with `AuthenticateOnUnsubscribe`); `sns:Unsubscribe`/`GetSubscriptionAttributes` (subscription ARNs are not topic-scoped); `sts:GetCallerIdentity`. |
-| `CallbackFunctionRole` | Lambda execution role allowed only `iam:CreateAccessKey`/`DeleteAccessKey`/`ListAccessKeys` on that user.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `CallbackFunction`     | Python 3.12 Lambda (inline code) backing the custom resource.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `Callback`             | `Custom::SendspriteCallback` — runs the Lambda on Create/Delete.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Resource               | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ServiceRole`          | IAM role CloudFormation assumes to **delete this stack**, so Sendsprite's Disconnect can tear it down with two `cloudformation:*` actions and no `iam:Delete*` on the long-lived user. Scoped to exactly the resources in this stack, by name. Deleted last: every other resource depends on it.                                                                                                                                                                                                                                                                                                                                |
+| `SendspriteUser`       | IAM user `sendsprite-<stack name>` with one inline policy: SES account/identity/configuration-set read+write+delete, `SendEmail`/`SendRawEmail`/`ApplyTrackingConfigurationOverrides`, `PutAccountDetails`; SNS `CreateTopic`/`DeleteTopic`/`Subscribe`/`ConfirmSubscription`/`GetTopicAttributes`/`SetTopicAttributes`/`ListSubscriptionsByTopic` scoped to `arn:aws:sns:*:<account>:sendsprite-*`; `sns:Unsubscribe`/`GetSubscriptionAttributes` (subscription ARNs are not topic-scoped); `sts:GetCallerIdentity`; `cloudformation:DeleteStack`/`DescribeStacks` on its own stack and `iam:PassRole` for `ServiceRole` only. |
+| `CallbackFunctionRole` | Lambda execution role allowed only `iam:CreateAccessKey`/`DeleteAccessKey`/`ListAccessKeys` on that user.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `CallbackFunction`     | Python 3.12 Lambda (inline code) backing the custom resource.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `Callback`             | `Custom::SendspriteCallback` — runs the Lambda on Create/Delete.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 The SNS topic `sendsprite-events`, the configuration set `sendsprite`, and the
 event-destination subscription are **not** part of the stack: Sendsprite creates
@@ -62,9 +63,10 @@ In the console it is the same thing: **Update** → _Replace existing template_ 
 upload the file → keep both parameters → update.
 
 Disconnecting and reconnecting through the wizard also works and is the path to
-suggest to a self-hoster, but it issues a new access key and deletes the old
-one. Nothing else is lost: the configuration set, SNS topic and verified
-identities live outside the stack.
+suggest to a self-hoster: disconnect deletes the old stack (or tells you it
+could not), and one-click creates a fresh one from the current template.
+Nothing else is lost: the configuration set, SNS topic and verified identities
+live outside the stack.
 
 ## Callback flow
 
@@ -80,7 +82,9 @@ identities live outside the stack.
    CloudFormation parameters, resource properties, stack state, or events.
 3. `POST /api/setup/aws/callback` consumes the token atomically (one
    `UPDATE … RETURNING`, so a replay gets 4xx), then runs the normal
-   connect-with-keys path. A freshly created key can be rejected until IAM
+   connect-with-keys path. The payload also carries `stackId` and
+   `serviceRoleArn`, which are stored on the connection for **Disconnect** to
+   delete the stack with later. A freshly created key can be rejected until IAM
    propagates it, so the STS/SES checks are retried on propagation errors
    (5 attempts × 3 s, ≤ 15 s in total; the Lambda's POST timeout is 45 s and
    its function timeout 60 s, so the rest of the connect fits). The Lambda
@@ -187,11 +191,37 @@ instance role.
 
 ## Revoking access
 
-Delete the stack (`sendsprite-connect` by default). On **Delete** the Lambda
-removes every access key of the user so CloudFormation can delete the user, and
-the role and function are deleted with the stack. Nothing else remains in the
-account. Sendsprite's own side is cleared with **Disconnect** in Settings →
-Instance (it also unsubscribes the SNS endpoint, best effort).
+**Disconnect** in Settings → Sending does it: it unsubscribes the SNS endpoint,
+calls `DeleteStack` on the stack that created the connection, and forgets the
+credentials. On **Delete** the Lambda removes every access key of the user so
+CloudFormation can delete the user, and the roles and function go with the
+stack. Nothing else of the stack remains in the account. Deleting the stack
+from the console does the same thing from the other side.
 
-Stack **Update** is a no-op in the Lambda; re-connecting means deleting the
-stack and running one-click again.
+### Why the stack carries a service role
+
+`DeleteStack` is called with `RoleARN` = `ServiceRole`, and that is not
+optional. CloudFormation deletes in reverse dependency order, so the custom
+resource — whose Delete handler removes the user's access keys — runs before
+the user is deleted. A `DeleteStack` without a role runs on a session minted
+from the caller's credentials, which are exactly the key the Lambda just
+removed; the session dies with half the stack standing and the stack lands in
+`DELETE_FAILED`. With the role, CloudFormation never touches the user's key.
+
+It also keeps `iam:DeleteUser` off the user itself. The user holds
+`cloudformation:DeleteStack` on its own stack and `iam:PassRole` for this one
+role, conditioned on `iam:PassedToService: cloudformation.amazonaws.com`, and
+nothing more.
+
+### Connections older than the service role
+
+A stack created from a template without `ServiceRole` cannot be deleted from
+Sendsprite's side: the user has no `DeleteStack`, and the row has no stack id
+to point at. Disconnect still clears Sendsprite's side and then **says so** —
+the IAM user and its key stay in the account until the owner deletes the stack
+in the console. The same applies to connections made with pasted keys, which
+never had a stack. Reconnecting through one-click after the template was
+republished moves a team onto the new path.
+
+Stack **Update** is a no-op in the Lambda; re-connecting means disconnecting
+(which deletes the stack) and running one-click again.

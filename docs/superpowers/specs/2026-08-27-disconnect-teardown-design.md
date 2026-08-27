@@ -1,8 +1,9 @@
 # Disconnect tears the stack down; the wizard has an escape hatch
 
 **Date:** 2026-08-27
-**Status:** approved. Escape hatch shipped 2026-08-27 (`cancelQuickCreate`);
-teardown not yet implemented.
+**Status:** implemented 2026-08-27. Two things surfaced in implementation
+that the design below did not anticipate; both are recorded in
+"Implementation notes" at the end rather than rewritten into the sections.
 
 ## Problem
 
@@ -191,6 +192,23 @@ cancelling mid-way is what strands a half-created config set and topic.
   order is load-bearing and nothing else would catch its removal.
 - **E2E** — cancel returns the wizard to its idle state and `Open AWS console`
   is usable again.
+
+## Implementation notes
+
+**`iam:PassRole`.** Passing `RoleARN` to `DeleteStack` requires the caller to
+hold `iam:PassRole` on that role. Granted on `SendspriteUser`, scoped to the
+service role's ARN and conditioned on
+`iam:PassedToService: cloudformation.amazonaws.com`.
+
+**A dependency cycle.** The user's policy references the service role
+(PassRole) and the service role's policy references the user (DeleteUser).
+With `!GetAtt` in both directions CloudFormation refuses the template. Every
+resource therefore carries an explicit name derived from `${AWS::StackName}`
+— `<stack>-cfn`, `<stack>-callback`, `sendsprite-<stack>` — so the service
+role's policy is plain `!Sub` ARNs referencing nothing. Explicit names need
+`CAPABILITY_NAMED_IAM`, which the stack already required for `UserName`.
+
+**Migration number.** 0027 was taken by the time this landed; it is 0028.
 
 ## Migration
 

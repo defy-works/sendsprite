@@ -37,6 +37,15 @@ export const teamAws = pgTable("team_aws", {
   /** Unique: two teams sharing one topic would cross-deliver events. */
   snsTopicArn: text("sns_topic_arn").unique(),
   snsSubscriptionArn: text("sns_subscription_arn"),
+  /**
+   * The CloudFormation stack (full ARN) that created this connection's IAM
+   * user, and the service role it carries for deleting itself. Disconnect
+   * calls `DeleteStack` with these; both are null for manual keys and for
+   * stacks created before the template had a service role, where disconnect
+   * has to tell the owner the user stays behind instead.
+   */
+  stackId: text("stack_id"),
+  stackServiceRoleArn: text("stack_service_role_arn"),
   sesAccountStatus: text("ses_account_status", {
     enum: ["sandbox", "requested", "production"],
   }),

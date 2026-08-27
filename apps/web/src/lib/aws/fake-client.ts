@@ -67,6 +67,7 @@ export class FakeAwsClient {
       case "PutAccountDetailsCommand":
       case "PutEmailIdentityMailFromAttributesCommand":
       case "DeleteEmailIdentityCommand":
+      case "DeleteStackCommand":
         return {};
       default:
         throw new Error(`FakeAwsClient: unhandled ${name}`);

@@ -30,6 +30,7 @@ const TEMPLATE = join(
 
 /** The SDK package each command comes from decides its IAM service prefix. */
 const SERVICE_OF_MODULE: Record<string, string> = {
+  "@aws-sdk/client-cloudformation": "cloudformation",
   "@aws-sdk/client-sesv2": "ses",
   "@aws-sdk/client-sns": "sns",
   "@aws-sdk/client-sts": "sts",

@@ -27,6 +27,13 @@ export interface WizardSettings {
   awsConnected: boolean;
   awsRegion: string | null;
   awsAccountId: string | null;
+  /**
+   * Name of the CloudFormation stack a one-click connection came from, so
+   * Disconnect can say up front that it will delete it. Null for manual keys
+   * and for stacks older than the template's service role, where the copy
+   * has to warn that the IAM user stays behind instead.
+   */
+  awsStackName: string | null;
   sesAccountStatus: "sandbox" | "requested" | "production" | null;
   sesReviewStatus: "PENDING" | "GRANTED" | "DENIED" | "FAILED" | null;
   sesDailyQuota: number | null;

@@ -11,6 +11,10 @@ const body = z.object({
   secretAccessKey: z.string().min(16).max(128),
   region: z.enum(SES_REGIONS),
   accountId: z.string().optional(),
+  // Both or neither: no template version sends one without the other, and
+  // half a teardown reference is worth nothing.
+  stackId: z.string().startsWith("arn:aws:cloudformation:").optional(),
+  serviceRoleArn: z.string().startsWith("arn:aws:iam::").optional(),
 });
 
 /**
@@ -48,6 +52,12 @@ export async function POST(req: Request) {
       region: parsed.data.region,
     },
     { userId: tok.issuedBy },
+    parsed.data.stackId && parsed.data.serviceRoleArn
+      ? {
+          stackId: parsed.data.stackId,
+          serviceRoleArn: parsed.data.serviceRoleArn,
+        }
+      : undefined,
   );
   if (!res.ok) {
     await recordSetupFailure(tok.id, res.error);

@@ -9,7 +9,12 @@ import { Label } from "@/components/ui/Label";
 import { Select } from "@/components/ui/Select";
 import { useConfirm } from "@/components/ui/confirm";
 import type { WizardProps } from "../types";
-import { connectKeys, disconnectAws, type Result } from "../actions";
+import {
+  connectKeys,
+  disconnectAws,
+  type DisconnectOutcome,
+  type Result,
+} from "../actions";
 import { QuickCreate } from "./QuickCreate";
 import { Alert, Heading, Notice, Panel } from "./shared";
 
@@ -21,21 +26,85 @@ export function AwsStep({
   oneClickAvailable,
   mode = "wizard",
 }: WizardProps) {
-  if (settings.awsConnected)
-    return <ConnectedPanel settings={settings} mode={mode} />;
+  // Lives here, not in ConnectedPanel: a successful disconnect re-renders
+  // the page without that panel, and the outcome has to outlive it.
+  const [outcome, setOutcome] = useState<DisconnectOutcome | null>(null);
   return (
-    <ConnectPanels
-      regions={regions}
-      defaultRegion={defaultRegion}
-      oneClickAvailable={oneClickAvailable}
-    />
+    <div className="flex flex-col gap-4">
+      {outcome && <DisconnectNotice outcome={outcome} />}
+      {settings.awsConnected ? (
+        <ConnectedPanel
+          settings={settings}
+          mode={mode}
+          onDisconnected={setOutcome}
+        />
+      ) : (
+        <ConnectPanels
+          regions={regions}
+          defaultRegion={defaultRegion}
+          oneClickAvailable={oneClickAvailable}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * What disconnect did about the stack. `stack_orphaned` is an obligation the
+ * owner has to act on — an IAM user with a live access key is still in their
+ * account — so it is a standing notice with the link, not a toast.
+ */
+function DisconnectNotice({ outcome }: { outcome: DisconnectOutcome }) {
+  const console = outcome.consoleUrl && (
+    <a
+      className="underline underline-offset-2"
+      href={outcome.consoleUrl}
+      target="_blank"
+      rel="noopener noreferrer"
+    >
+      {outcome.stackName ?? "the stack"} in the CloudFormation console
+    </a>
+  );
+  if (outcome.kind === "stack_deleting")
+    return (
+      <Notice>
+        Disconnected. Stack <code>{outcome.stackName}</code> is being deleted
+        from your AWS account — the IAM user and its access key go with it,
+        which takes about a minute. Your verified domains, configuration set and
+        events topic are kept, so reconnecting is quick. Watch it finish:{" "}
+        {console}.
+      </Notice>
+    );
+  const why =
+    outcome.reason === "no_stack"
+      ? "This connection was made with pasted keys, or from a stack older than the current template, so there is no stack for Sendsprite to delete."
+      : outcome.reason === "access_denied"
+        ? "The stack was created before the template could delete itself, so Sendsprite is not allowed to remove it."
+        : `Sendsprite could not delete the stack${outcome.detail ? `: ${outcome.detail}` : "."}`;
+  return (
+    <Alert>
+      Disconnected here, but the IAM user and its access key are still in your
+      AWS account. {why}{" "}
+      {console ? (
+        <>Delete {console} to revoke them.</>
+      ) : (
+        <>
+          Delete the <code>sendsprite-connect-…</code> CloudFormation stack, or
+          the IAM user it created, to revoke them.
+        </>
+      )}
+    </Alert>
   );
 }
 
 function ConnectedPanel({
   settings,
   mode,
-}: Pick<WizardProps, "settings"> & { mode: "wizard" | "settings" }) {
+  onDisconnected,
+}: Pick<WizardProps, "settings"> & {
+  mode: "wizard" | "settings";
+  onDisconnected: (outcome: DisconnectOutcome) => void;
+}) {
   const router = useRouter();
   const confirm = useConfirm();
   const [pending, start] = useTransition();
@@ -69,9 +138,14 @@ function ConnectedPanel({
           variant="dangerSubtle"
           disabled={pending}
           onClick={async () => {
+            // Say what happens to the stack *before* it happens. The two
+            // cases read very differently: one is a clean revoke, the other
+            // leaves a credential behind that only the owner can remove.
             const ok = await confirm({
               title: "Disconnect AWS?",
-              body: "Sending stops for this team the moment the connection goes. Domains, campaigns and logs are kept, but nothing leaves until an AWS account is connected again.",
+              body: settings.awsStackName
+                ? `Sending stops for this team the moment the connection goes. The CloudFormation stack ${settings.awsStackName} is deleted from your AWS account, and with it the IAM user and its access key. Verified domains, campaigns and logs are kept.`
+                : "Sending stops for this team the moment the connection goes. This connection has no stack Sendsprite can delete, so the IAM user and its access key stay in your AWS account until you remove them. Verified domains, campaigns and logs are kept.",
               confirmLabel: "Disconnect",
               tone: "danger",
             });
@@ -80,7 +154,10 @@ function ConnectedPanel({
               setError(null);
               const res = await disconnectAws();
               if (!res.ok) setError(res.error);
-              else router.refresh();
+              else {
+                onDisconnected(res.data);
+                router.refresh();
+              }
             });
           }}
         >

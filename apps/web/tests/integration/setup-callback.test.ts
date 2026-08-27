@@ -126,6 +126,45 @@ describe("POST /api/setup/aws/callback", () => {
     expect(sts.commandCalls(GetCallerIdentityCommand)).toHaveLength(1);
   });
 
+  it("stores the stack id and service role the template sends, for disconnect to use", async () => {
+    happyMocks();
+    const stackId =
+      "arn:aws:cloudformation:us-east-1:123456789012:stack/sendsprite-connect-acme/3f1c2a10-9b7e-11ef-8c2d-0a1b2c3d4e5f";
+    const serviceRoleArn =
+      "arn:aws:iam::123456789012:role/sendsprite-connect-acme-cfn";
+    const res = await post({
+      token: await issue("us-east-1"),
+      ...KEYS,
+      region: "us-east-1",
+      accountId: "123456789012",
+      stackId,
+      serviceRoleArn,
+    });
+    expect(res.status).toBe(200);
+    const { getTeamAws } = await import("@/services/team-aws");
+    expect(await getTeamAws(TEAM)).toMatchObject({
+      stackId,
+      stackServiceRoleArn: serviceRoleArn,
+    });
+  });
+
+  it("keeps a half teardown reference out of the row: stack id without a role is stored as neither", async () => {
+    happyMocks();
+    const res = await post({
+      token: await issue("us-east-1"),
+      ...KEYS,
+      region: "us-east-1",
+      stackId:
+        "arn:aws:cloudformation:us-east-1:123456789012:stack/sendsprite-connect-acme/3f1c2a10-9b7e-11ef-8c2d-0a1b2c3d4e5f",
+    });
+    expect(res.status).toBe(200);
+    const { getTeamAws } = await import("@/services/team-aws");
+    expect(await getTeamAws(TEAM)).toMatchObject({
+      stackId: null,
+      stackServiceRoleArn: null,
+    });
+  });
+
   it("returns 409 and records the failure when AWS is already connected", async () => {
     happyMocks();
     const first = await issue("us-east-1");

@@ -237,8 +237,11 @@ plain-http instance no subscription is made and SES events never arrive.
 The CloudFormation stack is likewise named `sendsprite-connect-<team slug>`,
 so two teams can run it in one account without colliding.
 
-To revoke: delete the stack (its Lambda removes the access keys on the way
-out), or use **Disconnect** in Settings → Sending.
+To revoke, use **Disconnect** in Settings → Sending: it deletes the stack
+from your account (the stack's own Lambda removes the access keys on the way
+out) and tells you if it could not — a stack created from an older template,
+or a connection made with pasted keys, leaves an IAM user behind that only
+you can delete. Deleting the stack in the CloudFormation console works too.
 
 If you would rather not trust a template served from our bucket, copy
 `infra/aws/sendsprite-connect.yaml` to your own S3 bucket and point

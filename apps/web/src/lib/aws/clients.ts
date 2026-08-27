@@ -1,3 +1,4 @@
+import { CloudFormationClient } from "@aws-sdk/client-cloudformation";
 import { SESv2Client } from "@aws-sdk/client-sesv2";
 import { SNSClient } from "@aws-sdk/client-sns";
 import { STSClient } from "@aws-sdk/client-sts";
@@ -42,3 +43,11 @@ export const makeSts = (c: AwsContext) =>
   e2eMock()
     ? (new FakeAwsClient() as unknown as STSClient)
     : new STSClient({ region: c.region, credentials: c.credentials });
+/** Only ever used to delete the team's own connect stack on disconnect. */
+export const makeCfn = (c: AwsContext) =>
+  e2eMock()
+    ? (new FakeAwsClient() as unknown as CloudFormationClient)
+    : new CloudFormationClient({
+        region: c.region,
+        credentials: c.credentials,
+      });

@@ -10,13 +10,83 @@ Parameters:
     ConstraintDescription: must be an https URL
   # Deliberately not NoEcho: CloudFormation quick-create links ignore NoEcho
   # parameters, so the wizard could not prefill it. The token is single-use and
-  # expires in 15 minutes, which is the mitigation.
+  # expires in 60 minutes, which is the mitigation.
   CallbackToken:
     Type: String
-    Description: One-time token (prefilled). Expires in 15 minutes.
+    Description: One-time token (prefilled). Expires in 60 minutes.
+# Every resource carries an explicit name derived from the stack name. That is
+# what lets ServiceRole's policy be written as plain `!Sub` ARNs that reference
+# no other resource: SendspriteUser's policy names ServiceRole (PassRole) and
+# ServiceRole's policy names SendspriteUser (DeleteUser), and with `!GetAtt` in
+# both directions CloudFormation would refuse the cycle.
 Resources:
+  # Assumed by CloudFormation itself to delete this stack, so that "Disconnect"
+  # in Sendsprite can tear the stack down with the two cloudformation:* actions
+  # granted to the user below and nothing more.
+  #
+  # Why a role rather than wider permissions on the user: deletion runs in
+  # reverse dependency order, so `Callback` goes before `SendspriteUser` - and
+  # its Lambda's whole job on Delete is to remove that user's access keys. A
+  # DeleteStack without a role runs on a session minted from the caller's own
+  # credentials, i.e. the key the Lambda just deleted, and dies with half the
+  # stack still standing. With a role CloudFormation is never using the user's
+  # key at all. It also keeps iam:DeleteUser off a long-lived credential that
+  # a SaaS holds.
+  #
+  # It is deleted last: every other resource depends on it.
+  ServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-cfn"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: cloudformation.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: delete-this-stack
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iam:GetUser
+                  - iam:ListAccessKeys
+                  - iam:DeleteAccessKey
+                  - iam:ListUserPolicies
+                  - iam:DeleteUserPolicy
+                  - iam:ListAttachedUserPolicies
+                  - iam:ListGroupsForUser
+                  - iam:DeleteUser
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:user/sendsprite-${AWS::StackName}"
+              - Effect: Allow
+                Action:
+                  - iam:GetRole
+                  - iam:ListRolePolicies
+                  - iam:DeleteRolePolicy
+                  - iam:ListAttachedRolePolicies
+                  - iam:DetachRolePolicy
+                  - iam:ListInstanceProfilesForRole
+                  - iam:DeleteRole
+                Resource:
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/${AWS::StackName}-callback"
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/${AWS::StackName}-cfn"
+              # InvokeFunction: the custom resource's Delete handler is invoked
+              # by CloudFormation as this role.
+              - Effect: Allow
+                Action:
+                  - lambda:GetFunction
+                  - lambda:GetFunctionConfiguration
+                  - lambda:InvokeFunction
+                  - lambda:DeleteFunction
+                Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-callback"
   SendspriteUser:
     Type: AWS::IAM::User
+    DependsOn: ServiceRole
     # W3037 checks actions against a list cfn-lint ships with, which does not
     # yet carry `ses:ApplyTrackingConfigurationOverrides` — a permission-only
     # action with no API call of its own, so it arrives late. The warning is
@@ -83,9 +153,25 @@ Resources:
               - Effect: Allow
                 Action: sts:GetCallerIdentity
                 Resource: "*"
+              # Disconnect in Sendsprite deletes this stack. Only its own stack,
+              # and only through ServiceRole above - which is what PassRole
+              # hands to CloudFormation, and the only role this user may pass.
+              - Effect: Allow
+                Action:
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStacks
+                Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${AWS::StackName}-cfn"
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: cloudformation.amazonaws.com
   CallbackFunctionRole:
     Type: AWS::IAM::Role
+    DependsOn: ServiceRole
     Properties:
+      RoleName: !Sub "${AWS::StackName}-callback"
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -119,7 +205,9 @@ Resources:
   #   Update: no-op.
   CallbackFunction:
     Type: AWS::Lambda::Function
+    DependsOn: ServiceRole
     Properties:
+      FunctionName: !Sub "${AWS::StackName}-callback"
       Runtime: python3.12
       Handler: index.handler
       Timeout: 60
@@ -152,8 +240,11 @@ Resources:
           def create(p):
               key = iam.create_access_key(UserName=p["UserName"])["AccessKey"]
               try:
+                  # stackId + serviceRoleArn let Sendsprite delete this stack on
+                  # Disconnect (DeleteStack with RoleARN); see ServiceRole.
                   payload = {"token": p["CallbackToken"], "accessKeyId": key["AccessKeyId"], "secretAccessKey": key["SecretAccessKey"],
-                      "region": p["Region"], "accountId": p["AccountId"]}
+                      "region": p["Region"], "accountId": p["AccountId"],
+                      "stackId": p["StackId"], "serviceRoleArn": p["ServiceRoleArn"]}
                   status, body = post(p["CallbackUrl"], payload)
                   if status >= 300:
                       raise Exception("callback returned %d: %s" % (status, body))
@@ -173,8 +264,8 @@ Resources:
                   respond(event, context, "SUCCESS")
               except Exception as e:
                   respond(event, context, "FAILED", str(e)[:1000])
-  # Ordering after SendspriteUser is implied by the UserName Ref (an explicit
-  # DependsOn trips cfn-lint W3005).
+  # Ordering after SendspriteUser and ServiceRole is implied by the Refs below
+  # (an explicit DependsOn trips cfn-lint W3005).
   Callback:
     Type: Custom::SendspriteCallback
     Properties:
@@ -185,8 +276,10 @@ Resources:
       UserName: !Ref SendspriteUser
       Region: !Ref AWS::Region
       AccountId: !Ref AWS::AccountId
+      StackId: !Ref AWS::StackId
+      ServiceRoleArn: !GetAtt ServiceRole.Arn
 Outputs:
   UserName:
     Value: !Ref SendspriteUser
   Note:
-    Value: "Delete this stack to revoke Sendsprite's access."
+    Value: "Disconnect in Sendsprite deletes this stack. Deleting it here works too."
