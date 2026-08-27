@@ -4,6 +4,19 @@ name: Release
 # leaves no changesets behind, so the same workflow run publishes instead.
 # Only `sendsprite` and `@sendsprite/mcp` are published — `@sendsprite/web` and
 # `@sendsprite/shared` are in `.changeset/config.json`'s `ignore` list.
+#
+# Publishing authenticates with npm **trusted publishing** (OIDC), not a
+# token. npm is configured, per package, to accept publishes from exactly this
+# repository, this workflow file (`release.yml`) and the `npm` environment;
+# GitHub mints a short-lived identity token for the job and npm exchanges it
+# for a publish that is also signed with provenance. There is no secret to
+# rotate, leak or scope wrong — the `NPM_TOKEN` that used to be here could
+# not create a package, and nobody could tell from the outside.
+#
+# Three things have to agree, or npm answers 404/E403 on `PUT`:
+#   - the workflow file name (this file), as entered on npm;
+#   - the environment (`npm`), as entered on npm and set on the job below;
+#   - `id-token: write`, which is what lets the job request the OIDC token.
 on:
   push:
     # Both names are listed so the workflow exists whichever the repository
@@ -17,26 +30,37 @@ concurrency:
 permissions:
   contents: write
   pull-requests: write
+  # For the OIDC token npm exchanges. Not needed to open the version PR, but
+  # the same job does both and the permission is harmless there.
+  id-token: write
 
 jobs:
   release:
     # Never version or publish from a non-default branch.
     if: github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
+    # The environment npm's trusted-publisher entry names. It is restricted to
+    # the default branch on the GitHub side too, so a workflow run from any
+    # other ref cannot even reach this job's identity.
+    environment: npm
     steps:
       - uses: actions/checkout@v4
         with:
           # changesets/action needs the full history to work out what changed.
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+      # `changeset publish` shells out to the `npm` on PATH. Trusted
+      # publishing needs npm 11.5.1 or newer, which no runner's Node ships
+      # yet; the upgrade is the whole reason Node is set up here at all.
+      # Deliberately no `registry-url`: that option writes an `_authToken`
+      # line into .npmrc, and an auth token — even an empty one — makes npm
+      # skip the OIDC exchange and fail on the token instead.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install -g npm@latest
+      - run: npm --version
       - run: bun install --frozen-lockfile
-      # changeset publish shells out to npm, which reads the token from
-      # ~/.npmrc; the repo itself never contains a token.
-      - name: Authenticate to npm
-        run: |
-          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
       - uses: changesets/action@v1
         with:
           version: bun run version-packages
@@ -45,4 +69,3 @@ jobs:
           title: "chore: version packages"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
