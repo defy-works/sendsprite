@@ -134,6 +134,10 @@ export default async function OrganizationPage({
                 value={org.sent30d.toLocaleString("en-US")}
               />
               <Row label="Plan" value={org.plan ?? "free"} />
+              <Row
+                label="Assets"
+                value={`${org.assets.count.toLocaleString("en-US")} · ${megabytes(org.assets.bytes)}`}
+              />
             </dl>
             <ul className="mt-4 flex flex-col gap-1.5 border-t border-white/8 pt-3 text-sm">
               {org.people.map((p) => (
@@ -180,6 +184,12 @@ export default async function OrganizationPage({
     </div>
   );
 }
+
+/** Whole megabytes past 10 MB, one decimal under; "0 MB" reads as nothing. */
+const megabytes = (bytes: number) =>
+  bytes === 0
+    ? "0 MB"
+    : `${(bytes / 1_048_576).toFixed(bytes >= 10 * 1_048_576 ? 0 : 1)} MB`;
 
 function Row({ label, value }: { label: string; value: string }) {
   return (

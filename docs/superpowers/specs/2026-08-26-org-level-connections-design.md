@@ -1,7 +1,8 @@
 # Org-level AWS and Cloudflare connections
 
 **Date:** 2026-08-26
-**Status:** approved, not yet implemented
+**Status:** implemented 2026-08-26 (phases 8 and 9;
+`docs/superpowers/plans/2026-08-26-phase-9-org-level-connections.md`)
 
 ## Problem
 

@@ -16,6 +16,7 @@ import {
   member,
   organization,
   session,
+  teamAssets,
   teamAws,
   teamBilling,
   teamCloudflare,
@@ -161,6 +162,14 @@ export interface OrgDetail extends OrgSummary {
   sesDailyQuota: number | null;
   sesMaxSendRate: number | null;
   cloudflareAccountName: string | null;
+  /**
+   * Images uploaded through the editor. Each is at most 2 MB, deduplicated
+   * per team by content hash, and never purged — delivered mail keeps
+   * fetching them — so this is the one number on the page that only grows.
+   * It is here so the growth is visible before it is a surprise; there is no
+   * cap, which is a decision for whoever hosts this, not a default.
+   */
+  assets: { count: number; bytes: number };
   people: {
     userId: string;
     email: string;
@@ -232,6 +241,17 @@ export async function getOrganization(id: string): Promise<OrgDetail | null> {
           ),
         )
         .then((r) => Number(r[0]?.n ?? 0)),
+      db()
+        .select({
+          n: count(),
+          bytes: sql<string>`coalesce(sum(${teamAssets.size}), 0)`,
+        })
+        .from(teamAssets)
+        .where(eq(teamAssets.teamId, id))
+        .then((r) => ({
+          count: Number(r[0]?.n ?? 0),
+          bytes: Number(r[0]?.bytes ?? 0),
+        })),
     ]),
   ]);
 
@@ -258,6 +278,7 @@ export async function getOrganization(id: string): Promise<OrgDetail | null> {
     sesDailyQuota: aws?.sesDailyQuota ?? null,
     sesMaxSendRate: aws?.sesMaxSendRate ?? null,
     cloudflareAccountName: cf?.accountName ?? null,
+    assets: counts[2],
     people: people.map((p) => ({
       userId: p.userId,
       email: p.email,
@@ -395,7 +416,18 @@ export async function listUsers(q?: string): Promise<UserRow[]> {
       createdAt: user.createdAt,
       bannedAt: user.bannedAt,
       bannedReason: user.bannedReason,
-      teams: sql<number>`(select count(*) from ${member} where ${member.userId} = ${user.id})`,
+      // Built with the query builder, like `listOrganizations` above, and
+      // for a subtler reason than that one. A hand-written fragment
+      // `${member.userId} = ${user.id}` rendered as `"user_id" = "id"`:
+      // drizzle leaves column references unqualified when the outer query
+      // has a single table, and inside the subquery `"id"` is `member.id`.
+      // The count was 0 for every user on the instance, and the users table
+      // said so for as long as it existed. `eq()` in a nested select renders
+      // both sides qualified.
+      teams: sql<number>`(${db()
+        .select({ n: count() })
+        .from(member)
+        .where(eq(member.userId, user.id))})`,
     })
     .from(user)
     .where(

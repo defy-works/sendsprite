@@ -87,7 +87,7 @@ describe("the meter sweep with billing off", () => {
     (await import("@/env.schema")).resetEnvCache();
   });
 
-  it("does nothing at all — no provider, no queries, no queue", async () => {
+  it("does nothing at all — no provider, no queries; the tick is a no-op", async () => {
     process.env.APP_URL = "https://mail.example.com";
     process.env.APP_SECRET = "x".repeat(40);
     process.env.DATABASE_URL = "postgres://x/y";
@@ -95,20 +95,23 @@ describe("the meter sweep with billing off", () => {
     const { resetEnvCache } = await import("@/env.schema");
     resetEnvCache();
 
-    // Importing the module must not register a queue either: a self-hosted
-    // instance gets no billing cron. `DATABASE_URL` here points nowhere, so a
-    // sweep that reached the database would throw rather than return zeros.
+    // `DATABASE_URL` here points nowhere, so a sweep that reached the
+    // database would throw rather than return zeros.
     const { runBillingMeterSweep } =
       await import("@/jobs/handlers/billing-meter");
     expect(
       await runBillingMeterSweep(new Date("2026-08-25T10:37:00Z")),
     ).toEqual({ teams: 0, events: 0, units: 0, failed: 0 });
-    // `registerQueue` records into the registry `boss.ts` keeps on
-    // `globalThis`; reading it is how "the import registered nothing" can be
-    // observed without a worker running.
+    // The queue *is* registered — unconditionally, so importing this module
+    // reads no env — and the handler above is the gate. This used to assert
+    // the opposite (no cron on a self-hosted instance), which was bought by
+    // an `if (billingConfig().enabled)` around `registerQueue` at module
+    // scope: every test that started the worker then depended on APP_URL
+    // being set by someone else before this file loaded. One no-op tick an
+    // hour is the cheaper end of that trade.
     const boss = (
       globalThis as { __sendspriteBoss?: { registry: Map<string, unknown> } }
     ).__sendspriteBoss;
-    expect(boss?.registry.has("billing.meter-sweep") ?? false).toBe(false);
+    expect(boss?.registry.has("billing.meter-sweep") ?? false).toBe(true);
   });
 });

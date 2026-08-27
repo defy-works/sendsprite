@@ -43,18 +43,20 @@ export async function runBillingMeterSweep(
   return s;
 }
 
-// Registered only when billing is on: a self-hosted instance gets no billing
-// queue and no hourly tick. Handler modules are imported from `startWorker()`
-// and `getBoss()`, both at runtime, so reading the env here is safe.
+// Registered unconditionally; the handler itself is the gate (`cfg.enabled`
+// above, first line). It used to be `if (billingConfig().enabled)` around
+// this call, which read the env at import time — and every test that started
+// the worker then depended on APP_URL having been set by someone else before
+// this module loaded. A self-hosted instance now gets one no-op tick an hour,
+// which costs nothing and keeps the env read where it can be reasoned about.
 //
 // The sweep is a plain cron and never enqueues itself — a handler that
 // re-enqueues onto its own exclusive queue has silently stalled twice in
 // earlier phases. A missed tick needs no recovery: the next one rebuilds
 // exactly the same buckets.
-if (billingConfig().enabled)
-  registerQueue(Q.billingMeterSweep, () => runBillingMeterSweep(), {
-    cron: "37 * * * *",
-    // retryLimit 0: a failed run is simply retried by the next tick, and the
-    // rollup is idempotent, so there is nothing a pg-boss retry would add.
-    queue: { retryLimit: 0 },
-  });
+registerQueue(Q.billingMeterSweep, () => runBillingMeterSweep(), {
+  cron: "37 * * * *",
+  // retryLimit 0: a failed run is simply retried by the next tick, and the
+  // rollup is idempotent, so there is nothing a pg-boss retry would add.
+  queue: { retryLimit: 0 },
+});
