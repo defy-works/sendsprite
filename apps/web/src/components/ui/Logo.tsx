@@ -150,8 +150,8 @@ export function Wordmark({
 export function Logo({ scale = 2, ...rest }: SvgProps & { scale?: number }) {
   return (
     <svg
-      viewBox="0 0 76 15"
-      width={px(76, scale)}
+      viewBox="0 0 66 15"
+      width={px(66, scale)}
       height={px(15, scale)}
       fill="none"
       style={CRISP}
@@ -159,27 +159,45 @@ export function Logo({ scale = 2, ...rest }: SvgProps & { scale?: number }) {
       aria-label="Sendsprite"
       {...rest}
     >
-      <path
-        fill="#c7d2fe"
-        d="M1 1h2v1h-2zM1 2h4v1h-4zM1 3h5v1h-5zM1 4h2v1h-2zM1 5h2v1h-2zM1 6h1v1h-1z"
-      />
-      <path
-        fill="#818cf8"
-        d="M17 1h2v1h-2zM15 2h4v1h-4zM13 3h6v1h-6zM12 4h3v1h-3zM17 4h2v1h-2zM10 5h3v1h-3zM17 5h1v1h-1zM9 6h2v1h-2zM2 11h1v1h-1zM1 12h7v1h-7zM1 13h5v1h-5z"
-      />
-      <path
-        fill="#a5b4fc"
-        d="M6 3h1v1h-1zM5 4h4v1h-4zM11 4h1v1h-1zM7 5h3v1h-3zM2 6h1v1h-1zM1 7h2v1h-2zM1 8h2v1h-2zM1 9h2v1h-2zM1 10h2v1h-2zM1 11h1v1h-1z"
-      />
-      <path
-        fill="#6366f1"
-        d="M18 5h1v1h-1zM17 6h2v1h-2zM17 7h2v1h-2zM17 8h2v1h-2zM17 9h2v1h-2zM17 10h1v1h-1zM8 12h7v1h-7zM6 13h8v1h-8z"
-      />
-      <path
-        fill="#4f46e5"
-        d="M18 10h1v1h-1zM17 11h2v1h-2zM15 12h4v1h-4zM14 13h5v1h-5z"
-      />
-      <g transform="translate(24 4)">
+      {/*
+       * The mark at half size, and why exactly half.
+       *
+       * Drawn full size it is 13 units of ink against a 7-unit cap height —
+       * nearly twice the height of the word it is set beside, which reads as a
+       * mark with a caption rather than a lockup. Halved it is 6.5 against 7,
+       * which is the relationship a mark and a wordmark usually have.
+       *
+       * 0.5 and an integer translate, not an arbitrary fit: this is pixel art
+       * rendered with `crispEdges`, so a scale that puts a 1-unit square on a
+       * fraction of a device pixel gives squares of uneven width. At the
+       * default `scale={2}` a unit is 2px, so half a unit is exactly 1px and
+       * every square still lands on the grid.
+       */}
+      <g transform="translate(1 4) scale(0.5)">
+        <path
+          fill="#c7d2fe"
+          d="M1 1h2v1h-2zM1 2h4v1h-4zM1 3h5v1h-5zM1 4h2v1h-2zM1 5h2v1h-2zM1 6h1v1h-1z"
+        />
+        <path
+          fill="#818cf8"
+          d="M17 1h2v1h-2zM15 2h4v1h-4zM13 3h6v1h-6zM12 4h3v1h-3zM17 4h2v1h-2zM10 5h3v1h-3zM17 5h1v1h-1zM9 6h2v1h-2zM2 11h1v1h-1zM1 12h7v1h-7zM1 13h5v1h-5z"
+        />
+        <path
+          fill="#a5b4fc"
+          d="M6 3h1v1h-1zM5 4h4v1h-4zM11 4h1v1h-1zM7 5h3v1h-3zM2 6h1v1h-1zM1 7h2v1h-2zM1 8h2v1h-2zM1 9h2v1h-2zM1 10h2v1h-2zM1 11h1v1h-1z"
+        />
+        <path
+          fill="#6366f1"
+          d="M18 5h1v1h-1zM17 6h2v1h-2zM17 7h2v1h-2zM17 8h2v1h-2zM17 9h2v1h-2zM17 10h1v1h-1zM8 12h7v1h-7zM6 13h8v1h-8z"
+        />
+        <path
+          fill="#4f46e5"
+          d="M18 10h1v1h-1zM17 11h2v1h-2zM15 12h4v1h-4zM14 13h5v1h-5z"
+        />
+      </g>
+      {/* Pulled left by the width the mark gave up, so the gap between the two
+          stays a gap rather than becoming a margin. */}
+      <g transform="translate(14 4)">
         <path
           fill="#ffffff"
           d="M1 0h4v1h-4zM22 0h1v1h-1zM44 0h1v1h-1zM0 1h1v1h-1zM22 1h1v1h-1zM41 1h1v1h-1zM44 1h1v1h-1zM0 2h1v1h-1zM7 2h3v1h-3zM12 2h1v1h-1zM14 2h2v1h-2zM19 2h4v1h-4zM25 2h4v1h-4zM30 2h4v1h-4zM36 2h1v1h-1zM38 2h2v1h-2zM43 2h3v1h-3zM48 2h3v1h-3zM1 3h3v1h-3zM6 3h1v1h-1zM10 3h1v1h-1zM12 3h2v1h-2zM16 3h1v1h-1zM18 3h1v1h-1zM22 3h1v1h-1zM24 3h1v1h-1zM30 3h1v1h-1zM34 3h1v1h-1zM36 3h2v1h-2zM41 3h1v1h-1zM44 3h1v1h-1zM47 3h1v1h-1zM51 3h1v1h-1zM4 4h1v1h-1zM6 4h5v1h-5zM12 4h1v1h-1zM16 4h1v1h-1zM18 4h1v1h-1zM22 4h1v1h-1zM25 4h3v1h-3zM30 4h1v1h-1zM34 4h1v1h-1zM36 4h1v1h-1zM41 4h1v1h-1zM44 4h1v1h-1zM47 4h5v1h-5zM4 5h1v1h-1zM6 5h1v1h-1zM12 5h1v1h-1zM16 5h1v1h-1zM18 5h1v1h-1zM22 5h1v1h-1zM28 5h1v1h-1zM30 5h1v1h-1zM34 5h1v1h-1zM36 5h1v1h-1zM41 5h1v1h-1zM44 5h1v1h-1zM47 5h1v1h-1zM0 6h4v1h-4zM7 6h3v1h-3zM12 6h1v1h-1zM16 6h1v1h-1zM19 6h4v1h-4zM24 6h4v1h-4zM30 6h4v1h-4zM36 6h1v1h-1zM41 6h1v1h-1zM44 6h2v1h-2zM48 6h3v1h-3zM30 7h1v1h-1zM30 8h1v1h-1z"
