@@ -17,11 +17,14 @@ import type { TeamAws } from "@/services/team-aws";
  */
 export function SetupBanner({
   awsConnected,
+  awsError = null,
   sesStatus,
   canSetUp,
   suspension,
 }: {
   awsConnected: boolean;
+  /** `team_aws.last_error`: connected on record, refused by AWS. */
+  awsError?: string | null;
   sesStatus: TeamAws["sesAccountStatus"];
   canSetUp: boolean;
   /** Set by an instance admin; outranks anything about setup. */
@@ -46,23 +49,31 @@ export function SetupBanner({
       </div>
     );
 
-  if (awsConnected && sesStatus === "production") return null;
+  // A dead connection outranks the SES standing: there is no point telling a
+  // team in production that they are in production when every send fails.
+  const dead = awsConnected && awsError !== null;
+  if (awsConnected && !dead && sesStatus === "production") return null;
 
-  const blocking = !awsConnected;
-  const { title, body } = blocking
+  const blocking = !awsConnected || dead;
+  const { title, body } = dead
     ? {
-        title: "This team cannot send yet",
-        body: "Nothing leaves until an AWS account is connected — domains will not verify and campaigns will not queue.",
+        title: "AWS is refusing this team's credentials",
+        body: "Sending is failing. If the connect stack was deleted in the AWS console, the access key no longer exists — reconnect from Settings → Sending.",
       }
-    : sesStatus === "requested"
+    : blocking
       ? {
-          title: "SES production access is under review",
-          body: "Until AWS grants it you can only send to addresses you have verified, 200 a day.",
+          title: "This team cannot send yet",
+          body: "Nothing leaves until an AWS account is connected — domains will not verify and campaigns will not queue.",
         }
-      : {
-          title: "SES is in the sandbox",
-          body: "You can only send to addresses you have verified, 200 a day. Request production access to lift both limits.",
-        };
+      : sesStatus === "requested"
+        ? {
+            title: "SES production access is under review",
+            body: "Until AWS grants it you can only send to addresses you have verified, 200 a day.",
+          }
+        : {
+            title: "SES is in the sandbox",
+            body: "You can only send to addresses you have verified, 200 a day. Request production access to lift both limits.",
+          };
 
   return (
     <div

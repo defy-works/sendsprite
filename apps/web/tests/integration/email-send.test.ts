@@ -260,6 +260,13 @@ describe("sendQueuedEmail", () => {
     const msg =
       "User 'arn:aws:iam::1:user/sendsprite-x' is not authorized to perform 'ses:ApplyTrackingConfigurationOverrides'";
     ses.on(SendEmailCommand).rejects(awsErr("AccessDeniedException", msg));
+    // Past the propagation grace, so the refusal counts against the
+    // connection and not just this email.
+    const { teamAws } = await import("@/db/schema");
+    await pg.db
+      .update(teamAws)
+      .set({ connectedAt: new Date(Date.now() - 10 * 60_000) })
+      .where(eq(teamAws.teamId, "org_1"));
     const created = await create();
     const enqueue = vi.fn(async () => "");
     const { sendQueuedEmail } = await import("@/services/ses-send");
@@ -276,6 +283,11 @@ describe("sendQueuedEmail", () => {
       "email.send",
       expect.anything(),
       expect.anything(),
+    );
+    // The connection now says so too; that is what the dashboard reads.
+    const { getTeamAws } = await import("@/services/team-aws");
+    expect((await getTeamAws("org_1"))?.lastError).toMatch(
+      /^AccessDeniedException: /,
     );
   });
 

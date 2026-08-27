@@ -55,6 +55,16 @@ export const teamAws = pgTable("team_aws", {
   sesDailyQuota: integer("ses_daily_quota"),
   sesMaxSendRate: doublePrecision("ses_max_send_rate"),
   sesLastCheckedAt: timestamp("ses_last_checked_at", { withTimezone: true }),
+  /**
+   * The last time AWS refused this team's credentials outright — a deleted
+   * access key (the connect stack removed in the console), a revoked policy.
+   * Set by the hourly account refresh, a settings page that found the check
+   * stale, or a send; cleared by the next successful refresh. The row still
+   * says "connected" in every other column, which is exactly why this one
+   * exists: without it the dashboard reported a dead connection as live until
+   * someone noticed the failed emails.
+   */
+  lastError: text("last_error"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

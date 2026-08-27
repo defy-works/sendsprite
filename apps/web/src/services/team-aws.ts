@@ -140,6 +140,68 @@ export async function getTeamAwsSecrets(
   };
 }
 
+/**
+ * Error names that mean "AWS no longer accepts this team's key", as opposed
+ * to a throttle, a network blip or a bad request. `InvalidClientTokenId` and
+ * `InvalidSignatureException` are in the set too — they are what a key that
+ * was deleted looks like — but they are also what a key created seconds ago
+ * looks like before IAM has propagated it, so callers on a fresh connection
+ * must not report them (see `noteAwsFailure`).
+ */
+const CREDENTIAL_FAILURES = new Set([
+  "AccessDenied",
+  "AccessDeniedException",
+  "UnrecognizedClientException",
+  "InvalidClientTokenId",
+  "InvalidSignatureException",
+  "SignatureDoesNotMatch",
+  "ExpiredToken",
+  "ExpiredTokenException",
+  "AuthFailure",
+]);
+export const isCredentialFailure = (name: string | undefined): boolean =>
+  name !== undefined && CREDENTIAL_FAILURES.has(name);
+
+/** A key can be refused for this long after connect and still be propagating. */
+const PROPAGATION_GRACE_MS = 2 * 60_000;
+
+/**
+ * Record that AWS refused the credentials. Audited once, when the row goes
+ * from healthy to failing (`aws.credentials_failed`); a repeat is just the
+ * latest message and a bumped `sesLastCheckedAt`, so a settings page does
+ * not re-hit AWS on every render to learn the same thing. Silently ignored
+ * inside the propagation grace after connect: a send fired seconds after a
+ * reconnect is refused with the same names a deleted key produces, and
+ * reporting that as a dead connection would be wrong for two minutes.
+ */
+export async function noteAwsFailure(
+  teamId: string,
+  name: string,
+  message: string,
+): Promise<void> {
+  const before = await selectRow(teamId);
+  if (!before) return;
+  if (Date.now() - before.connectedAt.getTime() < PROPAGATION_GRACE_MS) return;
+  const lastError = `${name}: ${message}`.slice(0, 500);
+  const patch = { lastError, sesLastCheckedAt: new Date() };
+  if (before.lastError) {
+    await updateTeamAws(teamId, patch, undefined, { audit: false });
+    return;
+  }
+  await updateTeamAws(teamId, patch, undefined, {
+    action: "aws.credentials_failed",
+  });
+}
+
+/** The credentials worked again: clear the failure, audited if there was one. */
+export async function clearAwsFailure(teamId: string): Promise<void> {
+  const before = await selectRow(teamId);
+  if (!before?.lastError) return;
+  await updateTeamAws(teamId, { lastError: null }, undefined, {
+    action: "aws.credentials_restored",
+  });
+}
+
 /** Disconnecting is a row delete: existence of the row is the connection. */
 export async function disconnectTeamAws(
   teamId: string,

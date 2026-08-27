@@ -49,6 +49,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
     >
       <SetupBanner
         awsConnected={aws !== null}
+        awsError={aws?.lastError ?? null}
         sesStatus={aws?.sesAccountStatus ?? null}
         canSetUp={canSetUp}
         suspension={suspension}

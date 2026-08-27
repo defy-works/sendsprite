@@ -29,7 +29,7 @@ import {
   UnsubscribeCommand,
 } from "@aws-sdk/client-sns";
 import { STSClient, GetCallerIdentityCommand } from "@aws-sdk/client-sts";
-import { auditLog } from "@/db/schema";
+import { auditLog, teamAws } from "@/db/schema";
 import { startPg } from "./_pg";
 import { seedTeamWithKey } from "./helpers";
 
@@ -481,6 +481,113 @@ describe("requestProductionAccess / refreshSesAccount", () => {
       first!.sesLastCheckedAt!.getTime(),
     );
     expect(await audits()).toHaveLength(1);
+  });
+});
+
+/**
+ * The stack deleted in the console, the key revoked, the policy pulled: the
+ * row still says "connected" in every column, and the dashboard used to
+ * print exactly that until someone noticed the failed emails. These pin the
+ * one column that says otherwise.
+ */
+describe("credential failures", () => {
+  /** Past the propagation grace, so a refusal counts. */
+  const ageConnection = () =>
+    pg.db
+      .update(teamAws)
+      .set({ connectedAt: new Date(Date.now() - 10 * 60_000) })
+      .where(eq(teamAws.teamId, TEAM));
+  const dead = () =>
+    ses
+      .on(GetAccountCommand)
+      .rejects(
+        awsErr(
+          "UnrecognizedClientException",
+          "The security token included in the request is invalid.",
+        ),
+      );
+
+  it("a refused refresh records lastError, audited once; a working one clears it, audited", async () => {
+    happyMocks();
+    const { connectWithKeys, refreshSesAccount } =
+      await import("@/services/aws-connect");
+    expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(
+      true,
+    );
+    await ageConnection();
+    dead();
+    expect((await refreshSesAccount(TEAM)).ok).toBe(false);
+    expect((await conn())?.lastError).toMatch(
+      /^UnrecognizedClientException: The security token/,
+    );
+    expect(await audits("aws.credentials_failed")).toHaveLength(1);
+    // Same again: the message is refreshed, nothing new is audited.
+    expect((await refreshSesAccount(TEAM)).ok).toBe(false);
+    expect(await audits("aws.credentials_failed")).toHaveLength(1);
+    // Reconnected in the console (or the key restored): back to healthy.
+    ses.reset();
+    happyMocks();
+    expect((await refreshSesAccount(TEAM)).ok).toBe(true);
+    expect((await conn())?.lastError).toBeNull();
+    expect(await audits("aws.credentials_restored")).toHaveLength(1);
+  });
+
+  it("a refusal inside the propagation grace after connect is not a dead connection", async () => {
+    happyMocks();
+    const { connectWithKeys, refreshSesAccount } =
+      await import("@/services/aws-connect");
+    expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(
+      true,
+    );
+    dead();
+    expect((await refreshSesAccount(TEAM)).ok).toBe(false);
+    expect((await conn())?.lastError).toBeNull();
+    expect(await audits("aws.credentials_failed")).toHaveLength(0);
+  });
+
+  it("a throttle or network error is not recorded as a credential failure", async () => {
+    happyMocks();
+    const { connectWithKeys, refreshSesAccount } =
+      await import("@/services/aws-connect");
+    expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(
+      true,
+    );
+    await ageConnection();
+    ses
+      .on(GetAccountCommand)
+      .rejects(awsErr("TooManyRequestsException", "Rate exceeded"));
+    expect((await refreshSesAccount(TEAM)).ok).toBe(false);
+    expect((await conn())?.lastError).toBeNull();
+  });
+
+  it("getTeamAwsChecked asks AWS only when the last check is stale", async () => {
+    happyMocks();
+    const { connectWithKeys, getTeamAwsChecked } =
+      await import("@/services/aws-connect");
+    expect((await connectWithKeys(TEAM, SLUG, KEYS, { userId: "u1" })).ok).toBe(
+      true,
+    );
+    // Connect just checked: believed without a call.
+    ses.resetHistory();
+    expect((await getTeamAwsChecked(TEAM))?.lastError).toBeNull();
+    expect(ses.commandCalls(GetAccountCommand)).toHaveLength(0);
+    // Ten minutes on, with the key gone: the page learns it now, not at the
+    // next hourly tick.
+    await pg.db
+      .update(teamAws)
+      .set({
+        connectedAt: new Date(Date.now() - 10 * 60_000),
+        sesLastCheckedAt: new Date(Date.now() - 10 * 60_000),
+      })
+      .where(eq(teamAws.teamId, TEAM));
+    dead();
+    const row = await getTeamAwsChecked(TEAM);
+    expect(ses.commandCalls(GetAccountCommand)).toHaveLength(1);
+    expect(row?.lastError).toMatch(/UnrecognizedClientException/);
+    // And is not asked again for the next five minutes.
+    ses.resetHistory();
+    await getTeamAwsChecked(TEAM);
+    expect(ses.commandCalls(GetAccountCommand)).toHaveLength(0);
   });
 });
 

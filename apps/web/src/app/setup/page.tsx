@@ -1,9 +1,9 @@
 import Link from "next/link";
+import { getTeamAwsChecked } from "@/services/aws-connect";
 import { parseStackArn } from "@/lib/aws/stack";
 import { env } from "@/env";
 import { SES_REGIONS } from "@/lib/aws/regions";
 import { requireTeamAdmin } from "@/lib/session";
-import { getTeamAws } from "@/services/team-aws";
 import { getTeamSettings } from "@/services/team-settings";
 import {
   getTeamCloudflare,
@@ -24,7 +24,7 @@ export default async function SetupPage({
 }) {
   const ctx = await requireTeamAdmin();
   const [aws, cf, team] = await Promise.all([
-    getTeamAws(ctx.team.id),
+    getTeamAwsChecked(ctx.team.id),
     getTeamCloudflare(ctx.team.id),
     getTeamSettings(ctx.team.id),
   ]);
@@ -33,6 +33,7 @@ export default async function SetupPage({
     awsConnected: aws !== null,
     awsRegion: aws?.region ?? null,
     awsAccountId: aws?.accountId ?? null,
+    awsLastError: aws?.lastError ?? null,
     awsStackName: aws?.stackId
       ? (parseStackArn(aws.stackId)?.name ?? null)
       : null,

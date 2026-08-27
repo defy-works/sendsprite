@@ -10,7 +10,7 @@ import { makeSes } from "@/lib/aws/clients";
 import { resolveAwsContext } from "@/lib/aws/credentials";
 import { formatAddress, parseAddress } from "@/lib/email-address";
 import { Q } from "@/jobs/queues";
-import { getTeamAws } from "./team-aws";
+import { getTeamAws, isCredentialFailure, noteAwsFailure } from "./team-aws";
 import { takeSesToken } from "./send-limits";
 import { RECONCILED_FAILED_PREFIX, recordEvent } from "./email-events";
 import { publicEmail } from "./ingest";
@@ -260,6 +260,13 @@ export async function sendQueuedEmail(
     const lastError = sandbox
       ? `sandbox_restricted: ${message}`
       : `${name}: ${message}`;
+    // A refused key is a fact about the connection, not this one email; the
+    // row is what the dashboard reads. Best effort — the email's own outcome
+    // must not depend on this write.
+    if (isCredentialFailure(name))
+      await noteAwsFailure(e.teamId, name, message).catch((err: unknown) =>
+        console.warn("ses-send: could not note credential failure:", err),
+      );
     if (NO_RETRY.has(name) || finalAttempt) {
       await markSendFailed(
         e,

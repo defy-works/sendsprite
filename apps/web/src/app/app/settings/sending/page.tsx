@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { getTeamAwsChecked } from "@/services/aws-connect";
 import { parseStackArn } from "@/lib/aws/stack";
 import { env } from "@/env";
 import { SES_REGIONS } from "@/lib/aws/regions";
@@ -7,7 +8,6 @@ import {
   getTeamCloudflare,
   oauthAvailable,
 } from "@/services/cloudflare-connect";
-import { getTeamAws } from "@/services/team-aws";
 import { getTeamSettings } from "@/services/team-settings";
 import { Card, CardBody } from "@/components/ui/Card";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -38,7 +38,7 @@ export default async function SendingSettingsPage() {
 
   const [settings, aws, cf] = await Promise.all([
     getTeamSettings(ctx.team.id),
-    getTeamAws(ctx.team.id),
+    getTeamAwsChecked(ctx.team.id),
     getTeamCloudflare(ctx.team.id),
   ]);
 
@@ -49,6 +49,7 @@ export default async function SendingSettingsPage() {
       awsConnected: aws !== null,
       awsRegion: aws?.region ?? null,
       awsAccountId: aws?.accountId ?? null,
+      awsLastError: aws?.lastError ?? null,
       awsStackName: aws?.stackId
         ? (parseStackArn(aws.stackId)?.name ?? null)
         : null,

@@ -122,6 +122,14 @@ function ConnectedPanel({
         <dt className="text-white/50">Region</dt>
         <dd>{settings.awsRegion}</dd>
       </dl>
+      {settings.awsLastError && (
+        <Alert>
+          AWS is refusing this team&apos;s credentials:{" "}
+          <code className="text-xs">{settings.awsLastError}</code>. Sending is
+          failing. If the connect stack was deleted in the AWS console, the
+          access key no longer exists — disconnect below and connect again.
+        </Alert>
+      )}
       {settings.snsSubscriptionMissing && (
         <Notice>
           SES events are not being delivered: this connection has an SNS topic

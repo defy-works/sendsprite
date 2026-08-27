@@ -34,6 +34,11 @@ export interface WizardSettings {
    * has to warn that the IAM user stays behind instead.
    */
   awsStackName: string | null;
+  /**
+   * AWS refused the credentials at the last check (`team_aws.last_error`):
+   * the connection is on record but dead. Null while it works.
+   */
+  awsLastError: string | null;
   sesAccountStatus: "sandbox" | "requested" | "production" | null;
   sesReviewStatus: "PENDING" | "GRANTED" | "DENIED" | "FAILED" | null;
   sesDailyQuota: number | null;

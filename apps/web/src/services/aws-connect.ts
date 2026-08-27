@@ -25,8 +25,11 @@ import type { Result } from "@/lib/result";
 import { configSetName, topicName } from "@/lib/aws/naming";
 import { parseStackArn, stackConsoleUrl } from "@/lib/aws/stack";
 import {
+  clearAwsFailure,
   disconnectTeamAws,
   getTeamAws,
+  isCredentialFailure,
+  noteAwsFailure,
   updateTeamAws,
   type AwsActor,
   type TeamAws,
@@ -355,10 +358,40 @@ export async function refreshSesAccount(
         { action: action ?? "ses.account.refresh" },
       );
     }
+    await clearAwsFailure(teamId);
     return { ok: true, data: { status: account.status } };
   } catch (e) {
+    // A refused key is recorded on the row so the dashboard stops saying
+    // "connected" about a stack that was deleted in the console. Anything
+    // else (throttle, network) is left for the next tick.
+    const name = errName(e);
+    if (isCredentialFailure(name))
+      await noteAwsFailure(teamId, name!, errMsg(e)).catch((err: unknown) =>
+        console.warn("aws-connect: could not note failure:", errMsg(err)),
+      );
     return { ok: false, error: errMsg(e) };
   }
+}
+
+/** A connection checked within this window is believed without asking AWS. */
+const HEALTH_STALE_MS = 5 * 60_000;
+
+/**
+ * The team's connection, checked against AWS if the last check is stale.
+ * For the two pages that *display* the connection — the wizard and Settings
+ * → Sending — where "connected" printed off a row that AWS stopped honouring
+ * an hour ago is the wrong answer, and one `GetAccount` is a fair price.
+ * Everything else reads the row.
+ */
+export async function getTeamAwsChecked(
+  teamId: string,
+): Promise<TeamAws | null> {
+  const row = await getTeamAws(teamId);
+  if (!row) return null;
+  const checked = row.sesLastCheckedAt?.getTime() ?? 0;
+  if (Date.now() - checked < HEALTH_STALE_MS) return row;
+  await refreshSesAccount(teamId);
+  return getTeamAws(teamId);
 }
 
 const prodSchema = z.object({
