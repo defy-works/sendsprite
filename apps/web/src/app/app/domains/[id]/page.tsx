@@ -1,7 +1,9 @@
 import { notFound } from "next/navigation";
 import { can } from "@sendsprite/shared";
 import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/Card";
+import { IconDownload } from "@/components/ui/icons";
 import { StatusDot, type Status } from "@/components/ui/StatusDot";
 import { cloudflareDnsUrl } from "@/lib/dns/cloudflare-zone";
 import { formatWhen } from "@/lib/format";
@@ -80,6 +82,21 @@ export default async function DomainPage({
             </p>
           )}
           <RecordsTable records={d.expectedRecords} />
+          {d.dkimTokens.length > 0 && (
+            <div className="flex flex-wrap items-center gap-3">
+              <Button variant="subtle" asChild icon={<IconDownload />}>
+                {/* A plain anchor, not next/link: this is a file download from a
+                    route handler, not a client navigation. `download` lets the
+                    browser save it instead of navigating to it. */}
+                <a href={`/app/domains/${d.id}/zone`} download>
+                  Download BIND zone file
+                </a>
+              </Button>
+              <span className="text-sm text-white/50">
+                Every record above, in one file to upload at your DNS provider.
+              </span>
+            </div>
+          )}
         </CardBody>
       </Card>
       {can(ctx.role, "domains.manage") && (
