@@ -5,8 +5,9 @@ import { Alert } from "@/components/ui/Alert";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { useConfirm } from "@/components/ui/confirm";
+import { usePrompt } from "@/components/ui/prompt";
 import { useToast } from "@/components/ui/toast";
-import { promoteUser } from "../actions-org";
+import { banUser, promoteUser } from "../actions-org";
 
 export interface AdminUserRow {
   id: string;
@@ -17,6 +18,8 @@ export interface AdminUserRow {
   teams: number;
   /** Admin through `INSTANCE_ADMIN_EMAILS`; the flag cannot revoke that. */
   envAdmin: boolean;
+  banned: boolean;
+  bannedReason: string | null;
 }
 
 const date = (iso: string) =>
@@ -36,6 +39,7 @@ export function UsersTable({
 }) {
   const router = useRouter();
   const confirm = useConfirm();
+  const prompt = usePrompt();
   const toast = useToast();
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -70,6 +74,44 @@ export function UsersTable({
     });
   };
 
+  const setBanned = async (u: AdminUserRow) => {
+    const banning = !u.banned;
+    if (!banning) {
+      const ok = await confirm({
+        title: `Let ${u.email} back in?`,
+        body: "They can sign in again immediately. Their teams were never stopped from sending — that is a separate suspension.",
+        confirmLabel: "Lift the ban",
+      });
+      if (!ok) return;
+      return run(u, false, null);
+    }
+    const reason = await prompt({
+      title: `Ban ${u.email}?`,
+      body: "They are signed out everywhere and cannot sign in again. Their teams keep sending: stopping a customer's mail is a suspension on the team, and a separate decision. The reason below is shown to them.",
+      confirmLabel: "Ban this account",
+      tone: "danger",
+    });
+    if (reason === null) return;
+    return run(u, true, reason);
+  };
+
+  const run = (u: AdminUserRow, banned: boolean, reason: string | null) =>
+    start(async () => {
+      setError(null);
+      try {
+        const res = await banUser(u.id, banned, reason);
+        if (!res.ok) return setError(res.error);
+        toast({
+          tone: banned ? "error" : "success",
+          title: banned ? "Account banned" : "Ban lifted",
+          body: u.email,
+        });
+        router.refresh();
+      } catch {
+        setError("Something went wrong. Please try again.");
+      }
+    });
+
   return (
     <div className="flex flex-col gap-3">
       <div className="glass overflow-x-auto p-0">
@@ -103,7 +145,11 @@ export function UsersTable({
                     )}
                     {u.envAdmin && <Badge variant="muted">via env</Badge>}
                     {u.id === me && <Badge variant="muted">You</Badge>}
+                    {u.banned && <Badge variant="danger">Banned</Badge>}
                   </p>
+                  {u.banned && u.bannedReason && (
+                    <p className="text-xs text-red-300/80">{u.bannedReason}</p>
+                  )}
                   {u.name && <p className="text-xs text-white/45">{u.email}</p>}
                 </td>
                 <td className="tnum px-4 py-3 text-white/70">{u.teams}</td>
@@ -123,6 +169,25 @@ export function UsersTable({
                     onClick={() => void toggle(u)}
                   >
                     {u.instanceAdmin ? "Remove admin" : "Make admin"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={u.banned ? "subtle" : "dangerSubtle"}
+                    className="ml-2"
+                    // An instance admin cannot be banned by the service
+                    // either: banning an operator out of the surface that
+                    // unbans them is not recoverable from here.
+                    disabled={
+                      pending || u.id === me || (!u.banned && u.instanceAdmin)
+                    }
+                    title={
+                      u.instanceAdmin && !u.banned
+                        ? "Remove the instance-admin flag first."
+                        : undefined
+                    }
+                    onClick={() => void setBanned(u)}
+                  >
+                    {u.banned ? "Unban" : "Ban"}
                   </Button>
                 </td>
               </tr>

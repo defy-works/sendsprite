@@ -15,6 +15,7 @@ import {
   emails,
   member,
   organization,
+  session,
   teamAws,
   teamBilling,
   teamCloudflare,
@@ -22,6 +23,7 @@ import {
   user,
 } from "@/db/schema";
 import { recordAudit, type RequestMeta } from "@/lib/audit";
+import { pgCode } from "@/lib/pg";
 import type { Result } from "@/lib/result";
 import { SEND_CONSUMING_STATUS } from "@sendsprite/shared";
 
@@ -378,6 +380,8 @@ export interface UserRow {
   instanceAdmin: boolean;
   createdAt: Date;
   teams: number;
+  bannedAt: Date | null;
+  bannedReason: string | null;
 }
 
 export async function listUsers(q?: string): Promise<UserRow[]> {
@@ -389,6 +393,8 @@ export async function listUsers(q?: string): Promise<UserRow[]> {
       name: user.name,
       instanceAdmin: user.instanceAdmin,
       createdAt: user.createdAt,
+      bannedAt: user.bannedAt,
+      bannedReason: user.bannedReason,
       teams: sql<number>`(select count(*) from ${member} where ${member.userId} = ${user.id})`,
     })
     .from(user)
@@ -458,6 +464,126 @@ export async function setInstanceAdmin(
     diff: {
       email: { to: target.email },
       instanceAdmin: { from: target.was === true, to: value },
+    },
+    ...actor.meta,
+  });
+  return { ok: true, data: undefined };
+}
+
+/**
+ * Locks an account out of the dashboard, or lets it back in.
+ *
+ * A ban is about the person, not their teams. A banned owner cannot sign in;
+ * their team's API keys keep sending, because stopping a customer's mail is
+ * `setOrgSuspended` and is a different decision with its own audit entry and
+ * its own error message to the customer. An operator who means both does both.
+ *
+ * Their sessions are deleted rather than left to expire: a ban that takes
+ * effect at the next login is not a ban.
+ */
+export async function setUserBanned(
+  actor: AdminActor,
+  userId: string,
+  banned: boolean,
+  reason: string | null,
+): Promise<Result> {
+  if (banned && userId === actor.userId)
+    return {
+      ok: false,
+      error: "You cannot ban yourself.",
+    };
+
+  const [target] = await db()
+    .select({
+      email: user.email,
+      was: user.bannedAt,
+      admin: user.instanceAdmin,
+    })
+    .from(user)
+    .where(eq(user.id, userId))
+    .limit(1);
+  if (!target) return { ok: false, error: "No such user." };
+  if (banned && target.admin === true)
+    return {
+      ok: false,
+      error:
+        "This user is an instance admin. Remove the flag first — banning an operator out of the surface that unbans them is not recoverable from here.",
+    };
+
+  const at = banned ? new Date() : null;
+  const trimmed = banned ? (reason?.trim() ?? "") : "";
+  await db()
+    .update(user)
+    .set({ bannedAt: at, bannedReason: trimmed.length > 0 ? trimmed : null })
+    .where(eq(user.id, userId));
+  if (banned) await db().delete(session).where(eq(session.userId, userId));
+
+  await recordAudit({
+    teamId: null,
+    actorUserId: actor.userId,
+    action: banned ? "admin.user.ban" : "admin.user.unban",
+    targetType: "user",
+    targetId: userId,
+    diff: {
+      email: { to: target.email },
+      banned: { from: target.was !== null, to: banned },
+      ...(banned && trimmed ? { reason: { to: trimmed } } : {}),
+    },
+    ...actor.meta,
+  });
+  return { ok: true, data: undefined };
+}
+
+/**
+ * Renames a team, as its operator rather than as its owner.
+ *
+ * The slug is part of it because the slug is what a team is addressed by, and
+ * an operator renaming "acme" to "acme-old" to free the name is the reason
+ * this exists. Uniqueness is the database's to enforce; a clash comes back as
+ * a message rather than a 500.
+ */
+export async function renameOrganization(
+  actor: AdminActor,
+  teamId: string,
+  patch: { name: string; slug: string },
+): Promise<Result> {
+  const name = patch.name.trim();
+  const slug = patch.slug.trim().toLowerCase();
+  if (name.length === 0) return { ok: false, error: "A name is required." };
+  if (!/^[a-z0-9][a-z0-9-]{0,47}$/.test(slug))
+    return {
+      ok: false,
+      error:
+        "A slug is lower-case letters, digits and dashes, starting with a letter or digit, up to 48 characters.",
+    };
+
+  const [before] = await db()
+    .select({ name: organization.name, slug: organization.slug })
+    .from(organization)
+    .where(eq(organization.id, teamId))
+    .limit(1);
+  if (!before) return { ok: false, error: "No such team." };
+
+  try {
+    await db()
+      .update(organization)
+      .set({ name, slug })
+      .where(eq(organization.id, teamId));
+  } catch (e) {
+    if (pgCode(e) === "23505")
+      return { ok: false, error: `The slug "${slug}" is already taken.` };
+    throw e;
+  }
+
+  await recordAudit({
+    teamId,
+    actorUserId: actor.userId,
+    action: "admin.team.rename",
+    targetType: "team",
+    targetId: teamId,
+    diff: {
+      name: { from: before.name, to: name },
+      slug: { from: before.slug, to: slug },
     },
     ...actor.meta,
   });

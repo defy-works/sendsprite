@@ -7,6 +7,7 @@ import { requireInstanceAdmin } from "@/lib/session";
 import { getOrganization } from "@/services/admin";
 import { getInstanceSettings } from "@/services/instance-settings";
 import { OverridesForm } from "./OverridesForm";
+import { RenameForm } from "./RenameForm";
 import { SuspendPanel } from "./SuspendPanel";
 
 const date = (d: Date) =>
@@ -55,6 +56,14 @@ export default async function OrganizationPage({
       />
 
       <div className="grid gap-6 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Identity</CardTitle>
+          </CardHeader>
+          <CardBody>
+            <RenameForm teamId={org.id} name={org.name} slug={org.slug} />
+          </CardBody>
+        </Card>
         <Card>
           <CardHeader>
             <CardTitle>Connection</CardTitle>

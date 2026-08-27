@@ -6,7 +6,9 @@ import { requestMeta } from "@/lib/audit";
 import { requireInstanceAdmin } from "@/lib/session";
 import type { Result } from "@/lib/result";
 import {
+  renameOrganization,
   setInstanceAdmin,
+  setUserBanned,
   setOrgOverrides,
   setOrgSuspended,
 } from "@/services/admin";
@@ -95,6 +97,36 @@ export async function suspendOrg(
   revalidatePath(`/admin/organizations/${teamId}`);
   revalidatePath("/admin/organizations");
   revalidatePath("/admin");
+  return res;
+}
+
+/**
+ * Locks an account out of the dashboard, or lets it back in.
+ *
+ * Separate from suspending a team, deliberately: this stops a person signing
+ * in and leaves their teams' API keys sending. See `setUserBanned`.
+ */
+export async function banUser(
+  userId: string,
+  banned: boolean,
+  reason: string | null,
+): Promise<Result> {
+  const a = await admin();
+  const res = await setUserBanned(a, userId, banned, reason);
+  revalidatePath("/admin/users");
+  return res;
+}
+
+/** Renames a team and its slug, as the instance operator. */
+export async function renameOrg(
+  teamId: string,
+  name: string,
+  slug: string,
+): Promise<Result> {
+  const a = await admin();
+  const res = await renameOrganization(a, teamId, { name, slug });
+  revalidatePath(`/admin/organizations/${teamId}`);
+  revalidatePath("/admin/organizations");
   return res;
 }
 

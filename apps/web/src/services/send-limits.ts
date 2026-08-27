@@ -4,6 +4,7 @@ import { db } from "@/db";
 import { emails, teamSendRate, teamSettings } from "@/db/schema";
 import { billingEnabled } from "./billing/config";
 import { billingRow, entitlementFrom } from "./billing/plans";
+import { getInstanceSettings } from "./instance-settings";
 import { getTeamAws } from "./team-aws";
 
 export type TokenResult = { ok: true } | { ok: false; retryInMs: number };
@@ -117,8 +118,13 @@ export interface TeamCaps {
   monthlyFrom: Date;
   /** Exclusive end of that window — what `x-ratelimit-reset` reports. */
   monthlyUntil: Date;
-  /** Where the numbers came from, for the refusal message and the UI. */
-  source: "settings" | "plan" | "none";
+  /**
+   * Where the numbers came from, for the refusal message and the UI.
+   *
+   * `instance` is the operator's default for a team nobody has decided about;
+   * `settings` is a decision somebody made about this team specifically.
+   */
+  source: "settings" | "plan" | "instance" | "none";
   /** Plan name when a plan supplied a cap; used in the refusal message. */
   planName: string | null;
 }
@@ -157,33 +163,67 @@ export async function resolveTeamCaps(
   teamId: string,
   now = new Date(),
 ): Promise<TeamCaps> {
-  const [ts] = await db()
-    .select({
-      daily: teamSettings.dailyLimit,
-      monthly: teamSettings.monthlyLimit,
-    })
-    .from(teamSettings)
-    .where(eq(teamSettings.teamId, teamId));
+  const [[ts], instance] = await Promise.all([
+    db()
+      .select({
+        daily: teamSettings.dailyLimit,
+        monthly: teamSettings.monthlyLimit,
+      })
+      .from(teamSettings)
+      .where(eq(teamSettings.teamId, teamId)),
+    getInstanceSettings(),
+  ]);
   const month = monthWindow(now);
 
-  if (!billingEnabled())
+  /*
+   * The instance-wide floor, under a team that has none of its own.
+   *
+   * Precedence is team, then plan, then instance: an operator's default is the
+   * value for a team nobody has decided about, not an override of one somebody
+   * has. It exists because an open-signup instance had no cap at all until an
+   * operator noticed a new team and set one by hand.
+   */
+  const daily = ts?.daily ?? instance.defaultDailyLimit ?? null;
+
+  if (!billingEnabled()) {
+    const monthly = ts?.monthly ?? instance.defaultMonthlyLimit ?? null;
     return {
-      daily: ts?.daily ?? null,
-      monthly: ts?.monthly ?? null,
+      daily,
+      monthly,
       monthlyFrom: month.from,
       monthlyUntil: month.until,
-      source: ts?.daily != null || ts?.monthly != null ? "settings" : "none",
+      source:
+        ts?.daily != null || ts?.monthly != null
+          ? "settings"
+          : daily != null || monthly != null
+            ? "instance"
+            : "none",
       planName: null,
     };
+  }
 
+  /*
+   * With billing on, the monthly allowance is the plan's and the instance
+   * default does not touch it — including when the plan says there is none.
+   * A plan with overage is a decision that this team may send without a
+   * ceiling, and an operator default meant for teams nobody has decided about
+   * must not quietly overrule it. The default daily still applies: plans
+   * govern volume over a period, not the rate on any one day.
+   */
   const e = entitlementFrom(await billingRow(teamId), now);
   const settingsWins = ts?.daily != null || ts?.monthly != null;
+  const dailyFromInstance =
+    ts?.daily == null && instance.defaultDailyLimit != null;
   return {
-    daily: ts?.daily ?? null,
+    daily,
     monthly: ts?.monthly ?? e.monthlyCap,
     monthlyFrom: ts?.monthly != null ? month.from : e.periodStart,
     monthlyUntil: ts?.monthly != null ? month.until : e.periodEnd,
-    source: settingsWins ? "settings" : "plan",
+    source: settingsWins
+      ? "settings"
+      : e.monthlyCap == null && dailyFromInstance
+        ? "instance"
+        : "plan",
     planName: ts?.monthly != null ? null : e.plan,
   };
 }

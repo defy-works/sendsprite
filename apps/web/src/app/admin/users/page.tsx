@@ -58,10 +58,13 @@ export default async function UsersPage({
         />
       ) : (
         <UsersTable
-          users={users.map((u) => ({
+          users={users.map(({ bannedAt, ...u }) => ({
             ...u,
             createdAt: u.createdAt.toISOString(),
             envAdmin: envAdmins.includes(u.email.toLowerCase()),
+            // A boolean crosses into the client tree; the timestamp is not
+            // shown and a Date would have to be serialised for nothing.
+            banned: bannedAt !== null,
           }))}
           me={s.user.id}
         />

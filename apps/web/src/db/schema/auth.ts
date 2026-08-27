@@ -20,6 +20,16 @@ export const user = pgTable("user", {
     .$onUpdate(() => /* @__PURE__ */ new Date())
     .notNull(),
   instanceAdmin: boolean("instance_admin").default(false),
+  /**
+   * Set by an instance admin to lock an account out of the dashboard.
+   *
+   * A ban is about the *person*, not their teams: a banned owner cannot sign
+   * in, but the team's API keys keep sending, because cutting a customer's
+   * mail off is `team_settings.suspended_at` and is a separate decision with a
+   * separate audit entry. An operator who wants both does both.
+   */
+  bannedAt: timestamp("banned_at", { withTimezone: true }),
+  bannedReason: text("banned_reason"),
 });
 
 export const session = pgTable(

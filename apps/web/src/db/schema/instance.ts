@@ -29,6 +29,16 @@ export const instanceSettings = pgTable(
      * this shortens every team that had asked for more.
      */
     retentionDays: integer("retention_days").notNull().default(90),
+    /**
+     * Caps applied to a team that has none of its own.
+     *
+     * `team_settings` still wins where it is set, and a plan still wins over
+     * nothing — this is the floor an operator puts under an instance where
+     * anybody can sign up, so a new team is not unlimited until somebody
+     * notices. Null is "no instance-wide cap", which is what it was before.
+     */
+    defaultDailyLimit: integer("default_daily_limit"),
+    defaultMonthlyLimit: integer("default_monthly_limit"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

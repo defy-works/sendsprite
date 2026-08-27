@@ -55,6 +55,8 @@ export default async function AdminPage() {
             signupMode={s.signupMode ?? "auto"}
             landingEnabled={s.landingEnabled ?? true}
             retentionDays={s.retentionDays}
+            defaultDailyLimit={s.defaultDailyLimit}
+            defaultMonthlyLimit={s.defaultMonthlyLimit}
             envSignupMode={env.SIGNUP_MODE}
           />
         </CardBody>

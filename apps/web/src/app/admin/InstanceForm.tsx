@@ -12,11 +12,15 @@ export function InstanceForm({
   signupMode,
   landingEnabled,
   retentionDays,
+  defaultDailyLimit,
+  defaultMonthlyLimit,
   envSignupMode,
 }: {
   signupMode: "open" | "invite" | "closed" | "auto";
   landingEnabled: boolean;
   retentionDays: number;
+  defaultDailyLimit: number | null;
+  defaultMonthlyLimit: number | null;
   envSignupMode: "open" | "invite" | "closed" | "auto";
 }) {
   const [landing, setLanding] = useState(landingEnabled);
@@ -81,6 +85,41 @@ export function InstanceForm({
           className="max-w-40"
         />
       </Field>
+      {/* The floor under a team nobody has decided about. A team's own
+          override still wins, and so does a plan — this is what an instance
+          with open signup applies until somebody looks. */}
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field
+          id="defaultDailyLimit"
+          label="Default daily limit"
+          hint="Applied to a team with no limit of its own. Blank for none."
+        >
+          <Input
+            id="defaultDailyLimit"
+            name="defaultDailyLimit"
+            type="number"
+            min={1}
+            step={1}
+            placeholder="No limit"
+            defaultValue={defaultDailyLimit ?? ""}
+          />
+        </Field>
+        <Field
+          id="defaultMonthlyLimit"
+          label="Default monthly limit"
+          hint="The same, per calendar month. A plan's allowance wins over this."
+        >
+          <Input
+            id="defaultMonthlyLimit"
+            name="defaultMonthlyLimit"
+            type="number"
+            min={1}
+            step={1}
+            placeholder="No limit"
+            defaultValue={defaultMonthlyLimit ?? ""}
+          />
+        </Field>
+      </div>
       <div className="flex items-center gap-3">
         <Button type="submit" loading={pending}>
           Save

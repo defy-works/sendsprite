@@ -1,6 +1,9 @@
 import { cache } from "react";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
+import { eq } from "drizzle-orm";
+import { db } from "@/db";
+import { user } from "@/db/schema";
 import { loadEnv } from "@/env.schema";
 import { auth } from "./auth";
 import { isInstanceAdmin, parseAdminEmails } from "./instance-admin";
@@ -17,10 +20,29 @@ const cachedResolveTeam = cache((userId: string, activeId: string | null) =>
   resolveTeam(userId, activeId),
 );
 
-/** Redirects to /login when unauthenticated. */
+/**
+ * Whether this account has been locked out by an instance admin.
+ *
+ * Read per request rather than carried on the session: a ban has to take
+ * effect on the request after it is applied, and a claim baked into a session
+ * cookie takes effect whenever that cookie next happens to be reissued.
+ * `setUserBanned` deletes the sessions too, so this is the belt to that
+ * braces — it also covers a session created between the two statements.
+ */
+const bannedSince = cache(async (userId: string) => {
+  const [row] = await db()
+    .select({ at: user.bannedAt })
+    .from(user)
+    .where(eq(user.id, userId))
+    .limit(1);
+  return row?.at ?? null;
+});
+
+/** Redirects to /login when unauthenticated, and to /banned when locked out. */
 export async function requireSession() {
   const s = await getSession();
   if (!s) redirect("/login");
+  if (await bannedSince(s.user.id)) redirect("/banned");
   return s;
 }
 
@@ -84,6 +106,13 @@ export async function requireApiSession(): Promise<
     return {
       ok: false,
       response: Response.json({ error: "unauthorized" }, { status: 401 }),
+    };
+  // The same check as the pages make. A route handler that answered a banned
+  // session would be the way around the ban.
+  if (await bannedSince(s.user.id))
+    return {
+      ok: false,
+      response: Response.json({ error: "forbidden" }, { status: 403 }),
     };
   const ctx = await cachedResolveTeam(
     s.user.id,
