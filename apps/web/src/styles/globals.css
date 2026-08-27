@@ -112,6 +112,23 @@ body {
   border-radius: 4px;
 }
 
+/*
+ * Except the editor canvas's own editables.
+ *
+ * A selected block already draws a 2px indigo outline, and focusing the
+ * paragraph inside it drew the same ring again two pixels in — two identical
+ * rectangles for one thing. Nothing is lost: focusing an editable selects its
+ * block, so the block's outline *is* the focus indicator.
+ *
+ * Here rather than as a utility on the element, because this rule is
+ * unlayered and every Tailwind utility is in `@layer utilities` — an unlayered
+ * declaration wins over a layered one whatever their specificities are, so
+ * `focus-visible:outline-none` on the element loses to the rule above.
+ */
+.ss-canvas [contenteditable]:focus-visible {
+  outline: none;
+}
+
 ::selection {
   background: var(--color-indigo-500);
   color: white;

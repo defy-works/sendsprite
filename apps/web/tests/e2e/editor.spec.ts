@@ -234,3 +234,28 @@ test("a heading is typed where it sits, and stays a heading", async ({
   const frame = await openPreview(page, "Template preview");
   await expect(frame.getByRole("heading")).toContainText("and again");
 });
+
+test("editing a block draws one outline, not two", async ({ page }) => {
+  await signUpOwner(page, "rings");
+  await page.goto("/app/templates/new");
+
+  // The block's outline is the focus indicator. The dashboard's global
+  // `:focus-visible` ring drew the same 2px indigo rectangle two pixels
+  // inside it, so a paragraph being typed into had two identical borders.
+  const body = page.getByRole("list", { name: "Email body" });
+  const text = body.getByLabel("Text content", { exact: true }).first();
+  await text.click();
+  await page.keyboard.type("x");
+  await expect(text).toHaveCSS("outline-style", "none");
+
+  const heading = body.getByRole("heading").first();
+  await heading.click();
+  await page.keyboard.type("y");
+  await expect(heading).toHaveCSS("outline-style", "none");
+
+  // The block around it still says which one is selected.
+  await expect(body.getByRole("listitem", { name: "Heading block" })).toHaveCSS(
+    "outline-style",
+    "solid",
+  );
+});

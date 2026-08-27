@@ -66,7 +66,13 @@ export function PlainEditable({
       spellCheck
       tabIndex={readOnly ? -1 : 0}
       style={style}
-      className={cn("outline-none", inert && "pointer-events-none", className)}
+      // The block's own outline is the focus indicator; the dashboard's global
+      // `:focus-visible` ring would draw a second one two pixels inside it.
+      className={cn(
+        "outline-none focus-visible:outline-none",
+        inert && "pointer-events-none",
+        className,
+      )}
       onInput={(e) => onChange(e.currentTarget.textContent ?? "")}
       onKeyDown={(e) => {
         // A heading is one line. Enter would insert a `<div>` or a `<br>` that

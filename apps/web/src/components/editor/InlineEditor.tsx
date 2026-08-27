@@ -144,8 +144,20 @@ const CONTENT_CLASS =
  * what is typed looks like what is sent. It had the panel's `text-white`,
  * which on a white card is a paragraph you cannot see.
  */
+/*
+ * `focus-visible:outline-none`, and that is the whole point of it.
+ *
+ * The dashboard has a global `:focus-visible` ring — 2px indigo — and the
+ * selected block already draws a 2px indigo outline of its own. Typing into a
+ * paragraph therefore produced two indigo rectangles, one inside the other:
+ * the block saying it is selected, and the browser saying the same thing again
+ * two pixels in. Nothing is lost by removing the inner one, because focusing
+ * this editor selects the block, and the block's outline *is* the focus
+ * indicator.
+ */
 const CANVAS_CLASS =
-  "w-full whitespace-pre-wrap break-words focus:outline-none " +
+  "w-full whitespace-pre-wrap break-words outline-none " +
+  "focus:outline-none focus-visible:outline-none " +
   "[&_a]:underline [&_a]:decoration-current";
 
 /**
