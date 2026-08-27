@@ -264,7 +264,10 @@ export function insertNode(
   return nodes.map((n) => {
     if (n.type !== "row" || n.id !== parsed.rowId) return n;
     const col = n.columns[parsed.index];
-    if (!col || col.length >= MAX_BLOCKS_PER_COLUMN) return n;
+    // A row of one holds one block. It exists to *be* that block's row — a
+    // second block in it is two components sharing a row, which is the thing
+    // wrapping every block in a row was meant to stop.
+    if (!col || col.length >= capacity(n)) return n;
     const nextCol = [...col];
     nextCol.splice(clamp(index, nextCol.length), 0, node);
     return {
@@ -374,13 +377,18 @@ function relayout(row: EditorRow, layout: ColumnLayout): EditorRow {
   const columns = row.columns.slice(0, want).map((c) => [...c]);
   while (columns.length < want) columns.push([]);
   const orphans = row.columns.slice(want).flat();
+  const next: EditorRow = { ...row, layout, columns };
   if (orphans.length > 0) {
     const last = columns[columns.length - 1]!;
-    // The cap is the contract's; overflow is dropped rather than saved into a
-    // body the service would refuse in full.
-    last.push(...orphans.slice(0, MAX_BLOCKS_PER_COLUMN - last.length));
+    // The cap is the contract's, or one for a row of one; overflow is dropped
+    // rather than saved into a body the service would refuse in full.
+    last.push(...orphans.slice(0, capacity(next) - last.length));
   }
-  return { ...row, layout, columns };
+  return next;
 }
+
+/** How many blocks a column of this row may hold. */
+export const capacity = (row: EditorRow): number =>
+  row.layout === "1" ? 1 : MAX_BLOCKS_PER_COLUMN;
 
 const clamp = (i: number, max: number) => Math.max(0, Math.min(i, max));

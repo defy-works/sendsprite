@@ -355,3 +355,31 @@ describe("row spacing round-trips", () => {
     expect(row).toHaveProperty("spaceTop", 16);
   });
 });
+
+describe("a row of one holds one block", () => {
+  it("refuses a second block in its column", () => {
+    // The row exists to be that block's row. Two blocks in it is two
+    // components sharing a row, which is what wrapping every block was for.
+    const only = leaf("heading");
+    const row = rowWith("1", [[only]]);
+    const target = columnContainer(row.id, 0);
+    const after = insertNode([row], target, 1, leaf("text"));
+    expect(itemsIn(after, target)).toEqual([only.id]);
+  });
+
+  it("takes a second block once it has a second column", () => {
+    const only = leaf("heading");
+    const row = rowWith("1-1", [[only], []]);
+    const target = columnContainer(row.id, 0);
+    const after = insertNode([row], target, 1, leaf("text"));
+    expect(itemsIn(after, target)).toHaveLength(2);
+  });
+
+  it("drops what will not fit when a row is narrowed to one column", () => {
+    const a = leaf("heading");
+    const b = leaf("text");
+    const row = rowWith("1-1", [[a], [b]]);
+    const narrowed = updateRow([row], row.id, { layout: "1" });
+    expect(itemsIn(narrowed, columnContainer(row.id, 0))).toEqual([a.id]);
+  });
+});

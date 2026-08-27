@@ -31,6 +31,7 @@ import {
 } from "@/lib/editor/blocks";
 import {
   blocksOfTree,
+  capacity,
   editorLeaf,
   editorNodesOf,
   editorRow,
@@ -183,21 +184,50 @@ export function BlockDesigner({
   };
 
   /** Click-to-add: appends to the root, or into the selected block's container. */
+  /** The index in the body of the row the selection is in, or the end. */
+  const rowIndexOf = (tree: EditorNode[], id: string | null): number => {
+    if (!id) return tree.length;
+    const found = locate(tree, id);
+    if (!found) return tree.length;
+    const c = parseContainer(found.container);
+    const rowId = c?.kind === "column" ? c.rowId : found.node.id;
+    const at = tree.findIndex((n) => n.id === rowId);
+    return at === -1 ? tree.length : at + 1;
+  };
+
+  /**
+   * Adds a block beside the selection, or after it.
+   *
+   * Into the selected block's own column when that column has room — which is
+   * a row with real columns — and otherwise as a new row directly after the
+   * one the selection is in. It used to insert into the selection's container
+   * unconditionally, and a row of one is full at one block, so clicking a
+   * palette tile while an ordinary block was selected did nothing at all.
+   */
   const addLeaf = (kind: LeafKind) => {
     const node = editorLeaf(blockDefaults(kind));
     onChange((tree) => {
       const target = selectedId ? locate(tree, selectedId) : null;
-      const container: ContainerId = target?.container ?? "root";
-      return insertNode(tree, container, itemsIn(tree, container).length, node);
+      const c = target ? parseContainer(target.container) : null;
+      if (c?.kind === "column") {
+        const row = tree.find((n) => n.id === c.rowId);
+        const items = itemsIn(tree, target!.container);
+        if (row?.type === "row" && items.length < capacity(row))
+          return insertNode(tree, target!.container, items.length, node);
+      }
+      return insertNode(tree, "root", rowIndexOf(tree, selectedId), node);
     });
     setSelectedId(node.id);
   };
 
   const addRow = (layout: ColumnLayout) => {
     const node = editorRow(layout);
-    // Always at the root: a row cannot nest, so "next to the selection" is
-    // only meaningful when the selection is itself at the root.
-    onChange((tree) => insertNode(tree, "root", tree.length, node));
+    // After the row the selection is in, not at the very end: a block added
+    // while you are looking at the middle of a body belongs where you are
+    // looking. A row cannot nest, so the root is the only container for it.
+    onChange((tree) =>
+      insertNode(tree, "root", rowIndexOf(tree, selectedId), node),
+    );
     setSelectedId(node.id);
   };
 

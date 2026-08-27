@@ -42,7 +42,9 @@ export function SegmentedControl<T extends string>({
       <div
         role="radiogroup"
         aria-label={label}
-        className="flex gap-0.5 rounded-md border border-white/12 bg-white/4 p-0.5"
+        // Wraps rather than overflowing: this sits in a 16rem inspector, and
+        // a five-option control with glyphs is wider than that.
+        className="flex flex-wrap gap-0.5 rounded-md border border-white/12 bg-white/4 p-0.5"
       >
         {options.map((o) => (
           <button

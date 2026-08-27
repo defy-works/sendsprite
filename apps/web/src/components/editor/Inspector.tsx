@@ -392,7 +392,7 @@ function LayoutGlyph({ layout }: { layout: ColumnLayout }) {
             ? [2, 1]
             : [1, 2];
   return (
-    <span aria-hidden className="flex h-3 w-8 items-stretch gap-[2px]">
+    <span aria-hidden className="flex h-3 w-6 items-stretch gap-[2px]">
       {parts.map((p, i) => (
         <span
           key={i}

@@ -266,6 +266,7 @@ function LeafShell({
   theme,
   pad,
   width,
+  asRow,
   readOnly,
   selected,
   invalid,
@@ -279,6 +280,19 @@ function LeafShell({
   pad: number;
   /** Layout width, for a block inside a column. */
   width?: number;
+  /**
+   * Drag and delete the *row* instead of the block.
+   *
+   * Set for the only block in a row of one. That row exists to be this
+   * block's row, so dragging the block has to take the row with it — otherwise
+   * the block leaves and an empty row stays behind — and deleting the block
+   * has to delete the row for the same reason.
+   */
+  asRow?: {
+    attributes: DraggableAttributes;
+    listeners: SyntheticListenerMap | undefined;
+    onRemove: () => void;
+  };
   readOnly: boolean;
   selected: boolean;
   invalid: boolean;
@@ -287,13 +301,16 @@ function LeafShell({
   onRemove: (id: string) => void;
 }) {
   const {
-    attributes,
-    listeners,
+    attributes: own,
+    listeners: ownListeners,
     setNodeRef,
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: leaf.id, disabled: readOnly });
+  } = useSortable({ id: leaf.id, disabled: readOnly || asRow !== undefined });
+  const attributes = asRow?.attributes ?? own;
+  const listeners = asRow?.listeners ?? ownListeners;
+  const remove = asRow ? asRow.onRemove : () => onRemove(leaf.id);
   const issue = blockIssue(leaf.block);
   const block = leaf.block;
 
@@ -332,7 +349,7 @@ function LeafShell({
             label={`${BLOCK_LABELS[block.kind]} block`}
             attributes={attributes}
             listeners={listeners}
-            onRemove={() => onRemove(leaf.id)}
+            onRemove={remove}
           />
         </ChromeBar>
       )}
@@ -375,7 +392,7 @@ function LeafShell({
                     label="Text block"
                     attributes={attributes}
                     listeners={listeners}
-                    onRemove={() => onRemove(leaf.id)}
+                    onRemove={remove}
                   />
                 </>
               )
@@ -457,7 +474,7 @@ function RowShell({
       }}
       className={outline(selected, invalid, isDragging)}
     >
-      {!readOnly && (
+      {!readOnly && row.layout !== "1" && (
         <ChromeBar>
           <ChromeButtons
             label="row"
@@ -465,12 +482,12 @@ function RowShell({
             listeners={listeners}
             onRemove={() => onRemove(row.id)}
           >
-            {row.layout !== "1" && (
-              <span className="flex items-center gap-1 px-1 text-[10px] text-white/45">
-                <IconColumns className="text-sm" />
-                {row.layout}
-              </span>
-            )}
+            {/* Only a row with columns gets this bar at all, so it always has
+                a ratio worth naming. */}
+            <span className="flex items-center gap-1 px-1 text-[10px] text-white/45">
+              <IconColumns className="text-sm" />
+              {row.layout}
+            </span>
           </ChromeButtons>
         </ChromeBar>
       )}
@@ -485,6 +502,15 @@ function RowShell({
             index={i}
             grow={growOf(row.layout, i)}
             verticalAlign={row.verticalAlign ?? "top"}
+            asRow={
+              row.layout === "1"
+                ? {
+                    attributes,
+                    listeners,
+                    onRemove: () => onRemove(row.id),
+                  }
+                : undefined
+            }
             leaves={column}
             theme={theme}
             readOnly={readOnly}
@@ -511,6 +537,7 @@ function Column({
   index,
   grow,
   verticalAlign,
+  asRow,
   leaves,
   theme,
   readOnly,
@@ -523,6 +550,12 @@ function Column({
   index: number;
   grow: number;
   verticalAlign: VerticalAlign;
+  /** Passed to the single block of a row of one. */
+  asRow?: {
+    attributes: DraggableAttributes;
+    listeners: SyntheticListenerMap | undefined;
+    onRemove: () => void;
+  };
   leaves: EditorLeaf[];
   theme: CampaignTheme;
   readOnly: boolean;
@@ -588,6 +621,7 @@ function Column({
                 leaf={leaf}
                 theme={theme}
                 pad={0}
+                asRow={asRow}
                 readOnly={readOnly}
                 selected={selectedId === leaf.id}
                 invalid={false}
