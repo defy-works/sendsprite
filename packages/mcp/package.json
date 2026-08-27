@@ -1,6 +1,6 @@
 {
   "name": "@sendsprite/mcp",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Model Context Protocol server for Sendsprite: send email, check status, search, domains, templates, contacts and stats.",
   "license": "MIT",
   "repository": {

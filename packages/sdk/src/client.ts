@@ -1,6 +1,6 @@
 import { SendspriteError, type SendspriteErrorCode } from "./errors";
 
-export const SDK_VERSION = "0.3.0"; // kept in sync with package.json by the release pipeline
+export const SDK_VERSION = "0.4.0"; // kept in sync with package.json by the release pipeline
 
 /** The hosted instance, used when neither `baseUrl` nor `SENDSPRITE_URL` is given. */
 export const DEFAULT_BASE_URL = "https://sendsprite.com";
