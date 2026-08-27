@@ -248,6 +248,37 @@ describe("sendQueuedEmail", () => {
     await pg.db.delete(webhooks).where(eq(webhooks.id, hook.data.id));
   });
 
+  /**
+   * The IAM policy the connect stack creates was missing
+   * `ses:ApplyTrackingConfigurationOverrides`, which every send needs because
+   * every send disables SES's own open/click tracking. Retrying that five
+   * times only postponed the same refusal by ~15 minutes, during which the
+   * message sat in `queued` looking like a slow send rather than a broken
+   * connection. See infra/aws/sendsprite-connect.yaml.
+   */
+  it("AccessDeniedException → failed at once, not five retries later", async () => {
+    const msg =
+      "User 'arn:aws:iam::1:user/sendsprite-x' is not authorized to perform 'ses:ApplyTrackingConfigurationOverrides'";
+    ses.on(SendEmailCommand).rejects(awsErr("AccessDeniedException", msg));
+    const created = await create();
+    const enqueue = vi.fn(async () => "");
+    const { sendQueuedEmail } = await import("@/services/ses-send");
+    const out = await sendQueuedEmail(created.id, { enqueue });
+    expect(out).toEqual({ outcome: "failed", error: msg });
+    expect(await load(created.id)).toMatchObject({
+      status: "failed",
+      attempts: 1,
+      lastError: `AccessDeniedException: ${msg}`,
+    });
+    expect(await events(created.id)).toEqual(["queued", "failed"]);
+    // No re-enqueue: nothing is waiting on a retry that cannot succeed.
+    expect(enqueue).not.toHaveBeenCalledWith(
+      "email.send",
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
   it("TooManyRequestsException → throws for pg-boss retry; status back to queued with lastError", async () => {
     ses
       .on(SendEmailCommand)

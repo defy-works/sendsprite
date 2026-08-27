@@ -9,17 +9,62 @@ console and clicks _Create stack_; nothing is typed by hand.
 
 ## What the stack creates
 
-| Resource               | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `SendspriteUser`       | IAM user `sendsprite-<stack name>` with one inline policy: SES account/identity/configuration-set read+write, `SendEmail`/`SendRawEmail`, `PutAccountDetails`; SNS `CreateTopic`/`Subscribe`/`ConfirmSubscription`/`GetTopicAttributes`/`SetTopicAttributes`/`ListSubscriptionsByTopic` scoped to `arn:aws:sns:*:<account>:sendsprite-*` (`ConfirmSubscription` lets the webhook confirm through the SDK with `AuthenticateOnUnsubscribe`); `sns:Unsubscribe`/`GetSubscriptionAttributes` (subscription ARNs are not topic-scoped); `sts:GetCallerIdentity`. |
-| `CallbackFunctionRole` | Lambda execution role allowed only `iam:CreateAccessKey`/`DeleteAccessKey`/`ListAccessKeys` on that user.                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `CallbackFunction`     | Python 3.12 Lambda (inline code) backing the custom resource.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `Callback`             | `Custom::SendspriteCallback` — runs the Lambda on Create/Delete.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Resource               | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SendspriteUser`       | IAM user `sendsprite-<stack name>` with one inline policy: SES account/identity/configuration-set read+write, `SendEmail`/`SendRawEmail`/`ApplyTrackingConfigurationOverrides`, `PutAccountDetails`; SNS `CreateTopic`/`Subscribe`/`ConfirmSubscription`/`GetTopicAttributes`/`SetTopicAttributes`/`ListSubscriptionsByTopic` scoped to `arn:aws:sns:*:<account>:sendsprite-*` (`ConfirmSubscription` lets the webhook confirm through the SDK with `AuthenticateOnUnsubscribe`); `sns:Unsubscribe`/`GetSubscriptionAttributes` (subscription ARNs are not topic-scoped); `sts:GetCallerIdentity`. |
+| `CallbackFunctionRole` | Lambda execution role allowed only `iam:CreateAccessKey`/`DeleteAccessKey`/`ListAccessKeys` on that user.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `CallbackFunction`     | Python 3.12 Lambda (inline code) backing the custom resource.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `Callback`             | `Custom::SendspriteCallback` — runs the Lambda on Create/Delete.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
 The SNS topic `sendsprite-events`, the configuration set `sendsprite`, and the
 event-destination subscription are **not** part of the stack: Sendsprite creates
 them itself after any connect path (instance role, one-click, manual keys) using
 the permissions above, so all three paths converge on the same state.
+
+### Why `ses:ApplyTrackingConfigurationOverrides` is in there
+
+Every `SendEmail` passes `ConfigurationOverrides.Tracking` with open and click
+tracking `DISABLED`. That is not decoration. Sendsprite serves its own open
+pixel and click redirect (`lib/tracking.ts`), and SES turns its own engagement
+tracking on for any message whose configuration set has an event destination
+matching `OPEN` or `CLICK` — which ours does, so that the same SNS topic can
+carry every other event type. Without the override SES would rewrite the links
+and insert a second pixel, and both would be counted twice.
+
+SES authorises that per-message override as a separate action from `SendEmail`,
+so a policy without it fails **every** send, not just tracked ones:
+
+```
+AccessDeniedException: User 'arn:aws:iam::<account>:user/sendsprite-<stack>' is
+not authorized to perform 'ses:ApplyTrackingConfigurationOverrides'
+```
+
+The message is stored on the email row and shown on its page in the dashboard.
+
+## Updating an existing stack
+
+The template changes with the app; a stack created from an older copy keeps the
+policy it was created with. To pick up a permission added since (the one above
+is the first), re-run the template over the same stack — the IAM user, its
+access key and the connection all survive, because only the inline policy
+changes and `Custom::SendspriteCallback` is a no-op on Update:
+
+```sh
+aws cloudformation update-stack \
+  --stack-name <your stack> \
+  --template-body file://infra/aws/sendsprite-connect.yaml \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameters ParameterKey=CallbackUrl,UsePreviousValue=true \
+               ParameterKey=CallbackToken,UsePreviousValue=true
+```
+
+In the console it is the same thing: **Update** → _Replace existing template_ →
+upload the file → keep both parameters → update.
+
+Disconnecting and reconnecting through the wizard also works and is the path to
+suggest to a self-hoster, but it issues a new access key and deletes the old
+one. Nothing else is lost: the configuration set, SNS topic and verified
+identities live outside the stack.
 
 ## Callback flow
 

@@ -17,6 +17,17 @@ Parameters:
 Resources:
   SendspriteUser:
     Type: AWS::IAM::User
+    # W3037 checks actions against a list cfn-lint ships with, which does not
+    # yet carry `ses:ApplyTrackingConfigurationOverrides` — a permission-only
+    # action with no API call of its own, so it arrives late. The warning is
+    # not free to leave in place: cfn-lint exits non-zero on warnings and CI
+    # runs it. Drop this block once the bundled list catches up; until then a
+    # typo in any other action in this policy is on review to catch.
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W3037
     Properties:
       UserName: !Sub "sendsprite-${AWS::StackName}"
       Policies:
@@ -38,6 +49,13 @@ Resources:
                   - ses:UpdateConfigurationSetEventDestination
                   - ses:SendEmail
                   - ses:SendRawEmail
+                  # Every send passes ConfigurationOverrides.Tracking to turn
+                  # SES's own open/click rewriting off: Sendsprite tracks both
+                  # itself, and the config set's OPEN/CLICK event destination
+                  # would otherwise switch SES tracking on. SES authorises that
+                  # per-message override as an action of its own, so without
+                  # this line every SendEmail is refused with AccessDenied.
+                  - ses:ApplyTrackingConfigurationOverrides
                 Resource: "*"
               # ConfirmSubscription: the webhook confirms through the SDK (with
               # AuthenticateOnUnsubscribe) instead of GET SubscribeURL.

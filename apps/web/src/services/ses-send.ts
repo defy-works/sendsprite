@@ -57,6 +57,12 @@ const BLOCKS_AT_SEND: ReadonlySet<SuppressionReason> = new Set(
 
 /** SES errors a retry cannot fix: the message is marked `failed` at once. */
 const NO_RETRY = new Set([
+  // An IAM policy gap, not a blip: the same key will be refused on every
+  // attempt, so the five backoff retries only delay the verdict by ~15 minutes
+  // and bury the one message an operator needs to read. Key propagation right
+  // after a connect fails as `InvalidClientTokenId`, not this, and
+  // `verifyIdentity` already waits that out (services/aws-connect.ts).
+  "AccessDeniedException",
   "MessageRejected",
   "MailFromDomainNotVerifiedException",
   "AccountSuspendedException",

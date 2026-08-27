@@ -77,9 +77,15 @@ jobs:
         with: { python-version: "3.12" }
       - run: pip install cfn-lint
       - run: cfn-lint infra/aws/sendsprite-connect.yaml
-      # Publish on tags once the bucket exists (maintainer step, see Task 17):
-      # - run: aws s3 cp infra/aws/sendsprite-connect.yaml s3://sendsprite-cfn/${GITHUB_REF_NAME}/sendsprite-connect.yaml --acl public-read
-      # - run: aws s3 cp infra/aws/sendsprite-connect.yaml s3://sendsprite-cfn/latest/sendsprite-connect.yaml --acl public-read
+      # Publish on tags. The bucket (s3://sendsprite-cfn, us-east-1) exists and
+      # serves `latest/` publicly through a bucket policy, NOT through object
+      # ACLs: Object Ownership is BucketOwnerEnforced, so `--acl public-read`
+      # is rejected with AccessControlListNotSupported. Do not add it back.
+      # Still needs credentials on this job (an OIDC role) before uncommenting;
+      # until then `latest/` is uploaded by hand and drifts from the repo, which
+      # is how the stack that could not send (bug-016) stayed live for two days.
+      # - run: aws s3 cp infra/aws/sendsprite-connect.yaml s3://sendsprite-cfn/${GITHUB_REF_NAME}/sendsprite-connect.yaml --content-type text/yaml
+      # - run: aws s3 cp infra/aws/sendsprite-connect.yaml s3://sendsprite-cfn/latest/sendsprite-connect.yaml --content-type text/yaml
 
   # Deliberately no `needs: test`: the image build is independent of the test
   # suite, so both jobs run in parallel and a red test job still shows whether
