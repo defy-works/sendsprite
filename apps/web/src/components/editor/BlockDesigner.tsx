@@ -146,13 +146,40 @@ export function BlockDesigner({
   const resolveDrop = (
     tree: EditorNode[],
     overId: string,
+    moving: string | null,
   ): { container: ContainerId; index: number } | null => {
-    if (parseContainer(overId)) {
-      const container = overId as ContainerId;
-      return { container, index: itemsIn(tree, container).length };
-    }
+    const asContainer = parseContainer(overId);
+    if (asContainer)
+      return {
+        container: overId as ContainerId,
+        index: itemsIn(tree, overId as ContainerId).length,
+      };
+
     const over = locate(tree, overId);
-    return over ? { container: over.container, index: over.index } : null;
+    if (!over) return null;
+
+    /*
+     * A drop onto a block whose row is full becomes a drop *beside* that row.
+     *
+     * Every ordinary block lives in a row of one, and a row of one is full at
+     * one block — so dropping anything onto a paragraph resolved to a
+     * container that refused it, and the drag did nothing at all. What the
+     * gesture means is "put it here", and here is the body, next to the row
+     * the block is in.
+     */
+    const c = parseContainer(over.container);
+    if (c?.kind === "column") {
+      const row = tree.find((n) => n.id === c.rowId);
+      const items = itemsIn(tree, over.container);
+      const full = row?.type === "row" && items.length >= capacity(row);
+      // Not full when the thing being dropped is already the occupant — that
+      // is a reorder within the column, not a new arrival.
+      if (full && !items.includes(moving ?? "")) {
+        const at = tree.findIndex((n) => n.id === c.rowId);
+        return { container: "root", index: at === -1 ? tree.length : at + 1 };
+      }
+    }
+    return { container: over.container, index: over.index };
   };
 
   const onDragEnd = (e: DragEndEvent) => {
@@ -162,7 +189,7 @@ export function BlockDesigner({
     const activeId = String(e.active.id);
 
     onChange((tree) => {
-      const drop = resolveDrop(tree, overId);
+      const drop = resolveDrop(tree, overId, activeId);
       if (!drop) return tree;
 
       // A palette drag creates a block rather than moving one.
@@ -305,9 +332,19 @@ export function BlockDesigner({
         )}
         onClick={() => setSelectedId(null)}
       >
+        {/*
+         * Below the canvas until there is room for a column beside it.
+         *
+         * Stacked above, adding a block to the middle of a long body meant
+         * dragging from the top of the page down past everything — and the
+         * page scrolls, so the drag had to be paused at the edge to scroll.
+         * Below it, the palette is next to the end of the body, which is where
+         * blocks are usually added; the click-to-add path puts one beside
+         * whatever is selected, which is the answer for the middle.
+         */}
         <div
           className={cn(
-            "flex flex-col gap-4 xl:sticky xl:top-6 xl:self-start",
+            "order-2 flex flex-col gap-4 xl:order-none xl:sticky xl:top-6 xl:self-start",
             mode === "preview" && "hidden",
           )}
           onClick={(e) => e.stopPropagation()}
@@ -389,7 +426,7 @@ export function BlockDesigner({
         </div>
 
         <div
-          className="flex min-w-0 flex-col gap-6"
+          className="order-1 flex min-w-0 flex-col gap-6 xl:order-none"
           onClick={(e) => e.stopPropagation()}
         >
           {settings}

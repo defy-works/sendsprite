@@ -216,3 +216,21 @@ test("every block is a row, and the breadcrumb is how you reach it", async ({
   const frame = await openPreview(page, "Template preview");
   await expect(frame.locator('td.ss-gutter[width="48"]')).toBeVisible();
 });
+
+test("a heading is typed where it sits, and stays a heading", async ({
+  page,
+}) => {
+  await signUpOwner(page, "headings");
+  await page.goto("/app/templates/new");
+
+  // Not a textbox pretending to be a heading: it is the element the email
+  // will carry, so the canvas has the same structure as the thing it previews.
+  const canvas = page.getByRole("list", { name: "Email body" });
+  const heading = canvas.getByRole("heading").first();
+  await heading.click();
+  await page.keyboard.press("End");
+  await page.keyboard.type(" and again");
+
+  const frame = await openPreview(page, "Template preview");
+  await expect(frame.getByRole("heading")).toContainText("and again");
+});

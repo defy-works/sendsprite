@@ -214,6 +214,7 @@ export function InlineEditor({
   surface = "panel",
   toolbarOpen = false,
   toolbarExtras,
+  inert = false,
 }: {
   /** The stored inline HTML. Read once, on mount; this component owns it after. */
   value: string;
@@ -239,6 +240,15 @@ export function InlineEditor({
    * top of the words it belonged to. One bar, one surface, above the block.
    */
   toolbarExtras?: ReactNode;
+  /**
+   * Take no pointer events.
+   *
+   * Set while a block is being dragged over the canvas. A contenteditable
+   * under the cursor claims the pointer, which cancels the drag in progress —
+   * from the outside that looks like the block disappearing out of your hand
+   * the moment it passes over a paragraph.
+   */
+  inert?: boolean;
 }) {
   const onCanvas = surface === "canvas";
   const contentClass = onCanvas ? CANVAS_CLASS : CONTENT_CLASS;
@@ -349,7 +359,13 @@ export function InlineEditor({
   };
 
   return (
-    <div className={cn("flex flex-col", onCanvas ? "gap-1" : "gap-2")}>
+    <div
+      className={cn(
+        "flex flex-col",
+        onCanvas ? "gap-1" : "gap-2",
+        inert && "pointer-events-none",
+      )}
+    >
       {!readOnly && (
         <div
           className={cn(

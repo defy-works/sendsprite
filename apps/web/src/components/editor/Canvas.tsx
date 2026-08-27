@@ -30,6 +30,22 @@ import {
   type EditorRow,
 } from "@/lib/editor/tree";
 import { InlineEditor } from "./InlineEditor";
+import { PlainEditable } from "./PlainEditable";
+
+/**
+ * The renderer's heading sizes, for the one block edited as live text.
+ *
+ * Three numbers rather than an export: they are the type scale of the email,
+ * and the canvas needs them as CSS on an element rather than inside a style
+ * string. `campaign-theme.test.ts` pins the rendered sizes; if these drift the
+ * heading types at the wrong size while it is being edited and snaps to the
+ * right one in the preview, which is visible immediately.
+ */
+const HEADING_SIZE: Record<1 | 2 | 3, string> = {
+  1: "28px",
+  2: "22px",
+  3: "18px",
+};
 
 /**
  * The canvas: the email itself, with the editing chrome laid over it.
@@ -250,15 +266,27 @@ function ChromeButtons({
 }
 
 /** The outline states, shared by leaves and rows. */
-const outline = (selected: boolean, invalid: boolean, dragging: boolean) =>
+const outline = (
+  selected: boolean,
+  invalid: boolean,
+  dragging: boolean,
+  /** A row of one draws nothing: the block inside it is the same object. */
+  bare = false,
+) =>
   cn(
-    "group/block relative cursor-default outline-offset-[-1px] transition-[outline-color]",
+    // `flow-root`, so the block's own margins are inside the box the outline
+    // draws. A rendered button carries `margin:8px 0 24px`; without this those
+    // margins collapse out through the shell and the outline lands offset from
+    // the thing it is outlining — above it on one side, inside it on the other.
+    "group/block relative flow-root cursor-default outline-offset-[-1px] transition-[outline-color]",
     dragging && "z-10 opacity-60",
-    invalid
-      ? "outline outline-2 outline-amber-400/70"
-      : selected
-        ? "outline outline-2 outline-indigo-500"
-        : "outline outline-1 outline-transparent hover:outline-indigo-400/40",
+    bare
+      ? null
+      : invalid
+        ? "outline outline-2 outline-amber-400/70"
+        : selected
+          ? "outline outline-2 outline-indigo-500"
+          : "outline outline-1 outline-transparent hover:outline-indigo-400/40",
   );
 
 function LeafShell({
@@ -308,6 +336,7 @@ function LeafShell({
     transition,
     isDragging,
   } = useSortable({ id: leaf.id, disabled: readOnly || asRow !== undefined });
+  const dragging = useDndContext().active !== null;
   const attributes = asRow?.attributes ?? own;
   const listeners = asRow?.listeners ?? ownListeners;
   const remove = asRow ? asRow.onRemove : () => onRemove(leaf.id);
@@ -354,7 +383,29 @@ function LeafShell({
         </ChromeBar>
       )}
 
-      {block.kind === "text" ? (
+      {block.kind === "heading" ? (
+        // Typed where it sits, like the paragraph. Its size and colour stay in
+        // the inspector; this is the first thing anyone tries on a canvas that
+        // shows the email.
+        <PlainEditable
+          as={`h${block.level}`}
+          value={block.text}
+          readOnly={readOnly}
+          inert={dragging}
+          onChange={(text) => onChange(leaf.id, { ...block, text })}
+          style={{
+            fontFamily: FONT_STACKS[theme.font ?? "sans"],
+            fontSize: HEADING_SIZE[block.level],
+            fontWeight: 700,
+            lineHeight: 1.3,
+            color: block.color ?? theme.textColor ?? "#111111",
+            textAlign: block.align ?? "left",
+            margin: "24px 0 8px",
+            paddingTop: block.spaceTop ?? 0,
+            paddingBottom: block.spaceBottom ?? 0,
+          }}
+        />
+      ) : block.kind === "text" ? (
         /*
          * The one block edited where it lives, dressed as the paragraph it
          * will be sent as: the renderer's own font, size, colour and
@@ -376,6 +427,10 @@ function LeafShell({
         >
           <InlineEditor
             surface="canvas"
+            // Off while something is being dragged: a contenteditable under
+            // the cursor takes the pointer, and the drag it interrupted was
+            // dropped — which looked like the block vanishing from the hand.
+            inert={dragging}
             value={block.html}
             readOnly={readOnly}
             // Distinct from the list item's own "Text block": both carry an
@@ -472,7 +527,10 @@ function RowShell({
         e.stopPropagation();
         onSelect(row.id);
       }}
-      className={outline(selected, invalid, isDragging)}
+      // A row of one and the block in it are one thing to the reader, so only
+      // the block is outlined. Two rectangles a pixel apart, one for the row
+      // and one for its only occupant, said there were two things here.
+      className={outline(selected, invalid, isDragging, row.layout === "1")}
     >
       {!readOnly && row.layout !== "1" && (
         <ChromeBar>
