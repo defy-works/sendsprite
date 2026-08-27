@@ -1,6 +1,6 @@
 {
   "name": "sendsprite",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "TypeScript SDK, React email helpers, Next.js webhook handler and CLI for Sendsprite.",
   "license": "MIT",
   "repository": {
