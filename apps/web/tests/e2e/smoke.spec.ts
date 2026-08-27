@@ -74,16 +74,23 @@ test("signup → create team → shell renders → settings rename", async ({
     body.sourceUrl,
   );
 
-  // Settings' sections live in the app's sidebar, under Settings — the page
-  // used to grow a second navigation column of its own beside it.
+  // Settings' pages live in the app's sidebar, under Settings — the page used
+  // to grow a second navigation column of its own beside it.
   const sections = page.getByRole("navigation", { name: "Sections" });
-  await expect(sections.getByRole("link", { name: "Members" })).toHaveAttribute(
-    "href",
-    "/app/settings#members",
-  );
+  const members = sections.getByRole("link", { name: "Members" });
+  await expect(members).toHaveAttribute("href", "/app/settings/members");
   await expect(
     page.getByRole("navigation", { name: "Settings sections" }),
   ).toHaveCount(0);
+
+  // The current sub-page is marked, and only it — the section row above must
+  // not claim to be the current page as well.
+  await members.click();
+  await expect(page).toHaveURL(/\/app\/settings\/members$/);
+  await expect(members).toHaveAttribute("aria-current", "page");
+  await expect(
+    sections.getByRole("link", { name: "Settings", exact: true }),
+  ).not.toHaveAttribute("aria-current", "page");
 
   // The rail collapses to icons and stays collapsed, and the label survives as
   // the row's accessible name.

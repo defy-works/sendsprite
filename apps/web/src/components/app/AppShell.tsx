@@ -16,11 +16,11 @@ import { TopBar } from "./TopBar";
  * that leaves the screen is not navigation, and the collapse control went with
  * it.
  *
- * Three horizontal rules have to agree, and all three are set here or in the
- * components this composes: the top bar's bottom edge, the vertical line
- * between the rail and the page (continued up through the bar by `LogoBlock`),
- * and the bottom rail, where the collapse control and the footer are the same
- * height so their top borders read as one line.
+ * The lines that have to agree are set here or in the components this
+ * composes: the top bar's bottom edge, the vertical rule between the rail and
+ * the page (continued up through the bar by `LogoBlock`), and the collapse
+ * control's height, which matches the footer's so the two read as one line
+ * when a short page puts them side by side.
  */
 export function AppShell(p: {
   teamId: string;
@@ -47,11 +47,17 @@ export function AppShell(p: {
         />
         <div className="flex min-h-0 flex-1">
           <Sidebar settingsChildren={p.settingsChildren} />
-          <div className="flex min-w-0 flex-1 flex-col">
-            <main id="main" className="min-h-0 flex-1 overflow-y-auto p-6">
-              {p.children}
-            </main>
-            <SourceOffer />
+          {/* The footer scrolls with the page. It sits at the bottom of the
+              window when the content is short and leaves with the content when
+              it is not — it is not pinned there, which is why it is inside the
+              scroll container and not beside it. */}
+          <div className="min-w-0 flex-1 overflow-y-auto">
+            <div className="flex min-h-full flex-col">
+              <main id="main" className="flex-1 p-6">
+                {p.children}
+              </main>
+              <SourceOffer />
+            </div>
           </div>
         </div>
       </div>

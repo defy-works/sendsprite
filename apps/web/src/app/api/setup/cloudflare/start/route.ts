@@ -12,7 +12,7 @@ export const HANDOFF_COOKIE = "ss_cf_oauth";
 const HANDOFF_TTL_S = 600;
 
 /** Only ever back into our own setup surfaces; a stray `?from=` cannot become an open redirect. */
-const RETURNS = ["/setup?step=cloudflare", "/app/settings#sending"] as const;
+const RETURNS = ["/setup?step=cloudflare", "/app/settings/sending"] as const;
 export const defaultReturn = RETURNS[0];
 
 /**

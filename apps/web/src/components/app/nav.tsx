@@ -13,7 +13,6 @@ import {
 } from "@/components/ui/icons";
 
 export interface NavChild {
-  /** May carry a fragment: Settings is one long page, not five routes. */
   href: string;
   label: string;
 }
@@ -38,6 +37,15 @@ export interface NavGroup {
   /** `null` for the ungrouped rows at the very top and bottom. */
   label: string | null;
   items: NavItem[];
+  /**
+   * Draw a rule above this group.
+   *
+   * The groups with headings separate themselves; a group with none, sitting
+   * after one that has, just floats — Settings read as an orphan under
+   * Configure rather than as its own thing. A hairline says the same as a
+   * heading would without inventing a word for a group of one.
+   */
+  rule?: boolean;
 }
 
 /**
@@ -88,24 +96,16 @@ export const NAV_GROUPS: readonly NavGroup[] = [
   },
   {
     label: null,
+    rule: true,
     items: [
       {
         href: "/app/settings",
         label: "Settings",
         icon: <IconSettings />,
-        // The ids these point at are the `<Section>` ids on the settings page.
-        // Two of them are conditional there (Sending needs an admin, Danger
-        // zone an owner) and an anchor to a section that is not rendered just
-        // scrolls nowhere, which is a better failure than a sidebar whose rows
-        // depend on a role the sidebar does not know.
-        children: [
-          { href: "/app/settings#team", label: "Team" },
-          { href: "/app/settings#members", label: "Members" },
-          { href: "/app/settings#sending", label: "Sending" },
-          { href: "/app/settings#retention", label: "Retention" },
-          { href: "/app/settings#billing", label: "Billing" },
-          { href: "/app/settings#danger", label: "Danger zone" },
-        ],
+        // Filled in by the shell from `settingsSections`, which knows the
+        // caller's role: Sending is admin-only and Billing exists only where
+        // billing is configured, so the list cannot be static here.
+        children: [],
       },
     ],
   },

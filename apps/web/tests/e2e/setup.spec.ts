@@ -86,10 +86,10 @@ test("owner completes setup via manual keys, adds a domain, sees records", async
     await expect(page).toHaveURL(/\/app$/);
   } else {
     // This team already finished setup (local dev database): the same AWS
-    // step lives on the Sending tab, without the wizard's Continue/Skip. If a
+    // step lives on the Sending page, without the wizard's Continue/Skip. If a
     // previous run (or the developer) already connected AWS, keep that
     // connection — the fake answers regardless of the stored keys.
-    await page.goto("/app/settings#sending");
+    await page.goto("/app/settings/sending");
     const manual = page.getByRole("button", { name: "Paste keys manually" });
     const connected = page.getByText("AWS is connected");
     await expect(manual.or(connected)).toBeVisible();
@@ -189,7 +189,7 @@ test("a second team must connect its own AWS account", async ({ page }) => {
     page.getByRole("button", { name: "Paste keys manually" }),
   ).toBeVisible();
 
-  // And its Sending tab shows no connection of its own.
-  await page.goto("/app/settings#sending");
+  // And its Sending page shows no connection of its own.
+  await page.goto("/app/settings/sending");
   await expect(page.getByText("AWS is connected")).toHaveCount(0);
 });

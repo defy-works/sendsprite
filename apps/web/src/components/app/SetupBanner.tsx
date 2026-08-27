@@ -89,7 +89,7 @@ export function SetupBanner({
           variant={blocking ? "primary" : "subtle"}
           className="shrink-0"
         >
-          <Link href="/app/settings#sending">
+          <Link href="/app/settings/sending">
             {blocking ? "Connect AWS" : "Request access"}
             <IconArrowRight className="text-xs" />
           </Link>

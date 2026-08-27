@@ -36,10 +36,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
       settingsChildren={settingsSections({
         role: ctx.role,
         billingEnabled: billingConfig().enabled,
-      }).map((sec) => ({
-        href: `/app/settings#${sec.id}`,
-        label: sec.label,
-      }))}
+      })}
       isInstanceAdmin={isInstanceAdmin(
         {
           email: ctx.session.user.email,

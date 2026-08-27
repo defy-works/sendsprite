@@ -35,9 +35,14 @@ test("settings links to billing; the page shows the Free plan, this period's usa
 }) => {
   await signUpOwner(page, "billing-page");
 
+  // Billing is reached from the sidebar now. It used to be a card on the
+  // Settings page whose entire content was a sentence and a link to the page
+  // this test is actually about.
   await page.goto("/app/settings");
-  await expect(page.getByRole("heading", { name: "Billing" })).toBeVisible();
-  await page.getByRole("link", { name: /open billing/i }).click();
+  await page
+    .getByRole("navigation", { name: "Sections" })
+    .getByRole("link", { name: "Billing" })
+    .click();
   await expect(page).toHaveURL(/\/app\/settings\/billing$/);
 
   // Current-plan card: the plan, the allowance and the period meter.

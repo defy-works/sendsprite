@@ -49,7 +49,7 @@ export function CloudflareStep({
   const error = params.get("error");
   const noZones = params.get("cloudflare") === "no_zones";
   const from =
-    mode === "wizard" ? "/setup?step=cloudflare" : "/app/settings#sending";
+    mode === "wizard" ? "/setup?step=cloudflare" : "/app/settings/sending";
   const startUrl = `/api/setup/cloudflare/start?from=${encodeURIComponent(from)}`;
 
   const disconnect = async () => {

@@ -12,6 +12,7 @@ export function NavLink({
   collapsed = false,
   expanded,
   onToggle,
+  suppressActive = false,
 }: {
   href: string;
   label: string;
@@ -25,13 +26,21 @@ export function NavLink({
    */
   expanded?: boolean;
   onToggle?: () => void;
+  /**
+   * Drop the active fill even when the route matches.
+   *
+   * Set when one of this row's children is the current page: the child carries
+   * the highlight, and filling the parent as well marks two rows as "here".
+   */
+  suppressActive?: boolean;
 }) {
   const pathname = usePathname();
   // `/app` matches only itself; everything else owns its subtree. Compared
   // against a trailing slash so `/app/api-keys` does not light up a
   // hypothetical `/app/api` row.
   const active =
-    pathname === href || (href !== "/app" && pathname.startsWith(`${href}/`));
+    !suppressActive &&
+    (pathname === href || (href !== "/app" && pathname.startsWith(`${href}/`)));
   const link = (
     <Link
       href={href}
@@ -84,10 +93,12 @@ export function NavLink({
           "text-white/35 transition-colors hover:bg-white/8 hover:text-white",
         )}
       >
+        {/* Closed points right, open points down — the direction the section
+            will move, not the direction it came from. */}
         <IconChevronDown
           className={cn(
             "text-xs transition-transform duration-[var(--duration-fast)]",
-            expanded && "rotate-180",
+            !expanded && "-rotate-90",
           )}
         />
       </button>

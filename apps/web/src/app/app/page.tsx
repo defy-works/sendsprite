@@ -55,7 +55,7 @@ export default async function OverviewPage() {
   // Connection steps link only for those who may change them: owner *or*
   // admin, which is who `requireTeamAdmin` lets into Sending. It read `owner`
   // alone, so an admin saw a checklist of dead text.
-  const sendingHref = canConfigure ? "/app/settings#sending" : null;
+  const sendingHref = canConfigure ? "/app/settings/sending" : null;
   const steps = [
     { label: "Connect AWS", done: aws !== null, href: sendingHref },
     // Only offered when the instance can actually do it; otherwise it is a

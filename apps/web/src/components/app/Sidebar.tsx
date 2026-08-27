@@ -83,6 +83,15 @@ export function SidebarNav({
     <nav className="flex flex-col gap-4" aria-label="Sections">
       {NAV_GROUPS.map((g) => (
         <div key={g.label ?? "root"} className="flex flex-col gap-0.5">
+          {g.rule && (
+            <div
+              aria-hidden
+              className={cn(
+                "mb-2 h-px bg-white/10",
+                collapsed ? "mx-auto w-5" : "mx-3",
+              )}
+            />
+          )}
           {g.label &&
             (collapsed ? (
               // A rule instead of a heading: the group boundary is worth
@@ -130,13 +139,21 @@ function Row({ item, collapsed }: { item: NavItem; collapsed: boolean }) {
   if (!nested) return <NavLink {...item} collapsed={collapsed} />;
 
   return (
-    <div className="flex flex-col gap-0.5">
-      <NavLink {...item} expanded={open} onToggle={() => setOpen((v) => !v)} />
+    <div className="flex flex-col">
+      <NavLink
+        {...item}
+        expanded={open}
+        onToggle={() => setOpen((v) => !v)}
+        suppressActive={kids.some((c) => c.href === pathname)}
+      />
       {open && (
-        <ul className="flex flex-col gap-0.5 pt-0.5">
+        // One rule down the whole list, not a border per row. Per-row borders
+        // rendered as a stack of short ticks — each row's rounded corners cut
+        // its own segment — which read as punctuation rather than as a group.
+        <ul className="mt-1 ml-[21px] flex flex-col gap-0.5 border-l border-white/12 pl-2">
           {kids.map((c) => (
             <li key={c.href}>
-              <SubLink {...c} />
+              <SubLink {...c} current={pathname === c.href} />
             </li>
           ))}
         </ul>
@@ -148,18 +165,22 @@ function Row({ item, collapsed }: { item: NavItem; collapsed: boolean }) {
 /**
  * A child row.
  *
- * Indented against a hairline rather than given its own icon: these are parts
- * of one page, not destinations of their own, and a column of icons at two
- * levels reads as two menus.
+ * No icon: these are pages of one section, not destinations of their own, and
+ * a column of icons at two levels reads as two menus. The current one is a
+ * filled row like the section headers are — it had no highlight at all, so on
+ * a settings page nothing in the sidebar said which one you were reading.
  */
-function SubLink({ href, label }: NavChild) {
+function SubLink({ href, label, current }: NavChild & { current: boolean }) {
   return (
     <Link
       href={href}
+      aria-current={current ? "page" : undefined}
       className={cn(
-        "ml-[22px] block rounded-md border-l border-white/10 py-1.5 pr-3 pl-3.5 text-[13px] no-underline",
-        "text-white/50 transition-colors duration-[var(--duration-fast)]",
-        "hover:border-white/25 hover:bg-white/4 hover:text-white",
+        "block rounded-md px-2.5 py-1.5 text-[13px] no-underline",
+        "transition-colors duration-[var(--duration-fast)]",
+        current
+          ? "bg-white/8 text-white"
+          : "text-white/50 hover:bg-white/4 hover:text-white",
       )}
     >
       {label}

@@ -49,7 +49,7 @@ export function SesPill({ status }: { status: TeamAws["sesAccountStatus"] }) {
 
   return (
     <Link
-      href="/app/settings#sending"
+      href="/app/settings/sending"
       title={spec.title}
       className={cn(
         "inline-flex items-center gap-1.5 rounded-full border border-white/10 py-1 pr-2.5 pl-2 text-xs no-underline transition-colors hover:border-white/25 hover:bg-white/5",
