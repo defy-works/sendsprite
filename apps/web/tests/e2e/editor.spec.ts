@@ -160,7 +160,7 @@ test("the canvas draws the email, and preview mode drops the chrome", async ({
   // Space is a block's own, and it reaches the document.
   await canvas.getByRole("listitem").first().click();
   const inspector = page.getByRole("region", { name: "Block settings" });
-  await chooseOption(page, "space-above", "48 — loose");
+  await chooseOption(page, "space-above", "48");
 
   // On the cell that positions the block, which is where the renderer writes
   // it — the page cell around the card has padding of its own, and matching on

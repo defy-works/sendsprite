@@ -21,6 +21,7 @@ import type {
   LeafBlock,
 } from "@sendsprite/shared";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/Card";
+import { IconChevronRight } from "@/components/ui/icons";
 import { cn } from "@/lib/cn";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import {
@@ -249,9 +250,19 @@ export function BlockDesigner({
     />
   );
 
-  const selectedNode = selectedId
-    ? (locate(nodes, selectedId)?.node ?? null)
-    : null;
+  const located = selectedId ? locate(nodes, selectedId) : null;
+  const selectedNode = located?.node ?? null;
+  /*
+   * The row a selected block sits in, if any.
+   *
+   * A row is almost impossible to select by clicking: it is a container, and
+   * every pixel of it that is not a few pixels of gutter belongs to a block
+   * inside it. So the row's own settings — its layout, its gutter, its
+   * vertical alignment — were unreachable in practice unless you happened to
+   * hit the edge. The panel names the row above the block and lets you go up.
+   */
+  const container = located ? parseContainer(located.container) : null;
+  const parentRow = container?.kind === "column" ? container.rowId : null;
 
   return (
     <DndContext
@@ -304,7 +315,22 @@ export function BlockDesigner({
             />
           </Card>
           <Card className="p-4" role="region" aria-label="Block settings">
-            <p className="num-stamp mb-3">
+            <p className="num-stamp mb-3 flex items-center gap-1.5">
+              {parentRow && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedId(parentRow)}
+                    className="num-stamp text-white/45 underline-offset-2 hover:text-white hover:underline"
+                  >
+                    Row
+                  </button>
+                  <IconChevronRight
+                    aria-hidden
+                    className="text-[10px] text-white/25"
+                  />
+                </>
+              )}
               {selectedNode
                 ? selectedNode.type === "row"
                   ? "Row style"

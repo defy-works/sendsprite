@@ -149,12 +149,12 @@ const CANVAS_CLASS =
   "[&_a]:underline [&_a]:decoration-current";
 
 /**
- * One toolbar button, in the colours of whatever it is sitting on.
+ * One toolbar button.
  *
- * Not the design-system `Button` on the canvas: its `ghost` variant is
- * `text-white/70`, `cn` here is a plain join with no conflict resolution, and
- * two `text-*` utilities on one element leave the winner to CSS source order.
- * The result was a white chip of invisible white icons.
+ * A plain element on the canvas rather than the design-system `Button`: `cn`
+ * here is a plain join with no conflict resolution, so a variant's `text-*`
+ * and an override's `text-*` both land and CSS source order picks the winner.
+ * Explicit classes are the only way to be sure which one shows.
  */
 function ToolButton({
   onCanvas,
@@ -197,8 +197,8 @@ function ToolButton({
       className={cn(
         "grid h-7 w-7 place-items-center rounded transition-colors",
         active
-          ? "bg-indigo-500/15 text-indigo-700"
-          : "text-black/55 hover:bg-black/6 hover:text-black",
+          ? "bg-indigo-500/25 text-white"
+          : "text-white/55 hover:bg-white/10 hover:text-white",
       )}
     >
       {children}
@@ -212,6 +212,8 @@ export function InlineEditor({
   label,
   onChange,
   surface = "panel",
+  toolbarOpen = false,
+  toolbarExtras,
 }: {
   /** The stored inline HTML. Read once, on mount; this component owns it after. */
   value: string;
@@ -223,6 +225,20 @@ export function InlineEditor({
    * `panel` is the bordered field for a dark surface.
    */
   surface?: "panel" | "canvas";
+  /**
+   * Show the canvas toolbar. Driven by selection rather than focus: the block
+   * is selected the moment it is clicked, and a bar that waited for the caret
+   * appeared a beat late and vanished whenever a control took focus.
+   */
+  toolbarOpen?: boolean;
+  /**
+   * The block's own controls — grip, bin — sharing this bar.
+   *
+   * A selected paragraph had two floating bars in two colour schemes: this one
+   * in white above the left, and the block's in dark over its top-right, on
+   * top of the words it belonged to. One bar, one surface, above the block.
+   */
+  toolbarExtras?: ReactNode;
 }) {
   const onCanvas = surface === "canvas";
   const contentClass = onCanvas ? CANVAS_CLASS : CONTENT_CLASS;
@@ -338,11 +354,11 @@ export function InlineEditor({
         <div
           className={cn(
             "flex flex-wrap items-center gap-1",
-            // On the canvas the toolbar is a chip on a light card, and it only
-            // appears once the paragraph has focus — a permanent bar over
-            // every text block is the stack of forms again.
+            // Above the block, not over it, and only for the selected one — a
+            // permanent bar over every paragraph is the stack of forms again.
             onCanvas &&
-              "pointer-events-none absolute -top-9 left-0 z-30 rounded-md border border-black/10 bg-white px-1 py-0.5 opacity-0 shadow-lg transition-opacity focus-within:pointer-events-auto focus-within:opacity-100 group-focus-within/text:pointer-events-auto group-focus-within/text:opacity-100",
+              "popover absolute -top-4 left-0 z-30 px-1 py-0.5 shadow-glass",
+            onCanvas && !toolbarOpen && "hidden",
           )}
         >
           <ToolButton
@@ -384,6 +400,7 @@ export function InlineEditor({
               formatting.
             </span>
           )}
+          {onCanvas && toolbarExtras}
         </div>
       )}
       <EditorContent editor={editor} />

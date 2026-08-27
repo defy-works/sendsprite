@@ -18,7 +18,7 @@ import {
   type ColumnLayout,
   type LeafBlock,
 } from "@sendsprite/shared";
-import { Fragment, useMemo } from "react";
+import { Fragment, useMemo, type ReactNode } from "react";
 import { Button } from "@/components/ui/Button";
 import { IconColumns, IconGrip, IconTrash } from "@/components/ui/icons";
 import { cn } from "@/lib/cn";
@@ -218,60 +218,68 @@ function Tail({
 }
 
 /**
- * The chrome around one block: a grip and a bin, on the block that is
- * selected.
+ * One toolbar per selected block, above it, in the dashboard's dark surface.
  *
- * Selection only, not hover. On hover it overlapped: a block's toolbar sits
- * above its top edge, which is inside the block above it, and in a row of
- * columns two neighbours could show theirs at once — two toolbars a few pixels
- * apart, neither obviously belonging to anything. Exactly one block is
- * selected at any time, so exactly one toolbar can be on screen. Hover still
- * outlines the block, which is what says it can be picked.
+ * It was two: a dark grip-and-bin floating over the block's top-right corner,
+ * and — for a text block — a white formatting chip above its left. Two bars in
+ * two colour schemes for one selection, and the dark one covered the words it
+ * was attached to.
+ *
+ * Now it sits above the block, so the block stays readable, and a text block's
+ * B / I / link controls join the same bar rather than bringing their own. The
+ * `popover` surface is the one every other floating thing in the dashboard
+ * uses, which is why it is not a bespoke white chip.
  */
-function Chrome({
+function ChromeBar({ children }: { children: ReactNode }) {
+  return (
+    <div className="pointer-events-none absolute -top-4 left-0 z-30 hidden [[data-selected='true']_>_&]:flex">
+      <div className="popover pointer-events-auto flex items-center gap-0.5 px-1 py-0.5 shadow-glass">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** The grip and the bin, without the bar around them. */
+function ChromeButtons({
   label,
-  readOnly,
   attributes,
   listeners,
   onRemove,
   children,
 }: {
   label: string;
-  readOnly: boolean;
   attributes: DraggableAttributes;
   listeners: SyntheticListenerMap | undefined;
   onRemove: () => void;
-  children?: React.ReactNode;
+  children?: ReactNode;
 }) {
-  if (readOnly) return null;
   return (
-    <div className="pointer-events-none absolute top-1 right-1 z-20 hidden items-center gap-1 [[data-selected='true']_>_&]:flex">
-      <div className="pointer-events-auto flex items-center gap-0.5 rounded-md border border-white/15 bg-shadow/95 px-1 py-0.5 shadow-glass backdrop-blur-sm">
-        {children}
-        <button
-          type="button"
-          className="cursor-grab rounded p-1 text-white/45 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500"
-          aria-label={`Move ${label}`}
-          onClick={(e) => e.stopPropagation()}
-          {...attributes}
-          {...listeners}
-        >
-          <IconGrip className="text-sm" />
-        </button>
-        <Button
-          size="iconSm"
-          variant="ghost"
-          aria-label={`Remove ${label}`}
-          className="text-white/45 hover:bg-red-500/15 hover:text-red-300"
-          onClick={(e) => {
-            e.stopPropagation();
-            onRemove();
-          }}
-        >
-          <IconTrash />
-        </Button>
-      </div>
-    </div>
+    <>
+      {children}
+      <button
+        type="button"
+        className="cursor-grab rounded p-1 text-white/45 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500"
+        aria-label={`Move ${label}`}
+        onClick={(e) => e.stopPropagation()}
+        {...attributes}
+        {...listeners}
+      >
+        <IconGrip className="text-sm" />
+      </button>
+      <Button
+        size="iconSm"
+        variant="ghost"
+        aria-label={`Remove ${label}`}
+        className="text-white/45 hover:bg-red-500/15 hover:text-red-300"
+        onClick={(e) => {
+          e.stopPropagation();
+          onRemove();
+        }}
+      >
+        <IconTrash />
+      </Button>
+    </>
   );
 }
 
@@ -347,13 +355,18 @@ function LeafShell({
       }}
       className={outline(selected, Boolean(issue) || invalid, isDragging)}
     >
-      <Chrome
-        label={`${BLOCK_LABELS[block.kind]} block`}
-        readOnly={readOnly}
-        attributes={attributes}
-        listeners={listeners}
-        onRemove={() => onRemove(leaf.id)}
-      />
+      {/* A text block's own bar carries the formatting controls too, so a
+          selected paragraph has one toolbar rather than two. */}
+      {!readOnly && block.kind !== "text" && (
+        <ChromeBar>
+          <ChromeButtons
+            label={`${BLOCK_LABELS[block.kind]} block`}
+            attributes={attributes}
+            listeners={listeners}
+            onRemove={() => onRemove(leaf.id)}
+          />
+        </ChromeBar>
+      )}
 
       {block.kind === "text" ? (
         /*
@@ -381,6 +394,20 @@ function LeafShell({
             readOnly={readOnly}
             label="Text block"
             onChange={(next) => onChange(leaf.id, { ...block, html: next })}
+            toolbarOpen={selected}
+            toolbarExtras={
+              readOnly ? null : (
+                <>
+                  <span aria-hidden className="mx-1 h-4 w-px bg-white/15" />
+                  <ChromeButtons
+                    label="Text block"
+                    attributes={attributes}
+                    listeners={listeners}
+                    onRemove={() => onRemove(leaf.id)}
+                  />
+                </>
+              )
+            }
           />
         </div>
       ) : (
@@ -457,18 +484,21 @@ function RowShell({
       }}
       className={outline(selected, invalid, isDragging)}
     >
-      <Chrome
-        label="row"
-        readOnly={readOnly}
-        attributes={attributes}
-        listeners={listeners}
-        onRemove={() => onRemove(row.id)}
-      >
-        <span className="flex items-center gap-1 px-1 text-[10px] text-white/45">
-          <IconColumns className="text-sm" />
-          {row.layout}
-        </span>
-      </Chrome>
+      {!readOnly && (
+        <ChromeBar>
+          <ChromeButtons
+            label="row"
+            attributes={attributes}
+            listeners={listeners}
+            onRemove={() => onRemove(row.id)}
+          >
+            <span className="flex items-center gap-1 px-1 text-[10px] text-white/45">
+              <IconColumns className="text-sm" />
+              {row.layout}
+            </span>
+          </ChromeButtons>
+        </ChromeBar>
+      )}
 
       <div className="flex" style={{ gap }}>
         {row.columns.map((column, i) => (

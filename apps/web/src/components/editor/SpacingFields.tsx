@@ -14,16 +14,31 @@ import { Select } from "@/components/ui/Select";
  */
 export const SPACE_STEPS = [0, 4, 8, 16, 24, 32, 48, 64, 96] as const;
 
+/**
+ * The label is the number; the word is a hint.
+ *
+ * Baked into one string they read as "4 — h…" in the inspector, which is
+ * 16rem wide — and `Select` already renders a hint under an option's label,
+ * so the description had no business being in the label.
+ */
 const LABELS: Record<number, string> = {
   0: "None",
-  4: "4 — hair",
-  8: "8 — tight",
+  4: "4",
+  8: "8",
   16: "16",
   24: "24",
   32: "32",
-  48: "48 — loose",
+  48: "48",
   64: "64",
-  96: "96 — a screen",
+  96: "96",
+};
+
+const HINTS: Record<number, string | undefined> = {
+  4: "A hair",
+  8: "Tight",
+  24: "Comfortable",
+  48: "Loose",
+  96: "Most of a phone screen",
 };
 
 export function SpaceField({
@@ -72,6 +87,7 @@ export function SpaceField({
         options={SPACE_STEPS.filter((s) => s <= max).map((s) => ({
           value: String(s),
           label: LABELS[s] ?? String(s),
+          ...(HINTS[s] ? { hint: HINTS[s] } : {}),
         }))}
       />
     </Field>
@@ -94,7 +110,10 @@ export function SpacingFields({
   }) => void;
 }) {
   return (
-    <div className="grid grid-cols-2 gap-3">
+    /* Stacked, not side by side: the inspector is 16rem wide, and two
+       uppercase letterspaced labels in half of that is "ABOVE" and "BELOW"
+       with their first words cut off. */
+    <div className="flex flex-col gap-3">
       <SpaceField
         id="space-above"
         label="Space above"
