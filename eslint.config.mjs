@@ -30,6 +30,15 @@ export default tseslint.config(
     rules: { ...nextPlugin.configs.recommended.rules },
   },
   {
+    // Plain-JS Node scripts. typescript-eslint switches `no-undef` off for
+    // `.ts` (the compiler owns that check), but `.mjs` still gets it from
+    // `js.configs.recommended`, so the Node globals must be declared here.
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      globals: { Buffer: "readonly", process: "readonly", console: "readonly" },
+    },
+  },
+  {
     rules: {
       "@typescript-eslint/no-unused-vars": [
         "error",
