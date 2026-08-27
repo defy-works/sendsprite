@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { Button } from "./Button";
+import { CopyField } from "./CopyField";
 import { Input } from "./Input";
 import { Label } from "./Label";
 import { Modal } from "./Modal";
@@ -72,7 +73,20 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const gate = open?.typeToConfirm;
-  const armed = !gate || typed.trim() === gate;
+  /*
+   * Case-insensitive, and whitespace-trimmed.
+   *
+   * It was an exact match, and the label that tells you what to type is styled
+   * uppercase — so a team called "test 2" was asked for in the dialog as
+   * "TEST 2", typing that was refused, and nothing said why. The phrase is now
+   * rendered in its own casing below the label, out of reach of the
+   * `text-transform`, and the comparison no longer cares either way. Case was
+   * never the safety property here: the gate exists to make a destructive
+   * action deliberate, and typing the name of the thing is deliberate whatever
+   * the shift key was doing.
+   */
+  const armed =
+    !gate || typed.trim().toLowerCase() === gate.trim().toLowerCase();
 
   const value = useMemo(() => ask, [ask]);
   return (
@@ -103,12 +117,12 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
         {gate && (
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="confirm-gate">
-              {open?.typeToConfirmLabel ?? (
-                <>
-                  Type <span className="text-white">{gate}</span> to confirm
-                </>
-              )}
+              {open?.typeToConfirmLabel ?? "Type the name below to confirm"}
             </Label>
+            {/* Outside the label, so the label's `text-transform: uppercase`
+                cannot misrepresent it — and copyable, because retyping a name
+                exactly is the whole ask. */}
+            <CopyField value={gate} className="pb-1" />
             <Input
               id="confirm-gate"
               value={typed}

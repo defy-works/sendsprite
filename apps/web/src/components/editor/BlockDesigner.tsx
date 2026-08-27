@@ -212,7 +212,7 @@ export function BlockDesigner({
         onClick={() => setSelectedId(null)}
       >
         <div
-          className="flex flex-col gap-4 xl:sticky xl:top-20 xl:self-start"
+          className="flex flex-col gap-4 xl:sticky xl:top-6 xl:self-start"
           onClick={(e) => e.stopPropagation()}
         >
           <Card className="p-4">

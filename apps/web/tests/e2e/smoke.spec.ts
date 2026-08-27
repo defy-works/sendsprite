@@ -1,5 +1,24 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { completeTeamSetup } from "./team-setup";
+
+/** A fresh account with a team of the given name, sitting on the dashboard. */
+async function signUpWithTeam(page: Page, teamName: string) {
+  const email = `e2e-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.com`;
+  await page.goto("/signup");
+  await page.fill("#name", "E2E");
+  await page.fill("#email", email);
+  await page.fill("#password", "correct-horse-battery");
+  await page.click("button[type=submit]");
+  const createTeam = page.getByRole("button", { name: "Create team" });
+  const checklist = page.getByText("Setup checklist");
+  await expect(createTeam.or(checklist)).toBeVisible();
+  if (await createTeam.isVisible()) {
+    await page.fill("#name", teamName);
+    await createTeam.click();
+    await page.waitForURL(/\/(setup|app)/);
+  }
+  await completeTeamSetup(page);
+}
 
 test("signup → create team → shell renders → settings rename", async ({
   page,
@@ -54,4 +73,50 @@ test("signup → create team → shell renders → settings rename", async ({
     "href",
     body.sourceUrl,
   );
+
+  // Settings' sections live in the app's sidebar, under Settings — the page
+  // used to grow a second navigation column of its own beside it.
+  const sections = page.getByRole("navigation", { name: "Sections" });
+  await expect(sections.getByRole("link", { name: "Members" })).toHaveAttribute(
+    "href",
+    "/app/settings#members",
+  );
+  await expect(
+    page.getByRole("navigation", { name: "Settings sections" }),
+  ).toHaveCount(0);
+
+  // The rail collapses to icons and stays collapsed, and the label survives as
+  // the row's accessible name.
+  await page.getByRole("button", { name: "Collapse sidebar" }).click();
+  const expand = page.getByRole("button", { name: "Expand sidebar" });
+  await expect(expand).toBeVisible();
+  await expect(sections.getByRole("link", { name: "Emails" })).toBeVisible();
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: "Expand sidebar" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Expand sidebar" }).click();
+  await expect(
+    page.getByRole("button", { name: "Collapse sidebar" }),
+  ).toBeVisible();
+});
+
+test("the type-to-confirm gate does not care about case", async ({ page }) => {
+  await signUpWithTeam(page, "lower case team");
+  await page.goto("/app/settings");
+
+  // The label that names the phrase is styled uppercase, so what a reader sees
+  // is not what the team is called. Typing what they see has to work — it did
+  // not, and nothing said why.
+  await page.getByRole("button", { name: "Delete this team" }).first().click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  const confirm = dialog.getByRole("button", { name: "Delete this team" });
+  await expect(confirm).toBeDisabled();
+
+  await dialog.locator("#confirm-gate").fill("LOWER CASE TEAM");
+  await expect(confirm).toBeEnabled();
+  // And a name that is simply wrong is still refused.
+  await dialog.locator("#confirm-gate").fill("some other team");
+  await expect(confirm).toBeDisabled();
 });

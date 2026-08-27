@@ -6,8 +6,10 @@ import { isInstanceAdmin, parseAdminEmails } from "@/lib/instance-admin";
 import { teamSuspension } from "@/services/send-limits";
 import { getTeamAws } from "@/services/team-aws";
 import { getTeamSettings } from "@/services/team-settings";
+import { billingConfig } from "@/services/billing/config";
 import { AppShell } from "@/components/app/AppShell";
 import { SetupBanner } from "@/components/app/SetupBanner";
+import { settingsSections } from "./settings/sections";
 
 export default async function AppLayout({ children }: { children: ReactNode }) {
   const ctx = await requireTeam();
@@ -31,6 +33,13 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
       email={ctx.session.user.email}
       name={ctx.session.user.name || null}
       sesStatus={aws?.sesAccountStatus ?? null}
+      settingsChildren={settingsSections({
+        role: ctx.role,
+        billingEnabled: billingConfig().enabled,
+      }).map((sec) => ({
+        href: `/app/settings#${sec.id}`,
+        label: sec.label,
+      }))}
       isInstanceAdmin={isInstanceAdmin(
         {
           email: ctx.session.user.email,

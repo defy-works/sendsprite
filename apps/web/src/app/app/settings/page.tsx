@@ -26,7 +26,6 @@ import { MembersPanel } from "./MembersPanel";
 import { InvitePanel } from "./InvitePanel";
 import { RetentionForm } from "./RetentionForm";
 import { DangerZone } from "./DangerZone";
-import { SectionRail, type Section } from "./SectionRail";
 
 export const metadata = { title: "Settings" };
 
@@ -121,18 +120,18 @@ export default async function SettingsPage() {
   };
 
   const billingEnabled = billingConfig().enabled;
-  const sections: Section[] = [
-    { id: "team", label: "Team" },
-    { id: "members", label: "Members" },
-    ...(isAdmin ? [{ id: "sending", label: "Sending" }] : []),
-    { id: "retention", label: "Retention" },
-    ...(billingEnabled ? [{ id: "billing", label: "Billing" }] : []),
-    ...(ctx.role === "owner" ? [{ id: "danger", label: "Danger zone" }] : []),
-  ];
 
+  /*
+   * No in-page rail.
+   *
+   * This page used to grow a sticky column of its own section links, which put
+   * two navigation columns side by side — the app's and the page's — with
+   * nothing to say which was in charge. The sections are listed under Settings
+   * in the sidebar now (`settingsSections`, shared so the two lists cannot
+   * drift), which is where everything else navigable already is.
+   */
   return (
-    <div className="flex gap-10">
-      <SectionRail sections={sections} />
+    <div className="flex">
       <div className="flex min-w-0 max-w-3xl flex-1 flex-col gap-8">
         <PageHeader
           title="Settings"
@@ -266,9 +265,9 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    // `scroll-mt` clears the sticky header, so an anchor jump does not put the
-    // heading underneath it.
-    <section id={id} className="flex scroll-mt-20 flex-col gap-4">
+    // `scroll-mt` matches the scrolling container's own gutter, so an anchor
+    // jump leaves the heading the same inset the page has everywhere else.
+    <section id={id} className="flex scroll-mt-6 flex-col gap-4">
       {title && (
         <div className="flex flex-col gap-1">
           <h2 className="text-base font-medium">{title}</h2>

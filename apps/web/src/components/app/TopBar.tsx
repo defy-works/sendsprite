@@ -1,6 +1,5 @@
-import Link from "next/link";
-import { Logo, MarkTile } from "@/components/ui/Logo";
 import { IconExternal } from "@/components/ui/icons";
+import { LogoBlock } from "./LogoBlock";
 import type { TeamAws } from "@/services/team-aws";
 import { MobileNav } from "./MobileNav";
 import { SesPill } from "./SesPill";
@@ -35,36 +34,27 @@ export function TopBar(p: {
   drawer: ReactNode;
 }) {
   return (
-    <header className="sticky top-0 z-30 flex h-13 shrink-0 items-center gap-1 border-b border-white/10 bg-ink/85 px-3 backdrop-blur-md">
-      <MobileNav>
-        <TeamSwitcher
-          activeId={p.teamId}
-          activeName={p.teamName}
-          variant="panel"
-        />
-        {p.drawer}
-      </MobileNav>
+    <header className="z-30 flex h-13 shrink-0 items-center border-b border-white/10 bg-ink/85 backdrop-blur-md">
+      <div className="flex h-full items-center pl-1 md:hidden">
+        <MobileNav>
+          <TeamSwitcher
+            activeId={p.teamId}
+            activeName={p.teamName}
+            variant="panel"
+          />
+          {p.drawer}
+        </MobileNav>
+      </div>
 
-      <Link
-        href="/app"
-        aria-label="Sendsprite"
-        className="flex shrink-0 items-center rounded-md px-1.5 py-1 transition-opacity hover:opacity-80"
-      >
-        <MarkTile scale={1.15} className="md:hidden" />
-        <Logo scale={1.9} className="hidden md:block" />
-      </Link>
+      <LogoBlock />
 
-      {/* The same separator Cloudflare and Vercel use between the instance and
-          the tenant: a hairline slash, not a border, so the two read as one
-          path rather than as two controls that happen to be adjacent. */}
-      <span aria-hidden className="hidden px-1 text-lg text-white/15 sm:block">
-        /
-      </span>
-      <div className="hidden min-w-0 sm:block">
+      {/* Everything right of the rail's edge belongs to the page, so it starts
+          where the page does. */}
+      <div className="hidden min-w-0 px-3 sm:block">
         <TeamSwitcher activeId={p.teamId} activeName={p.teamName} />
       </div>
 
-      <div className="ml-auto flex items-center gap-1.5">
+      <div className="ml-auto flex items-center gap-1.5 pr-3">
         <SesPill status={p.sesStatus} />
         {/* A new tab: the docs are read *while* configuring something, and
             replacing the page being configured is exactly the wrong move. */}

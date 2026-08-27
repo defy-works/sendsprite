@@ -2,6 +2,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
+import { IconChevronDown } from "@/components/ui/icons";
 import { cn } from "@/lib/cn";
 
 export function NavLink({
@@ -9,12 +10,21 @@ export function NavLink({
   label,
   icon,
   collapsed = false,
+  expanded,
+  onToggle,
 }: {
   href: string;
   label: string;
   icon?: ReactNode;
   /** Icon only, with the label as a tooltip and to screen readers. */
   collapsed?: boolean;
+  /**
+   * Set when this row has children. The chevron is a separate button, not the
+   * row: the row still navigates, so opening the section and going to it stay
+   * two different intentions.
+   */
+  expanded?: boolean;
+  onToggle?: () => void;
 }) {
   const pathname = usePathname();
   // `/app` matches only itself; everything else owns its subtree. Compared
@@ -22,7 +32,7 @@ export function NavLink({
   // hypothetical `/app/api` row.
   const active =
     pathname === href || (href !== "/app" && pathname.startsWith(`${href}/`));
-  return (
+  const link = (
     <Link
       href={href}
       aria-current={active ? "page" : undefined}
@@ -34,6 +44,7 @@ export function NavLink({
       className={cn(
         "group relative flex items-center gap-2.5 rounded-md px-3 py-2 text-sm no-underline",
         collapsed && "justify-center px-0",
+        onToggle && "pr-9",
         "transition-colors duration-[var(--duration-fast)]",
         // The active marker is a rail on the left rather than a filled pill:
         // ten filled pills in one column is a lot of weight for one of them
@@ -57,5 +68,29 @@ export function NavLink({
       </span>
       {!collapsed && label}
     </Link>
+  );
+
+  if (onToggle === undefined) return link;
+  return (
+    <div className="group/row relative flex items-center">
+      <div className="min-w-0 flex-1">{link}</div>
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        aria-label={`${expanded ? "Collapse" : "Expand"} ${label}`}
+        className={cn(
+          "absolute right-1.5 grid h-6 w-6 place-items-center rounded",
+          "text-white/35 transition-colors hover:bg-white/8 hover:text-white",
+        )}
+      >
+        <IconChevronDown
+          className={cn(
+            "text-xs transition-transform duration-[var(--duration-fast)]",
+            expanded && "rotate-180",
+          )}
+        />
+      </button>
+    </div>
   );
 }

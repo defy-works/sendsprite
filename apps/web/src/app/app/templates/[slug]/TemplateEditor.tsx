@@ -586,7 +586,7 @@ export function TemplateEditor({
   );
 
   const previewCard = (
-    <Card className="xl:sticky xl:top-20 xl:self-start">
+    <Card className="xl:sticky xl:top-6 xl:self-start">
       <CardHeader>
         <CardTitle>Preview</CardTitle>
         <IconEye className="text-white/30" />

@@ -1,20 +1,26 @@
 import type { ReactNode } from "react";
 import { appVersion, sourceUrl } from "@/lib/build-info";
 import type { TeamAws } from "@/services/team-aws";
+import type { NavChild } from "./nav";
+import { ShellState } from "./ShellState";
 import { Sidebar, SidebarNav } from "./Sidebar";
 import { TopBar } from "./TopBar";
 
 /**
- * The application chrome: a global bar across the top, a collapsible section
- * rail under it, the page beside that.
+ * The application chrome: a global bar across the top, a section rail under
+ * it, the page beside that.
  *
- * The bar used to start where the sidebar ended, so the wordmark, the team
- * switcher and the SES badge were all stacked inside the navigation column —
- * three things that scope the *window* living in the part of the window that
- * is about moving between pages. The account menu sat on the other side of the
- * screen from the team it belonged to. This is the arrangement every
- * multi-tenant console lands on instead: instance, tenant and person on one
- * line at the top, and the rail beneath doing one job.
+ * The window is fixed (`h-dvh`, `overflow-hidden`) and the two columns scroll
+ * themselves. Before, the whole document scrolled, so a long page dragged the
+ * sidebar's foot off the bottom of the screen with it — a navigation column
+ * that leaves the screen is not navigation, and the collapse control went with
+ * it.
+ *
+ * Three horizontal rules have to agree, and all three are set here or in the
+ * components this composes: the top bar's bottom edge, the vertical line
+ * between the rail and the page (continued up through the bar by `LogoBlock`),
+ * and the bottom rail, where the collapse control and the footer are the same
+ * height so their top borders read as one line.
  */
 export function AppShell(p: {
   teamId: string;
@@ -23,29 +29,33 @@ export function AppShell(p: {
   name: string | null;
   sesStatus: TeamAws["sesAccountStatus"];
   isInstanceAdmin?: boolean;
+  /** Settings' own sections, listed under it in the rail. */
+  settingsChildren?: readonly NavChild[];
   children: ReactNode;
 }) {
   return (
-    <div className="flex min-h-dvh flex-col">
-      <TopBar
-        teamId={p.teamId}
-        teamName={p.teamName}
-        email={p.email}
-        name={p.name}
-        sesStatus={p.sesStatus}
-        isInstanceAdmin={p.isInstanceAdmin}
-        drawer={<SidebarNav />}
-      />
-      <div className="flex min-h-0 flex-1">
-        <Sidebar />
-        <div className="flex min-w-0 flex-1 flex-col">
-          <main id="main" className="flex-1 p-6">
-            {p.children}
-          </main>
-          <SourceOffer />
+    <ShellState>
+      <div className="flex h-dvh flex-col overflow-hidden">
+        <TopBar
+          teamId={p.teamId}
+          teamName={p.teamName}
+          email={p.email}
+          name={p.name}
+          sesStatus={p.sesStatus}
+          isInstanceAdmin={p.isInstanceAdmin}
+          drawer={<SidebarNav settingsChildren={p.settingsChildren} />}
+        />
+        <div className="flex min-h-0 flex-1">
+          <Sidebar settingsChildren={p.settingsChildren} />
+          <div className="flex min-w-0 flex-1 flex-col">
+            <main id="main" className="min-h-0 flex-1 overflow-y-auto p-6">
+              {p.children}
+            </main>
+            <SourceOffer />
+          </div>
         </div>
       </div>
-    </div>
+    </ShellState>
   );
 }
 
@@ -57,7 +67,7 @@ export function AppShell(p: {
  */
 function SourceOffer() {
   return (
-    <footer className="flex items-center justify-end gap-2 border-t border-white/5 px-4 py-3 font-mono text-[11px] tracking-[0.08em] text-white/30">
+    <footer className="flex h-12 shrink-0 items-center justify-end gap-2 border-t border-white/5 px-4 font-mono text-[11px] tracking-[0.08em] text-white/30">
       <span>Sendsprite {appVersion()}</span>
       <span aria-hidden>·</span>
       <a

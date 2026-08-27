@@ -46,12 +46,10 @@ export function DangerZone({
       confirmLabel: "Delete this team",
       tone: "danger",
       typeToConfirm: teamName,
-      typeToConfirmLabel: (
-        <>
-          Type the team name <span className="text-white">{teamName}</span> to
-          confirm
-        </>
-      ),
+      // The name itself is rendered by the dialog, below this label, in its
+      // real casing — this label is uppercased by its own styling and would
+      // lie about it.
+      typeToConfirmLabel: "Type the team name below to confirm",
     });
     if (!ok) return;
     start(async () => {

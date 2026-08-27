@@ -1,83 +1,66 @@
 "use client";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { IconChevronLeft } from "@/components/ui/icons";
+import { IconChevronLeft, IconChevronRight } from "@/components/ui/icons";
 import { cn } from "@/lib/cn";
-import { NAV_GROUPS } from "./nav";
+import { NAV_GROUPS, type NavChild, type NavItem } from "./nav";
 import { NavLink } from "./NavLink";
-
-const KEY = "sendsprite:sidebar-collapsed";
+import { railWidth, useShell } from "./ShellState";
 
 /**
- * The section rail.
+ * The section rail: full height, its own scrollbar, and it does not move with
+ * the page.
  *
- * Collapsible, and it remembers: this is a console people keep open beside a
- * terminal or a Cloudflare tab, and on a 13" screen 240px of mostly-whitespace
- * column is worth reclaiming. Collapsed it is a 60px strip of icons with the
- * label as a tooltip, which is the arrangement Cloudflare's own console uses
- * and for the same reason — the rows stay in the same order and the same
- * place, so muscle memory survives the toggle.
+ * It used to be a flex child as tall as the document, so a long page made the
+ * sidebar long too and its foot scrolled away with the content. A navigation
+ * column that leaves the screen is not navigation. The shell is now a fixed
+ * viewport (`h-dvh`, no page scroll) and this column and the main column each
+ * scroll themselves.
  *
- * The preference lives in `localStorage`, per browser. It is a viewing
- * preference, not account state: syncing it to the server would mean a write
- * on every toggle and a layout that changes under you on another machine.
- *
- * It renders expanded on the first paint and corrects after mount, because a
- * server render cannot know what the browser stored. The correction is not
- * animated — a sidebar that slides shut on every page load looks broken.
+ * Collapsed it is a 60px strip of icons — the same arrangement Cloudflare's
+ * console uses, and for the same reason: rows keep their order and position
+ * across the toggle, so muscle memory survives it.
  */
-export function Sidebar() {
-  const [collapsed, setCollapsed] = useState(false);
-  const [ready, setReady] = useState(false);
-
-  useEffect(() => {
-    try {
-      setCollapsed(localStorage.getItem(KEY) === "1");
-    } catch {
-      // A browser with site data blocked still gets a working sidebar.
-    }
-    setReady(true);
-  }, []);
-
-  const toggle = () => {
-    const next = !collapsed;
-    setCollapsed(next);
-    try {
-      localStorage.setItem(KEY, next ? "1" : "0");
-    } catch {
-      // Same: the preference is lost, the sidebar is not.
-    }
-  };
-
+export function Sidebar({
+  settingsChildren,
+}: {
+  settingsChildren?: readonly NavChild[];
+}) {
+  const { collapsed, toggle, ready } = useShell();
   return (
     <aside
       className={cn(
-        "hidden shrink-0 flex-col border-r border-white/10 md:flex",
+        "hidden min-h-0 shrink-0 flex-col border-r border-white/10 md:flex",
         ready && "transition-[width] duration-[var(--duration-normal)]",
-        collapsed ? "w-[60px]" : "w-60",
+        railWidth(collapsed),
       )}
     >
       <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-2">
-        <SidebarNav collapsed={collapsed} />
+        <SidebarNav collapsed={collapsed} settingsChildren={settingsChildren} />
       </div>
-      <div className="shrink-0 border-t border-white/5 p-2">
+      {/* Same height and the same top border as the footer in the main column,
+          so the two rules read as one line across the bottom of the window. */}
+      <div className="flex h-12 shrink-0 items-center border-t border-white/5 px-2">
         <button
           type="button"
           onClick={toggle}
           aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           aria-pressed={collapsed}
           className={cn(
-            "flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm text-white/45",
+            "flex h-8 w-full items-center gap-2.5 rounded-md px-2.5 text-sm text-white/45",
             "transition-colors hover:bg-white/5 hover:text-white/80",
             collapsed && "justify-center px-0",
           )}
         >
-          <IconChevronLeft
-            className={cn(
-              "text-base transition-transform duration-[var(--duration-normal)]",
-              collapsed && "rotate-180",
-            )}
-          />
-          {!collapsed && <span>Collapse</span>}
+          {collapsed ? (
+            <IconChevronRight className="text-base" />
+          ) : (
+            <>
+              <IconChevronLeft className="text-base" />
+              <span>Collapse</span>
+            </>
+          )}
         </button>
       </div>
     </aside>
@@ -85,11 +68,17 @@ export function Sidebar() {
 }
 
 /**
- * The rows themselves, also used inside the mobile drawer — where nothing is
- * ever collapsed, because a drawer that opens to a strip of unlabelled icons
- * helps nobody.
+ * The rows, also used inside the mobile drawer — where nothing is ever
+ * collapsed, because a drawer that opens to a strip of unlabelled icons helps
+ * nobody.
  */
-export function SidebarNav({ collapsed = false }: { collapsed?: boolean }) {
+export function SidebarNav({
+  collapsed = false,
+  settingsChildren,
+}: {
+  collapsed?: boolean;
+  settingsChildren?: readonly NavChild[];
+}) {
   return (
     <nav className="flex flex-col gap-4" aria-label="Sections">
       {NAV_GROUPS.map((g) => (
@@ -106,10 +95,74 @@ export function SidebarNav({ collapsed = false }: { collapsed?: boolean }) {
               <p className="num-stamp px-3 pb-1.5">{g.label}</p>
             ))}
           {g.items.map((n) => (
-            <NavLink key={n.href} {...n} collapsed={collapsed} />
+            <Row
+              key={n.href}
+              item={
+                n.href === "/app/settings" && settingsChildren
+                  ? { ...n, children: settingsChildren }
+                  : n
+              }
+              collapsed={collapsed}
+            />
           ))}
         </div>
       ))}
     </nav>
+  );
+}
+
+/** One row, plus its children when it has them and there is room for them. */
+function Row({ item, collapsed }: { item: NavItem; collapsed: boolean }) {
+  const pathname = usePathname();
+  const onSection = pathname.startsWith(item.href);
+  const kids = item.children ?? [];
+  const nested = kids.length > 0 && !collapsed;
+
+  // Open when you are on the page the rows belong to, and openable by hand
+  // otherwise — the same behaviour as the console this borrows from. Tracked
+  // separately from the route so navigating to Settings opens it without
+  // trapping it open once you leave.
+  const [open, setOpen] = useState(onSection);
+  useEffect(() => {
+    if (onSection) setOpen(true);
+  }, [onSection]);
+
+  if (!nested) return <NavLink {...item} collapsed={collapsed} />;
+
+  return (
+    <div className="flex flex-col gap-0.5">
+      <NavLink {...item} expanded={open} onToggle={() => setOpen((v) => !v)} />
+      {open && (
+        <ul className="flex flex-col gap-0.5 pt-0.5">
+          {kids.map((c) => (
+            <li key={c.href}>
+              <SubLink {...c} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A child row.
+ *
+ * Indented against a hairline rather than given its own icon: these are parts
+ * of one page, not destinations of their own, and a column of icons at two
+ * levels reads as two menus.
+ */
+function SubLink({ href, label }: NavChild) {
+  return (
+    <Link
+      href={href}
+      className={cn(
+        "ml-[22px] block rounded-md border-l border-white/10 py-1.5 pr-3 pl-3.5 text-[13px] no-underline",
+        "text-white/50 transition-colors duration-[var(--duration-fast)]",
+        "hover:border-white/25 hover:bg-white/4 hover:text-white",
+      )}
+    >
+      {label}
+    </Link>
   );
 }
