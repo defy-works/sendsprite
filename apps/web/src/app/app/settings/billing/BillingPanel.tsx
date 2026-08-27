@@ -129,11 +129,29 @@ export function BillingPanel({
       setBusy(null);
     });
 
-  const over = Math.max(0, state.used - state.includedEmails);
-  const pct = Math.min(
-    100,
-    (state.used / Math.max(1, state.includedEmails)) * 100,
-  );
+  /*
+   * `includedEmails` is null on an unlimited entitlement — an operator grant
+   * or a `DEFAULT_PLAN=unlimited` instance. Everything that draws a bar or
+   * counts an overage is meaningless there, so the allowance is read once and
+   * the null is branched on rather than coerced: `Math.max(1, null)` is 1, and
+   * a team with no cap would have shown a full red bar.
+   */
+  const included = state.includedEmails;
+  const unlimited = included === null;
+  /** The team's plan was handed to it by the operator, not bought. */
+  const granted = state.source === "override";
+  /*
+   * Nothing on this page can be bought. Either an operator granted the plan,
+   * or the instance hands every team unlimited sending by `DEFAULT_PLAN` — and
+   * in that second case a catalogue of paid tiers would be offering a customer
+   * a downgrade dressed as an upgrade.
+   */
+  const nothingToBuy = granted || (state.source === "default" && unlimited);
+
+  const over = unlimited ? 0 : Math.max(0, state.used - included);
+  const pct = unlimited
+    ? 0
+    : Math.min(100, (state.used / Math.max(1, included)) * 100);
   const resets =
     daysLeft === 0
       ? "Resets today"
@@ -150,9 +168,12 @@ export function BillingPanel({
             <>
               The grace period{" "}
               {pastDue.deadline ? `ended on ${day(pastDue.deadline)}` : "ended"}
-              , so this team is now held to {n(state.includedEmails)} emails a
-              month even though the subscription is still open. Update your
-              payment method in the billing portal to restore your plan.
+              , so this team is now{" "}
+              {unlimited
+                ? "on this instance's own plan, which has no monthly cap,"
+                : `held to ${n(included)} emails a month`}{" "}
+              even though the subscription is still open. Update your payment
+              method in the billing portal to restore your plan.
             </>
           ) : pastDue.deadline ? (
             <>
@@ -200,6 +221,12 @@ export function BillingPanel({
                 {state.status.replace(/_/g, " ")}
               </Badge>
             )}
+            {/* Where the plan came from, said plainly. A team on Pro without
+                ever having paid for it should not have to guess why. */}
+            {granted && <Badge variant="muted">Operator grant</Badge>}
+            {state.source === "default" && state.plan !== "free" && (
+              <Badge variant="muted">Instance default</Badge>
+            )}
           </div>
         </CardHeader>
         <CardBody className="flex flex-col gap-5">
@@ -211,33 +238,34 @@ export function BillingPanel({
             <div className="flex flex-wrap items-baseline gap-x-3">
               <p className="metric-xl">{n(state.used)}</p>
               <p className="text-sm text-white/50">
-                of {n(state.includedEmails)} included
+                {unlimited ? "no monthly cap" : `of ${n(included)} included`}
               </p>
             </div>
-            <div
-              className="h-1.5 w-full overflow-hidden rounded-full bg-white/10"
-              role="progressbar"
-              aria-valuenow={Math.min(state.used, state.includedEmails)}
-              aria-valuemin={0}
-              aria-valuemax={state.includedEmails}
-              aria-valuetext={`${n(state.used)} of ${n(state.includedEmails)} included emails`}
-              aria-label="Emails used this period"
-            >
+            {/* No bar without a wall to draw it against. */}
+            {!unlimited && (
               <div
-                className={cn(
-                  "h-full transition-[width] duration-[var(--duration-slow)]",
-                  barTone(
-                    state.used,
-                    state.includedEmails,
-                    state.overageEnabled,
-                  ),
-                )}
-                style={{ width: `${pct}%` }}
-              />
-            </div>
+                className="h-1.5 w-full overflow-hidden rounded-full bg-white/10"
+                role="progressbar"
+                aria-valuenow={Math.min(state.used, included)}
+                aria-valuemin={0}
+                aria-valuemax={included}
+                aria-valuetext={`${n(state.used)} of ${n(included)} included emails`}
+                aria-label="Emails used this period"
+              >
+                <div
+                  className={cn(
+                    "h-full transition-[width] duration-[var(--duration-slow)]",
+                    barTone(state.used, included, state.overageEnabled),
+                  )}
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+            )}
             <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-sm">
               <p className="text-white/65">
-                {state.overageEnabled ? (
+                {unlimited ? (
+                  <>There is no monthly cap on this plan.</>
+                ) : state.overageEnabled ? (
                   <>
                     Past the include, sending continues at{" "}
                     {money(state.overagePer1kCents)} per 1,000.
@@ -273,9 +301,13 @@ export function BillingPanel({
               </p>
             ) : state.managed ? (
               <>
+                {/* The portal stays reachable under a grant — the subscription
+                    behind it still has a card and invoices — but it is no
+                    longer where the plan is decided, so it is not offered as
+                    the way to change one. */}
                 <p className="text-sm text-white/65">
-                  {subscribed ? "Plan changes, payment" : "Payment"} method,
-                  invoices and cancellation live in the billing portal.
+                  {subscribed && !granted ? "Plan changes, payment" : "Payment"}{" "}
+                  method, invoices and cancellation live in the billing portal.
                 </p>
                 <Button
                   variant="secondary"
@@ -285,6 +317,11 @@ export function BillingPanel({
                   {busy === "portal" ? "Opening…" : "Manage billing"}
                 </Button>
               </>
+            ) : nothingToBuy ? (
+              <p className="text-sm text-white/65">
+                This team&apos;s plan is set by the operator of this instance,
+                so there is nothing to buy here.
+              </p>
             ) : (
               <p className="text-sm text-white/65">
                 Choose a plan below to raise this team&apos;s monthly allowance.
@@ -309,7 +346,18 @@ export function BillingPanel({
           <CardTitle>Plans</CardTitle>
         </CardHeader>
         <CardBody>
-          {catalog.length === 0 ? (
+          {granted ? (
+            <p className="text-sm text-white/50">
+              This team is on the {state.plan} plan by a grant from the operator
+              of this instance.
+              {state.managed &&
+                " A subscription also exists; the grant takes precedence — it can still be managed in the billing portal above."}
+            </p>
+          ) : nothingToBuy ? (
+            <p className="text-sm text-white/50">
+              This instance includes unlimited sending; there is nothing to buy.
+            </p>
+          ) : catalog.length === 0 ? (
             <p className="text-sm text-white/50">
               The plan catalogue is unavailable right now. Your plan and usage
               above are unaffected; try again in a moment.

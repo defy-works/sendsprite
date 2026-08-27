@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
+import type { Plan } from "@sendsprite/shared";
 import type { TeamBilling } from "@/db/schema";
 import {
   FREE_ENTITLEMENT,
   PAST_DUE_GRACE_MS,
   calendarMonth,
   entitlementFrom,
+  grantedEntitlement,
   hasEntitlingSubscription,
   meteringPeriodStart,
   orderIsNewer,
+  resolveEntitlement,
   type BillingSnapshot,
 } from "@/services/billing/plans";
 
@@ -46,6 +49,9 @@ describe("entitlementFrom", () => {
       overageEnabled: false,
       managed: false,
       status: null,
+      // Free caps are not a subscription: `resolveEntitlement` reads this to
+      // mean "no entitling row here", and hands the team `DEFAULT_PLAN`.
+      source: "default",
       pastDueAt: null,
     });
   });
@@ -58,6 +64,7 @@ describe("entitlementFrom", () => {
       monthlyCap: null,
       overageEnabled: true,
       managed: true,
+      source: "subscription",
     });
     expect(e.periodStart).toEqual(row.periodStart);
     expect(e.periodEnd).toEqual(row.periodEnd);
@@ -78,6 +85,7 @@ describe("entitlementFrom", () => {
         plan: "free",
         monthlyCap: 3000,
         managed: true,
+        source: "default",
       });
   });
 
@@ -288,5 +296,154 @@ describe("hasEntitlingSubscription", () => {
 
   it("is false for a row that never carried a subscription id", () => {
     expect(hasEntitlingSubscription(sub({ subscriptionId: null }))).toBe(false);
+  });
+});
+
+describe("grantedEntitlement", () => {
+  it("is the calendar month, hard-capped, unmanaged", () => {
+    const e = grantedEntitlement(
+      {
+        plan: "pro",
+        includedEmails: 50000,
+        source: "override",
+        managed: false,
+      },
+      NOW,
+    );
+    expect(e).toMatchObject({
+      plan: "pro",
+      source: "override",
+      includedEmails: 50000,
+      monthlyCap: 50000,
+      overageEnabled: false,
+      overagePer1kCents: 0,
+      status: null,
+      managed: false,
+      pastDueAt: null,
+      cancelAtPeriodEnd: false,
+    });
+    expect(e.periodStart).toEqual(new Date("2026-08-01T00:00:00Z"));
+    expect(e.periodEnd).toEqual(new Date("2026-09-01T00:00:00Z"));
+  });
+
+  it("unlimited has no cap and no include", () => {
+    expect(
+      grantedEntitlement(
+        {
+          plan: "unlimited",
+          includedEmails: null,
+          source: "default",
+          managed: true,
+        },
+        NOW,
+      ),
+    ).toMatchObject({
+      plan: "unlimited",
+      includedEmails: null,
+      monthlyCap: null,
+      managed: true,
+    });
+  });
+});
+
+describe("resolveEntitlement", () => {
+  const catalog = async (p: Plan) =>
+    ({ free: 3000, pro: 50000, scale: 300000 })[p];
+
+  it("override beats an active subscription and stays managed", async () => {
+    const e = await resolveEntitlement(
+      { override: "scale", row, defaultPlan: "free", catalog },
+      NOW,
+    );
+    expect(e).toMatchObject({
+      plan: "scale",
+      source: "override",
+      monthlyCap: 300000,
+      managed: true,
+    });
+  });
+
+  it("subscription beats the default", async () => {
+    const e = await resolveEntitlement(
+      { override: null, row, defaultPlan: "unlimited", catalog },
+      NOW,
+    );
+    expect(e).toMatchObject({
+      plan: "pro",
+      source: "subscription",
+      monthlyCap: null,
+    });
+  });
+
+  it("default applies with no row, and when the row no longer entitles", async () => {
+    expect(
+      await resolveEntitlement(
+        { override: null, row: undefined, defaultPlan: "pro", catalog },
+        NOW,
+      ),
+    ).toMatchObject({
+      plan: "pro",
+      source: "default",
+      monthlyCap: 50000,
+      managed: false,
+    });
+    // A row that has stopped entitling still keeps the team managed, and its
+    // status is carried onto the default so the banner can say why.
+    expect(
+      await resolveEntitlement(
+        {
+          override: null,
+          row: { ...row, status: "canceled" },
+          defaultPlan: "pro",
+          catalog,
+        },
+        NOW,
+      ),
+    ).toMatchObject({
+      plan: "pro",
+      source: "default",
+      managed: true,
+      status: "canceled",
+    });
+  });
+
+  it("default free is exactly the old free entitlement, source default", async () => {
+    // The whole object, not a subset: an instance that never sets DEFAULT_PLAN
+    // must behave exactly as it did before overrides existed.
+    expect(
+      await resolveEntitlement(
+        { override: null, row: undefined, defaultPlan: "free", catalog },
+        NOW,
+      ),
+    ).toEqual(FREE_ENTITLEMENT(NOW));
+  });
+
+  it("ignores a plan_override nothing can honour", async () => {
+    // A value put there by hand, or a plan since dropped from GRANTABLE_PLANS.
+    // It must not stop the team sending, and it must not be mistaken for a
+    // grant either — the subscription underneath still decides.
+    const e = await resolveEntitlement(
+      { override: "platinum", row, defaultPlan: "free", catalog },
+      NOW,
+    );
+    expect(e).toMatchObject({ plan: "pro", source: "subscription" });
+  });
+
+  it("falls back to Free when the catalog does not know the plan", async () => {
+    const e = await resolveEntitlement(
+      {
+        override: "pro",
+        row: undefined,
+        defaultPlan: "free",
+        catalog: async () => undefined,
+      },
+      NOW,
+    );
+    expect(e).toMatchObject({
+      plan: "pro",
+      source: "override",
+      includedEmails: 3000,
+      monthlyCap: 3000,
+    });
   });
 });

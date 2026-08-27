@@ -15,6 +15,7 @@ afterEach(() => {
     "POLAR_ACCESS_TOKEN",
     "POLAR_WEBHOOK_SECRET",
     "POLAR_METER_ID",
+    "DEFAULT_PLAN",
   ])
     delete process.env[k];
 });
@@ -41,5 +42,18 @@ describe("billingConfig", () => {
     expect(cfg.returnUrl).toBe("https://mail.example.com/app/settings/billing");
     expect(cfg.eventName).toBe("email.sent");
     expect(cfg.meterId).toBeNull();
+  });
+
+  it("carries the default plan", () => {
+    const cfg = billingConfig(
+      parseEnv({
+        ...BASE,
+        BILLING_ENABLED: "1",
+        BILLING_PROVIDER: "fake",
+        DEFAULT_PLAN: "pro",
+      }),
+    );
+    expect(cfg.defaultPlan).toBe("pro");
+    expect(billingConfig(parseEnv({ ...BASE })).defaultPlan).toBe("free");
   });
 });

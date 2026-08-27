@@ -1,3 +1,4 @@
+import type { GrantedPlan } from "@sendsprite/shared";
 import { loadEnv, type Env } from "@/env.schema";
 
 /**
@@ -16,6 +17,8 @@ export interface BillingConfig {
   eventName: string;
   /** Display only; null when unset. Billing never needs it. */
   meterId: string | null;
+  /** Plan a team with no subscription and no grant resolves to. */
+  defaultPlan: GrantedPlan;
   /** Where the provider sends the browser after a successful checkout. */
   successUrl: string;
   /** Where the customer portal's back link points. */
@@ -34,6 +37,7 @@ export function billingConfig(env: Env = loadEnv()): BillingConfig {
     server: env.POLAR_SERVER,
     eventName: env.BILLING_EVENT_NAME,
     meterId: env.POLAR_METER_ID ?? null,
+    defaultPlan: env.DEFAULT_PLAN,
     // `{CHECKOUT_ID}` is substituted by the provider at redirect time.
     successUrl: `${base}${BILLING_PATH}?checkout={CHECKOUT_ID}`,
     returnUrl: `${base}${BILLING_PATH}`,

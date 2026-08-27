@@ -1,4 +1,5 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { startPg } from "./_pg";
 import { seedTeamWithKey } from "./helpers";
 
@@ -12,6 +13,15 @@ afterAll(async () => {
   await pg.stop();
   delete process.env.BILLING_ENABLED;
   delete process.env.BILLING_PROVIDER;
+});
+
+// The catalog cache is a module singleton with a wall clock: a value loaded
+// by one test is still there for the next, which would hide a test that only
+// passes because an earlier one warmed it.
+beforeEach(async () => {
+  const { resetCatalogCacheForTests } =
+    await import("@/services/billing/catalog-cache");
+  resetCatalogCacheForTests();
 });
 
 const NOW = new Date("2026-08-15T12:00:00Z");
@@ -140,7 +150,10 @@ describe("plan entitlements feed the existing caps", () => {
       await import("@/services/send-limits");
     const { team } = await seedTeamWithKey();
     const caps = await resolveTeamCaps(team.id, NOW);
-    expect(caps).toMatchObject({ monthly: 3000, source: "plan" });
+    // `source` is `default`, not `plan`: with no subscription the caps now come
+    // from `DEFAULT_PLAN`, which is Free unless an operator says otherwise —
+    // the same 3 000 as before, arriving by a named route.
+    expect(caps).toMatchObject({ monthly: 3000, source: "default" });
     expect(caps.monthlyFrom.toISOString()).toBe("2026-08-01T00:00:00.000Z");
     await seedEmails(team.id, 3000);
     const r = await checkTeamCaps(team.id, 1, NOW);
@@ -262,5 +275,100 @@ describe("plan entitlements feed the existing caps", () => {
     expect(h["x-ratelimit-reset"]).toBe(
       String(Math.floor(Date.UTC(2026, 8, 1) / 1000)),
     );
+  });
+});
+
+describe("plan overrides and DEFAULT_PLAN", () => {
+  // `plan_override`, `_by` and `_at` are set and cleared together — the check
+  // constraint on the table refuses any other combination.
+  const setOverride = async (teamId: string, plan: string | null) => {
+    const { db } = await import("@/db");
+    const { teamSettings } = await import("@/db/schema");
+    const grant = {
+      planOverride: plan,
+      planOverrideBy: plan === null ? null : "usr_operator",
+      planOverrideAt: plan === null ? null : NOW,
+    };
+    await db()
+      .insert(teamSettings)
+      .values({ teamId, ...grant, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: teamSettings.teamId,
+        set: { ...grant, updatedAt: new Date() },
+      });
+  };
+
+  it("an override beats the subscription and hard-caps at the catalog include", async () => {
+    await enableBilling();
+    const { resolveTeamCaps, checkTeamCaps } =
+      await import("@/services/send-limits");
+    const { team } = await seedTeamWithKey();
+    await setOverride(team.id, "pro");
+    expect(await resolveTeamCaps(team.id, NOW)).toMatchObject({
+      monthly: 50000,
+      source: "override",
+      planName: "pro",
+    });
+    // `adding` crosses the ceiling on its own — 50 000 rows need not exist for
+    // the grant's cap to be the thing that refuses.
+    const r = await checkTeamCaps(team.id, 50001, NOW);
+    expect(r).toMatchObject({ ok: false, code: "monthly_quota_exceeded" });
+    if (r.ok) throw new Error("unreachable");
+    // The team is told the number is an operator's decision, not the plan page's.
+    expect(r.message).toContain("Pro plan (granted)");
+  });
+
+  it("unlimited removes the monthly cap entirely", async () => {
+    await enableBilling();
+    const { resolveTeamCaps } = await import("@/services/send-limits");
+    const { team } = await seedTeamWithKey();
+    await setOverride(team.id, "unlimited");
+    expect(await resolveTeamCaps(team.id, NOW)).toMatchObject({
+      monthly: null,
+      source: "override",
+    });
+  });
+
+  it("a numeric monthly_limit still beats a plan override", async () => {
+    // A grant names a plan; a `team_settings` limit is a decision about this
+    // team's volume, and the more specific decision has to win.
+    await enableBilling();
+    const { db } = await import("@/db");
+    const { teamSettings } = await import("@/db/schema");
+    const { resolveTeamCaps } = await import("@/services/send-limits");
+    const { team } = await seedTeamWithKey();
+    await setOverride(team.id, "unlimited");
+    await db()
+      .update(teamSettings)
+      .set({ monthlyLimit: 10 })
+      .where(eq(teamSettings.teamId, team.id));
+    expect(await resolveTeamCaps(team.id, NOW)).toMatchObject({
+      monthly: 10,
+      source: "settings",
+    });
+  });
+
+  it("DEFAULT_PLAN gives a team with nothing the plan's allowance", async () => {
+    process.env.DEFAULT_PLAN = "scale";
+    await enableBilling();
+    try {
+      const { resolveTeamCaps } = await import("@/services/send-limits");
+      const { teamBillingState } = await import("@/services/billing");
+      const { team } = await seedTeamWithKey();
+      expect(await resolveTeamCaps(team.id, NOW)).toMatchObject({
+        monthly: 300000,
+        source: "default",
+        planName: "scale",
+      });
+      expect(await teamBillingState(team.id, NOW)).toMatchObject({
+        plan: "scale",
+        source: "default",
+        includedEmails: 300000,
+        managed: false,
+      });
+    } finally {
+      delete process.env.DEFAULT_PLAN;
+      await enableBilling();
+    }
   });
 });

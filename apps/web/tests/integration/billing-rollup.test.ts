@@ -147,6 +147,60 @@ describe("rollupUsage", () => {
     expect(provider.ingested.get(team.id)).toBe(6);
   });
 
+  it("bills nothing for a granted team, and clearing the grant does not replay it", async () => {
+    // The dangerous shape: a granted team pays nothing, so no event may be
+    // emitted for it — but its watermark still has to move, or the first run
+    // after an operator clears the grant walks the whole granted period and
+    // bills every hour of it. Consumed, not skipped.
+    const { rollupUsage, usageRow } = await import("@/services/billing/usage");
+    const { db } = await import("@/db");
+    const { teamSettings } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    const team = await seedTeam();
+    await db().insert(teamSettings).values({
+      teamId: team.id,
+      planOverride: "unlimited",
+      planOverrideBy: "usr_operator",
+      planOverrideAt: NOW,
+      updatedAt: NOW,
+    });
+    const granted = new Date("2026-08-25T09:10:00Z");
+    await seedEmails(team.id, granted, 5);
+
+    await rollupUsage(provider, "email.sent", NOW);
+    expect(provider.ingested.get(team.id)).toBeUndefined();
+    // The watermark moved anyway, and no units were counted as reported.
+    const row = (await usageRow(team.id, PERIOD_START))!;
+    expect(row.reportedThrough!.toISOString()).toBe("2026-08-25T10:00:00.000Z");
+    expect(row.reportedUnits).toBe(0);
+
+    // The operator ungrants — all three columns together, as the check
+    // constraint requires.
+    await db()
+      .update(teamSettings)
+      .set({
+        planOverride: null,
+        planOverrideBy: null,
+        planOverrideAt: null,
+        updatedAt: NOW,
+      })
+      .where(eq(teamSettings.teamId, team.id));
+    const later = new Date("2026-08-25T11:20:00Z");
+    await seedEmails(team.id, later, 4);
+    await rollupUsage(provider, "email.sent", new Date("2026-08-25T12:37:00Z"));
+
+    // Only the hour after the grant was cleared. The granted hour is gone for
+    // good, which is the point: it was never billable.
+    expect(provider.ingested.get(team.id)).toBe(4);
+    expect(provider.ingestedIds).toContain(
+      `${team.id}:2026-08-25T11:00:00.000Z`,
+    );
+    expect(provider.ingestedIds).not.toContain(
+      `${team.id}:2026-08-25T09:00:00.000Z`,
+    );
+    expect((await usageRow(team.id, PERIOD_START))!.reportedUnits).toBe(4);
+  });
+
   it("ignores teams that never went through checkout", async () => {
     const { rollupUsage } = await import("@/services/billing/usage");
     const { team } = await seedTeamWithKey();

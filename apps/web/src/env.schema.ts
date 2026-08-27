@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { GRANTABLE_PLANS } from "@sendsprite/shared";
 import { SES_REGIONS } from "@/lib/aws/regions";
 import { isS3TemplateUrl } from "@/lib/aws/quick-create";
 import { CF_DEFAULT_SCOPES } from "@/lib/cloudflare/scopes";
@@ -59,6 +60,17 @@ export const schema = z
      * in the Polar dashboard.
      */
     POLAR_METER_ID: z.string().min(1).optional(),
+    /**
+     * Plan a team with no subscription and no grant resolves to. Only with
+     * billing on.
+     *
+     * "No subscription" includes a subscription that has *stopped* entitling —
+     * canceled, unpaid, or past due beyond its grace window — not just a team
+     * that never bought. So `DEFAULT_PLAN=scale` means cancelling costs a
+     * customer nothing: they keep the Scale allowance for as long as they stay.
+     * Leave it `free` on a hosted instance.
+     */
+    DEFAULT_PLAN: z.enum(GRANTABLE_PLANS).default("free"),
     SIGNUP_MODE: z.enum(["auto", "open", "invite", "closed"]).default("auto"),
     /**
      * Comma-separated emails that always pass `requireInstanceAdmin`,
@@ -123,6 +135,10 @@ export const schema = z
       path: ["POLAR_WEBHOOK_SECRET"],
     },
   )
+  .refine((e) => e.BILLING_ENABLED || e.DEFAULT_PLAN === "free", {
+    message: "DEFAULT_PLAN requires BILLING_ENABLED",
+    path: ["DEFAULT_PLAN"],
+  })
   .refine((e) => e.NODE_ENV !== "production" || e.BILLING_PROVIDER !== "fake", {
     message: "BILLING_PROVIDER=fake is refused in production",
     path: ["BILLING_PROVIDER"],

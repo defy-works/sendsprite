@@ -5,6 +5,7 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusDot } from "@/components/ui/StatusDot";
 import { requireInstanceAdmin } from "@/lib/session";
 import { getOrganization } from "@/services/admin";
+import { billingEnabled } from "@/services/billing/config";
 import { getInstanceSettings } from "@/services/instance-settings";
 import { OverridesForm } from "./OverridesForm";
 import { RenameForm } from "./RenameForm";
@@ -133,7 +134,14 @@ export default async function OrganizationPage({
                 label="Sent · 30d"
                 value={org.sent30d.toLocaleString("en-US")}
               />
-              <Row label="Plan" value={org.plan ?? "free"} />
+              <Row
+                label="Plan"
+                value={
+                  org.planGrant
+                    ? `${org.planGrant.plan} · granted${org.planGrant.by ? ` by ${org.planGrant.by}` : ""} on ${date(org.planGrant.at)}`
+                    : (org.plan ?? "free")
+                }
+              />
               <Row
                 label="Assets"
                 value={`${org.assets.count.toLocaleString("en-US")} · ${megabytes(org.assets.bytes)}`}
@@ -168,6 +176,8 @@ export default async function OrganizationPage({
             dailyLimit={org.dailyLimit}
             monthlyLimit={org.monthlyLimit}
             retentionDays={org.retentionDays}
+            planOverride={org.planOverride}
+            billing={billingEnabled()}
             instanceRetentionMax={instance.retentionDays}
           />
         </CardBody>

@@ -64,6 +64,7 @@ describe("per-team overrides", () => {
       dailyLimit: 10,
       monthlyLimit: 200,
       retentionDays: 14,
+      planOverride: null,
     });
     expect(res).toEqual({ ok: true, data: undefined });
     expect(await resolveTeamCaps(team.id)).toMatchObject({
@@ -105,11 +106,13 @@ describe("per-team overrides", () => {
       dailyLimit: 5,
       monthlyLimit: 50,
       retentionDays: null,
+      planOverride: null,
     });
     await setOrgOverrides(actor(admin.id), team.id, {
       dailyLimit: null,
       monthlyLimit: 60,
       retentionDays: null,
+      planOverride: null,
     });
     expect(await resolveTeamCaps(team.id)).toMatchObject({
       daily: null,

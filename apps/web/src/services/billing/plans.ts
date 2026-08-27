@@ -2,10 +2,16 @@ import { eq } from "drizzle-orm";
 import {
   FREE_PLAN_METADATA,
   isEntitledStatus,
+  isGrantedPlan,
+  type EntitlementSource,
+  type GrantedPlan,
   type Plan,
 } from "@sendsprite/shared";
 import { db, type Db } from "@/db";
-import { teamBilling, type TeamBilling } from "@/db/schema";
+import { teamBilling, teamSettings, type TeamBilling } from "@/db/schema";
+import { CATALOG_TTL_MS, cachedPlanIncluded } from "./catalog-cache";
+import { billingConfig } from "./config";
+import type { PlanProduct } from "./provider";
 
 /**
  * A drizzle client or an open transaction. Webhook application runs entirely
@@ -24,9 +30,10 @@ export interface UsageWindow {
 
 /** What a team is entitled to right now. The only thing caps and UI read. */
 export interface Entitlement {
-  plan: Plan;
+  plan: GrantedPlan;
   status: string | null;
-  includedEmails: number;
+  /** Null on an unlimited grant. */
+  includedEmails: number | null;
   overagePer1kCents: number;
   /** The subscription bills overage, so `includedEmails` is not a ceiling. */
   overageEnabled: boolean;
@@ -37,6 +44,8 @@ export interface Entitlement {
   periodEnd: Date;
   /** There is a provider subscription row behind this. */
   managed: boolean;
+  /** Which of grant, subscription or instance default produced this. */
+  source: EntitlementSource;
   /**
    * When the subscription went past due, or null. Carried through even after
    * the grace window has expired and the caps have dropped to Free, because
@@ -78,6 +87,7 @@ export const FREE_ENTITLEMENT = (now: Date): Entitlement => {
     periodStart: w.start,
     periodEnd: w.end,
     managed: false,
+    source: "default",
     pastDueAt: null,
   };
 };
@@ -160,6 +170,12 @@ const freeButManaged = (row: BillingSnapshot, now: Date): Entitlement => ({
  *   landed yet): roll the stored period forward by its own length, so a stale
  *   row can never produce an empty window and with it unlimited sending. This
  *   substitution is for entitlement only — see `meteringPeriodStart`.
+ *
+ * The `source` on the result is meaningful only to `resolveEntitlement`, the
+ * one caller that reads it: `subscription` means the row was honoured, and
+ * `default` means this function fell back to Free caps for any of the reasons
+ * above. It is *not* a claim about where the team's entitlement finally came
+ * from — `resolveEntitlement` decides that.
  */
 export function entitlementFrom(
   row: BillingSnapshot | undefined,
@@ -198,6 +214,7 @@ export function entitlementFrom(
     periodStart: window.start,
     periodEnd: window.end,
     managed: true,
+    source: "subscription",
     pastDueAt: row.pastDueAt,
   };
 }
@@ -271,10 +288,216 @@ export async function billingRow(
   return row;
 }
 
-/** The entitlement a team is on right now. */
+/** The grant an entitlement is built from. */
+export interface Grant {
+  plan: GrantedPlan;
+  /** Null on an unlimited grant. */
+  includedEmails: number | null;
+  source: Exclude<EntitlementSource, "subscription">;
+  /**
+   * The caller's, not derived from `plan`: a granted team that also holds a
+   * subscription row must keep its customer portal reachable.
+   */
+  managed: boolean;
+}
+
+/**
+ * An entitlement that did not come from a subscription: an operator grant or
+ * the instance default. Calendar month, hard cap at the include (none for
+ * `unlimited`), nothing billed.
+ */
+export function grantedEntitlement(
+  { plan, includedEmails, source, managed }: Grant,
+  now: Date,
+): Entitlement {
+  const w = calendarMonth(now);
+  return {
+    plan,
+    status: null,
+    includedEmails,
+    overagePer1kCents: 0,
+    overageEnabled: false,
+    monthlyCap: includedEmails,
+    cancelAtPeriodEnd: false,
+    periodStart: w.start,
+    periodEnd: w.end,
+    managed,
+    source,
+    pastDueAt: null,
+  };
+}
+
+export interface EntitlementInputs {
+  /** `team_settings.plan_override`, or null. */
+  override: string | null;
+  row: BillingSnapshot | undefined;
+  defaultPlan: GrantedPlan;
+  /** Included emails for a catalog plan, undefined when unknown. */
+  catalog: (plan: Plan) => Promise<number | undefined>;
+}
+
+/**
+ * One line per `key` per catalog TTL.
+ *
+ * Entitlement is resolved on every send, so an unthrottled `console.error`
+ * below would be a line per send for as long as the misconfiguration lasts —
+ * enough to bury the rest of the log, and to cost real money in an aggregator.
+ * `CATALOG_TTL_MS` is the window because that is the soonest a catalog refresh
+ * could have made the message untrue; repeating faster tells an operator
+ * nothing new. Deliberately not reset between tests: it is a log throttle, and
+ * nothing asserts on it.
+ */
+const loggedAt = new Map<string, number>();
+function logThrottled(key: string, message: string): void {
+  const at = Date.now();
+  const last = loggedAt.get(key);
+  if (last !== undefined && at - last < CATALOG_TTL_MS) return;
+  loggedAt.set(key, at);
+  console.error(message);
+}
+
+/**
+ * Included volume for a granted plan; Free's when the catalog cannot say.
+ *
+ * Falling back to Free caps rather than refusing keeps a catalog outage from
+ * turning a grant into a send failure. It does leave the team with a refusal
+ * message naming the granted plan over a cap that is Free's, which reads as a
+ * contradiction — hence the log: the operator, not the customer, is the one
+ * who can fix it.
+ */
+async function grantedInclude(
+  plan: GrantedPlan,
+  catalog: EntitlementInputs["catalog"],
+): Promise<number | null> {
+  if (plan === "unlimited") return null;
+  if (plan === "free") return FREE_PLAN_METADATA.includedEmails;
+  const n = await catalog(plan);
+  if (n === undefined) {
+    logThrottled(
+      `no-catalog-plan:${plan}`,
+      `[billing] catalog has no "${plan}"; granting the Free allowance instead`,
+    );
+    return FREE_PLAN_METADATA.includedEmails;
+  }
+  return n;
+}
+
+/**
+ * The one precedence for "what is this team entitled to":
+ * operator grant → entitling subscription → `DEFAULT_PLAN`.
+ *
+ * Pure apart from `catalog`, so the matrix is unit-tested. The numeric
+ * `team_settings` limits are *not* here: they are caps, not plans, and
+ * `resolveTeamCaps` applies them on top, column by column.
+ *
+ * "Entitling subscription" is read off `entitlementFrom`'s `source`: it says
+ * `subscription` only when it honoured the row, and `default` whenever it fell
+ * back to Free caps (no row, non-entitling status, lapsed cancellation, expired
+ * grace) — exactly the cases the instance default is for. The row's status,
+ * cancellation and past-due stamp are carried onto the default so the banner
+ * can still say why.
+ */
+export async function resolveEntitlement(
+  inp: EntitlementInputs,
+  now: Date,
+): Promise<Entitlement> {
+  const managed = inp.row !== undefined;
+  if (inp.override) {
+    if (isGrantedPlan(inp.override))
+      return grantedEntitlement(
+        {
+          plan: inp.override,
+          includedEmails: await grantedInclude(inp.override, inp.catalog),
+          source: "override",
+          managed,
+        },
+        now,
+      );
+    // Falls through: a stored grant nobody can honour — a plan dropped from
+    // `GRANTABLE_PLANS` since it was written, or a value put there by hand.
+    // Ignored rather than thrown on, because an unusable grant must not stop a
+    // team sending, but named in the log: silence is how it stays wrong.
+    logThrottled(
+      `bad-override:${inp.override}`,
+      `[billing] team_settings.plan_override is "${inp.override}", which is not a grantable plan; ignoring the grant`,
+    );
+  }
+  const sub = entitlementFrom(inp.row, now);
+  if (sub.source === "subscription") return sub;
+  const d = grantedEntitlement(
+    {
+      plan: inp.defaultPlan,
+      includedEmails: await grantedInclude(inp.defaultPlan, inp.catalog),
+      source: "default",
+      managed,
+    },
+    now,
+  );
+  return managed
+    ? {
+        ...d,
+        status: sub.status,
+        cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
+        pastDueAt: sub.pastDueAt,
+      }
+    : d;
+}
+
+export type CatalogLoader = () => Promise<PlanProduct[]>;
+
+/**
+ * The wiring every entitlement read shares: the instance default, and the
+ * catalog behind the process-wide cache.
+ *
+ * `loadCatalog` is a parameter only so this module never imports `./index`,
+ * which imports this one. **Every caller must pass the same loader** —
+ * `defaultCatalogLoader` — because the cache behind `cachedPlanIncluded` is a
+ * module-level singleton, and a second loader would refresh that one slot with
+ * a different source.
+ */
+export function entitlementInputs(
+  override: string | null,
+  row: BillingSnapshot | undefined,
+  loadCatalog: CatalogLoader,
+): EntitlementInputs {
+  return {
+    override,
+    row,
+    defaultPlan: billingConfig().defaultPlan,
+    catalog: (plan) => cachedPlanIncluded(plan, loadCatalog),
+  };
+}
+
+/**
+ * The entitlement a team is on right now — grant, subscription or default.
+ *
+ * The catalog loader is a parameter rather than an import so `plans.ts` never
+ * reaches into `./index`, which imports this module.
+ *
+ * `opts.row` is for a caller that has already read `team_billing` and needs it
+ * for something else as well (`teamBillingState` keys usage off it): handing it
+ * over saves a second read of the same row. `resolveTeamCaps` does not use this
+ * wrapper at all — it folds both reads into the query it was already making.
+ */
 export async function teamEntitlement(
   teamId: string,
-  now = new Date(),
+  now: Date,
+  loadCatalog: CatalogLoader,
+  opts: { row?: BillingSnapshot | undefined; client?: DbClient } = {},
 ): Promise<Entitlement> {
-  return entitlementFrom(await billingRow(teamId), now);
+  const client = opts.client ?? db();
+  const [[settings], row] = await Promise.all([
+    client
+      .select({ override: teamSettings.planOverride })
+      .from(teamSettings)
+      .where(eq(teamSettings.teamId, teamId)),
+    // `"row" in opts`, not `opts.row ?? …`: `undefined` is a real answer here
+    // (the team has no subscription), and reading it as "not supplied" would
+    // re-read the row for exactly the teams that have none.
+    "row" in opts ? opts.row : billingRow(teamId, client),
+  ]);
+  return resolveEntitlement(
+    entitlementInputs(settings?.override ?? null, row, loadCatalog),
+    now,
+  );
 }

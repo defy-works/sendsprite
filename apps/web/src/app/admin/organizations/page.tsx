@@ -109,9 +109,15 @@ export default async function OrganizationsPage({
                   </td>
                   <td className="px-4 py-3">
                     <Badge
-                      variant={o.plan && o.plan !== "free" ? "indigo" : "muted"}
+                      variant={
+                        o.planOverride || (o.plan && o.plan !== "free")
+                          ? "indigo"
+                          : "muted"
+                      }
                     >
-                      {o.plan ?? "free"}
+                      {o.planOverride
+                        ? `${o.planOverride} (granted)`
+                        : (o.plan ?? "free")}
                     </Badge>
                   </td>
                   <td className="px-4 py-3 text-white/55">

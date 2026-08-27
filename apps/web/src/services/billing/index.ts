@@ -26,10 +26,10 @@ import {
 } from "./provider";
 import {
   billingRow,
-  entitlementFrom,
   hasEntitlingSubscription,
   meteringPeriodStart,
   orderIsNewer,
+  teamEntitlement,
   type DbClient,
 } from "./plans";
 import { countSentIn, usageRow } from "./usage";
@@ -100,6 +100,54 @@ export function resetBillingProvider(): void {
   g.__sendspriteBilling = undefined;
 }
 
+/** A promise that rejects after `ms`, plus the way to call the timer off. */
+function rejectAfter(ms: number): {
+  promise: Promise<never>;
+  cancel: () => void;
+} {
+  let timer: ReturnType<typeof setTimeout>;
+  const promise = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`catalog load timed out after ${ms}ms`)),
+      ms,
+    );
+  });
+  // Without the clear, a resolved race would still hold the event loop open
+  // for the rest of the timeout — five seconds added to every process exit.
+  return { promise, cancel: () => clearTimeout(timer) };
+}
+
+/** How long a catalog read may take before the cache gives up on it. */
+const CATALOG_LOAD_TIMEOUT_MS = 5_000;
+
+/**
+ * The catalog read the entitlement cache refreshes through.
+ *
+ * Bounded, because a hung socket would otherwise pin the cache's single
+ * in-flight promise for ever and every send waiting on a cap would hang with
+ * it. A timeout is just a failed refresh: the cache keeps its last good
+ * catalog and backs off for a full TTL.
+ */
+export const defaultCatalogLoader = (): Promise<PlanProduct[]> => {
+  // The clock starts before the provider is resolved, not after: the first
+  // call in a process lazily imports the provider SDK and awaits `ready()`,
+  // and a hang in either of those is just as capable of pinning the cache.
+  const bound = rejectAfter(CATALOG_LOAD_TIMEOUT_MS);
+  const timedOut = bound.promise.catch((e: unknown) => {
+    // The hang may be the *provider*, not the request: `getBillingProvider`
+    // memoises the promise it is building, and a lazy import or a `ready()`
+    // that never settles never rejects either — so that promise would stay
+    // pending for the life of the process and every later refresh would await
+    // the same dead object. Dropping it costs a rebuild in the case where only
+    // the listing hung, which is cheap, and is the only thing that lets the
+    // next refresh a TTL later actually recover.
+    resetBillingProvider();
+    throw e;
+  });
+  const load = async () => (await getBillingProvider()).listPlanProducts();
+  return Promise.race([load(), timedOut]).finally(bound.cancel);
+};
+
 // ---------------------------------------------------------------- state
 
 /** Everything the billing page renders, in one read. */
@@ -109,7 +157,9 @@ export async function teamBillingState(
 ): Promise<BillingStateObject> {
   const cfg = billingConfig();
   const row = await billingRow(teamId);
-  const e = entitlementFrom(row, now);
+  // `row` is already in hand for `meteringPeriodStart` below; passing it in
+  // keeps this page to one read of `team_billing` rather than two.
+  const e = await teamEntitlement(teamId, now, defaultCatalogLoader, { row });
   const [used, usage] = await Promise.all([
     countSentIn(teamId, { start: e.periodStart, end: e.periodEnd }),
     // Deliberately *not* `e.periodStart`: the entitlement may have rolled the
@@ -129,6 +179,7 @@ export async function teamBillingState(
     used,
     reportedUnits: usage?.reportedUnits ?? 0,
     managed: e.managed,
+    source: e.source,
     pastDueAt: e.pastDueAt?.toISOString() ?? null,
   };
 }
@@ -721,5 +772,5 @@ export async function planCatalog(): Promise<PlanCatalog> {
   }
 }
 
-export { entitlementFrom, teamEntitlement } from "./plans";
+export { entitlementFrom, resolveEntitlement, teamEntitlement } from "./plans";
 export type { Entitlement } from "./plans";

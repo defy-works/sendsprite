@@ -26,7 +26,11 @@ import {
 import { recordAudit, type RequestMeta } from "@/lib/audit";
 import { pgCode } from "@/lib/pg";
 import type { Result } from "@/lib/result";
-import { SEND_CONSUMING_STATUS } from "@sendsprite/shared";
+import {
+  isGrantedPlan,
+  SEND_CONSUMING_STATUS,
+  type GrantedPlan,
+} from "@sendsprite/shared";
 
 /**
  * What the instance operator can see and change, across every team.
@@ -60,6 +64,8 @@ export interface OrgSummary {
   sesStatus: "sandbox" | "requested" | "production" | null;
   cloudflareConnected: boolean;
   plan: string | null;
+  /** The operator's plan grant, when one is in force. It beats `plan`. */
+  planOverride: string | null;
   suspendedAt: Date | null;
   setupCompleted: boolean;
 }
@@ -117,6 +123,7 @@ export async function listOrganizations(q?: string): Promise<OrgSummary[]> {
       awsTeam: teamAws.teamId,
       cfTeam: teamCloudflare.teamId,
       plan: teamBilling.plan,
+      planOverride: teamSettings.planOverride,
       suspendedAt: teamSettings.suspendedAt,
       setupCompleted: teamSettings.setupCompleted,
     })
@@ -147,12 +154,22 @@ export async function listOrganizations(q?: string): Promise<OrgSummary[]> {
     sesStatus: r.sesStatus,
     cloudflareConnected: r.cfTeam !== null,
     plan: r.plan,
+    planOverride: r.planOverride,
     suspendedAt: r.suspendedAt,
     setupCompleted: r.setupCompleted ?? false,
   }));
 }
 
 export interface OrgDetail extends OrgSummary {
+  /**
+   * The same grant as `planOverride`, with the operator who made it — resolved
+   * to their email, since a user id tells the reader nothing — and when. `by`
+   * is null where that account has since been deleted; `at` is not optional
+   * because `team_settings_plan_override_complete` will not let a grant exist
+   * without one. The list needs only the plan name, which is why the summary
+   * carries it and this does not repeat the lookup.
+   */
+  planGrant: { plan: string; by: string | null; at: Date } | null;
   dailyLimit: number | null;
   monthlyLimit: number | null;
   retentionDays: number | null;
@@ -255,6 +272,23 @@ export async function getOrganization(id: string): Promise<OrgDetail | null> {
     ]),
   ]);
 
+  /*
+   * A second round trip rather than a join, because it happens only for the
+   * few teams that actually carry a grant. `plan_override_by` has no foreign
+   * key — the audit trail must outlive the account, the same reason
+   * `audit_log` has none — so a deleted operator resolves to null here rather
+   * than dropping the grant from the page.
+   */
+  const grantedBy = settings?.planOverrideBy
+    ? ((
+        await db()
+          .select({ email: user.email })
+          .from(user)
+          .where(eq(user.id, settings.planOverrideBy))
+          .limit(1)
+      )[0]?.email ?? null)
+    : null;
+
   return {
     id: base.id,
     name: base.name,
@@ -267,6 +301,17 @@ export async function getOrganization(id: string): Promise<OrgDetail | null> {
     sesStatus: aws?.sesAccountStatus ?? null,
     cloudflareConnected: cf !== null,
     plan: billing?.plan ?? null,
+    planOverride: settings?.planOverride ?? null,
+    // The `&& planOverrideAt` is the type system catching up with the CHECK
+    // constraint, not a real branch: a row cannot hold one without the other.
+    planGrant:
+      settings?.planOverride && settings.planOverrideAt
+        ? {
+            plan: settings.planOverride,
+            by: grantedBy,
+            at: settings.planOverrideAt,
+          }
+        : null,
     suspendedAt: settings?.suspendedAt ?? null,
     setupCompleted: settings?.setupCompleted ?? false,
     dailyLimit: settings?.dailyLimit ?? null,
@@ -290,13 +335,13 @@ export async function getOrganization(id: string): Promise<OrgDetail | null> {
 }
 
 /**
- * Upserts the operator's per-team overrides.
+ * Writes the operator's per-team overrides: the numeric caps and the plan grant.
  *
- * `team_settings` may not have a row yet — a team that never opened the
- * retention form has none — so this is an upsert rather than an update, and it
- * spells every `notNull` column out because Postgres constraint-checks the
- * candidate row *before* it looks for a conflict (the note `team-aws.ts`
- * carries, for the same reason).
+ * Reads the row first, then updates or inserts. The read is not just an
+ * existence check — the previous values are what the audit diff is built from,
+ * and comparing the old plan to the new one is what decides whether the grant
+ * columns move at all. `team_settings` may genuinely have no row yet: a team
+ * that never opened its own settings has none.
  */
 export async function setOrgOverrides(
   actor: AdminActor,
@@ -305,27 +350,63 @@ export async function setOrgOverrides(
     dailyLimit: number | null;
     monthlyLimit: number | null;
     retentionDays: number | null;
+    /** A plan name from `GRANTABLE_PLANS`, or null to drop the grant. */
+    planOverride: string | null;
   },
 ): Promise<Result> {
+  // Checked here rather than only in the action: the plan name goes into a
+  // text column and is read back as an entitlement, so an unknown value would
+  // silently resolve to Free for whoever the operator meant to help.
+  if (patch.planOverride !== null && !isGrantedPlan(patch.planOverride))
+    return { ok: false, error: `Unknown plan "${patch.planOverride}".` };
+  const plan: GrantedPlan | null = patch.planOverride;
+
   const [before] = await db()
     .select({
       dailyLimit: teamSettings.dailyLimit,
       monthlyLimit: teamSettings.monthlyLimit,
       retentionDays: teamSettings.retentionDays,
+      planOverride: teamSettings.planOverride,
     })
     .from(teamSettings)
     .where(eq(teamSettings.teamId, teamId))
     .limit(1);
 
+  /*
+   * The three grant columns move together or not at all —
+   * `team_settings_plan_override_complete` refuses any other combination — so
+   * they are written in the same statement as the limits. Leaving them out
+   * when the plan has not changed is what keeps `plan_override_at` meaning
+   * "when this grant was made" rather than "when the retention field was last
+   * saved".
+   */
+  const grantChanged = (before?.planOverride ?? null) !== plan;
+  const grant = !grantChanged
+    ? {}
+    : plan === null
+      ? { planOverride: null, planOverrideBy: null, planOverrideAt: null }
+      : {
+          planOverride: plan,
+          planOverrideBy: actor.userId,
+          planOverrideAt: new Date(),
+        };
+  const values = {
+    dailyLimit: patch.dailyLimit,
+    monthlyLimit: patch.monthlyLimit,
+    retentionDays: patch.retentionDays,
+    ...grant,
+    updatedAt: new Date(),
+  };
+
   if (before) {
     await db()
       .update(teamSettings)
-      .set({ ...patch, updatedAt: new Date() })
+      .set(values)
       .where(eq(teamSettings.teamId, teamId));
   } else {
     await db()
       .insert(teamSettings)
-      .values({ teamId, ...patch, updatedAt: new Date() });
+      .values({ teamId, ...values });
   }
 
   await recordAudit({
@@ -347,6 +428,20 @@ export async function setOrgOverrides(
     },
     ...actor.meta,
   });
+  // A separate entry from the limits above, and only when the plan moved: a
+  // grant is the one override that changes what a team is *sold*, and it
+  // should be findable by its own action name rather than buried in a diff
+  // alongside a retention tweak.
+  if (grantChanged)
+    await recordAudit({
+      teamId,
+      actorUserId: actor.userId,
+      action: "admin.team.plan_override",
+      targetType: "team",
+      targetId: teamId,
+      diff: { plan: { from: before?.planOverride ?? null, to: plan } },
+      ...actor.meta,
+    });
   return { ok: true, data: undefined };
 }
 

@@ -9,6 +9,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { startPg } from "./_pg";
 import { seedTeamWithKey } from "./helpers";
 
@@ -228,6 +229,7 @@ describe("instance-wide default caps", () => {
       dailyLimit: 7,
       monthlyLimit: null,
       retentionDays: null,
+      planOverride: null,
     });
 
     // The team's own daily wins; the monthly it did not set still falls
@@ -251,5 +253,137 @@ describe("instance-wide default caps", () => {
       monthly: null,
       source: "none",
     });
+  });
+});
+
+/**
+ * A grant is three columns that a CHECK constraint keeps in step, so the
+ * interesting part is not that a plan name lands in a row: it is that the
+ * operator's identity and the moment land with it, and that clearing removes
+ * all three. The refusal is checked at the service, because the form is not
+ * the only caller.
+ */
+describe("plan overrides", () => {
+  it("setOrgOverrides writes, audits and clears a plan grant", async () => {
+    const { setOrgOverrides, getOrganization } =
+      await import("@/services/admin");
+    const { db } = await import("@/db");
+    const { auditLog, teamSettings, user } = await import("@/db/schema");
+    const { team } = await seedTeamWithKey();
+    const admin = await makeUser({ instanceAdmin: true });
+    const [operator] = await db()
+      .select({ email: user.email })
+      .from(user)
+      .where(eq(user.id, admin));
+
+    const res = await setOrgOverrides(actor(admin), team.id, {
+      dailyLimit: null,
+      monthlyLimit: null,
+      retentionDays: null,
+      planOverride: "scale",
+    });
+    expect(res.ok).toBe(true);
+    const [row] = await db()
+      .select()
+      .from(teamSettings)
+      .where(eq(teamSettings.teamId, team.id));
+    expect(row).toMatchObject({ planOverride: "scale", planOverrideBy: admin });
+    expect(row?.planOverrideAt).toBeInstanceOf(Date);
+    const org = await getOrganization(team.id);
+    expect(org?.planOverride).toBe("scale");
+    // The operator is named by email, not by the id the column stores.
+    expect(org?.planGrant).toEqual({
+      plan: "scale",
+      by: operator!.email,
+      at: row!.planOverrideAt,
+    });
+
+    const audits = await db()
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.targetId, team.id));
+    expect(audits.some((a) => a.action === "admin.team.plan_override")).toBe(
+      true,
+    );
+
+    await setOrgOverrides(actor(admin), team.id, {
+      dailyLimit: null,
+      monthlyLimit: null,
+      retentionDays: null,
+      planOverride: null,
+    });
+    const [cleared] = await db()
+      .select()
+      .from(teamSettings)
+      .where(eq(teamSettings.teamId, team.id));
+    expect(cleared).toMatchObject({
+      planOverride: null,
+      planOverrideBy: null,
+      planOverrideAt: null,
+    });
+    expect((await getOrganization(team.id))?.planGrant).toBeNull();
+  });
+
+  it("leaves the grant's stamp alone when the save does not touch the plan", async () => {
+    const { setOrgOverrides, getOrganization } =
+      await import("@/services/admin");
+    const { db } = await import("@/db");
+    const { auditLog, teamSettings } = await import("@/db/schema");
+    const { team } = await seedTeamWithKey();
+    const admin = await makeUser({ instanceAdmin: true });
+
+    await setOrgOverrides(actor(admin), team.id, {
+      dailyLimit: null,
+      monthlyLimit: null,
+      retentionDays: null,
+      planOverride: "pro",
+    });
+    const [granted] = await db()
+      .select()
+      .from(teamSettings)
+      .where(eq(teamSettings.teamId, team.id));
+
+    // The form posts every field on every save, so the plan comes back
+    // unchanged alongside a retention edit. `plan_override_at` must go on
+    // meaning "when this grant was made".
+    await setOrgOverrides(actor(admin), team.id, {
+      dailyLimit: null,
+      monthlyLimit: null,
+      retentionDays: 30,
+      planOverride: "pro",
+    });
+    const [after] = await db()
+      .select()
+      .from(teamSettings)
+      .where(eq(teamSettings.teamId, team.id));
+    expect(after).toMatchObject({ retentionDays: 30, planOverride: "pro" });
+    expect(after?.planOverrideBy).toBe(granted!.planOverrideBy);
+    expect(after?.planOverrideAt?.getTime()).toBe(
+      granted!.planOverrideAt!.getTime(),
+    );
+    expect((await getOrganization(team.id))?.planGrant?.at.getTime()).toBe(
+      granted!.planOverrideAt!.getTime(),
+    );
+
+    const audits = await db()
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.targetId, team.id));
+    expect(
+      audits.filter((a) => a.action === "admin.team.plan_override"),
+    ).toHaveLength(1);
+  });
+
+  it("refuses a plan that is not grantable", async () => {
+    const { setOrgOverrides } = await import("@/services/admin");
+    const { team } = await seedTeamWithKey();
+    const admin = await makeUser({ instanceAdmin: true });
+    const res = await setOrgOverrides(actor(admin), team.id, {
+      dailyLimit: null,
+      monthlyLimit: null,
+      retentionDays: null,
+      planOverride: "gold",
+    });
+    expect(res.ok).toBe(false);
   });
 });

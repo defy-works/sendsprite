@@ -2,8 +2,13 @@ import { and, count, eq, gte, inArray, isNotNull, lt } from "drizzle-orm";
 import { SEND_CONSUMING_STATUS, type ErrorCode } from "@sendsprite/shared";
 import { db } from "@/db";
 import { emails, teamSendRate, teamSettings } from "@/db/schema";
+import { defaultCatalogLoader } from "./billing";
 import { billingEnabled } from "./billing/config";
-import { billingRow, entitlementFrom } from "./billing/plans";
+import {
+  billingRow,
+  entitlementInputs,
+  resolveEntitlement,
+} from "./billing/plans";
 import { getInstanceSettings } from "./instance-settings";
 import { getTeamAws } from "./team-aws";
 
@@ -122,9 +127,11 @@ export interface TeamCaps {
    * Where the numbers came from, for the refusal message and the UI.
    *
    * `instance` is the operator's default for a team nobody has decided about;
-   * `settings` is a decision somebody made about this team specifically.
+   * `settings` is a decision somebody made about this team specifically;
+   * `override` is an operator grant on this team, and `default` is the
+   * instance-wide `DEFAULT_PLAN` for a team with no subscription of its own.
    */
-  source: "settings" | "plan" | "instance" | "none";
+  source: "settings" | "plan" | "override" | "default" | "instance" | "none";
   /** Plan name when a plan supplied a cap; used in the refusal message. */
   planName: string | null;
 }
@@ -133,6 +140,7 @@ const PLAN_LABEL: Record<string, string> = {
   free: "Free",
   pro: "Pro",
   scale: "Scale",
+  unlimited: "Unlimited",
 };
 
 const monthWindow = (now: Date) => ({
@@ -147,31 +155,44 @@ const monthWindow = (now: Date) => ({
  *    hatch. Set, they win, on a hosted instance as well as a self-hosted one,
  *    column by column (so one team's monthly cap can be lifted without
  *    unsetting its plan).
- * 2. The billing plan, and only when `BILLING_ENABLED` is on. A self-hosted
- *    instance therefore behaves exactly as it did before this phase: no plan,
- *    no cap, this branch never taken — a `team_billing` row left behind by a
- *    restore from a hosted backup caps nothing.
+ * 2. The team's entitlement, and only when `BILLING_ENABLED` is on —
+ *    `teamEntitlement` picks that from an operator grant, an entitling
+ *    subscription or `DEFAULT_PLAN`, in that order. A self-hosted instance
+ *    therefore behaves exactly as it did before this phase: no plan, no cap,
+ *    this branch never taken — a `team_billing` row left behind by a restore
+ *    from a hosted backup caps nothing.
+ *
+ * A numeric `team_settings` limit still beats a grant: it is a decision about
+ * this team's volume specifically, and a plan name is not.
  *
  * The monthly window is the subscription's billing period, not the calendar
  * month, so a customer who subscribed on the 10th gets their allowance on the
  * 10th. `entitlementFrom` rolls that period forward onto its next
  * anniversary when the stored one has gone stale; that substitution is
  * entitlement-only and must not be reused as a metering key (see
- * `meteringPeriodStart`).
+ * `meteringPeriodStart`). A grant or the default is a calendar month instead:
+ * there is no anniversary to keep.
  */
 export async function resolveTeamCaps(
   teamId: string,
   now = new Date(),
 ): Promise<TeamCaps> {
-  const [[ts], instance] = await Promise.all([
+  // Every read this function needs, in one round trip — it runs on every
+  // send. `plan_override` rides along on the `team_settings` row that is being
+  // read anyway, and `team_billing` is read only when billing is on, so a
+  // self-hosted instance issues exactly the queries it issued before.
+  const billing = billingEnabled();
+  const [[ts], instance, row] = await Promise.all([
     db()
       .select({
         daily: teamSettings.dailyLimit,
         monthly: teamSettings.monthlyLimit,
+        override: teamSettings.planOverride,
       })
       .from(teamSettings)
       .where(eq(teamSettings.teamId, teamId)),
     getInstanceSettings(),
+    billing ? billingRow(teamId) : undefined,
   ]);
   const month = monthWindow(now);
 
@@ -185,7 +206,7 @@ export async function resolveTeamCaps(
    */
   const daily = ts?.daily ?? instance.defaultDailyLimit ?? null;
 
-  if (!billingEnabled()) {
+  if (!billing) {
     const monthly = ts?.monthly ?? instance.defaultMonthlyLimit ?? null;
     return {
       daily,
@@ -210,7 +231,10 @@ export async function resolveTeamCaps(
    * must not quietly overrule it. The default daily still applies: plans
    * govern volume over a period, not the rate on any one day.
    */
-  const e = entitlementFrom(await billingRow(teamId), now);
+  const e = await resolveEntitlement(
+    entitlementInputs(ts?.override ?? null, row, defaultCatalogLoader),
+    now,
+  );
   const settingsWins = ts?.daily != null || ts?.monthly != null;
   const dailyFromInstance =
     ts?.daily == null && instance.defaultDailyLimit != null;
@@ -223,7 +247,9 @@ export async function resolveTeamCaps(
       ? "settings"
       : e.monthlyCap == null && dailyFromInstance
         ? "instance"
-        : "plan",
+        : e.source === "subscription"
+          ? "plan"
+          : e.source,
     planName: ts?.monthly != null ? null : e.plan,
   };
 }
@@ -293,8 +319,13 @@ export async function checkTeamCaps(
       adding >
       caps.monthly
   ) {
-    const plan = caps.planName
-      ? ` on the ${PLAN_LABEL[caps.planName] ?? caps.planName} plan`
+    const label = caps.planName
+      ? (PLAN_LABEL[caps.planName] ?? caps.planName)
+      : null;
+    // A granted team is told so: the number it hit is an operator's decision
+    // about this team, not something the plan page can explain.
+    const plan = label
+      ? ` on the ${label} plan${caps.source === "override" ? " (granted)" : ""}`
       : "";
     return {
       ok: false,

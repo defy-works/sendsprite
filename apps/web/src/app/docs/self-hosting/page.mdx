@@ -145,6 +145,7 @@ stops the container with a message naming the variable.
 | `POLAR_SERVER`                                                  | `production`                                                                       | `sandbox` while developing against Polar's sandbox organization.                                                                                                                                                                           |
 | `POLAR_METER_ID`                                                | unset                                                                              | Optional, display only: shows Polar's own meter balance beside ours on the billing page.                                                                                                                                                   |
 | `BILLING_EVENT_NAME`                                            | `email.sent`                                                                       | Usage event name ingested to the provider. Must match what the Polar meter filters on.                                                                                                                                                     |
+| `DEFAULT_PLAN`                                                  | `free`                                                                             | Plan a team with no subscription resolves to (`free`, `pro`, `scale`, `unlimited`). Set it in the same change as `BILLING_ENABLED=true`; anything but `free` is refused while billing is off.                                              |
 
 Enable at least one sign-in method or nobody can reach the dashboard; the
 installer turns on `EMAIL_PASSWORD_ENABLED`.
@@ -448,10 +449,27 @@ In Polar (or your provider of choice, behind the same `BillingProvider` seam):
   signing secret for `POLAR_WEBHOOK_SECRET`. The endpoint has to be reachable
   from the internet: the provider cannot deliver to a laptop.
 
-### 2. Grandfather the teams you already have — before the flag
+### 2. Grandfather the teams you already have
 
-Do this while `BILLING_ENABLED` is still `false`. Two ways; the first is the one
-to reach for.
+Three ways. **A** and **B** are SQL you run while `BILLING_ENABLED` is still
+`false`. **Zero** is the exception to that timing, and is the one to reach for.
+
+**Zero. Set `DEFAULT_PLAN` in the same change as `BILLING_ENABLED=true`.** One
+variable, no SQL, and it covers teams that sign up later too. The two go in
+together because they are checked together: a `DEFAULT_PLAN` other than `free`
+with billing off is refused at boot (`DEFAULT_PLAN requires BILLING_ENABLED`),
+so this is not something you can stage ahead of the flag the way the SQL below
+is. `DEFAULT_PLAN=unlimited` keeps every team uncapped until it buys a plan;
+`DEFAULT_PLAN=pro` hands them Pro's volume for free. A team that subscribes
+moves onto its subscription, and one whose subscription lapses falls back to
+the default rather than to Free. Reach for **A** or **B** when different teams
+need different treatment.
+
+Individual teams can also be put on a plan by hand from
+**/admin/organizations → Overrides → Plan** (including _Unlimited_) — but only
+once the flag is on, because that control is not rendered with billing off. A
+grant beats the subscription, is never billed, and is what to use for a partner
+or an internal team.
 
 **A. Give every existing team an explicit monthly limit.** `team_settings` wins
 over the plan, per team and per column, on a hosted instance as well as a

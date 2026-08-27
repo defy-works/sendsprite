@@ -410,31 +410,32 @@ default branch the release workflow runs `changesets/action`:
 
 ## Environment reference
 
-| Variable                                             | Default       | Notes                                                                                       |
-| ---------------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------- |
-| `APP_URL`                                            | —             | Public URL, with protocol                                                                   |
-| `APP_SECRET`                                         | —             | ≥ 32 chars; encrypts stored credentials                                                     |
-| `DATABASE_URL`                                       | —             | Postgres connection string                                                                  |
-| `POSTGRES_PASSWORD`                                  | —             | Compose only; alphanumeric recommended (interpolated unencoded into URL)                    |
-| `SIGNUP_MODE`                                        | `auto`        | `auto` → open until first user, then invite; or `open`/`invite`/`closed`                    |
-| `EMAIL_PASSWORD_ENABLED`                             | `false`       | Email + password sign-in                                                                    |
-| `GOOGLE_CLIENT_ID/SECRET`, `GITHUB_CLIENT_ID/SECRET` | —             | OAuth providers                                                                             |
-| `WORKER_MODE`                                        | `inline`      | `inline` / `separate` / `none`                                                              |
-| `SMTP_ENABLED`                                       | `true`        | SMTP relay (username anything, password = API key); AUTH requires STARTTLS                  |
-| `SMTP_ALLOW_INSECURE_AUTH`                           | `false`       | Dev only: accept AUTH on a plain connection (the API key travels in clear)                  |
-| `SMTP_PORT`                                          | `587`         | Relay port. Under compose: the host port, mapped onto 2587 in the container                 |
-| `SMTP_TLS_CERT`, `SMTP_TLS_KEY`                      | —             | PEM paths for STARTTLS; unset → self-signed cert (clients must skip verify)                 |
-| `SMTP_MAX_SIZE`                                      | `10485760`    | Max message size in bytes (552 above it)                                                    |
-| `LANDING_ENABLED`                                    | `true`        | `false` sends `/` to `/app`                                                                 |
-| `AWS_DEFAULT_REGION`                                 | `us-east-1`   | Region preselected in the AWS connect wizard                                                |
-| `CFN_TEMPLATE_URL`                                   | Sendsprite S3 | S3 URL of the one-click CloudFormation template (must be S3)                                |
-| `AWS_E2E_MOCK`                                       | —             | `1` swaps AWS clients for an in-memory fake; ignored in production (tests)                  |
-| `AWS_E2E_VERIFY`                                     | —             | With the fake: `1` reports DKIM/MAIL FROM as SUCCESS (dev/test only)                        |
-| `BILLING_ENABLED`                                    | `false`       | Hosted-service billing. Off: no Billing page, no checkout, no webhook route, no plan limits |
-| `POLAR_ACCESS_TOKEN`                                 | —             | Polar organization token; required when billing is on                                       |
-| `POLAR_WEBHOOK_SECRET`                               | —             | Polar webhook signing secret; required when billing is on                                   |
-| `POLAR_SERVER`                                       | `production`  | `sandbox` while developing                                                                  |
-| `POLAR_METER_ID`                                     | —             | Optional, display only: shows Polar's own meter balance on the billing page                 |
+| Variable                                             | Default       | Notes                                                                                                                                         |
+| ---------------------------------------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `APP_URL`                                            | —             | Public URL, with protocol                                                                                                                     |
+| `APP_SECRET`                                         | —             | ≥ 32 chars; encrypts stored credentials                                                                                                       |
+| `DATABASE_URL`                                       | —             | Postgres connection string                                                                                                                    |
+| `POSTGRES_PASSWORD`                                  | —             | Compose only; alphanumeric recommended (interpolated unencoded into URL)                                                                      |
+| `SIGNUP_MODE`                                        | `auto`        | `auto` → open until first user, then invite; or `open`/`invite`/`closed`                                                                      |
+| `EMAIL_PASSWORD_ENABLED`                             | `false`       | Email + password sign-in                                                                                                                      |
+| `GOOGLE_CLIENT_ID/SECRET`, `GITHUB_CLIENT_ID/SECRET` | —             | OAuth providers                                                                                                                               |
+| `WORKER_MODE`                                        | `inline`      | `inline` / `separate` / `none`                                                                                                                |
+| `SMTP_ENABLED`                                       | `true`        | SMTP relay (username anything, password = API key); AUTH requires STARTTLS                                                                    |
+| `SMTP_ALLOW_INSECURE_AUTH`                           | `false`       | Dev only: accept AUTH on a plain connection (the API key travels in clear)                                                                    |
+| `SMTP_PORT`                                          | `587`         | Relay port. Under compose: the host port, mapped onto 2587 in the container                                                                   |
+| `SMTP_TLS_CERT`, `SMTP_TLS_KEY`                      | —             | PEM paths for STARTTLS; unset → self-signed cert (clients must skip verify)                                                                   |
+| `SMTP_MAX_SIZE`                                      | `10485760`    | Max message size in bytes (552 above it)                                                                                                      |
+| `LANDING_ENABLED`                                    | `true`        | `false` sends `/` to `/app`                                                                                                                   |
+| `AWS_DEFAULT_REGION`                                 | `us-east-1`   | Region preselected in the AWS connect wizard                                                                                                  |
+| `CFN_TEMPLATE_URL`                                   | Sendsprite S3 | S3 URL of the one-click CloudFormation template (must be S3)                                                                                  |
+| `AWS_E2E_MOCK`                                       | —             | `1` swaps AWS clients for an in-memory fake; ignored in production (tests)                                                                    |
+| `AWS_E2E_VERIFY`                                     | —             | With the fake: `1` reports DKIM/MAIL FROM as SUCCESS (dev/test only)                                                                          |
+| `BILLING_ENABLED`                                    | `false`       | Hosted-service billing. Off: no Billing page, no checkout, no webhook route, no plan limits                                                   |
+| `POLAR_ACCESS_TOKEN`                                 | —             | Polar organization token; required when billing is on                                                                                         |
+| `POLAR_WEBHOOK_SECRET`                               | —             | Polar webhook signing secret; required when billing is on                                                                                     |
+| `POLAR_SERVER`                                       | `production`  | `sandbox` while developing                                                                                                                    |
+| `POLAR_METER_ID`                                     | —             | Optional, display only: shows Polar's own meter balance on the billing page                                                                   |
+| `DEFAULT_PLAN`                                       | `free`        | Plan a team with no subscription resolves to (`free`, `pro`, `scale`, `unlimited`). Only with billing on; set together with `BILLING_ENABLED` |
 
 Billing is a hosted-service feature and is off by default; a self-hosted
 instance never loads the payment SDK and never registers the billing job.

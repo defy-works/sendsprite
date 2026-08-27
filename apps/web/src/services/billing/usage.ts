@@ -9,12 +9,13 @@ import {
   max,
   sql,
 } from "drizzle-orm";
-import { SEND_CONSUMING_STATUS } from "@sendsprite/shared";
+import { isGrantedPlan, SEND_CONSUMING_STATUS } from "@sendsprite/shared";
 import { db } from "@/db";
 import {
   billingUsage,
   emails,
   teamBilling,
+  teamSettings,
   type BillingUsage,
 } from "@/db/schema";
 import { meteringPeriodStart, type UsageWindow } from "./plans";
@@ -290,13 +291,16 @@ export async function rollupUsage(
   eventName: string,
   now = new Date(),
 ): Promise<RollupSummary> {
+  // The grant is read here so the watermark keeps moving and nothing is
+  // emitted — clearing the grant later must not bill the granted period.
   const teams = await db()
-    .select()
+    .select({ billing: teamBilling, override: teamSettings.planOverride })
     .from(teamBilling)
+    .leftJoin(teamSettings, eq(teamSettings.teamId, teamBilling.teamId))
     .where(isNotNull(teamBilling.providerCustomerId));
 
   const pending: TeamRollup[] = [];
-  for (const t of teams) {
+  for (const { billing: t, override } of teams) {
     // Deliberately **not** `entitlementFrom(t, now).periodStart`: entitlement
     // substitutes a window of its own whenever the stored period does not
     // contain `now` (a renewal webhook that has not landed yet, a
@@ -312,7 +316,25 @@ export async function rollupUsage(
       eventName,
       now,
     );
-    if (r) pending.push(r);
+    if (!r) continue;
+    // The same test `resolveEntitlement` applies: a value that is not a
+    // grantable plan (a tier retired from `GRANTABLE_PLANS`, a hand-edited
+    // row) is ignored there, so it must be ignored here too — otherwise the
+    // team keeps its paid caps while the sweep quietly stops billing it.
+    if (override !== null && isGrantedPlan(override)) {
+      // Granted: the hours are consumed — watermark and all — but no event is
+      // built from them and no unit is counted. Skipping the team outright
+      // would freeze its watermark instead, and the run after the grant was
+      // cleared would walk the whole granted period and bill every hour of it.
+      // Committed straight away rather than through `flush`, because there is
+      // no ingest here that could fail and no reason to hold it back. The
+      // planner above still runs in full for a granted team — one wasted
+      // hourly scan per granted team per tick, which is accepted: it keeps one
+      // watermark rule for every team instead of two.
+      await commitRollup({ ...r, events: [], units: 0 }, now);
+      continue;
+    }
+    pending.push(r);
   }
 
   const summary: RollupSummary = {

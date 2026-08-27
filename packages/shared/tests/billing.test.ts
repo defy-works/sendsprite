@@ -161,6 +161,7 @@ describe("BillingStateObject", () => {
         used: 1234,
         reportedUnits: 1200,
         managed: true,
+        source: "subscription",
         pastDueAt: null,
       }).success,
     ).toBe(true);
@@ -179,6 +180,7 @@ describe("BillingStateObject", () => {
         used: 12,
         reportedUnits: 0,
         managed: false,
+        source: "default",
         pastDueAt: null,
       }).success,
     ).toBe(true);
@@ -198,6 +200,7 @@ describe("BillingStateObject", () => {
       used: 1234,
       reportedUnits: 1200,
       managed: true,
+      source: "subscription",
       pastDueAt: "2026-08-20T00:00:00.000Z",
     });
     expect(parsed.success).toBe(true);

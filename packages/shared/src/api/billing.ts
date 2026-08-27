@@ -5,6 +5,29 @@ export const PLANS = ["free", "pro", "scale"] as const;
 export type Plan = (typeof PLANS)[number];
 
 /**
+ * What an operator may grant, or name in `DEFAULT_PLAN`. `unlimited` is not a
+ * product: it has no catalog entry and means "no monthly cap".
+ */
+export const GRANTABLE_PLANS = [...PLANS, "unlimited"] as const;
+export type GrantedPlan = (typeof GRANTABLE_PLANS)[number];
+
+/**
+ * Narrows a plan name that arrived as a `string` — from a form, or from the
+ * `text` column a grant is stored in. Both of those are claims, and neither
+ * the database nor a POST body is checked by the type system.
+ */
+export const isGrantedPlan = (v: string): v is GrantedPlan =>
+  (GRANTABLE_PLANS as readonly string[]).includes(v);
+
+/** Where a team's entitlement came from. */
+export const ENTITLEMENT_SOURCES = [
+  "subscription",
+  "override",
+  "default",
+] as const;
+export type EntitlementSource = (typeof ENTITLEMENT_SOURCES)[number];
+
+/**
  * The contract each billing product carries in its provider-side metadata.
  * Product **ids are never hardcoded**: the app finds a product by listing the
  * catalog and matching `plan`, and maps a subscription to entitlements by
@@ -139,9 +162,10 @@ export const isEntitledStatus = (status: string | null | undefined): boolean =>
 /** What the dashboard renders. `managed: false` = never went through checkout. */
 export const BillingStateObject = z.object({
   enabled: z.boolean(),
-  plan: z.enum(PLANS),
+  plan: z.enum(GRANTABLE_PLANS),
   status: z.string().nullable(),
-  includedEmails: z.number().int(),
+  /** Null on an unlimited grant. */
+  includedEmails: z.number().int().nullable(),
   overagePer1kCents: z.number().int(),
   /** The subscription carries a metered price, so sends past the include are billed. */
   overageEnabled: z.boolean(),
@@ -154,6 +178,8 @@ export const BillingStateObject = z.object({
   reportedUnits: z.number().int(),
   /** There is a provider subscription behind this state. */
   managed: z.boolean(),
+  /** `override`: an operator grant; `default`: `DEFAULT_PLAN`; else the subscription. */
+  source: z.enum(ENTITLEMENT_SOURCES),
   /**
    * When the subscription went past due, `null` otherwise. Reserved for the
    * banner and for time-boxing the past-due window; no code consumes it yet,

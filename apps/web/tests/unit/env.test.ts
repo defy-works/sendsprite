@@ -127,4 +127,22 @@ describe("billing env", () => {
       }),
     ).toThrow(/BILLING_PROVIDER/);
   });
+
+  it("defaults DEFAULT_PLAN to free and refuses any other value with billing off", () => {
+    expect(parseEnv({ ...BASE }).DEFAULT_PLAN).toBe("free");
+    expect(() => parseEnv({ ...BASE, DEFAULT_PLAN: "pro" })).toThrow(
+      /DEFAULT_PLAN requires BILLING_ENABLED/,
+    );
+    expect(() => parseEnv({ ...BASE, DEFAULT_PLAN: "gold" })).toThrow();
+  });
+
+  it("accepts DEFAULT_PLAN=unlimited with billing on", () => {
+    const e = parseEnv({
+      ...BASE,
+      BILLING_ENABLED: "1",
+      BILLING_PROVIDER: "fake",
+      DEFAULT_PLAN: "unlimited",
+    });
+    expect(e.DEFAULT_PLAN).toBe("unlimited");
+  });
 });

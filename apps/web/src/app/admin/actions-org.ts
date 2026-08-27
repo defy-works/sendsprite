@@ -2,6 +2,7 @@
 import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
+import { isGrantedPlan } from "@sendsprite/shared";
 import { requestMeta } from "@/lib/audit";
 import { requireInstanceAdmin } from "@/lib/session";
 import type { Result } from "@/lib/result";
@@ -47,6 +48,17 @@ const overridesForm = z.object({
       (v) => v === null || (Number.isInteger(v) && v >= 1 && v <= 3650),
       "Retention must be a whole number of days between 1 and 3650.",
     ),
+  // `""` is "no grant", the same convention the limits use. The plan itself is
+  // checked again in the service, which is the only place the value reaches
+  // the column.
+  planOverride: z
+    .string()
+    .trim()
+    .transform((v) => (v === "" ? null : v))
+    .refine(
+      (v) => v === null || isGrantedPlan(v),
+      "Pick a plan from the list.",
+    ),
 });
 
 export async function updateOrgOverrides(
@@ -58,6 +70,7 @@ export async function updateOrgOverrides(
     dailyLimit: String(fd.get("dailyLimit") ?? ""),
     monthlyLimit: String(fd.get("monthlyLimit") ?? ""),
     retentionDays: String(fd.get("retentionDays") ?? ""),
+    planOverride: String(fd.get("planOverride") ?? ""),
   });
   if (!parsed.success)
     return {
