@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { completeTeamSetup } from "./team-setup";
+import { openPreview } from "./_ui";
 import { PgBoss } from "pg-boss";
 import { Q } from "../../src/jobs/queues";
 
@@ -317,8 +318,49 @@ test("a campaign reaches one eligible contact, and unsubscribing needs a POST", 
     .getByLabel("Text", { exact: true })
     .fill("What we shipped in August");
 
-  // The starter body's paragraph, typed into where it sits on the canvas.
-  const body = canvas(page).getByLabel("Text block").first();
+  /*
+   * The starter body's paragraph, typed into where it sits on the canvas.
+   *
+   * `exact`, because the selected block's toolbar carries "Move Text block"
+   * and "Remove Text block" — and `getByLabel` matches substrings, so without
+   * it `.first()` resolves to a button that is hidden until the block is
+   * selected and never becomes clickable.
+   */
+  const body = canvas(page).getByLabel("Text block", { exact: true }).first();
+  // TEMP PROBE
+  try {
+    await body.click({ timeout: 4000 });
+    console.log("PROBE click ok");
+  } catch (e) {
+    console.log(
+      "PROBE " +
+        JSON.stringify(
+          await page.evaluate(() => {
+            const el = document.querySelector('[aria-label="Text block"]')!;
+            const r = el.getBoundingClientRect();
+            const cx = r.x + r.width / 2;
+            const cy = r.y + r.height / 2;
+            const hit = document.elementFromPoint(cx, cy);
+            const cs = getComputedStyle(el);
+            return {
+              rect: { x: r.x, y: r.y, w: r.width, h: r.height },
+              inViewport: r.y >= 0 && r.y < window.innerHeight,
+              viewport: { w: window.innerWidth, h: window.innerHeight },
+              pointerEvents: cs.pointerEvents,
+              ariaDisabled: el.getAttribute("aria-disabled"),
+              contentEditable: (el as HTMLElement).contentEditable,
+              hitTag: hit?.tagName,
+              hitClass: (hit?.className ?? "").toString().slice(0, 120),
+              hitIsSelfOrChild: el.contains(hit),
+            };
+          }),
+          null,
+          1,
+        ),
+    );
+    throw e;
+  }
+
   const bold = page.getByRole("button", { name: "Bold", exact: true });
   await body.click();
   await expect(body).toBeFocused();
@@ -399,7 +441,7 @@ test("a campaign reaches one eligible contact, and unsubscribing needs a POST", 
 
   /* ---- 3. the preview is the rendered HTML, not a second renderer ---- */
 
-  const preview = page.frameLocator('iframe[title="Campaign preview"]');
+  const preview = await openPreview(page, "Campaign preview");
   await expect(
     preview.getByRole("heading", { name: "What we shipped in August" }),
   ).toBeVisible();

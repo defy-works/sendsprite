@@ -57,3 +57,21 @@ export async function acceptTypedConfirm(
   await dialog.getByRole("button", { name: confirmLabel, exact: true }).click();
   await expect(dialog).toHaveCount(0);
 }
+
+/**
+ * Opens the visual editor's preview and returns the frame.
+ *
+ * The designer has one preview, reached by the Edit/Preview switch — it used
+ * to also have a permanent panel, which meant two previews of the same body on
+ * one screen and a "desktop" one narrower than the phone. Tests that read the
+ * rendered document have to ask for it.
+ */
+export async function openPreview(page: Page, title: string) {
+  await page.getByRole("radio", { name: "Preview" }).click();
+  return page.frameLocator(`iframe[title="${title}"]`);
+}
+
+/** Back to the canvas, for a test that keeps editing afterwards. */
+export async function closePreview(page: Page) {
+  await page.getByRole("radio", { name: "Edit" }).click();
+}

@@ -1,5 +1,9 @@
 "use client";
-import { useDroppable, type DraggableAttributes } from "@dnd-kit/core";
+import {
+  useDndContext,
+  useDroppable,
+  type DraggableAttributes,
+} from "@dnd-kit/core";
 import type { SyntheticListenerMap } from "@dnd-kit/core/dist/hooks/utilities";
 import { useSortable } from "@dnd-kit/sortable";
 import {
@@ -8,15 +12,18 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
+  FONT_STACKS,
   renderBlockFragment,
   type CampaignTheme,
+  type ColumnLayout,
   type LeafBlock,
 } from "@sendsprite/shared";
-import { useMemo } from "react";
+import { Fragment, useMemo } from "react";
 import { Button } from "@/components/ui/Button";
 import { IconColumns, IconGrip, IconTrash } from "@/components/ui/icons";
 import { cn } from "@/lib/cn";
 import { BLOCK_LABELS, blockIssue } from "@/lib/editor/blocks";
+import type { LeafKind } from "@/lib/editor/blocks";
 import {
   columnContainer,
   type EditorLeaf,
@@ -24,6 +31,7 @@ import {
   type EditorRow,
 } from "@/lib/editor/tree";
 import { InlineEditor } from "./InlineEditor";
+import { InsertPoint } from "./InsertPoint";
 
 /**
  * The canvas: the email itself, with the editing chrome laid over it.
@@ -59,6 +67,8 @@ export function Canvas({
   onSelect,
   onChangeLeaf,
   onRemove,
+  onInsertLeaf,
+  onInsertRow,
 }: {
   nodes: EditorNode[];
   /** What the page looks like, so the canvas looks like it too. */
@@ -70,6 +80,9 @@ export function Canvas({
   onSelect: (id: string | null) => void;
   onChangeLeaf: (id: string, block: LeafBlock) => void;
   onRemove: (id: string) => void;
+  /** Adds a block at a position in the body, from the gap it was asked for. */
+  onInsertLeaf: (kind: LeafKind, index: number) => void;
+  onInsertRow: (layout: ColumnLayout, index: number) => void;
 }) {
   const pad = theme.contentPadding ?? 24;
   return (
@@ -95,49 +108,125 @@ export function Canvas({
           strategy={verticalListSortingStrategy}
         >
           <ul aria-label="Email body" className="flex list-none flex-col">
-            {nodes.map((node, i) =>
-              node.type === "row" ? (
-                <RowShell
-                  key={node.id}
-                  row={node}
-                  theme={theme}
-                  pad={pad}
-                  readOnly={readOnly}
-                  selectedId={selectedId}
-                  invalid={invalidIndex === i}
-                  onSelect={onSelect}
-                  onChangeLeaf={onChangeLeaf}
-                  onRemove={onRemove}
-                />
-              ) : (
-                <LeafShell
-                  key={node.id}
-                  leaf={node}
-                  theme={theme}
-                  pad={pad}
-                  readOnly={readOnly}
-                  selected={selectedId === node.id}
-                  invalid={invalidIndex === i}
-                  onSelect={onSelect}
-                  onChange={onChangeLeaf}
-                  onRemove={onRemove}
-                />
-              ),
-            )}
+            {nodes.map((node, i) => (
+              <Fragment key={node.id}>
+                {!readOnly && (
+                  <li aria-hidden className="list-none">
+                    <InsertPoint
+                      index={i}
+                      onAddLeaf={onInsertLeaf}
+                      onAddRow={onInsertRow}
+                    />
+                  </li>
+                )}
+                {node.type === "row" ? (
+                  <RowShell
+                    row={node}
+                    theme={theme}
+                    pad={pad}
+                    readOnly={readOnly}
+                    selectedId={selectedId}
+                    invalid={invalidIndex === i}
+                    onSelect={onSelect}
+                    onChangeLeaf={onChangeLeaf}
+                    onRemove={onRemove}
+                  />
+                ) : (
+                  <LeafShell
+                    leaf={node}
+                    theme={theme}
+                    pad={pad}
+                    readOnly={readOnly}
+                    selected={selectedId === node.id}
+                    invalid={invalidIndex === i}
+                    onSelect={onSelect}
+                    onChange={onChangeLeaf}
+                    onRemove={onRemove}
+                  />
+                )}
+              </Fragment>
+            ))}
           </ul>
         </SortableContext>
+        {!readOnly && (
+          <Tail
+            empty={nodes.length === 0}
+            index={nodes.length}
+            pad={pad}
+            onInsertLeaf={onInsertLeaf}
+            onInsertRow={onInsertRow}
+          />
+        )}
       </div>
     </div>
   );
 }
 
 /**
- * The chrome around one block: an outline, a grip and a bin.
+ * The end of the body: somewhere to drop, and somewhere to add.
  *
- * Absolutely positioned and only visible on hover or selection, because the
- * whole argument for this canvas is that what you see is the email — a
- * permanent bar above every block would be the stack of cards again with extra
- * steps.
+ * Inside the card rather than beneath it. As a sibling it drew its own page
+ * background and its own white card, so a body with three blocks looked like
+ * two documents with a gap between them.
+ */
+function Tail({
+  empty,
+  index,
+  pad,
+  onInsertLeaf,
+  onInsertRow,
+}: {
+  empty: boolean;
+  index: number;
+  pad: number;
+  onInsertLeaf: (kind: LeafKind, index: number) => void;
+  onInsertRow: (layout: ColumnLayout, index: number) => void;
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id: "root" });
+  // Only while something is being dragged, or while there is nothing to drop
+  // onto. A permanent dashed box under every body is a second way to add a
+  // block sitting directly beneath the first one.
+  const dragging = useDndContext().active !== null;
+  return (
+    <div style={{ paddingLeft: pad, paddingRight: pad, paddingBottom: pad }}>
+      <InsertPoint
+        always
+        index={index}
+        label="Add a block at the end"
+        onAddLeaf={onInsertLeaf}
+        onAddRow={onInsertRow}
+      />
+      <div
+        ref={setNodeRef}
+        className={cn(
+          "mt-2 flex items-center justify-center rounded border-dashed px-4 text-center text-xs transition-colors",
+          empty || dragging ? "border" : "border-0",
+          empty ? "min-h-32 py-8" : dragging ? "min-h-10 py-2" : "min-h-0",
+          isOver
+            ? "border-indigo-500 bg-indigo-500/10 text-indigo-700"
+            : "border-black/15 text-black/40",
+        )}
+      >
+        {empty
+          ? "Nothing here yet — add a block, or drag one onto the page."
+          : dragging
+            ? "Drop here to add at the end"
+            : null}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The chrome around one block: a grip and a bin, on the block that is
+ * selected.
+ *
+ * Selection only, not hover. On hover it overlapped: a block's toolbar sits
+ * above its top edge, which is inside the block above it, and in a row of
+ * columns two neighbours could show theirs at once — two toolbars a few pixels
+ * apart, neither obviously belonging to anything. Exactly one block is
+ * selected at any time, so exactly one toolbar can be on screen. Hover still
+ * outlines the block, which is what says it can be picked.
  */
 function Chrome({
   label,
@@ -156,7 +245,7 @@ function Chrome({
 }) {
   if (readOnly) return null;
   return (
-    <div className="pointer-events-none absolute -top-3 right-1 z-20 flex items-center gap-1 opacity-0 transition-opacity group-hover/block:opacity-100 group-focus-within/block:opacity-100 [[data-selected='true']_>_&]:opacity-100">
+    <div className="pointer-events-none absolute top-1 right-1 z-20 hidden items-center gap-1 [[data-selected='true']_>_&]:flex">
       <div className="pointer-events-auto flex items-center gap-0.5 rounded-md border border-white/15 bg-shadow/95 px-1 py-0.5 shadow-glass backdrop-blur-sm">
         {children}
         <button
@@ -267,15 +356,27 @@ function LeafShell({
       />
 
       {block.kind === "text" ? (
-        // The one block that is edited where it lives. Its own spacing is
-        // applied around the editor so moving the slider still moves the text.
+        /*
+         * The one block edited where it lives, dressed as the paragraph it
+         * will be sent as: the renderer's own font, size, colour and
+         * alignment, so what is typed is what is read. Without them the
+         * editor inherited the dashboard's white text onto a white card.
+         */
         <div
+          className="group/text relative"
           style={{
             paddingTop: block.spaceTop ?? 0,
             paddingBottom: block.spaceBottom ?? 0,
+            fontFamily: FONT_STACKS[theme.font ?? "sans"],
+            fontSize: 16,
+            lineHeight: 1.6,
+            color: block.color ?? theme.textColor ?? "#111111",
+            textAlign: block.align ?? "left",
+            margin: "0 0 16px",
           }}
         >
           <InlineEditor
+            surface="canvas"
             value={block.html}
             readOnly={readOnly}
             label="Text block"
@@ -468,53 +569,5 @@ function Column({
         )}
       </div>
     </SortableContext>
-  );
-}
-
-/**
- * The drop target at the end of the body, drawn on the page rather than under
- * it — dropping "at the end" should mean the bottom of the email, which is
- * where this sits.
- */
-export function RootDropZone({
-  empty,
-  theme,
-}: {
-  empty: boolean;
-  theme: CampaignTheme;
-}) {
-  const { setNodeRef, isOver } = useDroppable({ id: "root" });
-  const pad = theme.contentPadding ?? 24;
-  return (
-    <div
-      className="ss-canvas flex justify-center px-4 pb-4"
-      style={{ background: theme.pageBackground ?? "#f3f4f6" }}
-    >
-      <div
-        className="w-full"
-        style={{
-          maxWidth: theme.contentWidth ?? 600,
-          background: theme.cardBackground ?? "#ffffff",
-          paddingLeft: pad,
-          paddingRight: pad,
-          paddingBottom: pad,
-        }}
-      >
-        <div
-          ref={setNodeRef}
-          className={cn(
-            "flex items-center justify-center rounded border border-dashed px-4 text-center text-xs transition-colors",
-            empty ? "min-h-32 py-8" : "min-h-10 py-2",
-            isOver
-              ? "border-indigo-500 bg-indigo-500/10 text-indigo-700"
-              : "border-black/15 text-black/40",
-          )}
-        >
-          {empty
-            ? "Nothing here yet — click a block on the left, or drag one onto the page."
-            : "Drop here to add at the end"}
-        </div>
-      </div>
-    </div>
   );
 }

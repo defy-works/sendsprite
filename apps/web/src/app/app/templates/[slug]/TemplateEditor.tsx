@@ -625,6 +625,14 @@ export function TemplateEditor({
           Variables with a default show it; the rest show{" "}
           <code>{"{name}"}</code>.
         </p>
+        {/* Said out loud, because its absence looks like a missing feature.
+            A template is the body of a transactional send — a receipt, a
+            password reset — and mail like that carries no unsubscribe. The
+            footer belongs to campaigns, which are bulk mail to a list. */}
+        <p className="text-xs text-white/40">
+          No unsubscribe footer: a template is transactional. Campaigns get one
+          automatically.
+        </p>
       </CardBody>
     </Card>
   );

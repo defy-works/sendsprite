@@ -115,7 +115,7 @@ export const UNSUBSCRIBE_MARKER = "\u0001SENDSPRITE_UNSUBSCRIBE\u0001";
  * the one that actually renders somewhere: Outlook on Windows has no
  * `-apple-system`, and Gmail on Android has neither Georgia nor Menlo.
  */
-const FONT_STACKS: Record<FontFamily, string> = {
+export const FONT_STACKS: Record<FontFamily, string> = {
   sans: "-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif",
   serif: "Georgia,Cambria,'Times New Roman',Times,serif",
   mono: "'SF Mono',Menlo,Consolas,'Liberation Mono',monospace",

@@ -6,7 +6,33 @@ import { IconEye, IconExternal } from "./icons";
 
 export type PreviewWidth = "desktop" | "mobile";
 
-const WIDTH: Record<PreviewWidth, number> = { desktop: 680, mobile: 390 };
+/**
+ * 1000 for desktop, not 680.
+ *
+ * The card is 600 wide and a desktop client puts it in a column with room
+ * around it; at 680 in a 26rem panel the "desktop" preview was narrower than
+ * the phone one, which is the opposite of what the toggle claims. This is the
+ * width the reading pane of a maximised Gmail or Outlook gives an email.
+ */
+const WIDTH: Record<PreviewWidth, number> = { desktop: 1000, mobile: 390 };
+
+/**
+ * Turns the document's links off, for the preview only.
+ *
+ * The frame is `sandbox=""`, which stops it navigating the *page* — but not
+ * itself, so clicking a call to action replaced the preview of the email with
+ * whatever the button pointed at, and the way back was to reload the editor.
+ * A stylesheet rather than a script because the frame runs nothing, and
+ * appended to the document rather than folded into the renderer because the
+ * email that is sent must keep working links.
+ */
+const INERT = "<style>a{pointer-events:none;cursor:default}</style>";
+
+function withInertLinks(doc: string): string {
+  const head = doc.indexOf("</head>");
+  if (head !== -1) return doc.slice(0, head) + INERT + doc.slice(head);
+  return INERT + doc;
+}
 
 /**
  * The sandboxed frame every email preview in the dashboard renders into.
@@ -51,6 +77,9 @@ export function EmailPreview({
 }) {
   const [width, setWidth] = useState<PreviewWidth>("desktop");
   const doc = wrap ? wrapFragment(html) : html;
+  // The frame gets the inert copy; "open in a tab" gets the real one, where
+  // following a link is the whole point of opening it.
+  const framed = withInertLinks(doc);
 
   return (
     <div className={cn("flex flex-col gap-2", className)}>
@@ -96,7 +125,7 @@ export function EmailPreview({
         <iframe
           title={title}
           sandbox=""
-          srcDoc={doc}
+          srcDoc={framed}
           style={{ height, maxWidth: "100%", width: WIDTH[width] }}
           className="rounded-md border border-white/10 bg-white transition-[width] duration-[var(--duration-normal)] ease-[var(--ease-out-soft)]"
         />
@@ -104,6 +133,7 @@ export function EmailPreview({
       <p className="flex items-center gap-1.5 text-xs text-white/45">
         <IconEye className="text-[13px]" />
         Rendered by the same code the send uses, in a frame that runs nothing.
+        Links are inert here; open it in a tab to follow one.
       </p>
     </div>
   );

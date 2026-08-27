@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { completeTeamSetup } from "./team-setup";
-import { acceptConfirm, acceptTypedConfirm } from "./_ui";
+import { acceptConfirm, acceptTypedConfirm, openPreview } from "./_ui";
 
 // Runs after setup.spec.ts (project `app`), so the dashboard is open. Nothing
 // here needs AWS or the worker: a template is created, previewed, versioned,
@@ -134,7 +134,7 @@ test("a template built in the visual editor compiles to its body", async ({
 
   // The preview is the compiled blocks, and it carries the placeholder
   // through — a heading is escaped, and `{{name}}` has nothing to escape.
-  const preview = page.frameLocator('iframe[title="Template preview"]');
+  const preview = await openPreview(page, "Template preview");
   await expect(preview.getByRole("heading")).toContainText("Welcome");
   await expect(
     preview.getByRole("link", { name: "Get started" }),
@@ -144,6 +144,9 @@ test("a template built in the visual editor compiles to its body", async ({
   // it is the body of a transactional send, not bulk mail to a list.
   await expect(preview.getByText("Unsubscribe")).toHaveCount(0);
 
+  // Back to the canvas: Create is in the page header, but the body has to be
+  // the one being edited when it is pressed.
+  await page.getByRole("radio", { name: "Edit" }).click();
   await page.getByRole("button", { name: "Create" }).click();
   await page.waitForURL("**/app/templates/designed");
 

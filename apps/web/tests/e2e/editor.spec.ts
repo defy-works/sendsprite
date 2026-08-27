@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { completeTeamSetup } from "./team-setup";
-import { chooseOption } from "./_ui";
+import { chooseOption, openPreview } from "./_ui";
 
 /**
  * Three of the four things the editor gained after the first UI pass:
@@ -75,7 +75,7 @@ test("an uploaded image is served publicly and lands in the block", async ({
 
   // And it reaches the rendered body.
   await page.getByLabel("Alt text").fill("The logo");
-  const preview = page.frameLocator('iframe[title="Template preview"]');
+  const preview = await openPreview(page, "Template preview");
   await expect(preview.getByRole("img", { name: "The logo" })).toHaveAttribute(
     "src",
     url,
@@ -110,8 +110,9 @@ test("a layout inserts its blocks, and a saved one comes back", async ({
   await page
     .getByRole("button", { name: "Insert the Footer layout", exact: true })
     .click();
-  const preview = page.frameLocator('iframe[title="Template preview"]');
+  const preview = await openPreview(page, "Template preview");
   await expect(preview.getByText("1 Example Street")).toBeVisible();
+  await page.getByRole("radio", { name: "Edit" }).click();
 
   // Save the whole body as the team's own layout.
   await page.getByRole("button", { name: "Save this as a layout" }).click();
@@ -138,7 +139,7 @@ test("the body theme reaches the rendered document", async ({ page }) => {
   await page.getByRole("radio", { name: "480" }).click();
   await page.getByRole("radio", { name: "Serif" }).click();
 
-  const frame = page.frameLocator('iframe[title="Template preview"]');
+  const frame = await openPreview(page, "Template preview");
   // The card follows the theme, and so does the font — both inline, so both
   // are readable off the rendered document rather than off a stylesheet.
   await expect(frame.locator("table.ss-card")).toHaveAttribute("width", "480");
@@ -164,12 +165,11 @@ test("the canvas draws the email, and preview mode drops the chrome", async ({
   // On the cell that positions the block, which is where the renderer writes
   // it — the page cell around the card has padding of its own, and matching on
   // the computed value would find that one first.
-  const frame = page.frameLocator('iframe[title="Template preview"]');
+  // Preview is the only preview: there is no panel showing the same body
+  // beside the canvas, so opening it is what puts the frame on screen — and
+  // it takes the palette and the inspector away while it is there.
+  const frame = await openPreview(page, "Template preview");
   await expect(frame.locator('td[style*="padding:48px"]')).toHaveCount(1);
-
-  // Preview hides the palette and the inspector and gives the width to the
-  // frame — the same frame, moved, not a second one.
-  await page.getByRole("radio", { name: "Preview" }).click();
   await expect(inspector).toBeHidden();
   await expect(canvas).toBeHidden();
   await expect(frame.locator("table.ss-card")).toBeVisible();

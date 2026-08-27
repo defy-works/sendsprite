@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
 } from "react";
 import { SafeUrl } from "@sendsprite/shared";
 import { Button } from "@/components/ui/Button";
@@ -135,18 +136,96 @@ const CONTENT_CLASS =
   "text-sm leading-relaxed text-white whitespace-pre-wrap break-words " +
   "focus:outline-none [&_a]:underline [&_a]:decoration-indigo-400";
 
+/**
+ * The same editor, on the light canvas.
+ *
+ * No box of its own and no colour of its own: it sits inside the email, and
+ * the paragraph around it supplies the font, the size and the colour so that
+ * what is typed looks like what is sent. It had the panel's `text-white`,
+ * which on a white card is a paragraph you cannot see.
+ */
+const CANVAS_CLASS =
+  "w-full whitespace-pre-wrap break-words focus:outline-none " +
+  "[&_a]:underline [&_a]:decoration-current";
+
+/**
+ * One toolbar button, in the colours of whatever it is sitting on.
+ *
+ * Not the design-system `Button` on the canvas: its `ghost` variant is
+ * `text-white/70`, `cn` here is a plain join with no conflict resolution, and
+ * two `text-*` utilities on one element leave the winner to CSS source order.
+ * The result was a white chip of invisible white icons.
+ */
+function ToolButton({
+  onCanvas,
+  active,
+  title,
+  onMouseDown,
+  onClick,
+  children,
+}: {
+  onCanvas: boolean;
+  active: boolean;
+  title: string;
+  onMouseDown: (e: ReactMouseEvent<HTMLButtonElement>) => void;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  if (!onCanvas)
+    return (
+      <Button
+        size="iconSm"
+        variant="ghost"
+        title={title}
+        aria-label={title}
+        className={active ? "bg-indigo-500/25 text-white" : undefined}
+        aria-pressed={active}
+        onMouseDown={onMouseDown}
+        onClick={onClick}
+      >
+        {children}
+      </Button>
+    );
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      aria-pressed={active}
+      onMouseDown={onMouseDown}
+      onClick={onClick}
+      className={cn(
+        "grid h-7 w-7 place-items-center rounded transition-colors",
+        active
+          ? "bg-indigo-500/15 text-indigo-700"
+          : "text-black/55 hover:bg-black/6 hover:text-black",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
 export function InlineEditor({
   value,
   readOnly,
   label,
   onChange,
+  surface = "panel",
 }: {
   /** The stored inline HTML. Read once, on mount; this component owns it after. */
   value: string;
   readOnly: boolean;
   label: string;
   onChange: (html: string) => void;
+  /**
+   * `canvas` drops the box and the colour and lets the email supply both;
+   * `panel` is the bordered field for a dark surface.
+   */
+  surface?: "panel" | "canvas";
 }) {
+  const onCanvas = surface === "canvas";
+  const contentClass = onCanvas ? CANVAS_CLASS : CONTENT_CLASS;
   const [linkError, setLinkError] = useState<string | null>(null);
   const [linkOpen, setLinkOpen] = useState(false);
   const [linkDraft, setLinkDraft] = useState("");
@@ -166,7 +245,7 @@ export function InlineEditor({
     // transaction. Cheap here: one small editor per text block.
     shouldRerenderOnTransaction: true,
     editorProps: {
-      attributes: { class: CONTENT_CLASS, "aria-label": label },
+      attributes: { class: contentClass, "aria-label": label },
     },
     onUpdate: ({ editor: e }) => emit.current(serializeInline(e.getJSON())),
   });
@@ -177,7 +256,9 @@ export function InlineEditor({
 
   if (!editor)
     return (
-      <div className={cn(CONTENT_CLASS, "text-white/40")}>Loading editor…</div>
+      <div className={cn(contentClass, !onCanvas && "text-white/40")}>
+        Loading editor…
+      </div>
     );
 
   /**
@@ -251,20 +332,23 @@ export function InlineEditor({
     editor.chain().extendMarkRange("link").setLink({ href: parsed.data }).run();
   };
 
-  const mark = (active: boolean) =>
-    active ? "bg-indigo-500/25 text-white" : undefined;
-
   return (
-    <div className="flex flex-col gap-2">
+    <div className={cn("flex flex-col", onCanvas ? "gap-1" : "gap-2")}>
       {!readOnly && (
-        <div className="flex flex-wrap items-center gap-1">
-          <Button
-            size="iconSm"
-            variant="ghost"
+        <div
+          className={cn(
+            "flex flex-wrap items-center gap-1",
+            // On the canvas the toolbar is a chip on a light card, and it only
+            // appears once the paragraph has focus — a permanent bar over
+            // every text block is the stack of forms again.
+            onCanvas &&
+              "pointer-events-none absolute -top-9 left-0 z-30 rounded-md border border-black/10 bg-white px-1 py-0.5 opacity-0 shadow-lg transition-opacity focus-within:pointer-events-auto focus-within:opacity-100 group-focus-within/text:pointer-events-auto group-focus-within/text:opacity-100",
+          )}
+        >
+          <ToolButton
+            onCanvas={onCanvas}
             title="Bold"
-            aria-label="Bold"
-            className={mark(editor.isActive("bold"))}
-            aria-pressed={editor.isActive("bold")}
+            active={editor.isActive("bold")}
             onMouseDown={keepCaret}
             onClick={() => {
               focusEditor();
@@ -272,14 +356,11 @@ export function InlineEditor({
             }}
           >
             <IconBold />
-          </Button>
-          <Button
-            size="iconSm"
-            variant="ghost"
+          </ToolButton>
+          <ToolButton
+            onCanvas={onCanvas}
             title="Italic"
-            aria-label="Italic"
-            className={mark(editor.isActive("italic"))}
-            aria-pressed={editor.isActive("italic")}
+            active={editor.isActive("italic")}
             onMouseDown={keepCaret}
             onClick={() => {
               focusEditor();
@@ -287,23 +368,22 @@ export function InlineEditor({
             }}
           >
             <IconItalic />
-          </Button>
-          <Button
-            size="iconSm"
-            variant="ghost"
+          </ToolButton>
+          <ToolButton
+            onCanvas={onCanvas}
             title="Link"
-            aria-label="Link"
-            className={mark(editor.isActive("link"))}
-            aria-pressed={editor.isActive("link")}
+            active={editor.isActive("link")}
             onMouseDown={keepCaret}
             onClick={openLink}
           >
             <IconLink />
-          </Button>
-          <span className="ml-1 text-xs text-white/40">
-            Bold, italic and links — a campaign body has no other inline
-            formatting.
-          </span>
+          </ToolButton>
+          {!onCanvas && (
+            <span className="ml-1 text-xs text-white/40">
+              Bold, italic and links — a campaign body has no other inline
+              formatting.
+            </span>
+          )}
         </div>
       )}
       <EditorContent editor={editor} />

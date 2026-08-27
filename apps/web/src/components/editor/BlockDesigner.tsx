@@ -44,7 +44,7 @@ import {
   type ContainerId,
   type EditorNode,
 } from "@/lib/editor/tree";
-import { Canvas, RootDropZone } from "./Canvas";
+import { Canvas } from "./Canvas";
 import { LeafInspector, RowInspector } from "./Inspector";
 import { LayoutPicker } from "./LayoutPicker";
 import { Palette, parsePaletteId } from "./Palette";
@@ -174,6 +174,22 @@ export function BlockDesigner({
     });
   };
 
+  /**
+   * Adds at a position in the body, which is what the gaps between blocks ask
+   * for. The palette's own click still appends — it has no position to mean.
+   */
+  const insertLeafAt = (kind: LeafKind, index: number) => {
+    const node = editorLeaf(blockDefaults(kind));
+    onChange((tree) => insertNode(tree, "root", index, node));
+    setSelectedId(node.id);
+  };
+
+  const insertRowAt = (layout: ColumnLayout, index: number) => {
+    const node = editorRow(layout);
+    onChange((tree) => insertNode(tree, "root", index, node));
+    setSelectedId(node.id);
+  };
+
   /** Click-to-add: appends to the root, or into the selected block's container. */
   const addLeaf = (kind: LeafKind) => {
     const node = editorLeaf(blockDefaults(kind));
@@ -205,6 +221,27 @@ export function BlockDesigner({
     setSelectedId((current) => (current === id ? null : current));
   };
 
+  /**
+   * The Edit/Preview switch, defined once and rendered into whichever card is
+   * on screen. Hiding the card that holds it is how you build a preview mode
+   * nobody can leave, and leaving an empty card behind just to keep the switch
+   * is a card of nothing.
+   */
+  const modeToggle = (
+    <SegmentedControl
+      value={mode}
+      options={[
+        { value: "edit" as const, label: "Edit" },
+        { value: "preview" as const, label: "Preview" },
+      ]}
+      onChange={(v) => {
+        setMode(v);
+        if (v === "preview") setSelectedId(null);
+      }}
+      aria-label="Canvas mode"
+    />
+  );
+
   const selectedNode = selectedId
     ? (locate(nodes, selectedId)?.node ?? null)
     : null;
@@ -219,11 +256,20 @@ export function BlockDesigner({
     >
       {/* Clicking the background clears the selection, which is what makes the
           inspector feel like it belongs to the canvas. */}
+      {/*
+       * Two columns, not three.
+       *
+       * There was a preview panel *and* a preview mode, which is two answers
+       * to the same question: the panel was a 26rem column showing a 680px
+       * email, so the "desktop" preview was narrower than a phone and the
+       * canvas it sat beside was squeezed to make room for it. One preview,
+       * reached by the toggle, at the width a desktop client actually gives an
+       * email.
+       */}
       <div
         className={cn(
           "grid gap-6",
-          mode === "edit" &&
-            "xl:grid-cols-[15rem_minmax(0,1fr)_minmax(0,26rem)]",
+          mode === "edit" && "xl:grid-cols-[16rem_minmax(0,1fr)]",
         )}
         onClick={() => setSelectedId(null)}
       >
@@ -294,33 +340,17 @@ export function BlockDesigner({
           {/* The card stays in preview mode; only its canvas goes. The toggle
               lives in this header, and hiding the header is how you build a
               preview mode nobody can leave. */}
-          <Card>
-            <CardHeader className={cn(mode === "preview" && "pb-0")}>
+          <Card className={cn(mode === "preview" && "hidden")}>
+            <CardHeader>
               <CardTitle>{bodyTitle}</CardTitle>
               <div className="flex items-center gap-3">
                 <span className="text-xs text-white/40">
                   {nodes.length} block{nodes.length === 1 ? "" : "s"}
                 </span>
-                <SegmentedControl
-                  value={mode}
-                  options={[
-                    { value: "edit" as const, label: "Edit" },
-                    { value: "preview" as const, label: "Preview" },
-                  ]}
-                  onChange={(v) => {
-                    setMode(v);
-                    if (v === "preview") setSelectedId(null);
-                  }}
-                  aria-label="Canvas mode"
-                />
+                {modeToggle}
               </div>
             </CardHeader>
-            <CardBody
-              className={cn(
-                "flex flex-col gap-0 p-0",
-                mode === "preview" && "hidden",
-              )}
-            >
+            <CardBody className="flex flex-col gap-0 p-0">
               <Canvas
                 nodes={nodes}
                 theme={theme}
@@ -332,22 +362,25 @@ export function BlockDesigner({
                   onChange((tree) => replaceLeaf(tree, id, block))
                 }
                 onRemove={removeById}
+                onInsertLeaf={insertLeafAt}
+                onInsertRow={insertRowAt}
               />
-              {!readOnly && (
-                <RootDropZone empty={nodes.length === 0} theme={theme} />
-              )}
             </CardBody>
           </Card>
         </div>
 
-        {/* One preview, moved rather than duplicated: in edit mode it is the
-            narrow column beside the canvas, in preview mode it is the page. */}
-        <div
-          className={cn(mode === "preview" && "xl:col-span-full")}
-          onClick={(e) => e.stopPropagation()}
-        >
-          {preview}
-        </div>
+        {mode === "preview" && (
+          <div
+            className="flex flex-col gap-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <p className="num-stamp">{bodyTitle}</p>
+              {modeToggle}
+            </div>
+            {preview}
+          </div>
+        )}
       </div>
 
       <DragOverlay dropAnimation={null}>
