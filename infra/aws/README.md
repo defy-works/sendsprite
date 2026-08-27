@@ -160,21 +160,48 @@ aws s3api put-bucket-policy --bucket sendsprite-cfn --policy '{
 }'
 ```
 
-Publish a version manually (this is what the CI steps do on a tag):
+CI publishes from here on. Every push to `master` writes `latest/` (the
+`cfn` job in `.github/workflows/ci.yml`, after `cfn-lint`), and every `v*`
+tag writes `<tag>/` (the `cfn-template` job in `publish-image.yml`), so the
+template the wizard serves is the template in the repo and a self-hoster can
+pin `CFN_TEMPLATE_URL` to the version they run.
 
-```bash
-aws s3 cp infra/aws/sendsprite-connect.yaml s3://sendsprite-cfn/v1.2.3/sendsprite-connect.yaml --acl public-read
-aws s3 cp infra/aws/sendsprite-connect.yaml s3://sendsprite-cfn/latest/sendsprite-connect.yaml --acl public-read
+Credentials are an IAM role, `sendsprite-ci-cfn-publish`, that trusts
+GitHub's OIDC provider for this repository on exactly `refs/heads/master`
+and `refs/tags/v*`, with `s3:PutObject` on `sendsprite-cfn/*` and nothing
+else. No secret exists anywhere. The role and the provider were created by
+hand once; if either is ever recreated, the trust policy is:
+
+```json
+{
+  "Effect": "Allow",
+  "Principal": {
+    "Federated": "arn:aws:iam::<account>:oidc-provider/token.actions.githubusercontent.com"
+  },
+  "Action": "sts:AssumeRoleWithWebIdentity",
+  "Condition": {
+    "StringEquals": {
+      "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+    },
+    "StringLike": {
+      "token.actions.githubusercontent.com:sub": [
+        "repo:defy-works/sendsprite:ref:refs/heads/master",
+        "repo:defy-works/sendsprite:ref:refs/tags/v*"
+      ]
+    }
+  }
+}
 ```
 
-`--acl public-read` only works when the bucket's Object Ownership setting allows
-ACLs (`ObjectWriter` or `BucketOwnerPreferred`); with the bucket policy above the
-flag is redundant and can be dropped.
+To publish by hand (an emergency, or a fork with its own bucket):
 
-Then uncomment the two `aws s3 cp` steps in the `cfn` job of
-`.github/workflows/ci.yml` (they publish `s3://sendsprite-cfn/${GITHUB_REF_NAME}/…`
-and `…/latest/…`) and give the job AWS credentials (OIDC role or secrets). The
-`cfn-lint` step already runs on every push.
+```bash
+aws s3 cp infra/aws/sendsprite-connect.yaml s3://sendsprite-cfn/latest/sendsprite-connect.yaml --content-type text/yaml
+```
+
+No `--acl public-read`: the bucket's Object Ownership is `BucketOwnerEnforced`,
+which rejects ACLs outright (`AccessControlListNotSupported`); public read
+comes from the bucket policy above.
 
 ## Self-hosters: use your own copy
 

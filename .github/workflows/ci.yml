@@ -71,21 +71,37 @@ jobs:
 
   cfn:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # For the OIDC token AWS exchanges for the publish role below.
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install cfn-lint
       - run: cfn-lint infra/aws/sendsprite-connect.yaml
-      # Publish on tags. The bucket (s3://sendsprite-cfn, us-east-1) exists and
-      # serves `latest/` publicly through a bucket policy, NOT through object
-      # ACLs: Object Ownership is BucketOwnerEnforced, so `--acl public-read`
-      # is rejected with AccessControlListNotSupported. Do not add it back.
-      # Still needs credentials on this job (an OIDC role) before uncommenting;
-      # until then `latest/` is uploaded by hand and drifts from the repo, which
-      # is how the stack that could not send (bug-016) stayed live for two days.
-      # - run: aws s3 cp infra/aws/sendsprite-connect.yaml s3://sendsprite-cfn/${GITHUB_REF_NAME}/sendsprite-connect.yaml --content-type text/yaml
-      # - run: aws s3 cp infra/aws/sendsprite-connect.yaml s3://sendsprite-cfn/latest/sendsprite-connect.yaml --content-type text/yaml
+      # Publish `latest/` on every push to the default branch, so the template
+      # the one-click wizard serves is the template in the repo. It used to be
+      # uploaded by hand, and drifted: a stack that could not send (bug-016)
+      # stayed live for two days that way. The versioned `v*/` copy is
+      # published by the tag workflow (publish-image.yml), since this one does
+      # not run on tags.
+      #
+      # Credentials come from an IAM role that trusts GitHub's OIDC provider
+      # for exactly this repository on `master` and `v*` tags, and may only
+      # `s3:PutObject` under `sendsprite-cfn/`. No secret is involved.
+      #
+      # The bucket serves `latest/` publicly through a bucket policy, NOT
+      # through object ACLs: Object Ownership is BucketOwnerEnforced, so
+      # `--acl public-read` is rejected with AccessControlListNotSupported.
+      - uses: aws-actions/configure-aws-credentials@v4
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        with:
+          role-to-assume: arn:aws:iam::582071018365:role/sendsprite-ci-cfn-publish
+          aws-region: us-east-1
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: aws s3 cp infra/aws/sendsprite-connect.yaml s3://sendsprite-cfn/latest/sendsprite-connect.yaml --content-type text/yaml
 
   # Deliberately no `needs: test`: the image build is independent of the test
   # suite, so both jobs run in parallel and a red test job still shows whether

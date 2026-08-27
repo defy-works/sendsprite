@@ -200,3 +200,23 @@ jobs:
 
       - name: Inspect the published manifest
         run: docker buildx imagetools inspect "${IMAGE}:${{ steps.meta.outputs.version }}"
+
+  # A release also freezes the CloudFormation connect template under its
+  # version, next to the `latest/` copy ci.yml publishes on every push to the
+  # default branch: a self-hoster who pins `CFN_TEMPLATE_URL` to a version
+  # gets the template that shipped with the image they run. Same IAM role as
+  # ci.yml (trusts this repository on `master` and `v*` tags, `s3:PutObject`
+  # under `sendsprite-cfn/` and nothing else), obtained through OIDC.
+  cfn-template:
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::582071018365:role/sendsprite-ci-cfn-publish
+          aws-region: us-east-1
+      - run: aws s3 cp infra/aws/sendsprite-connect.yaml "s3://sendsprite-cfn/${GITHUB_REF_NAME}/sendsprite-connect.yaml" --content-type text/yaml
