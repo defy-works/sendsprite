@@ -12,7 +12,7 @@ import { registerSearchEmails } from "./tools/search-emails";
 import { registerSendEmail } from "./tools/send-email";
 
 /** Reported in `initialize`; kept in sync with package.json by the release pipeline. */
-export const MCP_VERSION = "0.2.0";
+export const MCP_VERSION = "0.2.1";
 
 /**
  * The registry. Order is the order tools are advertised in `tools/list`, so
