@@ -10,6 +10,7 @@ import {
 import { Button } from "@/components/ui/Button";
 import { ColorField } from "@/components/ui/ColorField";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
+import { SpaceField } from "./SpacingFields";
 import { IconRefresh } from "@/components/ui/icons";
 
 /**
@@ -86,6 +87,18 @@ export function ThemePanel({
         ]}
         disabled={readOnly}
         onChange={(v: CornerStyle) => set("cardCorners", v)}
+      />
+      {/* The card's inner gutter. Bounded at 64: past that a 600px card has
+          more margin than message. */}
+      <SpaceField
+        id="card-padding"
+        label="Card padding"
+        space={theme.contentPadding ?? 24}
+        max={64}
+        // Zero here is a card with no gutter, not "use the default".
+        zeroIsAbsent={false}
+        disabled={readOnly}
+        onChange={(v) => set("contentPadding", v)}
       />
       <ColorField
         label="Page background"

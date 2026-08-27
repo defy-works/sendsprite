@@ -175,11 +175,23 @@ const rowFor = (page: Page, text: string) =>
  * row. Each card is labelled with its kind, and `nth` disambiguates when a
  * body holds two of the same.
  */
-const blockCard = (page: Page, kind: string, nth = 0) =>
-  page
-    .locator("li")
-    .filter({ has: page.getByText(kind, { exact: true }) })
-    .nth(nth);
+const canvas = (page: Page) => page.getByRole("list", { name: "Email body" });
+
+/** The block's own settings, which live in the inspector beside the canvas. */
+const inspector = (page: Page) =>
+  page.getByRole("region", { name: "Block settings" });
+
+/**
+ * Selects the nth block on the canvas, so the inspector is showing its fields.
+ *
+ * The canvas draws the email rather than a stack of labelled forms, so a
+ * block's fields are not on the block — selecting it is what brings them up.
+ * The rendered markup is inert, which is why the click lands on the list item
+ * and not on whatever the block rendered as.
+ */
+const selectBlock = async (page: Page, nth: number) => {
+  await canvas(page).getByRole("listitem").nth(nth).click();
+};
 
 /** Adds a block by clicking its palette tile, which appends it to the body. */
 const addBlock = (page: Page, kind: string) =>
@@ -300,11 +312,13 @@ test("a campaign reaches one eligible contact, and unsubscribing needs a POST", 
   await expect(page.locator("#cmp-from")).toHaveValue(`hello@${domain}`);
 
   // The starter body is a heading and a text block; the other two are added.
-  await blockCard(page, "Heading")
+  await selectBlock(page, 0);
+  await inspector(page)
     .getByLabel("Text", { exact: true })
     .fill("What we shipped in August");
 
-  const body = page.getByLabel("Campaign text block");
+  // The starter body's paragraph, typed into where it sits on the canvas.
+  const body = canvas(page).getByLabel("Text block").first();
   const bold = page.getByRole("button", { name: "Bold", exact: true });
   await body.click();
   await expect(body).toBeFocused();
@@ -330,7 +344,7 @@ test("a campaign reaches one eligible contact, and unsubscribing needs a POST", 
     const button = [...document.querySelectorAll("button")].find(
       (b) => b.getAttribute("aria-label") === "Bold",
     );
-    const editor = document.querySelector('[aria-label="Campaign text block"]');
+    const editor = document.querySelector('[aria-label="Text block"]');
     if (!button || !editor) return "the toolbar or the editor is not there";
     const press = () => {
       button.focus();
@@ -371,15 +385,17 @@ test("a campaign reaches one eligible contact, and unsubscribing needs a POST", 
   await linkDialog.getByRole("button", { name: "Apply" }).click();
   await expect(linkDialog).toHaveCount(0);
 
+  // Adding from the palette selects what it added, so the inspector is
+  // already showing the new block's fields.
   await addBlock(page, "Button");
-  const buttonBlock = blockCard(page, "Button");
-  await buttonBlock.getByLabel("Label").fill("Read the notes");
-  await buttonBlock.getByLabel("Links to", { exact: true }).fill(buttonUrl);
+  await inspector(page)
+    .getByLabel("Label", { exact: true })
+    .fill("Read the notes");
+  await inspector(page).getByLabel("Links to", { exact: true }).fill(buttonUrl);
 
   await addBlock(page, "Image");
-  const imageBlock = blockCard(page, "Image");
-  await imageBlock.getByLabel("Image URL").fill(imageUrl);
-  await imageBlock.getByLabel("Alt text").fill(imageAlt);
+  await inspector(page).getByLabel("Image URL").fill(imageUrl);
+  await inspector(page).getByLabel("Alt text").fill(imageAlt);
 
   /* ---- 3. the preview is the rendered HTML, not a second renderer ---- */
 

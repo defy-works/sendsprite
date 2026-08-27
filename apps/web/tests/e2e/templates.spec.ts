@@ -110,17 +110,25 @@ test("a template built in the visual editor compiles to its body", async ({
   // The starter is a heading and a paragraph; a button is added from the
   // palette, which is what makes this the campaign editor rather than a
   // textarea with a different label.
+  //
+  // The canvas draws the blocks as they will look, so a block's fields are in
+  // the inspector rather than on the block: select it, then edit it.
+  const canvas = page.getByRole("list", { name: "Email body" });
+  // The block, not the heading inside it: the rendered markup is inert, so the
+  // shell around it is the click target.
+  await canvas.getByRole("listitem").first().click();
   await page
-    .locator("li")
-    .filter({ has: page.getByText("Heading", { exact: true }) })
+    .getByRole("region", { name: "Block settings" })
     .getByLabel("Text", { exact: true })
     .fill("Welcome, {{name}}");
+
+  // Adding from the palette selects what it added, so the fields are already
+  // the button's. Scoped to the inspector: "Label" is a common enough word to
+  // match something else on a page with a form on it.
+  const inspector = page.getByRole("region", { name: "Block settings" });
   await page.getByRole("button", { name: "Add Button", exact: true }).click();
-  const button = page
-    .locator("li")
-    .filter({ has: page.getByText("Button", { exact: true }) });
-  await button.getByLabel("Label").fill("Get started");
-  await button
+  await inspector.getByLabel("Label", { exact: true }).fill("Get started");
+  await inspector
     .getByLabel("Links to", { exact: true })
     .fill("https://example.com/start");
 
@@ -146,10 +154,18 @@ test("a template built in the visual editor compiles to its body", async ({
     "aria-checked",
     "true",
   );
+  // The button survived the round trip: select it on the canvas and its
+  // label is still there.
+  // The rendered anchor is inert on the canvas, so this selects the block
+  // rather than following the link — which is the point of it being inert.
+  await page
+    .getByRole("list", { name: "Email body" })
+    .getByRole("listitem")
+    .filter({ hasText: "Get started" })
+    .click();
   await expect(
     page
-      .locator("li")
-      .filter({ has: page.getByText("Button", { exact: true }) })
-      .getByLabel("Label"),
+      .getByRole("region", { name: "Block settings" })
+      .getByLabel("Label", { exact: true }),
   ).toHaveValue("Get started");
 });

@@ -583,8 +583,20 @@ export type CornerStyle = "sharp" | "soft" | "pill";
 /** Image width as a percentage of its container. Quarters only. */
 export type ImageWidth = 25 | 50 | 75 | 100;
 
+/**
+ * Vertical space a block carries with it, in pixels, 0–96.
+ *
+ * Distinct from the spacer block, which is space *as* content — this is the
+ * room a block needs around itself, and it does not survive as a block of its
+ * own when the one it belongs to is moved or deleted.
+ */
+export interface BlockSpacing {
+  spaceTop?: number;
+  spaceBottom?: number;
+}
+
 /** One of three sizes; the renderer maps each level to a fixed style. */
-export interface HeadingBlock {
+export interface HeadingBlock extends BlockSpacing {
   kind: "heading";
   level: 1 | 2 | 3;
   text: string;
@@ -598,7 +610,7 @@ export interface HeadingBlock {
  * `http(s)`/`mailto` — every tag closed, no anchor inside an anchor. Anything
  * else is a `validation_error`, not sanitised-away markup.
  */
-export interface TextBlock {
+export interface TextBlock extends BlockSpacing {
   kind: "text";
   html: string;
   align?: BlockAlign;
@@ -606,7 +618,7 @@ export interface TextBlock {
 }
 
 /** A call to action, rendered as a button that survives Outlook. */
-export interface ButtonBlock {
+export interface ButtonBlock extends BlockSpacing {
   kind: "button";
   label: string;
   /** Absolute `http(s)`/`mailto`. A URL carrying credentials is refused. */
@@ -621,7 +633,7 @@ export interface ButtonBlock {
   fullWidth?: boolean;
 }
 
-export interface ImageBlock {
+export interface ImageBlock extends BlockSpacing {
   kind: "image";
   url: string;
   /** Required: most clients block images until the reader asks for them. */
@@ -635,7 +647,7 @@ export interface ImageBlock {
 }
 
 /** A horizontal rule. */
-export interface DividerBlock {
+export interface DividerBlock extends BlockSpacing {
   kind: "divider";
   color?: HexColor;
 }
@@ -671,11 +683,13 @@ export type LeafBlock =
 export type ColumnLayout = "1-1" | "1-1-1" | "2-1" | "1-2";
 
 /** A row of two or three columns. At most 20 blocks per column. */
-export interface ColumnsBlock {
+export interface ColumnsBlock extends BlockSpacing {
   kind: "columns";
   layout: ColumnLayout;
   /** Fills the row behind every column. */
   background?: HexColor;
+  /** The gutter between columns, in pixels, 0–48. Defaults to 16. */
+  gap?: number;
   columns: LeafBlock[][];
 }
 
@@ -718,6 +732,11 @@ export interface CampaignTheme {
    */
   linkColor?: HexColor;
   cardCorners?: CornerStyle;
+  /**
+   * The card's inner gutter, in pixels, 0–64. Defaults to 24, and is what
+   * every block's left and right edge is set against.
+   */
+  contentPadding?: number;
 }
 
 /** `POST /campaigns`: a draft. Nothing here schedules or sends. */

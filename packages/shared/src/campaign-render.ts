@@ -7,6 +7,7 @@ import {
   type CornerStyle,
   type FontFamily,
   type LeafBlock,
+  type BlockSpacing,
 } from "./api/campaigns";
 import { escapeHtml } from "./template";
 
@@ -146,8 +147,10 @@ interface Resolved {
   pageBackground: string;
   cardBackground: string;
   cardWidth: number;
-  /** The usable width inside the card: `cardWidth` minus 24px each side. */
-  contentWidth: number;
+  /** The card's inner gutter, each side. */
+  cardPadding: number;
+  /** The usable width inside the card: `cardWidth` minus the gutters. */
+  usableWidth: number;
   fontCss: string;
   textColor: string;
   linkColor: string | null;
@@ -156,11 +159,13 @@ interface Resolved {
 
 function resolveTheme(theme?: CampaignTheme): Resolved {
   const cardWidth = theme?.contentWidth ?? DEFAULT_THEME.contentWidth;
+  const cardPadding = theme?.contentPadding ?? CARD_PADDING;
   return {
     pageBackground: theme?.pageBackground ?? DEFAULT_THEME.pageBackground,
     cardBackground: theme?.cardBackground ?? DEFAULT_THEME.cardBackground,
     cardWidth,
-    contentWidth: cardWidth - 2 * CARD_PADDING,
+    cardPadding,
+    usableWidth: cardWidth - 2 * cardPadding,
     fontCss: `font-family:${FONT_STACKS[theme?.font ?? DEFAULT_THEME.font]}`,
     textColor: theme?.textColor ?? DEFAULT_THEME.textColor,
     linkColor: theme?.linkColor ?? DEFAULT_THEME.linkColor,
@@ -195,9 +200,13 @@ const GUTTER = 16;
  * plus the gutters always total {@link CONTENT_WIDTH} exactly — a row that
  * totals one pixel more is a row Outlook wraps.
  */
-function columnWidths(layout: ColumnLayout, content: number): number[] {
+function columnWidths(
+  layout: ColumnLayout,
+  content: number,
+  gap: number = GUTTER,
+): number[] {
   const gaps = COLUMN_COUNT[layout] - 1;
-  const usable = content - gaps * GUTTER;
+  const usable = content - gaps * gap;
   switch (layout) {
     case "1-1": {
       const half = Math.floor(usable / 2);
@@ -253,9 +262,48 @@ function responsiveCss(t: Resolved): string {
   );
 }
 
-/** One full-width row wrapping a block's own markup. */
-function row(inner: string): string {
-  return `<tr><td style="padding:0 ${CARD_PADDING}px">${inner}</td></tr>`;
+/**
+ * A block's own vertical space.
+ *
+ * Read off the union rather than destructured, because the spacer block does
+ * not carry these fields — a block whose entire content is space has no use
+ * for space around it — and every other kind does.
+ */
+function spacingOf(b: CampaignBlock | LeafBlock): {
+  top: number;
+  bottom: number;
+} {
+  const s = b as BlockSpacing;
+  return { top: s.spaceTop ?? 0, bottom: s.spaceBottom ?? 0 };
+}
+
+/**
+ * One full-width row wrapping a block's own markup.
+ *
+ * The vertical padding is written only when a block asks for it, so a body
+ * with no spacing set renders the string this always rendered — which is what
+ * lets spacing be added to a live table with no backfill and no visual change
+ * to anything already written.
+ */
+function row(inner: string, pad: number, b: CampaignBlock): string {
+  const { top, bottom } = spacingOf(b);
+  const box =
+    top === 0 && bottom === 0
+      ? `padding:0 ${pad}px`
+      : `padding:${top}px ${pad}px ${bottom}px`;
+  return `<tr><td style="${box}">${inner}</td></tr>`;
+}
+
+/**
+ * A leaf's own spacing, for a leaf inside a column cell.
+ *
+ * A `<div>` rather than padding on the cell: the cell holds several leaves and
+ * carries the column's width, and Outlook adds cell padding to that width.
+ */
+function spaced(inner: string, b: LeafBlock): string {
+  const { top, bottom } = spacingOf(b);
+  if (top === 0 && bottom === 0) return inner;
+  return `<div style="padding:${top}px 0 ${bottom}px">${inner}</div>`;
 }
 
 /**
@@ -339,31 +387,43 @@ function renderLeaf(b: LeafBlock, width: number, t: Resolved): string {
  * would be *added* to the width, and the row would overflow the card by
  * exactly the padding. A spacer cell cannot do that.
  */
-function renderColumns(b: ColumnsBlock, t: Resolved): string {
-  const widths = columnWidths(b.layout, t.contentWidth);
+/** The columns table itself, without the row that positions it in the card. */
+function columnsTable(b: ColumnsBlock, t: Resolved): string {
+  const gap = b.gap ?? GUTTER;
+  const widths = columnWidths(b.layout, t.usableWidth, gap);
   const cells = b.columns
     .map((column, i) => {
       const width = widths[i] ?? 0;
       const inner =
         column.length === 0
           ? "&nbsp;"
-          : column.map((leaf) => renderLeaf(leaf, width, t)).join("");
+          : column
+              .map((leaf) => spaced(renderLeaf(leaf, width, t), leaf))
+              .join("");
       return `<td class="ss-col" width="${width}" valign="top" style="width:${width}px;vertical-align:top">${inner}</td>`;
     })
     .join(
-      `<td class="ss-gutter" width="${GUTTER}" style="width:${GUTTER}px;font-size:0;line-height:0">&nbsp;</td>`,
+      `<td class="ss-gutter" width="${gap}" style="width:${gap}px;font-size:0;line-height:0">&nbsp;</td>`,
     );
-  const bg = b.background ? `background:${b.background};` : "";
   return (
-    `<tr><td style="padding:0 ${CARD_PADDING}px;${bg}">` +
     `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%">` +
-    `<tr>${cells}</tr></table></td></tr>`
+    `<tr>${cells}</tr></table>`
   );
+}
+
+function renderColumns(b: ColumnsBlock, t: Resolved): string {
+  const bg = b.background ? `background:${b.background};` : "";
+  const { top, bottom } = spacingOf(b);
+  const box =
+    top === 0 && bottom === 0
+      ? `padding:0 ${t.cardPadding}px;${bg}`
+      : `padding:${top}px ${t.cardPadding}px ${bottom}px;${bg}`;
+  return `<tr><td style="${box}">${columnsTable(b, t)}</td></tr>`;
 }
 
 function renderBlock(b: CampaignBlock, t: Resolved): string {
   if (b.kind === "columns") return renderColumns(b, t);
-  return row(renderLeaf(b, t.contentWidth, t));
+  return row(renderLeaf(b, t.usableWidth, t), t.cardPadding, b);
 }
 
 /**
@@ -498,6 +558,33 @@ export interface RenderOptions {
   theme?: CampaignTheme;
 }
 
+/**
+ * One block's markup on its own, for a surface that is not an email.
+ *
+ * The dashboard's editing canvas draws the body as it will look, and it needs
+ * a DOM node per block to hang selection, dragging and a toolbar on. It gets
+ * that from here rather than from a second renderer written in React: two
+ * renderers means two answers to "what does this look like", and the one the
+ * author is editing would be the one that is not sent.
+ *
+ * What comes back is a fragment — no document, no card, no page background,
+ * and for a leaf no positioning row, because the caller supplies the box. The
+ * block's own spacing *is* included: it is part of what the block looks like.
+ *
+ * `width` is the width the block will be laid out at, which is what an image
+ * is sized against; it defaults to the theme's usable card width.
+ */
+export function renderBlockFragment(
+  block: CampaignBlock,
+  options: RenderOptions & { width?: number } = {},
+): string {
+  const t = resolveTheme(options.theme);
+  const [safe] = validate([block]);
+  if (!safe) return "";
+  if (safe.kind === "columns") return columnsTable(safe, t);
+  return spaced(renderLeaf(safe, options.width ?? t.usableWidth, t), safe);
+}
+
 export function renderBlocks(
   blocks: readonly CampaignBlock[],
   options: RenderOptions = {},
@@ -534,10 +621,10 @@ export function renderBlocks(
     `<table role="presentation" class="ss-card" width="${t.cardWidth}" cellpadding="0" cellspacing="0" border="0" style="width:${t.cardWidth}px;max-width:100%;background:${t.cardBackground};border-radius:${t.cardRadius}">` +
     body +
     (unsubscribe
-      ? `<tr><td style="padding:8px ${CARD_PADDING}px ${CARD_PADDING}px">` +
+      ? `<tr><td style="padding:8px ${t.cardPadding}px ${t.cardPadding}px">` +
         `<p style="${t.fontCss};font-size:12px;line-height:1.5;color:${MUTED};margin:0">${UNSUBSCRIBE_MARKER}</p>` +
         `</td></tr>`
-      : `<tr><td style="padding:0 ${CARD_PADDING}px ${CARD_PADDING}px">&nbsp;</td></tr>`) +
+      : `<tr><td style="padding:0 ${t.cardPadding}px ${t.cardPadding}px">&nbsp;</td></tr>`) +
     `</table></td></tr></table></body></html>`;
 
   const text = safe

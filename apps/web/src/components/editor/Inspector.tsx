@@ -9,6 +9,8 @@ import {
 } from "@sendsprite/shared";
 import { ColorField } from "@/components/ui/ColorField";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
+import { BlockFields } from "./BlockFields";
+import { SpaceField, SpacingFields } from "./SpacingFields";
 import { Switch } from "@/components/ui/Toggle";
 import {
   IconAlignCenter,
@@ -45,6 +47,49 @@ const CORNER_OPTIONS = [
 ];
 
 export function LeafInspector({
+  block,
+  readOnly,
+  onChange,
+}: {
+  block: LeafBlock;
+  readOnly: boolean;
+  onChange: (block: LeafBlock) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-5">
+      {/* Content first, then style.
+       *
+       * These fields used to live on the block's card in the canvas. The canvas
+       * draws the block itself now, so there is nowhere on it for a labelled
+       * URL field to go — and a canvas that shows the email is worth more than
+       * one that shows a form. Text is the exception and is absent here: it is
+       * typed where it sits.
+       */}
+      {block.kind !== "text" && (
+        <BlockFields
+          block={block}
+          readOnly={readOnly}
+          id={`inspector-${block.kind}`}
+          onChange={onChange}
+        />
+      )}
+      <LeafStyle block={block} readOnly={readOnly} onChange={onChange} />
+      {/* Every kind but the spacer, which is space already. Appended here
+          rather than repeated in six branches: the pair is the same for all of
+          them, and the only thing that varies is what sits above it. */}
+      {block.kind !== "spacer" && (
+        <SpacingFields
+          spaceTop={block.spaceTop}
+          spaceBottom={block.spaceBottom}
+          disabled={readOnly}
+          onChange={(patch) => onChange({ ...block, ...patch })}
+        />
+      )}
+    </div>
+  );
+}
+
+function LeafStyle({
   block,
   readOnly,
   onChange,
@@ -181,6 +226,9 @@ export function RowInspector({
   onChange: (patch: {
     layout?: ColumnLayout;
     background?: string | undefined;
+    gap?: number | undefined;
+    spaceTop?: number | undefined;
+    spaceBottom?: number | undefined;
   }) => void;
 }) {
   return (
@@ -207,6 +255,22 @@ export function RowInspector({
         fallback="#ffffff"
         disabled={readOnly}
         onChange={(background) => onChange({ background })}
+      />
+      {/* Bounded tighter than block spacing: the gutter comes out of the
+          columns, and 48px of it leaves little of a three-column row. */}
+      <SpaceField
+        id="column-gap"
+        label="Gap between columns"
+        space={row.gap}
+        max={48}
+        disabled={readOnly}
+        onChange={(gap) => onChange({ gap })}
+      />
+      <SpacingFields
+        spaceTop={row.spaceTop}
+        spaceBottom={row.spaceBottom}
+        disabled={readOnly}
+        onChange={(patch) => onChange(patch)}
       />
     </div>
   );

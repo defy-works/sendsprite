@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { completeTeamSetup } from "./team-setup";
+import { chooseOption } from "./_ui";
 
 /**
  * Three of the four things the editor gained after the first UI pass:
@@ -142,4 +143,37 @@ test("the body theme reaches the rendered document", async ({ page }) => {
   // are readable off the rendered document rather than off a stylesheet.
   await expect(frame.locator("table.ss-card")).toHaveAttribute("width", "480");
   await expect(frame.locator("h2").first()).toHaveCSS("font-family", /Georgia/);
+});
+
+test("the canvas draws the email, and preview mode drops the chrome", async ({
+  page,
+}) => {
+  await signUpOwner(page, "canvas");
+  await page.goto("/app/templates/new");
+
+  // The canvas is the body rendered by the send's own code, not a stack of
+  // labelled inputs: the starter heading is a real heading on it.
+  const canvas = page.getByRole("list", { name: "Email body" });
+  await expect(canvas.getByRole("heading").first()).toBeVisible();
+
+  // Space is a block's own, and it reaches the document.
+  await canvas.getByRole("listitem").first().click();
+  const inspector = page.getByRole("region", { name: "Block settings" });
+  await chooseOption(page, "space-above", "48 — loose");
+
+  // On the cell that positions the block, which is where the renderer writes
+  // it — the page cell around the card has padding of its own, and matching on
+  // the computed value would find that one first.
+  const frame = page.frameLocator('iframe[title="Template preview"]');
+  await expect(frame.locator('td[style*="padding:48px"]')).toHaveCount(1);
+
+  // Preview hides the palette and the inspector and gives the width to the
+  // frame — the same frame, moved, not a second one.
+  await page.getByRole("radio", { name: "Preview" }).click();
+  await expect(inspector).toBeHidden();
+  await expect(canvas).toBeHidden();
+  await expect(frame.locator("table.ss-card")).toBeVisible();
+
+  await page.getByRole("radio", { name: "Edit" }).click();
+  await expect(canvas).toBeVisible();
 });

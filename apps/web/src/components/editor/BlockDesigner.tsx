@@ -21,6 +21,8 @@ import type {
   LeafBlock,
 } from "@sendsprite/shared";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/Card";
+import { cn } from "@/lib/cn";
+import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import {
   BLOCK_LABELS,
   blockDefaults,
@@ -103,6 +105,16 @@ export function BlockDesigner({
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
+  /**
+   * Editing or reading.
+   *
+   * The canvas is faithful but it is not the email — it carries outlines, a
+   * grip on hover and a drop zone at the end. Preview hides all of it and
+   * hands the width to the frame that renders the real thing, which is the
+   * check an author wants before sending and could previously only get by
+   * squinting at a 26rem column.
+   */
+  const [mode, setMode] = useState<"edit" | "preview">("edit");
 
   const sensors = useSensors(
     // A few pixels of travel before a drag starts, so a click into a text
@@ -208,11 +220,18 @@ export function BlockDesigner({
       {/* Clicking the background clears the selection, which is what makes the
           inspector feel like it belongs to the canvas. */}
       <div
-        className="grid gap-6 xl:grid-cols-[15rem_minmax(0,1fr)_minmax(0,26rem)]"
+        className={cn(
+          "grid gap-6",
+          mode === "edit" &&
+            "xl:grid-cols-[15rem_minmax(0,1fr)_minmax(0,26rem)]",
+        )}
         onClick={() => setSelectedId(null)}
       >
         <div
-          className="flex flex-col gap-4 xl:sticky xl:top-6 xl:self-start"
+          className={cn(
+            "flex flex-col gap-4 xl:sticky xl:top-6 xl:self-start",
+            mode === "preview" && "hidden",
+          )}
           onClick={(e) => e.stopPropagation()}
         >
           <Card className="p-4">
@@ -231,7 +250,7 @@ export function BlockDesigner({
               currentTheme={Object.keys(theme).length > 0 ? theme : null}
             />
           </Card>
-          <Card className="p-4">
+          <Card className="p-4" role="region" aria-label="Block settings">
             <p className="num-stamp mb-3">
               {selectedNode
                 ? selectedNode.type === "row"
@@ -272,16 +291,39 @@ export function BlockDesigner({
           onClick={(e) => e.stopPropagation()}
         >
           {settings}
+          {/* The card stays in preview mode; only its canvas goes. The toggle
+              lives in this header, and hiding the header is how you build a
+              preview mode nobody can leave. */}
           <Card>
-            <CardHeader>
+            <CardHeader className={cn(mode === "preview" && "pb-0")}>
               <CardTitle>{bodyTitle}</CardTitle>
-              <span className="text-xs text-white/40">
-                {nodes.length} block{nodes.length === 1 ? "" : "s"}
-              </span>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-white/40">
+                  {nodes.length} block{nodes.length === 1 ? "" : "s"}
+                </span>
+                <SegmentedControl
+                  value={mode}
+                  options={[
+                    { value: "edit" as const, label: "Edit" },
+                    { value: "preview" as const, label: "Preview" },
+                  ]}
+                  onChange={(v) => {
+                    setMode(v);
+                    if (v === "preview") setSelectedId(null);
+                  }}
+                  aria-label="Canvas mode"
+                />
+              </div>
             </CardHeader>
-            <CardBody className="flex flex-col gap-2.5">
+            <CardBody
+              className={cn(
+                "flex flex-col gap-0 p-0",
+                mode === "preview" && "hidden",
+              )}
+            >
               <Canvas
                 nodes={nodes}
+                theme={theme}
                 readOnly={readOnly}
                 selectedId={selectedId}
                 invalidIndex={invalidIndex}
@@ -291,12 +333,21 @@ export function BlockDesigner({
                 }
                 onRemove={removeById}
               />
-              {!readOnly && <RootDropZone empty={nodes.length === 0} />}
+              {!readOnly && (
+                <RootDropZone empty={nodes.length === 0} theme={theme} />
+              )}
             </CardBody>
           </Card>
         </div>
 
-        <div onClick={(e) => e.stopPropagation()}>{preview}</div>
+        {/* One preview, moved rather than duplicated: in edit mode it is the
+            narrow column beside the canvas, in preview mode it is the page. */}
+        <div
+          className={cn(mode === "preview" && "xl:col-span-full")}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {preview}
+        </div>
       </div>
 
       <DragOverlay dropAnimation={null}>

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { MAX_BLOCKS_PER_COLUMN, type LeafBlock } from "@sendsprite/shared";
+import {
+  MAX_BLOCKS_PER_COLUMN,
+  type CampaignBlock,
+  type LeafBlock,
+} from "@sendsprite/shared";
 import { blockDefaults } from "@/lib/editor/blocks";
 import {
   blocksOfTree,
@@ -282,5 +286,47 @@ describe("updateRow", () => {
       background: undefined,
     })[0] as EditorRow;
     expect(next.background).toBeUndefined();
+  });
+});
+
+describe("row spacing round-trips", () => {
+  it("carries gap and space through the editor and back", () => {
+    const blocks: CampaignBlock[] = [
+      {
+        kind: "columns",
+        layout: "1-1",
+        gap: 32,
+        spaceTop: 24,
+        spaceBottom: 8,
+        columns: [[{ kind: "text", html: "a" }], []],
+      },
+    ];
+    expect(blocksOfTree(editorNodesOf(blocks))).toEqual(blocks);
+  });
+
+  it("keeps an unspaced row free of the keys entirely", () => {
+    // A key holding `undefined` and an absent key are the same value and
+    // different JSON, and the dirty check compares strings.
+    const [row] = blocksOfTree(
+      editorNodesOf([{ kind: "columns", layout: "1-1", columns: [[], []] }]),
+    );
+    expect(Object.keys(row!).sort()).toEqual(["columns", "kind", "layout"]);
+  });
+
+  it("clears a row field when the patch says undefined", () => {
+    const nodes = editorNodesOf([
+      {
+        kind: "columns",
+        layout: "1-1",
+        gap: 32,
+        spaceTop: 16,
+        columns: [[], []],
+      },
+    ]);
+    const id = nodes[0]!.id;
+    const cleared = updateRow(nodes, id, { gap: undefined });
+    const [row] = blocksOfTree(cleared);
+    expect(row).not.toHaveProperty("gap");
+    expect(row).toHaveProperty("spaceTop", 16);
   });
 });

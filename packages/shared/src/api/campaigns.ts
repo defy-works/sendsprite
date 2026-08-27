@@ -231,6 +231,25 @@ export const HexColor = z
   .regex(/^#[0-9a-fA-F]{6}$/, "A colour must be a hex value like #4f46e5.");
 export type HexColor = z.infer<typeof HexColor>;
 
+/**
+ * Vertical space above or below a block, in pixels.
+ *
+ * Bounded like the spacer block is, and for the same reason: a body is a
+ * column of blocks and one of them must not be able to push the rest off the
+ * end of a scroll. The spacer block stays — it is space *as* content, which is
+ * what a layout needs between two sections; this is space a block carries with
+ * it, which is what a block needs to breathe without one.
+ */
+export const BlockSpace = z.number().int().min(0).max(96);
+
+/**
+ * The gutter between columns in a row, in pixels.
+ *
+ * Rendered as its own cell rather than as padding, so it is bounded by what
+ * still leaves a usable column at the narrowest layout.
+ */
+export const ColumnGap = z.number().int().min(0).max(48);
+
 export const CORNER_STYLES = ["sharp", "soft", "pill"] as const;
 export const CornerStyle = z.enum(CORNER_STYLES);
 export type CornerStyle = z.infer<typeof CornerStyle>;
@@ -252,6 +271,8 @@ export const HeadingBlock = z.object({
   text: BlockText,
   align: BlockAlign.optional(),
   color: HexColor.optional(),
+  spaceTop: BlockSpace.optional(),
+  spaceBottom: BlockSpace.optional(),
 });
 export type HeadingBlock = z.infer<typeof HeadingBlock>;
 
@@ -261,6 +282,8 @@ export const TextBlock = z.object({
   html: InlineHtml,
   align: BlockAlign.optional(),
   color: HexColor.optional(),
+  spaceTop: BlockSpace.optional(),
+  spaceBottom: BlockSpace.optional(),
 });
 export type TextBlock = z.infer<typeof TextBlock>;
 
@@ -275,6 +298,8 @@ export const ButtonBlock = z.object({
   corners: CornerStyle.optional(),
   /** Stretches to the container width. Useful in a narrow column. */
   fullWidth: z.boolean().optional(),
+  spaceTop: BlockSpace.optional(),
+  spaceBottom: BlockSpace.optional(),
 });
 export type ButtonBlock = z.infer<typeof ButtonBlock>;
 
@@ -293,6 +318,8 @@ export const ImageBlock = z.object({
   /** Percentage of the container. Defaults to the full width. */
   width: ImageWidth.optional(),
   corners: CornerStyle.optional(),
+  spaceTop: BlockSpace.optional(),
+  spaceBottom: BlockSpace.optional(),
 });
 export type ImageBlock = z.infer<typeof ImageBlock>;
 
@@ -300,6 +327,8 @@ export type ImageBlock = z.infer<typeof ImageBlock>;
 export const DividerBlock = z.object({
   kind: z.literal("divider"),
   color: HexColor.optional(),
+  spaceTop: BlockSpace.optional(),
+  spaceBottom: BlockSpace.optional(),
 });
 export type DividerBlock = z.infer<typeof DividerBlock>;
 
@@ -308,6 +337,12 @@ export const SpacerBlock = z.object({
   kind: z.literal("spacer"),
   size: z.number().int().min(4).max(96),
 });
+
+/**
+ * The presentation fields every block carries, for code that does not care
+ * which kind it has.
+ */
+export type BlockSpacing = { spaceTop?: number; spaceBottom?: number };
 export type SpacerBlock = z.infer<typeof SpacerBlock>;
 
 /**
@@ -366,6 +401,9 @@ export const ColumnsBlock = z
     kind: z.literal("columns"),
     layout: ColumnLayout,
     background: HexColor.optional(),
+    gap: ColumnGap.optional(),
+    spaceTop: BlockSpace.optional(),
+    spaceBottom: BlockSpace.optional(),
     columns: z
       .array(z.array(LeafBlock).max(MAX_BLOCKS_PER_COLUMN))
       .min(2)
@@ -448,6 +486,11 @@ export const CampaignTheme = z.object({
    */
   linkColor: HexColor.optional(),
   cardCorners: CornerStyle.optional(),
+  /**
+   * The card's inner gutter, in pixels. Applies to every block's left and
+   * right edge; a block's own `spaceTop`/`spaceBottom` handle the vertical.
+   */
+  contentPadding: z.number().int().min(0).max(64).optional(),
 });
 export type CampaignTheme = z.infer<typeof CampaignTheme>;
 

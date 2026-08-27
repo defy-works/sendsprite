@@ -42,6 +42,10 @@ export interface EditorRow {
   type: "row";
   layout: ColumnLayout;
   background?: string;
+  /** The gutter between columns. Absent is the renderer's 16px. */
+  gap?: number;
+  spaceTop?: number;
+  spaceBottom?: number;
   columns: EditorLeaf[][];
 }
 
@@ -98,6 +102,11 @@ export function editorNodesOf(blocks: readonly CampaignBlock[]): EditorNode[] {
           type: "row" as const,
           layout: b.layout,
           ...(b.background ? { background: b.background } : {}),
+          ...(b.gap === undefined ? {} : { gap: b.gap }),
+          ...(b.spaceTop === undefined ? {} : { spaceTop: b.spaceTop }),
+          ...(b.spaceBottom === undefined
+            ? {}
+            : { spaceBottom: b.spaceBottom }),
           columns: b.columns.map((col) => col.map(editorLeaf)),
         }
       : editorLeaf(b),
@@ -113,6 +122,12 @@ export function blocksOfTree(nodes: readonly EditorNode[]): CampaignBlock[] {
           kind: "columns" as const,
           layout: n.layout,
           ...(n.background ? { background: n.background } : {}),
+          // Only when set, and never as `0`: the renderer writes no vertical
+          // padding for an absent value, which is what keeps a body written
+          // before spacing existed rendering byte for byte as it did.
+          ...(n.gap ? { gap: n.gap } : {}),
+          ...(n.spaceTop ? { spaceTop: n.spaceTop } : {}),
+          ...(n.spaceBottom ? { spaceBottom: n.spaceBottom } : {}),
           columns: n.columns.map((col) => col.map((l) => l.block)),
         },
   );
@@ -285,13 +300,21 @@ export function replaceLeaf(
 export function updateRow(
   nodes: readonly EditorNode[],
   id: string,
-  patch: Partial<Pick<EditorRow, "layout" | "background">>,
+  patch: Partial<
+    Pick<
+      EditorRow,
+      "layout" | "background" | "gap" | "spaceTop" | "spaceBottom"
+    >
+  >,
 ): EditorNode[] {
   return nodes.map((n) => {
     if (n.type !== "row" || n.id !== id) return n;
     const next: EditorRow = { ...n, ...patch };
-    if (patch.background === undefined && "background" in patch)
-      delete next.background;
+    // An explicit `undefined` in the patch means "clear it", which is not the
+    // same as leaving the key off — spreading would otherwise store the key
+    // with an undefined value and serialise it into the body.
+    for (const k of ["background", "gap", "spaceTop", "spaceBottom"] as const)
+      if (k in patch && patch[k] === undefined) delete next[k];
     return patch.layout ? relayout(next, patch.layout) : next;
   });
 }

@@ -68,7 +68,7 @@ export function BlockFields({
         <InlineEditor
           value={block.html}
           readOnly={readOnly}
-          label="Campaign text block"
+          label="Text block"
           onChange={(html) => onChange({ ...block, html })}
         />
       );
