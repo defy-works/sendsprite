@@ -52,6 +52,12 @@ export const domains = pgTable(
       .notNull()
       .default([]),
     lastError: text("last_error"),
+    /**
+     * When the records were last written to the Cloudflare zone by Apply.
+     * Null until the owner clicks — provisioning stores what SES issued and
+     * stops, it never writes DNS on its own — and always null in manual mode.
+     */
+    dnsAppliedAt: timestamp("dns_applied_at", { withTimezone: true }),
     lastCheckedAt: timestamp("last_checked_at", { withTimezone: true }),
     verifiedAt: timestamp("verified_at", { withTimezone: true }),
     verifyUntil: timestamp("verify_until", { withTimezone: true }),

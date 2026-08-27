@@ -325,7 +325,7 @@ describe("domains", () => {
     expect((await retryProvisioning(actor, id, { enqueue })).ok).toBe(false);
     await pg.db.delete(domains).where(eq(domains.id, id));
   });
-  it("provisionDomain creates the identity, MAIL FROM, writes records to Cloudflare", async () => {
+  it("provisionDomain creates the identity and MAIL FROM, stores the records, and writes nothing to Cloudflare", async () => {
     happyProvision();
     const { provisionDomain } = await import("@/services/domains");
     const d = await byName("mail.acme.com");
@@ -336,8 +336,13 @@ describe("domains", () => {
     expect(after.dkimStatus).toBe("PENDING");
     expect(after.lastError).toBeNull();
     expect(after.expectedRecords).toHaveLength(6);
-    expect(after.expectedRecords.every((r) => r.cloudflareId)).toBe(true);
-    expect(cfCalls.filter((c) => c.method === "POST")).toHaveLength(6);
+    // Stored, not applied: a zone is only written when someone clicks.
+    expect(after.expectedRecords.some((r) => r.cloudflareId)).toBe(false);
+    expect(after.dnsAppliedAt).toBeNull();
+    expect(after.dnsMode).toBe("auto");
+    expect(cfCalls.filter((c) => c.url.includes("/dns_records"))).toHaveLength(
+      0,
+    );
     expect(
       ses.commandCalls(CreateEmailIdentityCommand)[0]!.args[0].input,
     ).toEqual({
@@ -359,10 +364,37 @@ describe("domains", () => {
       { startAfter: 30, singletonKey: d.id },
     );
   });
+  it("applyDnsRecords writes the records to Cloudflare, stamps dnsAppliedAt, audits and queues a verify", async () => {
+    const { applyDnsRecords } = await import("@/services/domains");
+    const d = await byName("mail.acme.com");
+    const enqueue = vi.fn(async () => "job");
+    expect(
+      (await applyDnsRecords({ ...actor, role: "member" }, d.id, { enqueue }))
+        .ok,
+    ).toBe(false);
+    const res = await applyDnsRecords(actor, d.id, { enqueue, fetch: cfFetch });
+    expect(res.ok).toBe(true);
+    const after = await byName("mail.acme.com");
+    expect(after.expectedRecords.every((r) => r.cloudflareId)).toBe(true);
+    expect(after.dnsAppliedAt).not.toBeNull();
+    expect(after.lastError).toBeNull();
+    expect(cfCalls.filter((c) => c.method === "POST")).toHaveLength(6);
+    expect(enqueue).toHaveBeenCalledWith(
+      "domain.verify",
+      { domainId: d.id },
+      { startAfter: 30, singletonKey: d.id },
+    );
+    expect(
+      await pg.db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.action, "domains.apply_dns")),
+    ).toHaveLength(1);
+  });
   it("a Cloudflare failure mid-loop leaves the ids already created on the row", async () => {
     happyProvision();
     ses.on(DeleteEmailIdentityCommand).resolves({});
-    const { createDomain, provisionDomain, deleteDomain } =
+    const { createDomain, provisionDomain, applyDnsRecords, deleteDomain } =
       await import("@/services/domains");
     const res = await createDomain(actor, { name: "partial.acme.com" }, noop);
     if (!res.ok) throw new Error(res.error);
@@ -378,34 +410,46 @@ describe("domains", () => {
         );
       return cfFetch(url, init);
     };
-    await expect(
-      provisionDomain(res.data.id, {
-        enqueue: noop.enqueue,
-        fetch: cfThirdFails,
-      }),
-    ).rejects.toThrow(/hiccup/);
-    const after = await byName("partial.acme.com");
-    expect(after.dkimTokens).toEqual(["t1", "t2", "t3"]);
-    expect(after.lastError).toMatch(/hiccup/);
-    expect(after.expectedRecords).toHaveLength(6);
-    expect(
-      after.expectedRecords.filter((r) => r.cloudflareId).map((r) => r.kind),
-    ).toEqual(["DKIM", "DKIM"]);
-    // The retry (upsert by type+name) fills in the rest and clears the error.
     await provisionDomain(res.data.id, {
       enqueue: noop.enqueue,
       fetch: cfFetch,
     });
+    const failed = await applyDnsRecords(actor, res.data.id, {
+      enqueue: noop.enqueue,
+      fetch: cfThirdFails,
+    });
+    expect(failed.ok).toBe(false);
+    if (!failed.ok) expect(failed.error).toMatch(/hiccup/);
+    const after = await byName("partial.acme.com");
+    expect(after.dkimTokens).toEqual(["t1", "t2", "t3"]);
+    expect(after.lastError).toMatch(/hiccup/);
+    expect(after.dnsAppliedAt).toBeNull();
+    expect(after.expectedRecords).toHaveLength(6);
+    expect(
+      after.expectedRecords.filter((r) => r.cloudflareId).map((r) => r.kind),
+    ).toEqual(["DKIM", "DKIM"]);
+    // Re-apply (upsert by type+name) fills in the rest and clears the error.
+    expect(
+      (
+        await applyDnsRecords(actor, res.data.id, {
+          enqueue: noop.enqueue,
+          fetch: cfFetch,
+        })
+      ).ok,
+    ).toBe(true);
     const retried = await byName("partial.acme.com");
     expect(retried.expectedRecords.every((r) => r.cloudflareId)).toBe(true);
     expect(retried.lastError).toBeNull();
+    expect(retried.dnsAppliedAt).not.toBeNull();
     expect((await deleteDomain(actor, res.data.id, noop)).ok).toBe(true);
   });
-  it("re-provisioning patches the records Cloudflare already has and keeps their ids", async () => {
-    happyProvision();
-    const { provisionDomain } = await import("@/services/domains");
+  it("re-applying patches the records Cloudflare already has and keeps their ids", async () => {
+    const { applyDnsRecords } = await import("@/services/domains");
     const d = await byName("mail.acme.com");
-    await provisionDomain(d.id, { enqueue: async () => "", fetch: cfExisting });
+    const enqueue = async () => "";
+    expect(
+      (await applyDnsRecords(actor, d.id, { enqueue, fetch: cfExisting })).ok,
+    ).toBe(true);
     const after = await byName("mail.acme.com");
     expect(cfCalls.filter((c) => c.method === "POST")).toHaveLength(0);
     expect(cfCalls.filter((c) => c.method === "PATCH")).toHaveLength(6);
@@ -413,7 +457,7 @@ describe("domains", () => {
       after.expectedRecords.map((r) => `e-${r.type}-${r.name}`),
     );
     // Restore the ids the delete test expects to remove.
-    await provisionDomain(d.id, { enqueue: async () => "", fetch: cfFetch });
+    await applyDnsRecords(actor, d.id, { enqueue, fetch: cfFetch });
   });
   it("provisionDomain converges when the identity already exists", async () => {
     ses
@@ -423,12 +467,18 @@ describe("domains", () => {
     ses.on(PutEmailIdentityMailFromAttributesCommand).resolves({});
     const { provisionDomain } = await import("@/services/domains");
     const d = await byName("mail.acme.com");
+    expect(d.expectedRecords.every((r) => r.cloudflareId)).toBe(true);
     await provisionDomain(d.id, { enqueue: async () => "", fetch: cfFetch });
-    expect((await byName("mail.acme.com")).dkimTokens).toEqual([
-      "t1",
-      "t2",
-      "t3",
-    ]);
+    const after = await byName("mail.acme.com");
+    expect(after.dkimTokens).toEqual(["t1", "t2", "t3"]);
+    // Recomputing the rows must not forget which are already in the zone.
+    expect(after.expectedRecords.map((r) => r.cloudflareId)).toEqual(
+      d.expectedRecords.map((r) => r.cloudflareId),
+    );
+    expect(after.dnsAppliedAt).toEqual(d.dnsAppliedAt);
+    expect(cfCalls.filter((c) => c.url.includes("/dns_records"))).toHaveLength(
+      0,
+    );
   });
   it("provisionDomain records the error and rethrows so pg-boss retries", async () => {
     ses
@@ -460,8 +510,8 @@ describe("domains", () => {
       .set({ status: "pending" })
       .where(eq(domains.id, d.id));
   });
-  it("auto mode degrades to manual when Cloudflare is disconnected mid-flight", async () => {
-    const { createDomain, provisionDomain, deleteDomain } =
+  it("Cloudflare disconnected: provisioning is unaffected and Apply refuses without demoting the mode", async () => {
+    const { createDomain, provisionDomain, applyDnsRecords, deleteDomain } =
       await import("@/services/domains");
     const res = await createDomain(actor, { name: "deg.acme.com" }, noop);
     if (!res.ok) throw new Error(res.error);
@@ -471,15 +521,51 @@ describe("domains", () => {
     const enqueue = vi.fn(async () => "job");
     await provisionDomain(res.data.id, { enqueue, fetch: cfFetch });
     const after = await byName("deg.acme.com");
-    expect(after).toMatchObject({
-      dnsMode: "manual",
-      lastError: /Cloudflare is not connected/,
-    });
+    // Still a Cloudflare domain: reconnecting makes Apply work again
+    // without re-adding it.
+    expect(after).toMatchObject({ dnsMode: "auto", lastError: null });
     expect(after.expectedRecords).toHaveLength(6);
     expect(after.expectedRecords.some((r) => r.cloudflareId)).toBe(false);
     expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(
+      await applyDnsRecords(actor, res.data.id, { enqueue, fetch: cfFetch }),
+    ).toMatchObject({
+      ok: false,
+      code: "not_configured",
+      error: /Cloudflare is not connected/,
+    });
+    expect((await byName("deg.acme.com")).dnsMode).toBe("auto");
     ses.on(DeleteEmailIdentityCommand).resolves({});
     expect((await deleteDomain(actor, res.data.id, noop)).ok).toBe(true);
+  });
+  it("Apply refuses a manual-mode domain and one SES has not provisioned yet", async () => {
+    const { createDomain, provisionDomain, applyDnsRecords, deleteDomain } =
+      await import("@/services/domains");
+    const manual = await createDomain(
+      actor,
+      { name: "nozone.example.org" },
+      noop,
+    );
+    if (!manual.ok) throw new Error(manual.error);
+    expect(manual.data.dnsMode).toBe("manual");
+    // Not provisioned yet: nothing to apply.
+    expect(await applyDnsRecords(actor, manual.data.id, noop)).toMatchObject({
+      ok: false,
+      code: "conflict",
+      error: /not issued/,
+    });
+    happyProvision();
+    await provisionDomain(manual.data.id, noop);
+    expect(await applyDnsRecords(actor, manual.data.id, noop)).toMatchObject({
+      ok: false,
+      code: "conflict",
+      error: /DNS provider/,
+    });
+    expect(cfCalls.filter((c) => c.url.includes("/dns_records"))).toHaveLength(
+      0,
+    );
+    ses.on(DeleteEmailIdentityCommand).resolves({});
+    expect((await deleteDomain(actor, manual.data.id, noop)).ok).toBe(true);
   });
   it("verifyDomain flips to verified when SES + DNS agree", async () => {
     ses.on(GetEmailIdentityCommand).resolves({
@@ -862,7 +948,7 @@ describe("domains", () => {
   it("deleteDomain reports Cloudflare records it could not remove", async () => {
     happyProvision();
     ses.on(DeleteEmailIdentityCommand).resolves({});
-    const { createDomain, provisionDomain, deleteDomain } =
+    const { createDomain, provisionDomain, applyDnsRecords, deleteDomain } =
       await import("@/services/domains");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
@@ -870,6 +956,10 @@ describe("domains", () => {
       const a = await createDomain(actor, { name: "left.acme.com" }, noop);
       if (!a.ok) throw new Error(a.error);
       await provisionDomain(a.data.id, {
+        enqueue: async () => "",
+        fetch: cfFetch,
+      });
+      await applyDnsRecords(actor, a.data.id, {
         enqueue: async () => "",
         fetch: cfFetch,
       });
@@ -883,6 +973,10 @@ describe("domains", () => {
       const b = await createDomain(actor, { name: "gone.acme.com" }, noop);
       if (!b.ok) throw new Error(b.error);
       await provisionDomain(b.data.id, {
+        enqueue: async () => "",
+        fetch: cfFetch,
+      });
+      await applyDnsRecords(actor, b.data.id, {
         enqueue: async () => "",
         fetch: cfFetch,
       });
@@ -903,11 +997,15 @@ describe("domains", () => {
   });
   it("deleteDomain with AWS disconnected removes the row and reports every record as left over", async () => {
     happyProvision();
-    const { createDomain, provisionDomain, deleteDomain } =
+    const { createDomain, provisionDomain, applyDnsRecords, deleteDomain } =
       await import("@/services/domains");
     const res = await createDomain(actor, { name: "off.acme.com" }, noop);
     if (!res.ok) throw new Error(res.error);
     await provisionDomain(res.data.id, {
+      enqueue: noop.enqueue,
+      fetch: cfFetch,
+    });
+    await applyDnsRecords(actor, res.data.id, {
       enqueue: noop.enqueue,
       fetch: cfFetch,
     });

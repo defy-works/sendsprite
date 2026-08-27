@@ -1,24 +1,20 @@
 "use client";
 import { useRouter } from "next/navigation";
-import { useEffect, useState, useTransition } from "react";
+import { useState, useTransition } from "react";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
 import { useConfirm } from "@/components/ui/confirm";
 import { useToast } from "@/components/ui/toast";
 import { deleteDomain, retryProvisioning, reverifyDomain } from "./actions";
 
-const REFRESH_MS = 15_000;
-
 export function DomainActions({
   id,
   name,
-  status,
   provisioned,
   retryable,
 }: {
   id: string;
   name: string;
-  status: "pending" | "verified" | "failed";
   /** False until the provision job has stored the DKIM tokens. */
   provisioned: boolean;
   /** Provisioning never ran or failed for good: offer to re-send the job. */
@@ -32,18 +28,6 @@ export function DomainActions({
   const [deleting, startDelete] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const busy = verifying || retrying || deleting;
-
-  // A pending domain re-renders from the server on a timer: the change stream
-  // carries email and webhook events, not domain status, so there is nothing
-  // here to subscribe to.
-  useEffect(() => {
-    if (status !== "pending") return;
-    // A background tab does not need to re-render.
-    const t = setInterval(() => {
-      if (document.visibilityState === "visible") router.refresh();
-    }, REFRESH_MS);
-    return () => clearInterval(t);
-  }, [status, router]);
 
   return (
     <div className="flex flex-col gap-3">

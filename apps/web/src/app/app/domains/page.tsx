@@ -74,7 +74,7 @@ export default async function DomainsPage() {
                       <Badge
                         variant={d.dnsMode === "auto" ? "indigo" : "muted"}
                       >
-                        {d.dnsMode}
+                        {d.dnsMode === "auto" ? "Cloudflare" : "manual"}
                       </Badge>
                     </td>
                     <td className="px-4 py-3 text-white/65">{d.region}</td>

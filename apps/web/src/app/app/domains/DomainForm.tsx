@@ -38,7 +38,7 @@ export function DomainForm({ hasCloudflare }: { hasCloudflare: boolean }) {
       </div>
       <p className="text-sm text-white/65">
         {hasCloudflare
-          ? "If the domain is in a Cloudflare zone you authorised, the DNS records are added for you."
+          ? "If the domain is in a Cloudflare zone you authorised, you can apply the DNS records to it with one click once SES has issued them."
           : "Cloudflare is not connected: you will add the DNS records at your provider by hand. We link straight to the right zone if the domain is already on Cloudflare."}
       </p>
       <div>

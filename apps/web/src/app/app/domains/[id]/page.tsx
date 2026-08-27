@@ -8,7 +8,9 @@ import { formatWhen } from "@/lib/format";
 import { requireTeam } from "@/lib/session";
 import { getDomain, type Domain } from "@/services/domains";
 import { Alert } from "@/app/setup/steps/shared";
+import { ApplyDns } from "../ApplyDns";
 import { DomainActions } from "../DomainActions";
+import { DomainPoller } from "../DomainPoller";
 import { RecordsTable } from "../RecordsTable";
 import { PageHeader } from "@/components/ui/PageHeader";
 
@@ -28,7 +30,7 @@ export default async function DomainPage({
   const d = await getDomain(ctx.team.id, id);
   if (!d) notFound();
   return (
-    <div className="flex max-w-4xl flex-col gap-6">
+    <div className="flex flex-col gap-6">
       <PageHeader
         back={{ href: "/app/domains", label: "Domains" }}
         title={
@@ -36,13 +38,14 @@ export default async function DomainPage({
             {d.name}
             <StatusDot status={DOT[d.status]} label={d.status} />
             <Badge variant={d.dnsMode === "auto" ? "indigo" : "muted"}>
-              {d.dnsMode === "auto" ? "Cloudflare auto" : "manual DNS"}
+              {d.dnsMode === "auto" ? "Cloudflare" : "manual DNS"}
             </Badge>
           </span>
         }
         description={`${d.region} · last checked ${formatWhen(d.lastCheckedAt)}`}
       />
       {d.lastError && <Alert>{d.lastError}</Alert>}
+      <DomainPoller provisioned={d.dkimTokens.length > 0} status={d.status} />
       <Card>
         <CardHeader>
           <CardTitle>DNS records</CardTitle>
@@ -50,9 +53,18 @@ export default async function DomainPage({
         <CardBody className="flex flex-col gap-4">
           <p className="text-sm text-white/65">
             {d.dnsMode === "auto"
-              ? "These records were written to your Cloudflare zone. SES confirms DKIM and MAIL FROM once DNS propagates; we re-check every 2 minutes for 72 hours."
+              ? "SES issued these records. Apply writes them to your Cloudflare zone; SES confirms DKIM and MAIL FROM once DNS propagates, and we re-check every 2 minutes for 72 hours."
               : "Add these at your DNS provider. We re-check every 2 minutes for 72 hours; click Re-verify to check right away."}
           </p>
+          {d.dnsMode === "auto" &&
+            d.dkimTokens.length > 0 &&
+            can(ctx.role, "domains.manage") && (
+              <ApplyDns
+                id={d.id}
+                zone={d.cloudflareZone}
+                appliedAt={d.dnsAppliedAt?.toISOString() ?? null}
+              />
+            )}
           {d.dnsMode === "manual" && d.cloudflareZone && (
             <p className="text-sm text-white/65">
               <strong>{d.cloudflareZone}</strong> is on Cloudflare.{" "}
@@ -79,7 +91,6 @@ export default async function DomainPage({
             <DomainActions
               id={d.id}
               name={d.name}
-              status={d.status}
               provisioned={d.dkimTokens.length > 0}
               retryable={d.dkimTokens.length === 0 && !!d.lastError}
             />

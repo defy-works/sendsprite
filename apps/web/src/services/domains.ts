@@ -77,7 +77,7 @@ const NOT_FOUND: Result<never> = {
   error: "Domain not found.",
 };
 const CF_DISCONNECTED =
-  "Cloudflare is not connected; add the records manually.";
+  "Cloudflare is not connected. Reconnect it in Settings → Sending, or add the records at your DNS provider.";
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const errName = (e: unknown) =>
   typeof e === "object" && e !== null
@@ -309,54 +309,33 @@ export async function provisionDomain(
       dkimTokens: tokens,
       mailFromDomain: d.mailFromDomain,
     });
-    const persistRecords = () =>
-      db()
-        .update(domains)
-        .set({ expectedRecords: [...recs] })
-        .where(eq(domains.id, d.id));
+    // A re-run (pg-boss retry, or the identity already existing) recomputes
+    // the rows but must not forget which of them Apply has already written:
+    // the Cloudflare id is what delete removes and re-apply patches.
+    const applied = new Map(
+      d.expectedRecords.map((r) => [`${r.type} ${r.name}`, r.cloudflareId]),
+    );
+    for (const r of recs) {
+      const id = applied.get(`${r.type} ${r.name}`);
+      if (id) r.cloudflareId = id;
+    }
     await db()
       .update(domains)
       .set({
         dkimTokens: tokens,
         dkimStatus: identity.DkimAttributes?.Status ?? null,
         expectedRecords: [...recs],
-      })
-      .where(eq(domains.id, d.id));
-    let dnsMode = d.dnsMode;
-    let lastError: string | null = null;
-    if (d.dnsMode === "auto" && d.cloudflareZoneId) {
-      const zoneId = d.cloudflareZoneId;
-      const cf = await cloudflareClient(d.teamId, deps.fetch);
-      if (cf) {
-        for (const r of recs) {
-          const { id } = await cf.upsertRecord(zoneId, {
-            type: r.type,
-            name: r.name,
-            content: r.value,
-            priority: r.priority,
-          });
-          r.cloudflareId = id;
-          await persistRecords();
-        }
-      } else {
-        dnsMode = "manual";
-        lastError = CF_DISCONNECTED;
-      }
-    }
-    await db()
-      .update(domains)
-      .set({
-        dnsMode,
-        lastError,
-        // Manual mode only: in auto mode we write the records ourselves, so
-        // there is nothing for the dashboard link to help with. A failed
-        // lookup is not fatal — it just means no link on the domain page.
-        ...(dnsMode === "manual" && {
-          cloudflareZone: await detectCloudflareZone(
-            d.name,
-            deps.resolver ?? publicResolver(),
-          ).catch(() => null),
-        }),
+        lastError: null,
+        // The records are stored, not written. In Cloudflare mode they land
+        // in the zone when the owner clicks Apply (`applyDnsRecords`), so
+        // nothing changes in a zone a person has not looked at; in manual
+        // mode they are copied out by hand. The zone link on the domain page
+        // helps either way, so it is detected for both. A failed lookup is
+        // not fatal — it just means no link.
+        cloudflareZone: await detectCloudflareZone(
+          d.name,
+          deps.resolver ?? publicResolver(),
+        ).catch(() => null),
       })
       .where(eq(domains.id, d.id));
     await enqueueVerify(deps.enqueue, d.id, FIRST_VERIFY_AFTER_S);
@@ -377,6 +356,89 @@ async function setError(id: string, lastError: string) {
     .update(domains)
     .set({ lastError, lastCheckedAt: new Date() })
     .where(eq(domains.id, id));
+}
+
+/**
+ * Write the expected records into the domain's Cloudflare zone — on request,
+ * never as a side effect of provisioning, so nothing lands in a zone until a
+ * person has looked at the rows and clicked.
+ *
+ * Safe to repeat: `upsertRecord` matches on type + name, so a re-apply
+ * repairs a record that was edited or deleted by hand and keeps the ids of
+ * the rest. Ids are persisted after every record so a failure mid-loop
+ * leaves the ones already created on the row — delete removes them, the
+ * next apply patches them. A verify is queued at the usual delay so the page
+ * turns green without waiting for the sweep.
+ *
+ * Cloudflare being disconnected is an error here, not a demotion to manual:
+ * the zone match is still true, and reconnecting makes the button work
+ * again without re-adding the domain.
+ */
+export async function applyDnsRecords(
+  actor: TeamActor,
+  id: string,
+  deps: Pick<Deps, "fetch" | "enqueue">,
+): Promise<Result<Domain>> {
+  if (!can(actor.role, "domains.manage")) return DENIED;
+  const d = await getDomain(actor.teamId, id);
+  if (!d) return NOT_FOUND;
+  if (d.dkimTokens.length === 0 || d.expectedRecords.length === 0)
+    return {
+      ok: false,
+      code: "conflict",
+      error: "SES hasn't issued the records yet.",
+    };
+  if (d.dnsMode !== "auto" || !d.cloudflareZoneId)
+    return {
+      ok: false,
+      code: "conflict",
+      error:
+        "This domain is not in a Cloudflare zone you authorised; add the records at your DNS provider.",
+    };
+  const cf = await cloudflareClient(actor.teamId, deps.fetch);
+  if (!cf) return { ok: false, code: "not_configured", error: CF_DISCONNECTED };
+  const zoneId = d.cloudflareZoneId;
+  const recs = d.expectedRecords.map((r) => ({ ...r }));
+  const persist = (patch: Partial<typeof domains.$inferInsert> = {}) =>
+    db()
+      .update(domains)
+      .set({ expectedRecords: recs, ...patch })
+      .where(eq(domains.id, d.id));
+  try {
+    for (const r of recs) {
+      const { id: cloudflareId } = await cf.upsertRecord(zoneId, {
+        type: r.type,
+        name: r.name,
+        content: r.value,
+        priority: r.priority,
+      });
+      r.cloudflareId = cloudflareId;
+      await persist();
+    }
+  } catch (e) {
+    await persist({ lastError: `Cloudflare: ${errMsg(e)}` });
+    return {
+      ok: false,
+      code: "internal_error",
+      error: `Cloudflare refused a record: ${errMsg(e)}`,
+    };
+  }
+  const [row] = await persist({
+    dnsAppliedAt: new Date(),
+    lastError: null,
+  }).returning();
+  if (!row) throw new Error("domains update returned no row");
+  await recordAudit({
+    teamId: actor.teamId,
+    actorUserId: actor.userId,
+    action: "domains.apply_dns",
+    targetType: "domain",
+    targetId: id,
+    diff: { records: { to: recs.length } },
+    ...actor.meta,
+  });
+  await enqueueVerify(deps.enqueue, d.id, FIRST_VERIFY_AFTER_S);
+  return { ok: true, data: row };
 }
 
 /**

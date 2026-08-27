@@ -42,6 +42,12 @@ export async function retryProvisioning(id: string) {
   return res;
 }
 
+export async function applyDns(id: string) {
+  const res = await domains.applyDnsRecords(await actor(), id, { enqueue });
+  revalidatePath(`/app/domains/${id}`);
+  return res;
+}
+
 export async function deleteDomain(id: string) {
   const res = await domains.deleteDomain(await actor(), id, {});
   if (res.ok) revalidatePath("/app/domains");
