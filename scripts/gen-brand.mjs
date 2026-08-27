@@ -2,6 +2,7 @@
  * Everything is drawn on an integer grid; SVG output merges horizontal runs
  * so the files stay tiny and every edge lands on a whole unit. */
 import { writeFileSync, mkdirSync } from "node:fs";
+import { encodePng } from "./png.mjs";
 
 const INK = "#0a0a0a";
 const PAPER = "#ffffff";
@@ -368,3 +369,80 @@ export function Logo({ scale = 2, ...rest }: SvgProps & { scale?: number }) {
 }
 `;
 writeFileSync(`${OUT}/../../src/components/ui/Logo.tsx`, tsx);
+
+/* ---------- PNG exports ----------
+ * Bitmaps drawn straight from the grid at whole-number scales, so every source
+ * pixel becomes an exact scale x scale block — no rasteriser, no antialiasing.
+ * The tile's rounded corners are the one non-grid shape; they are supersampled
+ * so the curve is smooth while the envelope on top stays hard-edged.
+ * `currentColor` variants are skipped: a PNG cannot inherit a colour, the
+ * "-on-light" files are the equivalents for light surfaces. */
+const PNG_SCALES = [8, 32];
+
+const hex = (c) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
+
+function rasterize(grid, scale, tile = null) {
+  const W = grid.w * scale;
+  const H = grid.h * scale;
+  const out = new Uint8Array(W * H * 4);
+  if (tile) {
+    const [r, g, b] = hex(tile.fill);
+    const rx = tile.rx * scale;
+    const SS = 4; // supersample the corner edge
+    for (let y = 0; y < H; y++)
+      for (let x = 0; x < W; x++) {
+        let hit = 0;
+        for (let sy = 0; sy < SS; sy++)
+          for (let sx = 0; sx < SS; sx++) {
+            const px = x + (sx + 0.5) / SS;
+            const py = y + (sy + 0.5) / SS;
+            const cx = Math.min(Math.max(px, rx), W - rx);
+            const cy = Math.min(Math.max(py, rx), H - rx);
+            if ((px - cx) ** 2 + (py - cy) ** 2 <= rx * rx) hit++;
+          }
+        const i = (y * W + x) * 4;
+        out[i] = r;
+        out[i + 1] = g;
+        out[i + 2] = b;
+        out[i + 3] = Math.round((255 * hit) / (SS * SS));
+      }
+  }
+  for (const { x, y, w, c } of grid.rects()) {
+    const [r, g, b] = hex(c);
+    for (let yy = y * scale; yy < (y + 1) * scale; yy++)
+      for (let xx = x * scale; xx < (x + w) * scale; xx++) {
+        const i = (yy * W + xx) * 4;
+        out[i] = r;
+        out[i + 1] = g;
+        out[i + 2] = b;
+        out[i + 3] = 255;
+      }
+  }
+  return encodePng(W, H, out);
+}
+
+/** Lockup as one grid so it rasterizes like everything else. */
+function lockupGrid(art, word) {
+  const g = new Grid(lockW, 15);
+  for (const [k, c] of art.px) g.px.set(k, c);
+  for (const [k, c] of word.px) {
+    const [x, y] = k.split(",").map(Number);
+    g.set(x + 20 + GAP, y + 4, c);
+  }
+  return g;
+}
+
+const TILE = { fill: INK, rx: 5.5 };
+const pngs = {
+  mark: [mark],
+  "mark-on-light": [markGrid(RAMP_LIGHT)],
+  "mark-tile": [tileGlyph, TILE],
+  wordmark: [wmDark],
+  "wordmark-on-light": [wmLight],
+  "wordmark-duo": [wmDuo],
+  lockup: [lockupGrid(lockMark, wmDark)],
+  "lockup-on-light": [lockupGrid(lockMarkLight, wmLight)],
+};
+for (const [name, [grid, tile]] of Object.entries(pngs))
+  for (const s of PNG_SCALES)
+    writeFileSync(`${OUT}/${name}@${s}x.png`, rasterize(grid, s, tile));
