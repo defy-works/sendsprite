@@ -42,6 +42,8 @@ test("owner completes setup via manual keys, adds a domain, sees records", async
   await page.goto("/signup");
   await page.fill("#name", "Owner");
   await page.fill("#email", `owner-${suffix}@example.com`);
+  // Email is two-step: the password field appears after "Continue with email".
+  await page.click("button[type=submit]");
   await page.fill("#password", "correct-horse-battery");
   await page.click("button[type=submit]");
 
@@ -164,6 +166,8 @@ test("a second team must connect its own AWS account", async ({ page }) => {
   await page.goto("/signup");
   await page.fill("#name", "Two Teams");
   await page.fill("#email", `two-teams-${suffix}@example.com`);
+  // Email is two-step: the password field appears after "Continue with email".
+  await page.click("button[type=submit]");
   await page.fill("#password", "correct-horse-battery");
   await page.click("button[type=submit]");
 

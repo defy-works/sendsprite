@@ -7,6 +7,8 @@ async function signUpWithTeam(page: Page, teamName: string) {
   await page.goto("/signup");
   await page.fill("#name", "E2E");
   await page.fill("#email", email);
+  // Email is two-step: the password field appears after "Continue with email".
+  await page.click("button[type=submit]");
   await page.fill("#password", "correct-horse-battery");
   await page.click("button[type=submit]");
   const createTeam = page.getByRole("button", { name: "Create team" });
@@ -28,6 +30,8 @@ test("signup → create team → shell renders → settings rename", async ({
   await page.goto("/signup");
   await page.fill("#name", "E2E");
   await page.fill("#email", email);
+  // Email is two-step: the password field appears after "Continue with email".
+  await page.click("button[type=submit]");
   await page.fill("#password", "correct-horse-battery");
   await page.click("button[type=submit]");
 

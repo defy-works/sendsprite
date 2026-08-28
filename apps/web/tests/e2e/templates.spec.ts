@@ -12,6 +12,8 @@ async function signUpOwner(page: Page, label: string) {
   await page.goto("/signup");
   await page.fill("#name", "Templates");
   await page.fill("#email", `${label}-${suffix}@example.com`);
+  // Email is two-step: the password field appears after "Continue with email".
+  await page.click("button[type=submit]");
   await page.fill("#password", "correct-horse-battery");
   await page.click("button[type=submit]");
   const createTeam = page.getByRole("button", { name: "Create team" });

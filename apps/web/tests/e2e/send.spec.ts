@@ -53,6 +53,8 @@ test("owner verifies a domain, sends via REST and SMTP, sees the log", async ({
   await page.goto("/signup");
   await page.fill("#name", "Sender");
   await page.fill("#email", `sender-${suffix}@example.com`);
+  // Email is two-step: the password field appears after "Continue with email".
+  await page.click("button[type=submit]");
   await page.fill("#password", "correct-horse-battery");
   await page.click("button[type=submit]");
   const createTeam = page.getByRole("button", { name: "Create team" });
