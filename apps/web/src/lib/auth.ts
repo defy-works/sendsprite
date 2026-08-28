@@ -75,6 +75,23 @@ function createAuth() {
       // then accounts are usable immediately.
       requireEmailVerification: false,
     },
+    /**
+     * One account per email, reachable through any enabled provider.
+     * better-auth only auto-links a social login onto an existing user when
+     * that user's email is verified. Password accounts here never are
+     * (`requireEmailVerification: false`, no verification mail), so with the
+     * default every Google/GitHub login for an address that already had a
+     * password account died with `account_not_linked` and landed on the
+     * generic /api/auth/error page. Google and GitHub both assert the
+     * address is verified on their side, which is what we trust instead.
+     */
+    account: {
+      accountLinking: {
+        enabled: true,
+        trustedProviders: ["google", "github"],
+        requireLocalEmailVerified: false,
+      },
+    },
     socialProviders: {
       ...(env.providers.google && {
         google: {

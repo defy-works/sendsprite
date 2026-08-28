@@ -13,11 +13,18 @@ export interface AuthFormProps {
   providers: { google: boolean; github: boolean; emailPassword: boolean };
   /** Where to go after success. */
   next?: string;
+  /** Message to show on first render, e.g. from an OAuth `?error=`. */
+  initialError?: string | null;
 }
 
-export function AuthForm({ mode, providers, next = "/app" }: AuthFormProps) {
+export function AuthForm({
+  mode,
+  providers,
+  next = "/app",
+  initialError = null,
+}: AuthFormProps) {
   const router = useRouter();
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(initialError);
   const [busy, setBusy] = useState(false);
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
@@ -57,6 +64,9 @@ export function AuthForm({ mode, providers, next = "/app" }: AuthFormProps) {
       const res = await authClient.signIn.social({
         provider,
         callbackURL: next,
+        // Without this, provider errors land on better-auth's bare
+        // /api/auth/error page whose only link is the landing page.
+        errorCallbackURL: `${window.location.pathname}?next=${encodeURIComponent(next)}`,
       });
       if (res.error) setError(res.error.message ?? "Sign-in failed");
     } catch (err) {

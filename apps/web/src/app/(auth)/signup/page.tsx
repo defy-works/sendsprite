@@ -4,16 +4,25 @@ import { env } from "@/env";
 import { getSession } from "@/lib/session";
 import { safeNext } from "@/lib/safe-next";
 import { AuthForm } from "@/components/auth/AuthForm";
+import { describeOAuthError } from "@/lib/oauth-error";
 
 export const metadata = { title: "Sign up" };
 
 export default async function SignupPage(props: PageProps<"/signup">) {
   const sp = await props.searchParams;
   const next = safeNext(sp.next);
+  const oauthError = describeOAuthError(
+    typeof sp.error === "string" ? sp.error : undefined,
+  );
   if (await getSession()) redirect(next);
   return (
     <>
-      <AuthForm mode="signup" providers={env.providers} next={next} />
+      <AuthForm
+        mode="signup"
+        providers={env.providers}
+        next={next}
+        initialError={oauthError}
+      />
       <p className="mt-4 text-xs text-white/45">
         By creating an account you agree to the{" "}
         <Link

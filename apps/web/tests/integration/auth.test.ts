@@ -223,3 +223,66 @@ describe("instance admin flag", () => {
     expect(await flagOf("fresh@example.com")).toBe(true);
   });
 });
+
+describe("oauth account linking", () => {
+  // Drives better-auth's post-callback logic directly: a fake provider
+  // profile for an email that already has a password account. Real
+  // providers cannot be reached from a test, and this is the exact function
+  // /api/auth/callback/:id hands the profile to.
+  async function oauthLogin(providerId: "google" | "github", email: string) {
+    const { auth } = await import("@/lib/auth");
+    const { handleOAuthUserInfo } = await import("better-auth/oauth2");
+    const context = await auth.$context;
+    const c = {
+      context,
+      request: new Request(
+        "http://localhost:3000/api/auth/callback/" + providerId,
+      ),
+      setCookie() {},
+      setSignedCookie() {},
+      getSignedCookie() {
+        return null;
+      },
+    } as unknown as Parameters<typeof handleOAuthUserInfo>[0];
+    return handleOAuthUserInfo(c, {
+      userInfo: {
+        id: `${providerId}-id-1`,
+        email,
+        name: "Linked",
+        emailVerified: true,
+        image: null,
+      },
+      account: {
+        providerId,
+        accountId: `${providerId}-id-1`,
+        issuer: providerId,
+      } as Parameters<typeof handleOAuthUserInfo>[1]["account"],
+      callbackURL: "/app",
+      source: { method: "oauth", oauth: { providerId } },
+    });
+  }
+
+  it("links a verified provider login to an existing password account", async () => {
+    await setSignupMode("open");
+    await signUp("linkme@example.com");
+    for (const provider of ["google", "github"] as const) {
+      const result = await oauthLogin(provider, "linkme@example.com");
+      expect(result.error, provider).toBeFalsy();
+      expect(result.data?.user.email).toBe("linkme@example.com");
+    }
+    const users = await pg.db
+      .select({ id: schema.user.id })
+      .from(schema.user)
+      .where(eq(schema.user.email, "linkme@example.com"));
+    expect(users).toHaveLength(1);
+    const accounts = await pg.db
+      .select({ providerId: schema.account.providerId })
+      .from(schema.account)
+      .where(eq(schema.account.userId, users[0]!.id));
+    expect(accounts.map((a) => a.providerId).sort()).toEqual([
+      "credential",
+      "github",
+      "google",
+    ]);
+  });
+});
