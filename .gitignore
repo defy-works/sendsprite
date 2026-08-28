@@ -24,3 +24,6 @@ test-results/
 CLAUDE.md
 AGENTS.md
 .superpowers
+
+# Playwright MCP screenshots/logs
+.playwright-mcp/

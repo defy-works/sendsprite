@@ -1,5 +1,5 @@
 "use client";
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
 import { Button } from "@/components/ui/Button";
@@ -17,6 +17,33 @@ export interface AuthFormProps {
   initialError?: string | null;
 }
 
+type Method = "google" | "github" | "email";
+
+/**
+ * Remembers which method the browser last signed in with so the matching
+ * button can carry a "Last used" hint. Written at click time for the social
+ * providers — the OAuth flow leaves the page, so there is no client-side
+ * success moment to hook.
+ */
+const LAST_USED_KEY = "sendsprite:last-login";
+
+function readLastUsed(): Method | null {
+  try {
+    const v = localStorage.getItem(LAST_USED_KEY);
+    return v === "google" || v === "github" || v === "email" ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLastUsed(method: Method) {
+  try {
+    localStorage.setItem(LAST_USED_KEY, method);
+  } catch {
+    // Private mode / storage disabled: the hint is a nicety, not a feature.
+  }
+}
+
 export function AuthForm({
   mode,
   providers,
@@ -26,9 +53,22 @@ export function AuthForm({
   const router = useRouter();
   const [error, setError] = useState<string | null>(initialError);
   const [busy, setBusy] = useState(false);
+  // Email is a two-step flow: the password field only appears after
+  // "Continue with email", so the first screen is one field per method.
+  const [step, setStep] = useState<"email" | "password">("email");
+  // Read after mount: localStorage is not available during SSR and the
+  // server-rendered markup must match the first client render.
+  const [lastUsed, setLastUsed] = useState<Method | null>(null);
+  useEffect(() => setLastUsed(readLastUsed()), []);
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (step === "email") {
+      // Native validation has already run for the visible fields.
+      setError(null);
+      setStep("password");
+      return;
+    }
     setBusy(true);
     setError(null);
     const fd = new FormData(e.currentTarget);
@@ -47,6 +87,7 @@ export function AuthForm({
         setError(res.error.message ?? "Something went wrong");
         return;
       }
+      writeLastUsed("email");
       router.push(next);
       router.refresh();
     } catch (err) {
@@ -60,13 +101,11 @@ export function AuthForm({
     if (busy) return;
     setBusy(true);
     setError(null);
+    writeLastUsed(provider);
     try {
       const res = await authClient.signIn.social({
         provider,
         callbackURL: next,
-        // Without this, provider errors land on better-auth's bare
-        // /api/auth/error page whose only link is the landing page.
-        errorCallbackURL: `${window.location.pathname}?next=${encodeURIComponent(next)}`,
       });
       if (res.error) setError(res.error.message ?? "Sign-in failed");
     } catch (err) {
@@ -75,6 +114,8 @@ export function AuthForm({
       setBusy(false);
     }
   }
+
+  const hasSocial = providers.google || providers.github;
 
   return (
     <div className="flex flex-col gap-4">
@@ -97,50 +138,71 @@ export function AuthForm({
               type="email"
               required
               autoComplete="email"
+              placeholder="Your email address"
             />
           </div>
-          <div>
-            <Label htmlFor="password">Password</Label>
-            <Input
-              id="password"
-              name="password"
-              type="password"
-              required
-              minLength={8}
-              autoComplete={
-                mode === "signup" ? "new-password" : "current-password"
-              }
-            />
-          </div>
-          <Button type="submit" disabled={busy}>
-            {busy ? "…" : mode === "login" ? "Sign in" : "Sign up"}
-          </Button>
-        </form>
-      )}
-      {providers.emailPassword && (providers.google || providers.github) && (
-        <Divider />
-      )}
-      {(providers.google || providers.github) && (
-        <div className="flex flex-col gap-2">
-          {providers.google && (
-            <Button
-              variant="secondary"
-              disabled={busy}
-              icon={<GoogleIcon />}
-              onClick={() => social("google")}
-            >
-              Continue with Google
+          {step === "password" && (
+            <div>
+              <Label htmlFor="password">Password</Label>
+              <Input
+                id="password"
+                name="password"
+                type="password"
+                required
+                minLength={8}
+                autoFocus
+                autoComplete={
+                  mode === "signup" ? "new-password" : "current-password"
+                }
+              />
+            </div>
+          )}
+          {step === "email" ? (
+            <LastUsedAnchor show={lastUsed === "email"}>
+              <Button
+                type="submit"
+                variant="secondary"
+                className="w-full"
+                disabled={busy}
+              >
+                Continue with email
+              </Button>
+            </LastUsedAnchor>
+          ) : (
+            <Button type="submit" loading={busy}>
+              {mode === "login" ? "Sign in" : "Sign up"}
             </Button>
           )}
+        </form>
+      )}
+      {providers.emailPassword && hasSocial && <Divider label="or" />}
+      {hasSocial && (
+        <div className="flex flex-col gap-4">
+          {providers.google && (
+            <LastUsedAnchor show={lastUsed === "google"}>
+              <Button
+                variant="secondary"
+                className="w-full"
+                disabled={busy}
+                icon={<GoogleIcon />}
+                onClick={() => social("google")}
+              >
+                Continue with Google
+              </Button>
+            </LastUsedAnchor>
+          )}
           {providers.github && (
-            <Button
-              variant="secondary"
-              disabled={busy}
-              icon={<GitHubIcon />}
-              onClick={() => social("github")}
-            >
-              Continue with GitHub
-            </Button>
+            <LastUsedAnchor show={lastUsed === "github"}>
+              <Button
+                variant="secondary"
+                className="w-full"
+                disabled={busy}
+                icon={<GitHubIcon />}
+                onClick={() => social("github")}
+              >
+                Continue with GitHub
+              </Button>
+            </LastUsedAnchor>
           )}
         </div>
       )}
@@ -149,11 +211,38 @@ export function AuthForm({
           {error}
         </p>
       )}
-      {!providers.emailPassword && !providers.google && !providers.github && (
+      {!providers.emailPassword && !hasSocial && (
         <p className="text-sm text-amber-300">
           No auth provider is configured. Set EMAIL_PASSWORD_ENABLED=true or a
           Google/GitHub client id + secret.
         </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Wraps a full-width button and, when `show`, hangs a "Last used" pill off
+ * its top-right corner. Solid fill on purpose: the card behind is
+ * translucent glass, so nothing colour-matched could mask the border.
+ */
+function LastUsedAnchor({
+  show,
+  children,
+}: {
+  show: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <div className="relative">
+      {children}
+      {show && (
+        <span
+          aria-hidden
+          className="absolute -top-2.5 right-0 rounded-md border border-indigo-400/70 bg-[#101014] px-2 py-0.5 text-xs font-medium text-indigo-100 shadow-[0_2px_8px_rgba(0,0,0,0.5)]"
+        >
+          Last used
+        </span>
       )}
     </div>
   );
