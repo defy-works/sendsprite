@@ -65,6 +65,13 @@ services:
       # Fixed: the container runs as a non-root user and cannot bind below
       # 1024. SMTP_PORT below is the port on the *host*, mapped onto this one.
       - SMTP_PORT=2587
+      # Coolify only offers a field for variables listed here, so the two
+      # that drive `ports:` and `volumes:` below are repeated (the app ignores
+      # them). SMTP_BIND is the host interface the relay is published on:
+      # 127.0.0.1 keeps it private, 0.0.0.0 opens it. SMTP_TLS_DIR is a host
+      # directory of PEM files mounted at /certs; empty means none.
+      - SMTP_BIND=${SMTP_BIND:-127.0.0.1}
+      - SMTP_TLS_DIR=${SMTP_TLS_DIR:-}
       - SMTP_MAX_SIZE=${SMTP_MAX_SIZE:-10485760}
       # Own STARTTLS certificate: set SMTP_TLS_DIR (below) to a host directory
       # holding the PEM files; it is mounted at /certs, so these are
