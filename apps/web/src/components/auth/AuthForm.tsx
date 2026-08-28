@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Label } from "@/components/ui/Label";
 import { Divider } from "@/components/ui/Divider";
+import { GitHubIcon, GoogleIcon } from "./BrandIcons";
 
 export interface AuthFormProps {
   mode: "login" | "signup";
@@ -70,31 +71,6 @@ export function AuthForm({ mode, providers, next = "/app" }: AuthFormProps) {
       <h1 className="text-xl font-medium">
         {mode === "login" ? "Sign in" : "Create your account"}
       </h1>
-      {(providers.google || providers.github) && (
-        <div className="flex flex-col gap-2">
-          {providers.google && (
-            <Button
-              variant="secondary"
-              disabled={busy}
-              onClick={() => social("google")}
-            >
-              Continue with Google
-            </Button>
-          )}
-          {providers.github && (
-            <Button
-              variant="secondary"
-              disabled={busy}
-              onClick={() => social("github")}
-            >
-              Continue with GitHub
-            </Button>
-          )}
-        </div>
-      )}
-      {providers.emailPassword && (providers.google || providers.github) && (
-        <Divider />
-      )}
       {providers.emailPassword && (
         <form onSubmit={onSubmit} className="flex flex-col gap-3">
           {mode === "signup" && (
@@ -126,15 +102,42 @@ export function AuthForm({ mode, providers, next = "/app" }: AuthFormProps) {
               }
             />
           </div>
-          {error && (
-            <p role="alert" className="text-sm text-red-300">
-              {error}
-            </p>
-          )}
           <Button type="submit" disabled={busy}>
             {busy ? "…" : mode === "login" ? "Sign in" : "Sign up"}
           </Button>
         </form>
+      )}
+      {providers.emailPassword && (providers.google || providers.github) && (
+        <Divider />
+      )}
+      {(providers.google || providers.github) && (
+        <div className="flex flex-col gap-2">
+          {providers.google && (
+            <Button
+              variant="secondary"
+              disabled={busy}
+              icon={<GoogleIcon />}
+              onClick={() => social("google")}
+            >
+              Continue with Google
+            </Button>
+          )}
+          {providers.github && (
+            <Button
+              variant="secondary"
+              disabled={busy}
+              icon={<GitHubIcon />}
+              onClick={() => social("github")}
+            >
+              Continue with GitHub
+            </Button>
+          )}
+        </div>
+      )}
+      {error && (
+        <p role="alert" className="text-sm text-red-300">
+          {error}
+        </p>
       )}
       {!providers.emailPassword && !providers.google && !providers.github && (
         <p className="text-sm text-amber-300">
