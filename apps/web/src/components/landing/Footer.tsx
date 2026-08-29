@@ -36,9 +36,9 @@ export function Footer() {
                 </Link>
               </li>
               <li>
-                <a href={`${GITHUB_URL}#licensing`} className={LINK}>
-                  Licensing
-                </a>
+                <Link href="/license" className={LINK}>
+                  Licence
+                </Link>
               </li>
               <li>
                 <Link href="/terms" className={LINK}>

@@ -29,5 +29,6 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     ),
     at("/terms", 0.2, "monthly"),
     at("/privacy", 0.2, "monthly"),
+    at("/license", 0.3, "monthly"),
   ];
 }

@@ -5,14 +5,14 @@ import Link from "next/link";
 export const metadata: Metadata = {
   title: { default: "Legal", template: "%s · Sendsprite" },
   description:
-    "Terms of Service and Privacy Policy for the hosted Sendsprite service.",
+    "Terms of Service and Privacy Policy for the hosted Sendsprite service, and the MIT licence the software is under.",
 };
 
 const TOP_LINK =
   "font-mono text-[11px] tracking-[0.2em] uppercase text-white/60 transition-colors duration-[var(--duration-fast)] hover:text-indigo-200";
 
 /**
- * `/terms` and `/privacy`. Same header and prose column as `/docs`, without
+ * `/terms`, `/privacy` and `/license`. Same header and prose column as `/docs`, without
  * the docs sidebar: these pages are not product documentation and must not
  * show up in the reading order of `DOCS_NAV`.
  */
@@ -39,6 +39,9 @@ export default function LegalLayout({ children }: { children: ReactNode }) {
             </Link>
             <Link href="/privacy" className={TOP_LINK}>
               Privacy
+            </Link>
+            <Link href="/license" className={TOP_LINK}>
+              Licence
             </Link>
             <Link href="/docs" className={`hidden sm:block ${TOP_LINK}`}>
               Docs
