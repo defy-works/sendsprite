@@ -21,6 +21,11 @@ export function TopNav() {
           </Link>
         </li>
         <li className="hidden sm:block">
+          <Link href="/alternatives" className={LINK}>
+            Compare
+          </Link>
+        </li>
+        <li className="hidden sm:block">
           <a href={GITHUB_URL} className={LINK}>
             GitHub
           </a>
