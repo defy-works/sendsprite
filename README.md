@@ -83,6 +83,7 @@ List prices checked 2026-08-29; the detailed pages are at
 [Postmark](https://sendsprite.com/alternatives/postmark) ·
 [SendGrid](https://sendsprite.com/alternatives/sendgrid) ·
 [Mailgun](https://sendsprite.com/alternatives/mailgun) ·
+[useSend](https://sendsprite.com/alternatives/usesend) ·
 [raw Amazon SES](https://sendsprite.com/alternatives/amazon-ses).
 
 Don't want to run it? [sendsprite.com](https://sendsprite.com) is the same

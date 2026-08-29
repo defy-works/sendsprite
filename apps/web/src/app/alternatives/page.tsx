@@ -9,10 +9,10 @@ import { TopNav } from "@/components/landing/TopNav";
 import { isLandingEnabled, siteOrigin } from "@/services/landing";
 
 const TITLE =
-  "Free, self-hosted alternative to Resend, Postmark, SendGrid and Mailgun";
+  "Free, self-hosted alternative to Resend, Postmark, SendGrid, Mailgun and useSend";
 const OG_IMAGE = { url: "/og/default.png", width: 1200, height: 630 };
 const DESCRIPTION =
-  "Sendsprite is a free, self-hosted email API on your own Amazon SES: $0.10 per 1,000 emails, unlimited retention, signed webhooks, SMTP relay, typed SDK. Compare it with Resend, Postmark, SendGrid, Mailgun and raw SES.";
+  "Sendsprite is a free, self-hosted email API on your own Amazon SES: $0.10 per 1,000 emails, unlimited retention, signed webhooks, SMTP relay, typed SDK. Compare it with Resend, Postmark, SendGrid, Mailgun, useSend and raw SES.";
 
 export function generateMetadata(): Metadata {
   const url = `${siteOrigin()}/alternatives`;
@@ -25,6 +25,7 @@ export function generateMetadata(): Metadata {
       "Postmark alternative",
       "SendGrid alternative",
       "Mailgun alternative",
+      "useSend alternative",
       "free email API",
       "self-hosted email API",
       "open source email API",
@@ -102,7 +103,7 @@ export default async function AlternativesIndex() {
               API in front of someone else&rsquo;s mail servers, metered per
               email. Sendsprite is that API on your own box, sending through
               Amazon SES in your own account for $0.10 per 1,000 — and nothing
-              to us.
+              to us. Already self-hosting on useSend? That one is compared too.
             </p>
           </div>
         </section>
@@ -112,7 +113,7 @@ export default async function AlternativesIndex() {
           className="px-5 pb-20 sm:px-12 sm:pb-28 lg:px-20"
         >
           <div className="mx-auto max-w-7xl">
-            <SectionHeader num="01" label="Pick yours" end="Five comparisons">
+            <SectionHeader num="01" label="Pick yours" end="Six comparisons">
               <h2
                 id="list-title"
                 className="metric-xl max-w-3xl"

@@ -402,6 +402,112 @@ export const COMPETITORS: Competitor[] = [
     pricingUrl: "https://www.mailgun.com/pricing/",
   },
   {
+    slug: "usesend",
+    name: "useSend",
+    title:
+      "useSend alternative — self-hosted email on Amazon SES, set up in one command",
+    description:
+      "Comparing useSend and Sendsprite? Both are open, self-hostable email APIs on your own Amazon SES. Sendsprite runs as one container, provisions the AWS side with a CloudFormation stack, writes your DNS to Cloudflare and adds an SMTP relay, CLI and MCP server.",
+    headline: ["The useSend alternative", "that sets up AWS for you."],
+    intro:
+      "useSend and Sendsprite want the same thing: an open email API on Amazon SES that you can run yourself. The difference is what happens between docker pull and the first email. useSend gives you a compose file with Postgres, Redis and MinIO and asks for AWS keys; Sendsprite is one container plus Postgres, and its setup wizard creates the IAM role, SNS topics and configuration set with a CloudFormation stack and writes DKIM, SPF and DMARC to Cloudflare for you.",
+    credit:
+      "useSend is a good project: open source, on SES, with campaigns, contacts, inbound email and a hosted plan that starts at $10. It has been around longer, has a larger community, and its AGPL licence is the one some self-hosters want. If you already have it running, there is no reason to move.",
+    switchReasons: [
+      {
+        title: "The AWS side is a click, not a runbook",
+        body: "useSend expects you to create the IAM user, paste its keys into the environment and wire SES's SNS notifications yourself. Sendsprite's wizard launches a CloudFormation quick-create stack that provisions the IAM role, SNS topics, configuration set and event destinations, then picks the role up when the stack finishes.",
+      },
+      {
+        title: "DNS written for you",
+        body: "Authorise Cloudflare once and Sendsprite writes and verifies DKIM, SPF, MAIL FROM and DMARC. Other DNS providers get a copy-paste list with a link to the right zone. useSend shows you the records; you add them.",
+      },
+      {
+        title: "One container, not four",
+        body: "useSend's production compose file runs the app, Postgres, Redis and MinIO. Sendsprite is the app and Postgres — the queue lives in Postgres, so there is no Redis to size, back up or watch. One command installs it and opens the setup wizard.",
+      },
+      {
+        title: "SMTP, CLI and an MCP server in the box",
+        body: "Both have SMTP and webhooks. Sendsprite adds a CLI for scripts, a live SSE event stream, a Resend-shaped REST API so existing integrations move by changing the base URL, and an MCP server so an AI agent can send and query email with a scoped key.",
+      },
+    ],
+    rows: [
+      {
+        label: "Self-hosting stack",
+        theirs: "App + Postgres + Redis + MinIO (docker compose)",
+        ours: OURS.selfHost,
+      },
+      {
+        label: "AWS setup",
+        theirs: "Create IAM keys and SNS wiring by hand, paste keys into .env",
+        ours: "One-click CloudFormation stack from the setup wizard",
+      },
+      {
+        label: "Domain DNS",
+        theirs: "Records shown; you add them",
+        ours: "Written and verified on Cloudflare; copy-paste list elsewhere",
+      },
+      {
+        label: "Hosted price at 50,000 transactional / month",
+        theirs: "$20 ($0.0004 per email; $10 minimum)",
+        ours: OURS.price50k,
+      },
+      {
+        label: "Hosted free tier",
+        theirs: "3,000 emails / month, 100 per day, 1 domain",
+        ours: OURS.free,
+      },
+      {
+        label: "Your own AWS account",
+        theirs: "Yes, when self-hosted",
+        ours: OURS.ownAws,
+      },
+      {
+        label: "Licence",
+        theirs: "AGPL-3.0",
+        ours: OURS.source,
+      },
+      { label: "SMTP relay", theirs: "Yes", ours: OURS.smtp },
+      { label: "Webhooks", theirs: "Yes", ours: OURS.webhooks },
+      {
+        label: "Campaigns and contacts",
+        theirs: "Yes",
+        ours: "Yes — contact books, campaigns, RFC 8058 one-click unsubscribe",
+      },
+      {
+        label: "Inbound email",
+        theirs: "Yes",
+        ours: "Not yet",
+      },
+      { label: "CLI", theirs: "—", ours: "Yes — npx sendsprite" },
+      { label: "AI agents", theirs: "—", ours: OURS.agents },
+    ],
+    faqs: [
+      {
+        q: "What is the difference between useSend and Sendsprite?",
+        a: "Both are open, self-hostable email APIs that send through Amazon SES in your own account. Sendsprite runs as a single container plus Postgres, provisions the AWS side with a one-click CloudFormation stack, writes your DNS records to Cloudflare, and ships an SMTP relay, a CLI and an MCP server. useSend needs Redis and MinIO alongside Postgres, takes AWS keys you create yourself, and has inbound email, which Sendsprite does not yet.",
+      },
+      {
+        q: "Is Sendsprite open source like useSend?",
+        a: "useSend is AGPL-3.0. Sendsprite's server is source-available under the Functional Source License (FSL-1.1-MIT), which converts to MIT two years after each release; the SDK, CLI, MCP server and shared packages are MIT. You can read, fork, self-host and modify all of it. The FSL is what lets a small team fund the project.",
+      },
+      {
+        q: "How do I migrate from useSend to Sendsprite?",
+        a: "Install Sendsprite, connect the same AWS account with the CloudFormation stack, add your domain (existing DKIM records verify straight away), then point your app at the new base URL with a new API key. Contacts export from useSend as CSV and import into a Sendsprite contact book.",
+      },
+      {
+        q: "Does Sendsprite need Redis?",
+        a: "No. The send queue, retries and scheduled jobs run on pg-boss inside Postgres, so a self-hosted install is one container and one database.",
+      },
+      {
+        q: "Does Sendsprite handle inbound email?",
+        a: "Not yet. If you rely on useSend's inbound parsing, keep that piece or wait; outbound, events, suppression, templates, contacts and campaigns are all there.",
+      },
+    ],
+    checked: "2026-08-29",
+    pricingUrl: "https://usesend.com/",
+  },
+  {
     slug: "amazon-ses",
     name: "Amazon SES",
     vendor: "raw",
