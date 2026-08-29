@@ -27,3 +27,6 @@ AGENTS.md
 
 # Playwright MCP screenshots/logs
 .playwright-mcp/
+
+# internal launch material, never published
+.internal/

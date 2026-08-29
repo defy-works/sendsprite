@@ -1,7 +1,7 @@
 {
   "name": "sendsprite-monorepo",
   "private": true,
-  "license": "FSL-1.1-MIT",
+  "license": "MIT",
   "packageManager": "bun@1.3.14",
   "type": "module",
   "workspaces": [

@@ -116,5 +116,4 @@ await server.connect(yourTransport);
 
 MIT — see `LICENSE`. This package is deliberately permissive so it can be
 embedded in closed-source applications: installing it puts you under no
-obligation to publish anything. The Sendsprite _server_ is FSL-1.1-MIT, which
-does not reach your code.
+obligation to publish anything. The Sendsprite server is MIT too.

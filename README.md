@@ -10,7 +10,7 @@
 <h1 align="center">The email API you run yourself.</h1>
 
 <p align="center">
-  <b>Self-hosted email API on Amazon SES.</b> A free, source-available alternative to
+  <b>Self-hosted email API on Amazon SES.</b> A free, open-source alternative to
   Resend, Postmark, SendGrid and Mailgun: one container, your own AWS account,
   $0.10 per 1,000 emails, and your logs kept for as long as you like.
 </p>
@@ -29,7 +29,7 @@
   <a href="https://www.npmjs.com/package/sendsprite"><img alt="npm: sendsprite" src="https://img.shields.io/npm/v/sendsprite?label=sendsprite&color=6366f1"></a>
   <a href="https://www.npmjs.com/package/@sendsprite/mcp"><img alt="npm: @sendsprite/mcp" src="https://img.shields.io/npm/v/@sendsprite/mcp?label=%40sendsprite%2Fmcp&color=6366f1"></a>
   <a href="https://github.com/defy-works/sendsprite/pkgs/container/sendsprite"><img alt="Docker image" src="https://img.shields.io/badge/ghcr.io-defy--works%2Fsendsprite-6366f1?logo=docker&logoColor=white"></a>
-  <a href="#licensing"><img alt="Licence: FSL-1.1-MIT server, MIT SDK" src="https://img.shields.io/badge/licence-FSL--1.1--MIT%20server%20%C2%B7%20MIT%20SDK-6366f1"></a>
+  <a href="#licensing"><img alt="Licence: MIT" src="https://img.shields.io/badge/licence-MIT-6366f1"></a>
   <a href="https://github.com/defy-works/sendsprite/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/defy-works/sendsprite?style=flat&color=6366f1"></a>
 </p>
 
@@ -65,8 +65,8 @@ on your own box, sending through Amazon SES in **your** AWS account.
   and scheduled sends, idempotency keys, tags, signed webhooks, a live SSE stream,
   SMTP relay on 587, automatic suppression, templates, contacts, campaigns with
   RFC 8058 one-click unsubscribe, and an MCP server for agents.
-- **Source you can read.** FSL-1.1-MIT server (MIT two years after each release),
-  MIT SDK, CLI and MCP server. Self-host it, fork it, ship it.
+- **Open source, MIT.** Server, SDK, CLI and MCP server, all under one
+  permissive licence. Self-host it, fork it, ship it.
 
 |                       | Sendsprite (self-hosted) | Resend                | Postmark | SendGrid     | Mailgun   |
 | --------------------- | ------------------------ | --------------------- | -------- | ------------ | --------- |
@@ -75,7 +75,7 @@ on your own box, sending through Amazon SES in **your** AWS account.
 | Event retention       | Your database            | 30 days               | 45 days  | days         | 1–30 days |
 | Self-hostable         | **Yes**                  | No                    | No       | No           | No        |
 | Your own AWS account  | **Yes**                  | No                    | No       | No           | No        |
-| Source                | FSL / MIT                | Closed                | Closed   | Closed       | Closed    |
+| Source                | MIT                      | Closed                | Closed   | Closed       | Closed    |
 
 List prices checked 2026-08-29; the detailed pages are at
 [sendsprite.com/alternatives](https://sendsprite.com/alternatives):
@@ -580,36 +580,19 @@ find it. Bugs and ideas go in [issues](https://github.com/defy-works/sendsprite/
 
 ## Licensing
 
-Sendsprite is split, on purpose:
+Everything in this repository is [MIT](LICENSE.md) — the server (`apps/web`,
+`infra/`), the `sendsprite` SDK and CLI, `@sendsprite/mcp` and `packages/shared`.
+The published npm packages each carry their own copy of the licence so the text
+ships inside the tarball.
 
-| Part                                             | Licence       |
-| ------------------------------------------------ | ------------- |
-| The server — `apps/web`, `infra/`, the repo root | `FSL-1.1-MIT` |
-| `sendsprite` (`packages/sdk`)                    | `MIT`         |
-| `@sendsprite/mcp` (`packages/mcp`)               | `MIT`         |
-| `packages/shared`                                | `MIT`         |
-
-**The SDK is MIT so you can put it in a closed-source app.** That is the whole
-point of the split: the code you `npm install` and compile into your own product
-comes with no obligations at all — no copyleft, no source disclosure, nothing to
-publish. `packages/shared` is MIT for the same reason, one step removed: tsup
-inlines it into the published SDK and MCP bundles, so its code physically ships
-inside those MIT packages and has to match them.
-
-**Self-hosting is free, and using it obliges you to nothing.** The server is
-under the [Functional Source License](https://fsl.software) (FSL-1.1-MIT).
-Running Sendsprite — unmodified or patched to death — for your own company, your
-own products, your own customers' email, is exactly what it permits. No
-copyleft, no source disclosure, nothing to publish. The one thing it withholds
-is offering Sendsprite itself as a product that competes with ours, and even
-that expires: every release becomes plain MIT two years after it ships.
+**Self-hosting is free, and using it obliges you to nothing.** Run Sendsprite —
+unmodified or patched to death — for your own company, your own products, your
+own customers' email, or as a service you sell. No copyleft, no source
+disclosure, nothing to publish. The code you `npm install` and compile into
+your own product comes with the same terms.
 
 The name is not covered by any of this — see [TRADEMARK.md](TRADEMARK.md). Forks
 are welcome; call yours something else.
 
-**Commercial licences.** If you want to do the one thing the FSL withholds, or
-your organisation cannot adopt source-available software as policy, the same
-server is available under commercial terms. Email <hello@defy.works>.
-
-Contributions are covered by a [CLA](CLA.md); see
-[CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and the reasoning.
+There is no CLA: contributions are MIT, same as the rest. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the workflow.

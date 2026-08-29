@@ -15,7 +15,7 @@ export function Footer() {
           <div className="flex flex-col gap-3">
             <Logo scale={2} />
             <p className="font-mono text-[11px] tracking-[0.08em] text-white/40">
-              FSL server, MIT SDK. Self-host it, fork it, ship it.
+              MIT licensed. Self-host it, fork it, ship it.
             </p>
           </div>
           <nav aria-label="Footer">

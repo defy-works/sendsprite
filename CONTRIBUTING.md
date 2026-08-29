@@ -1,50 +1,15 @@
 # Contributing to Sendsprite
 
-Thanks for wanting to help. This page covers the CLA (read it before you start
-writing code), the local setup, and what a mergeable pull request looks like.
-
-## The CLA, and why there is one
-
-Every contributor signs the [Contributor Licence Agreement](CLA.md) once. The
-first pull request you open cannot be merged until you have — a bot comments
-with a link and a one-line statement to post back, which takes about ten
-seconds and covers all your later pull requests too.
-
-You keep your copyright. What the CLA grants us is a licence broad enough to
-sublicense, which is what lets us:
-
-- **Sell commercial licences.** Sendsprite's server is FSL-1.1-MIT, which
-  permits everything except offering it as a competing product. Organisations
-  that want to do exactly that, or whose policy does not allow source-available
-  licences, can have the same code under commercial terms. We can only offer
-  that if we hold the rights to every line, including yours.
-- **Change the licence if we have to.** Licence bugs happen — an incompatible
-  dependency, a court decision, a GPL revision. Without a CLA, fixing one means
-  tracking down every past contributor for permission, and projects have been
-  stuck for years that way.
-
-The CLA is not an assignment. Your contribution stays yours: you can use it,
-relicense it and republish it anywhere else, exactly as if you had never signed.
-
-If you would rather not sign, say so in the issue. A good bug report, a failing
-test case or a precise description of the fix is genuinely useful, and none of
-those need a CLA.
+Thanks for wanting to help. This page covers the licensing of what you send,
+the local setup, and what a mergeable pull request looks like.
 
 ## Licensing of what you write
 
-Where your change lands decides its licence:
-
-| Path                               | Licence       |
-| ---------------------------------- | ------------- |
-| `apps/web`, `infra/`, repo root    | `FSL-1.1-MIT` |
-| `packages/sdk` (`sendsprite`)      | `MIT`         |
-| `packages/mcp` (`@sendsprite/mcp`) | `MIT`         |
-| `packages/shared`                  | `MIT`         |
-
-`packages/shared` is MIT because tsup inlines it into the published SDK and MCP
-bundles — its code physically ships inside those MIT packages. So do not move
-code from `apps/web` into `packages/shared`: that would relicense FSL code as
-MIT two years early by accident. Move it the other way freely.
+There is no CLA. Everything in the repository is MIT (`LICENSE.md`), and by
+opening a pull request you agree that your contribution is licensed under the
+same terms — inbound is outbound, nothing more. You keep your copyright.
+`packages/sdk`, `packages/mcp` and `packages/shared` carry their own copy of
+the same licence because it ships inside the published npm tarballs.
 
 The name is handled separately — see [TRADEMARK.md](TRADEMARK.md).
 

@@ -50,7 +50,7 @@ const OURS = {
   domains: "Unlimited",
   selfHost: "Yes — one container plus Postgres, installed with one command",
   ownAws: "Yes — SES in your account, credentials never leave it",
-  source: "Source-available server (FSL-1.1-MIT), MIT SDK, CLI and MCP server",
+  source: "Open source — MIT server, SDK, CLI and MCP server",
   smtp: "Yes — port 587 with an API key as the password",
   webhooks:
     "Signed webhooks for delivery, bounce, complaint, open and click, plus a live SSE stream",
@@ -131,7 +131,7 @@ export const COMPETITORS: Competitor[] = [
       },
       {
         q: "Is Sendsprite open source?",
-        a: "The server is source-available under the Functional Source License (FSL-1.1-MIT), which converts to MIT two years after each release. The SDK, CLI, MCP server and shared packages are MIT. You can read, fork, self-host and modify all of it.",
+        a: "Yes. The server, SDK, CLI, MCP server and shared packages are all MIT licensed. You can read, fork, self-host, modify and resell all of it.",
       },
       {
         q: "How do I migrate from Resend to Sendsprite?",
@@ -489,7 +489,7 @@ export const COMPETITORS: Competitor[] = [
       },
       {
         q: "Is Sendsprite open source like useSend?",
-        a: "useSend is AGPL-3.0. Sendsprite's server is source-available under the Functional Source License (FSL-1.1-MIT), which converts to MIT two years after each release; the SDK, CLI, MCP server and shared packages are MIT. You can read, fork, self-host and modify all of it. The FSL is what lets a small team fund the project.",
+        a: "Both are open source, under different licences. useSend is AGPL-3.0, which is copyleft: modify it and offer it over a network and you owe the source. Sendsprite is MIT throughout — server, SDK, CLI, MCP server and shared packages — so you can read, fork, self-host, modify and embed it without any disclosure obligation.",
       },
       {
         q: "How do I migrate from useSend to Sendsprite?",
