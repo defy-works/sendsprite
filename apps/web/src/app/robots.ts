@@ -1,6 +1,10 @@
 import type { MetadataRoute } from "next";
 import { isLandingEnabled, siteOrigin } from "@/services/landing";
 
+// Metadata routes are prerendered at build unless told otherwise; this one
+// reads the instance settings from the database, which only exists at runtime.
+export const dynamic = "force-dynamic";
+
 /**
  * `/robots.txt`. A self-hosted instance with the landing off has nothing a
  * search engine should index — every remaining route is an account's own

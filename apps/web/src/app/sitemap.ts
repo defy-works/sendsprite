@@ -3,6 +3,10 @@ import { COMPETITORS } from "@/components/alternatives/competitors";
 import { DOCS_NAV } from "@/app/docs/nav";
 import { isLandingEnabled, siteOrigin } from "@/services/landing";
 
+// Metadata routes are prerendered at build unless told otherwise; this one
+// reads the instance settings from the database, which only exists at runtime.
+export const dynamic = "force-dynamic";
+
 /** `/sitemap.xml`: the marketing pages, the docs and the legal pages. */
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   if (!(await isLandingEnabled())) return [];
