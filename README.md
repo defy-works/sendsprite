@@ -1,10 +1,109 @@
-# Sendsprite
+<p align="center">
+  <a href="https://sendsprite.com">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="apps/web/public/brand/lockup.svg">
+      <img src="apps/web/public/brand/lockup-on-light.svg" alt="Sendsprite" width="304">
+    </picture>
+  </a>
+</p>
 
-Self-hosted email API and marketing platform on Amazon SES. A Resend / useSend
-alternative that sets up SES and Cloudflare DNS for you, ships an npm SDK with
-first-class React support, and runs from a single `docker compose up`.
+<h1 align="center">The email API you run yourself.</h1>
 
-Bun · Next.js 16 · Postgres · Drizzle · pg-boss · BetterAuth · FSL-1.1-MIT server, MIT SDK
+<p align="center">
+  <b>Self-hosted email API on Amazon SES.</b> A free, source-available alternative to
+  Resend, Postmark, SendGrid and Mailgun: one container, your own AWS account,
+  $0.10 per 1,000 emails, and your logs kept for as long as you like.
+</p>
+
+<p align="center">
+  <a href="https://sendsprite.com">Website</a> ·
+  <a href="https://sendsprite.com/docs">Docs</a> ·
+  <a href="https://sendsprite.com/docs/self-hosting">Self-host</a> ·
+  <a href="https://sendsprite.com/alternatives">Compare</a> ·
+  <a href="https://www.npmjs.com/package/sendsprite">SDK</a> ·
+  <a href="https://www.npmjs.com/package/@sendsprite/mcp">MCP server</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/defy-works/sendsprite/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/defy-works/sendsprite/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://www.npmjs.com/package/sendsprite"><img alt="npm: sendsprite" src="https://img.shields.io/npm/v/sendsprite?label=sendsprite&color=6366f1"></a>
+  <a href="https://www.npmjs.com/package/@sendsprite/mcp"><img alt="npm: @sendsprite/mcp" src="https://img.shields.io/npm/v/@sendsprite/mcp?label=%40sendsprite%2Fmcp&color=6366f1"></a>
+  <a href="https://github.com/defy-works/sendsprite/pkgs/container/sendsprite"><img alt="Docker image" src="https://img.shields.io/badge/ghcr.io-defy--works%2Fsendsprite-6366f1?logo=docker&logoColor=white"></a>
+  <a href="#licensing"><img alt="Licence: FSL-1.1-MIT server, MIT SDK" src="https://img.shields.io/badge/licence-FSL--1.1--MIT%20server%20%C2%B7%20MIT%20SDK-6366f1"></a>
+  <a href="https://github.com/defy-works/sendsprite/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/defy-works/sendsprite?style=flat&color=6366f1"></a>
+</p>
+
+<p align="center">
+  <a href="https://sendsprite.com"><img src="apps/web/public/og/default.png" alt="Sendsprite — the email API you run yourself" width="800"></a>
+</p>
+
+```bash
+curl -fsSL https://sendsprite.com/install.sh | sh
+```
+
+Docker + Postgres. Prompts for a domain, brings up the container, opens the
+setup wizard. Two minutes later you are sending from `curl`, the typed SDK,
+React Email, the CLI, SMTP or an AI agent.
+
+## Why Sendsprite
+
+Resend, Postmark, SendGrid and Mailgun sell the same thing: a pleasant API in
+front of someone else's mail servers, metered per email. Sendsprite is that API
+on your own box, sending through Amazon SES in **your** AWS account.
+
+- **SES's price, an email API's product.** $0.10 per 1,000 at Amazon; nothing to
+  us when you self-host. 50,000 emails is about $5, not $20 (Resend) or $35
+  (Mailgun).
+- **No caps but your SES quota.** No 100-a-day free-tier ceiling, no 3,000-a-month
+  limit, no per-domain add-ons.
+- **Your logs, your retention.** Every delivery, bounce, complaint, open and click
+  lands in your Postgres and stays as long as you say — not 1, 3, 30 or 45 days.
+- **AWS set up for you.** One-click CloudFormation stack: IAM role, SNS topics,
+  configuration set, event destinations. Cloudflare DNS writes DKIM, SPF, MAIL
+  FROM and DMARC for you; other providers get a copy-paste list.
+- **Everything the paid APIs have.** REST API, typed SDK with React Email, batch
+  and scheduled sends, idempotency keys, tags, signed webhooks, a live SSE stream,
+  SMTP relay on 587, automatic suppression, templates, contacts, campaigns with
+  RFC 8058 one-click unsubscribe, and an MCP server for agents.
+- **Source you can read.** FSL-1.1-MIT server (MIT two years after each release),
+  MIT SDK, CLI and MCP server. Self-host it, fork it, ship it.
+
+|                       | Sendsprite (self-hosted) | Resend                | Postmark | SendGrid     | Mailgun   |
+| --------------------- | ------------------------ | --------------------- | -------- | ------------ | --------- |
+| 50,000 emails / month | ~$5 (SES) + your box     | $20                   | ~$87     | from $19.95  | $35       |
+| Free tier             | Free for ever, no cap    | 3,000 / mo, 100 / day | 100 / mo | 60-day trial | 100 / day |
+| Event retention       | Your database            | 30 days               | 45 days  | days         | 1–30 days |
+| Self-hostable         | **Yes**                  | No                    | No       | No           | No        |
+| Your own AWS account  | **Yes**                  | No                    | No       | No           | No        |
+| Source                | FSL / MIT                | Closed                | Closed   | Closed       | Closed    |
+
+List prices checked 2026-08-29; the detailed pages are at
+[sendsprite.com/alternatives](https://sendsprite.com/alternatives):
+[Resend](https://sendsprite.com/alternatives/resend) ·
+[Postmark](https://sendsprite.com/alternatives/postmark) ·
+[SendGrid](https://sendsprite.com/alternatives/sendgrid) ·
+[Mailgun](https://sendsprite.com/alternatives/mailgun) ·
+[raw Amazon SES](https://sendsprite.com/alternatives/amazon-ses).
+
+Don't want to run it? [sendsprite.com](https://sendsprite.com) is the same
+software, hosted.
+
+**Stack:** Bun · Next.js 16 · Postgres · Drizzle · pg-boss · BetterAuth · Amazon SES · Docker
+
+<details>
+<summary><b>Table of contents</b></summary>
+
+- [Install (self-host)](#install-self-host)
+- [Send your first email](#send-your-first-email)
+- [Packages](#packages) — SDK, CLI, MCP server
+- [Docs](#docs)
+- [Why it works the way it does](#why-it-works-the-way-it-does)
+- [Connect AWS & Cloudflare](#connect-aws--cloudflare)
+- [Sending](#sending) — templates, contacts, campaigns, webhooks, SMTP, suppressions
+- [Development](#development) · [Releasing](#releasing) · [Environment reference](#environment-reference)
+- [Roadmap](#roadmap) · [Licensing](#licensing)
+
+</details>
 
 ## Install (self-host)
 
@@ -12,7 +111,7 @@ Bun · Next.js 16 · Postgres · Drizzle · pg-boss · BetterAuth · FSL-1.1-MIT
 curl -fsSL https://sendsprite.com/install.sh | sh
 ```
 
-That writes `~/sendsprite/.env` with generated secrets, starts the app and
+The script writes `~/sendsprite/.env` with generated secrets, starts the app and
 Postgres, and prints the signup URL. The first account becomes the instance
 owner; after that, sign-ups are invite-only unless you change `SIGNUP_MODE`.
 
@@ -471,6 +570,12 @@ audience selection, scheduling, resumable fan-out, per-campaign stats and RFC
 8058 one-click unsubscribe — done. Phase 8 (next): the audit log UI and the
 analytics overview, a campaign test send, and per-campaign send-rate control.
 Design: `docs/superpowers/specs/2026-08-24-sendsprite-design.md`.
+
+## Stay in the loop
+
+If Sendsprite saves you a monthly bill, a ⭐ on this repo is how other people
+find it. Bugs and ideas go in [issues](https://github.com/defy-works/sendsprite/issues);
+"Postmark did X, can Sendsprite?" is a fine issue.
 
 ## Licensing
 
